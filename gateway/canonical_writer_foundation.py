@@ -102,6 +102,8 @@ SQL_TLS_SERVER_NAME = (
 SQL_PORT = 5432
 SQL_DATABASE = "muncho_canary_brain"
 SQL_USER = "muncho_canary_writer_login"
+DATABASE_OWNER_ROLE = "cloudsqlsuperuser"
+PERSISTENT_MEMBERSHIP_GRANTOR = "cloudsqladmin"
 MIGRATION_OWNER_ROLE = "canonical_brain_migration_owner"
 WRITER_ROLE = "canonical_brain_writer"
 CANARY_BOOTSTRAP_ROLE = "canonical_brain_canary_bootstrap"
@@ -139,6 +141,7 @@ FOUNDATION_PLAN_MODES = frozenset(
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 _ADMIN_RE = re.compile(r"^muncho_canary_admin_[0-9a-f]{16}$")
+_LEGACY_SOURCE_OWNER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,63}$")
 _WRITER_SECRET_RE = re.compile(rb"^[A-Za-z0-9_-]{64}$")
 _MAX_SQL_BYTES = 16 * 1024 * 1024
 _MAX_PUBLIC_JSON_BYTES = 4 * 1024 * 1024
@@ -158,15 +161,18 @@ _OBSERVATION_FIELDS = frozenset(
     {
         "schema",
         "database",
+        "database_owner",
         "postgres_version_num",
         "session_user",
         "current_user",
+        "temporary_admin_roles",
         "tls_peer_certificate_sha256",
         "roles",
         "memberships",
         "event_log_shape",
         "event_log_owner",
         "legacy_archive_present",
+        "legacy_archive_identity",
         "canonical_schema_owner",
         "writer_ping_present",
         "database_acl",
@@ -195,9 +201,38 @@ _MEMBERSHIP_FIELDS = frozenset(
     {
         "granted_role",
         "member_role",
+        "grantor",
         "admin_option",
         "inherit_option",
         "set_option",
+    }
+)
+_LEGACY_ARCHIVE_IDENTITY_FIELDS = frozenset(
+    {
+        "oid",
+        "owner",
+        "relation_kind",
+        "persistence",
+        "owner_superuser",
+        "owner_create_database",
+        "owner_create_role",
+        "owner_replication",
+        "owner_bypass_row_security",
+        "owner_connection_limit",
+        "owner_validity_is_unbounded",
+        "owner_configuration_is_empty",
+    }
+)
+_LEGACY_ARCHIVE_RESERVED_OWNERS = frozenset(
+    {
+        "postgres",
+        "cloudsqladmin",
+        "cloudsqlsuperuser",
+        MIGRATION_OWNER_ROLE,
+        WRITER_ROLE,
+        CANARY_BOOTSTRAP_ROLE,
+        CANARY_BOOTSTRAP_LOGIN,
+        SQL_USER,
     }
 )
 _CREDENTIAL_FIELDS = frozenset(
@@ -555,6 +590,24 @@ class SecretStore(Protocol):
     def remove(self, expected: Mapping[str, Any]) -> None: ...
 
 
+def _effective_uid() -> int:
+    """Return the POSIX effective uid without a bare Windows-only lookup."""
+
+    getter = getattr(os, "geteuid", None)
+    if not callable(getter):
+        raise CanonicalWriterFoundationError("foundation_posix_identity_unavailable")
+    return int(getter())
+
+
+def _effective_gid() -> int:
+    """Return the POSIX effective gid without a bare Windows-only lookup."""
+
+    getter = getattr(os, "getegid", None)
+    if not callable(getter):
+        raise CanonicalWriterFoundationError("foundation_posix_identity_unavailable")
+    return int(getter())
+
+
 def _canonical_bytes(value: Any) -> bytes:
     try:
         rendered = json.dumps(
@@ -880,9 +933,10 @@ def _validate_membership_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
             raise CanonicalWriterFoundationError("foundation_membership_authority_drifted")
         seen.add(pair)
         exact_options = (
-            row["admin_option"] is False
+            row["grantor"] == PERSISTENT_MEMBERSHIP_GRANTOR
+            and row["admin_option"] is False
             and row["inherit_option"] is True
-            and row["set_option"] is True
+            and row["set_option"] is False
         )
         if not exact_options:
             raise CanonicalWriterFoundationError("foundation_membership_authority_drifted")
@@ -948,6 +1002,12 @@ def _credential_mapping(value: Any) -> Mapping[str, Any]:
     return raw
 
 
+def _is_foundation_observer_username(value: Any) -> bool:
+    return isinstance(value, str) and (
+        value == SQL_USER or _ADMIN_RE.fullmatch(value) is not None
+    )
+
+
 @dataclass(frozen=True)
 class FoundationObservation:
     value: Mapping[str, Any]
@@ -962,8 +1022,7 @@ class FoundationObservation:
             raw["schema"] != FOUNDATION_OBSERVATION_SCHEMA
             or raw["database"] != SQL_DATABASE
             or raw["postgres_version_num"] // 10000 != 18
-            or not isinstance(raw["session_user"], str)
-            or _ADMIN_RE.fullmatch(raw["session_user"]) is None
+            or not _is_foundation_observer_username(raw["session_user"])
             or raw["current_user"] != raw["session_user"]
             or _digest(
                 raw["tls_peer_certificate_sha256"],
@@ -982,6 +1041,58 @@ class FoundationObservation:
             or raw["observation_sha256"] != _sha256_json(unsigned)
         ):
             raise CanonicalWriterFoundationError("foundation_observation_identity_invalid")
+        if raw["database_owner"] != DATABASE_OWNER_ROLE:
+            raise CanonicalWriterFoundationError("foundation_database_owner_drifted")
+        archive_identity = raw["legacy_archive_identity"]
+        if raw["legacy_archive_present"] is False:
+            if archive_identity is not None:
+                raise CanonicalWriterFoundationError(
+                    "foundation_legacy_archive_identity_invalid"
+                )
+        elif (
+            not isinstance(archive_identity, Mapping)
+            or set(archive_identity) != _LEGACY_ARCHIVE_IDENTITY_FIELDS
+            or not isinstance(archive_identity.get("oid"), str)
+            or re.fullmatch(r"[1-9][0-9]*", archive_identity["oid"]) is None
+            or not isinstance(archive_identity.get("owner"), str)
+            or _LEGACY_SOURCE_OWNER_RE.fullmatch(archive_identity["owner"])
+            is None
+            or _ADMIN_RE.fullmatch(archive_identity["owner"]) is not None
+            or archive_identity["owner"] in _LEGACY_ARCHIVE_RESERVED_OWNERS
+            or archive_identity.get("relation_kind") != "r"
+            or archive_identity.get("persistence") != "p"
+            or archive_identity.get("owner_superuser") is not False
+            or archive_identity.get("owner_create_database") is not False
+            or archive_identity.get("owner_create_role") is not False
+            or archive_identity.get("owner_replication") is not False
+            or archive_identity.get("owner_bypass_row_security") is not False
+            or type(archive_identity.get("owner_connection_limit")) is not int
+            or archive_identity.get("owner_connection_limit") != -1
+            or archive_identity.get("owner_validity_is_unbounded") is not True
+            or archive_identity.get("owner_configuration_is_empty") is not True
+        ):
+            raise CanonicalWriterFoundationError(
+                "foundation_legacy_archive_identity_invalid"
+            )
+        temporary_admin_roles = raw["temporary_admin_roles"]
+        if (
+            not isinstance(temporary_admin_roles, list)
+            or any(
+                not isinstance(name, str) or _ADMIN_RE.fullmatch(name) is None
+                for name in temporary_admin_roles
+            )
+            or temporary_admin_roles != sorted(set(temporary_admin_roles))
+        ):
+            raise CanonicalWriterFoundationError(
+                "foundation_temporary_admin_observation_invalid"
+            )
+        expected_temporary_admin_roles = (
+            [] if raw["session_user"] == SQL_USER else [raw["session_user"]]
+        )
+        if temporary_admin_roles != expected_temporary_admin_roles:
+            raise CanonicalWriterFoundationError(
+                "foundation_temporary_admin_authority_drifted"
+            )
         roles = _validate_role_rows(raw["roles"])
         memberships = _validate_membership_rows(raw["memberships"])
         role_names = {str(row["name"]) for row in roles}
@@ -1066,8 +1177,17 @@ class FoundationObservation:
                 raise CanonicalWriterFoundationError("foundation_legacy_observation_invalid")
         elif legacy is not None:
             raise CanonicalWriterFoundationError("foundation_legacy_observation_unexpected")
-        _credential_mapping(raw["credential"])
-        return cls(json.loads(_canonical_bytes(raw).decode("utf-8")))
+        credential = _credential_mapping(raw["credential"])
+        observation = cls(json.loads(_canonical_bytes(raw).decode("utf-8")))
+        if raw["session_user"] == SQL_USER and (
+            not observation.membership_ready
+            or credential["state"] != "installed"
+            or raw["legacy_truth"] is not None
+        ):
+            raise CanonicalWriterFoundationError(
+                "foundation_writer_observation_not_terminal"
+            )
+        return observation
 
     @property
     def sha256(self) -> str:
@@ -1164,8 +1284,11 @@ def observe_foundation(
 ) -> FoundationObservation:
     """Observe only the one fixed isolated database and credential target."""
 
-    if _ADMIN_RE.fullmatch(str(getattr(admin_session, "username", ""))) is None:
-        raise CanonicalWriterFoundationError("foundation_admin_session_identity_invalid")
+    session_username = getattr(admin_session, "username", None)
+    if not _is_foundation_observer_username(session_username):
+        raise CanonicalWriterFoundationError(
+            "foundation_observation_session_identity_invalid"
+        )
     tls_peer = _digest(
         getattr(admin_session, "tls_peer_certificate_sha256", None),
         "foundation_admin_tls_peer_invalid",
@@ -1182,8 +1305,12 @@ def observe_foundation(
             expected_column="foundation_observation",
         )
     )
-    if observed.get("session_user") != admin_session.username:
-        raise CanonicalWriterFoundationError("foundation_admin_session_drifted")
+    if observed.get("session_user") != session_username:
+        raise CanonicalWriterFoundationError("foundation_observation_session_drifted")
+    if session_username == SQL_USER and observed.get("event_log_shape") != "canonical14":
+        raise CanonicalWriterFoundationError(
+            "foundation_writer_observation_not_terminal"
+        )
     legacy: Mapping[str, Any] | None = None
     if observed.get("event_log_shape") == "legacy19":
         legacy = _query_json(
@@ -2183,7 +2310,7 @@ def _secure_directory(
                     "foundation_evidence_ancestor_untrusted"
                 )
         item = os.fstat(descriptor)
-        expected_uid = 0 if strict_root else os.geteuid()
+        expected_uid = 0 if strict_root else _effective_uid()
         if (
             stat.S_IMODE(item.st_mode) != 0o700
             or item.st_uid != expected_uid
@@ -2485,15 +2612,15 @@ class _AppendOnlyFoundationJournal:
                     # on macOS) inherit a parent group instead of the process
                     # effective group.  Pin the test/non-root lock identity so
                     # the subsequent exact lstat/fstat contract is portable.
-                    os.fchown(descriptor, -1, os.getegid())
+                    os.fchown(descriptor, -1, _effective_gid())
                 os.fchmod(descriptor, 0o600)
                 os.fsync(descriptor)
                 _fsync_directory(lock_path.parent)
             before = lock_path.lstat()
             opened = os.fstat(descriptor)
             reachable = lock_path.lstat()
-            expected_uid = 0 if self.strict_root else os.geteuid()
-            expected_gid = 0 if self.strict_root else os.getegid()
+            expected_uid = 0 if self.strict_root else _effective_uid()
+            expected_gid = 0 if self.strict_root else _effective_gid()
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or stat.S_IMODE(opened.st_mode) != 0o600
@@ -3442,7 +3569,8 @@ def build_foundation_adoption_plan(
     revision = _revision(release_revision)
     credential = _credential_mapping(observation.value["credential"])
     if (
-        not observation.membership_ready
+        observation.value["session_user"] != SQL_USER
+        or not observation.membership_ready
         or credential["state"] != "installed"
         or observation.value["legacy_truth"] is not None
     ):
@@ -3566,6 +3694,22 @@ def _observe_for_plan(
         "tls_peer_certificate_sha256"
     ]:
         raise CanonicalWriterFoundationError("foundation_tls_peer_changed_after_approval")
+    if observed.value["session_user"] != plan.initial_observation.value["session_user"]:
+        raise CanonicalWriterFoundationError(
+            "foundation_observation_session_changed_after_approval"
+        )
+    if observed.value["legacy_archive_present"] is not plan.initial_observation.value[
+        "legacy_archive_present"
+    ]:
+        raise CanonicalWriterFoundationError(
+            "foundation_legacy_archive_changed_after_approval"
+        )
+    if observed.value["legacy_archive_identity"] != plan.initial_observation.value[
+        "legacy_archive_identity"
+    ]:
+        raise CanonicalWriterFoundationError(
+            "foundation_legacy_archive_changed_after_approval"
+        )
     if expected_credential is not None:
         _require_same_credential_identity(
             expected_credential,
@@ -3724,8 +3868,13 @@ def apply_approved_foundation(
     )
     if not hmac.compare_digest(plan.sha256, approved):
         raise CanonicalWriterFoundationError("foundation_plan_not_approved")
-    if _ADMIN_RE.fullmatch(str(getattr(admin_session, "username", ""))) is None:
-        raise CanonicalWriterFoundationError("foundation_admin_session_identity_invalid")
+    if (
+        getattr(admin_session, "username", None) != SQL_USER
+        or plan.initial_observation.value["session_user"] != SQL_USER
+    ):
+        raise CanonicalWriterFoundationError(
+            "foundation_adoption_writer_session_required"
+        )
     artifacts = (
         _load_sealed_artifacts(plan.revision) if _artifacts is None else _artifacts
     )

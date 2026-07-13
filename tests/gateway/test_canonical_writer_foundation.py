@@ -23,6 +23,7 @@ ADMIN = "muncho_canary_admin_1111111111111111"
 TLS_PEER = "b" * 64
 NOW = 2_000_000_000
 SECRET = b"A" * 64
+LEGACY_ARCHIVE_OWNER = "legacy_archive_source_owner"
 
 
 def _credential(state: str) -> dict[str, object]:
@@ -128,9 +129,10 @@ def _memberships(*, writer: bool) -> list[dict[str, object]]:
         {
             "granted_role": granted,
             "member_role": member,
+            "grantor": foundation.PERSISTENT_MEMBERSHIP_GRANTOR,
             "admin_option": False,
             "inherit_option": True,
-            "set_option": True,
+            "set_option": False,
         }
         for granted, member in pairs
     ]
@@ -142,19 +144,45 @@ def _observation(
     login: bool,
     ping: bool,
     writer: bool,
+    session_user: str = ADMIN,
+    legacy_archive_present: bool = False,
+    legacy_archive_oid: str = "424242",
+    legacy_archive_owner: str = LEGACY_ARCHIVE_OWNER,
 ) -> foundation.FoundationObservation:
     unsigned = {
         "schema": foundation.FOUNDATION_OBSERVATION_SCHEMA,
         "database": foundation.SQL_DATABASE,
+        "database_owner": foundation.DATABASE_OWNER_ROLE,
         "postgres_version_num": 180004,
-        "session_user": ADMIN,
-        "current_user": ADMIN,
+        "session_user": session_user,
+        "current_user": session_user,
+        "temporary_admin_roles": (
+            [] if session_user == foundation.SQL_USER else [session_user]
+        ),
         "tls_peer_certificate_sha256": TLS_PEER,
         "roles": _roles(login=login),
         "memberships": _memberships(writer=writer),
         "event_log_shape": "canonical14",
         "event_log_owner": foundation.MIGRATION_OWNER_ROLE,
-        "legacy_archive_present": False,
+        "legacy_archive_present": legacy_archive_present,
+        "legacy_archive_identity": (
+            {
+                "oid": legacy_archive_oid,
+                "owner": legacy_archive_owner,
+                "relation_kind": "r",
+                "persistence": "p",
+                "owner_superuser": False,
+                "owner_create_database": False,
+                "owner_create_role": False,
+                "owner_replication": False,
+                "owner_bypass_row_security": False,
+                "owner_connection_limit": -1,
+                "owner_validity_is_unbounded": True,
+                "owner_configuration_is_empty": True,
+            }
+            if legacy_archive_present
+            else None
+        ),
         "canonical_schema_owner": foundation.MIGRATION_OWNER_ROLE if ping else None,
         "writer_ping_present": ping,
         "database_acl": [],
@@ -171,12 +199,24 @@ def _observation(
 
 
 class _AdminSession:
-    username = ADMIN
     tls_peer_certificate_sha256 = TLS_PEER
 
-    def __init__(self, store: _SecretStore, artifacts) -> None:
+    def __init__(
+        self,
+        store: _SecretStore,
+        artifacts,
+        *,
+        username: str = ADMIN,
+        legacy_archive_present: bool = False,
+        legacy_archive_oid: str = "424242",
+        legacy_archive_owner: str = LEGACY_ARCHIVE_OWNER,
+    ) -> None:
         self.store = store
         self.artifacts = artifacts
+        self.username = username
+        self.legacy_archive_present = legacy_archive_present
+        self.legacy_archive_oid = legacy_archive_oid
+        self.legacy_archive_owner = legacy_archive_owner
         self.login = False
         self.ping = False
         self.writer = False
@@ -190,6 +230,10 @@ class _AdminSession:
             login=self.login,
             ping=self.ping,
             writer=self.writer,
+            session_user=self.username,
+            legacy_archive_present=self.legacy_archive_present,
+            legacy_archive_oid=self.legacy_archive_oid,
+            legacy_archive_owner=self.legacy_archive_owner,
         ).to_mapping()
         for key in (
             "schema",
@@ -384,6 +428,23 @@ def test_phase_a_creation_is_rejected_before_every_mutation(
             _secret_factory=lambda: SECRET,
             _clock=lambda: NOW,
         )
+    writer_session = _AdminSession(
+        store,
+        artifacts,
+        username=foundation.SQL_USER,
+    )
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_creation_requires_admin_delete_integration",
+    ):
+        foundation.apply_approved_foundation(
+            plan,
+            approved_plan_sha256=plan.sha256,
+            admin_session=writer_session,
+            _journal=journal,
+            _secret_store=store,
+            _artifacts=artifacts,
+        )
     assert session.mutations == []
     assert session.password_statements == 0
     assert store.state == "absent"
@@ -395,9 +456,21 @@ def test_exact_existing_terminal_is_adopted_without_mutation_or_rotation(
 ):
     artifacts = foundation._load_source_artifacts_for_tests()
     store = _SecretStore("installed")
-    session = _AdminSession(store, artifacts)
+    session = _AdminSession(
+        store,
+        artifacts,
+        username=foundation.SQL_USER,
+        legacy_archive_present=True,
+    )
     session.login = session.ping = session.writer = True
-    observed = _observation(store, login=True, ping=True, writer=True)
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+        legacy_archive_present=True,
+    )
     plan = foundation.build_foundation_adoption_plan(
         REVISION,
         observed,
@@ -427,11 +500,161 @@ def test_exact_existing_terminal_is_adopted_without_mutation_or_rotation(
     assert receipt["mode"] == "adopted_existing_terminal"
     assert receipt["retirement_covered"] is False
     assert session.mutations == []
+    assert session.legacy_archive_present is True
     assert store.state == "installed"
     assert [entry.state for entry in journal.load(plan) if not entry.prepared] == [
         "adopted_existing_terminal",
         "terminal",
     ]
+
+
+def test_legacy_archive_disappearance_blocks_terminal_receipt(tmp_path: Path):
+    artifacts = foundation._load_source_artifacts_for_tests()
+    store = _SecretStore("installed")
+    session = _AdminSession(
+        store,
+        artifacts,
+        username=foundation.SQL_USER,
+        legacy_archive_present=True,
+    )
+    session.login = session.ping = session.writer = True
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+        legacy_archive_present=True,
+    )
+    plan = foundation.build_foundation_adoption_plan(
+        REVISION,
+        observed,
+        _artifacts=artifacts,
+        _hba_collector=_hba,
+        _authentication_probe=_auth(session),
+        _terminal_attestor=_attestation,
+        _clock=lambda: NOW,
+    )
+    journal = foundation._AppendOnlyFoundationJournal(
+        tmp_path / "archive-drift-evidence",
+        strict_root=False,
+    )
+
+    def remove_archive_after_initial_observation(state: str, point: str) -> None:
+        if state == "adopted_existing_terminal" and point == "after_transition":
+            session.legacy_archive_present = False
+
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_legacy_archive_changed_after_approval",
+    ):
+        foundation.apply_approved_foundation(
+            plan,
+            approved_plan_sha256=plan.sha256,
+            admin_session=session,
+            _journal=journal,
+            _secret_store=store,
+            _artifacts=artifacts,
+            _hba_collector=_hba,
+            _authentication_probe=_auth(session),
+            _terminal_attestor=_attestation,
+            _clock=lambda: NOW,
+            _fault_injector=remove_archive_after_initial_observation,
+        )
+    assert session.mutations == []
+    assert not journal._terminal_root(plan).exists()
+
+
+@pytest.mark.parametrize(
+    ("attribute", "replacement"),
+    [
+        ("legacy_archive_oid", "424243"),
+        ("legacy_archive_owner", "legacy_archive_source_owner_2"),
+    ],
+)
+def test_legacy_archive_identity_change_blocks_terminal_receipt(
+    tmp_path: Path,
+    attribute: str,
+    replacement: str,
+):
+    artifacts = foundation._load_source_artifacts_for_tests()
+    store = _SecretStore("installed")
+    session = _AdminSession(
+        store,
+        artifacts,
+        username=foundation.SQL_USER,
+        legacy_archive_present=True,
+        legacy_archive_oid="424242",
+    )
+    session.login = session.ping = session.writer = True
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+        legacy_archive_present=True,
+        legacy_archive_oid="424242",
+    )
+    plan = foundation.build_foundation_adoption_plan(
+        REVISION,
+        observed,
+        _artifacts=artifacts,
+        _hba_collector=_hba,
+        _authentication_probe=_auth(session),
+        _terminal_attestor=_attestation,
+        _clock=lambda: NOW,
+    )
+    journal = foundation._AppendOnlyFoundationJournal(
+        tmp_path / "archive-replacement-evidence",
+        strict_root=False,
+    )
+
+    def replace_archive_after_initial_observation(state: str, point: str) -> None:
+        if state == "adopted_existing_terminal" and point == "after_transition":
+            setattr(session, attribute, replacement)
+
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_legacy_archive_changed_after_approval",
+    ):
+        foundation.apply_approved_foundation(
+            plan,
+            approved_plan_sha256=plan.sha256,
+            admin_session=session,
+            _journal=journal,
+            _secret_store=store,
+            _artifacts=artifacts,
+            _hba_collector=_hba,
+            _authentication_probe=_auth(session),
+            _terminal_attestor=_attestation,
+            _clock=lambda: NOW,
+            _fault_injector=replace_archive_after_initial_observation,
+        )
+    assert session.mutations == []
+    assert not journal._terminal_root(plan).exists()
+
+
+def test_temporary_admin_cannot_author_terminal_adoption():
+    artifacts = foundation._load_source_artifacts_for_tests()
+    store = _SecretStore("installed")
+    observed = _observation(store, login=True, ping=True, writer=True)
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_existing_authority_not_exact_terminal",
+    ):
+        foundation.build_foundation_adoption_plan(
+            REVISION,
+            observed,
+            _artifacts=artifacts,
+            _hba_collector=_hba,
+            _authentication_probe=lambda _enabled: {
+                "authenticated": True,
+                "user": foundation.SQL_USER,
+            },
+            _terminal_attestor=_attestation,
+            _clock=lambda: NOW,
+        )
 
 
 @pytest.mark.parametrize(
@@ -469,6 +692,184 @@ def test_partial_existing_authority_cannot_be_created_or_adopted(
             _terminal_attestor=_attestation,
             _clock=lambda: NOW,
         )
+
+
+def _rebuild_observation(
+    observation: foundation.FoundationObservation,
+    **changes: object,
+) -> foundation.FoundationObservation:
+    unsigned = observation.to_mapping()
+    unsigned.pop("observation_sha256")
+    unsigned.update(changes)
+    return foundation.FoundationObservation.from_mapping(
+        {
+            **unsigned,
+            "observation_sha256": foundation._sha256_json(unsigned),
+        }
+    )
+
+
+@pytest.mark.parametrize("grantor", [ADMIN, "postgres"])
+def test_persistent_membership_foreign_grantor_fails_closed(grantor: str):
+    store = _SecretStore("installed")
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+    )
+    memberships = [dict(row) for row in observed.value["memberships"]]
+    memberships[0]["grantor"] = grantor
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_membership_authority_drifted",
+    ):
+        _rebuild_observation(observed, memberships=memberships)
+
+
+def test_persistent_membership_set_role_authority_fails_closed():
+    store = _SecretStore("installed")
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+    )
+    memberships = [dict(row) for row in observed.value["memberships"]]
+    memberships[1]["set_option"] = True
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_membership_authority_drifted",
+    ):
+        _rebuild_observation(observed, memberships=memberships)
+
+
+def test_wrong_database_owner_fails_closed():
+    store = _SecretStore("installed")
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+    )
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_database_owner_drifted",
+    ):
+        _rebuild_observation(observed, database_owner=ADMIN)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("oid", "0"),
+        ("owner", "invalid.owner"),
+        ("owner", ADMIN),
+        ("owner", "postgres"),
+        ("owner", "cloudsqladmin"),
+        ("owner", "cloudsqlsuperuser"),
+        ("owner", foundation.MIGRATION_OWNER_ROLE),
+        ("owner", foundation.WRITER_ROLE),
+        ("owner", foundation.CANARY_BOOTSTRAP_ROLE),
+        ("owner", foundation.CANARY_BOOTSTRAP_LOGIN),
+        ("owner", foundation.SQL_USER),
+        ("relation_kind", "v"),
+        ("persistence", "t"),
+        ("owner_superuser", True),
+        ("owner_create_database", True),
+        ("owner_create_role", True),
+        ("owner_replication", True),
+        ("owner_bypass_row_security", True),
+        ("owner_connection_limit", 0),
+        ("owner_validity_is_unbounded", False),
+        ("owner_configuration_is_empty", False),
+    ],
+)
+def test_invalid_legacy_archive_identity_fails_closed(field: str, value: object):
+    store = _SecretStore("installed")
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+        legacy_archive_present=True,
+    )
+    archive_identity = dict(observed.value["legacy_archive_identity"])
+    archive_identity[field] = value
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_legacy_archive_identity_invalid",
+    ):
+        _rebuild_observation(
+            observed,
+            legacy_archive_identity=archive_identity,
+        )
+
+
+def test_admissible_durable_legacy_source_owner_is_accepted():
+    store = _SecretStore("installed")
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+        legacy_archive_present=True,
+        legacy_archive_owner="durable-source_owner-1",
+    )
+    assert observed.value["legacy_archive_identity"]["owner"] == (
+        "durable-source_owner-1"
+    )
+
+
+def test_permission_sensitive_writer_ping_lookup_drift_fails_closed():
+    store = _SecretStore("installed")
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+    )
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_writer_observation_not_terminal",
+    ):
+        _rebuild_observation(observed, writer_ping_present=False)
+
+
+def test_writer_terminal_rejects_any_surviving_temporary_admin_role():
+    store = _SecretStore("installed")
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+    )
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_temporary_admin_authority_drifted",
+    ):
+        _rebuild_observation(observed, temporary_admin_roles=[ADMIN])
+
+
+def test_observation_sql_uses_permission_independent_catalog_identity():
+    sql = foundation._load_source_artifacts_for_tests()["observe"].payload.decode()
+    for permission_sensitive_lookup in (
+        "to_regclass",
+        "::regclass",
+        "to_regprocedure",
+        "::regprocedure",
+    ):
+        assert permission_sensitive_lookup not in sql
+    assert "pg_catalog.pg_namespace" in sql
+    assert "pg_catalog.pg_class" in sql
+    assert "pg_catalog.pg_proc" in sql
 
 
 class _InjectedCrash(RuntimeError):
@@ -530,7 +931,13 @@ def test_journal_publication_recovers_each_durable_boundary(
 def _adoption_journal(tmp_path: Path):
     artifacts = foundation._load_source_artifacts_for_tests()
     store = _SecretStore("installed")
-    observed = _observation(store, login=True, ping=True, writer=True)
+    observed = _observation(
+        store,
+        login=True,
+        ping=True,
+        writer=True,
+        session_user=foundation.SQL_USER,
+    )
     plan = foundation.build_foundation_adoption_plan(
         REVISION,
         observed,
@@ -810,6 +1217,8 @@ def test_real_postgres18_managed_nonsuper_foundation_and_password_boundary():
                 "log_parameter_max_length=-1",
                 "-c",
                 "log_parameter_max_length_on_error=-1",
+                "-c",
+                "allow_system_table_mods=on",
             ],
             redactions=redactions,
         )
@@ -843,9 +1252,17 @@ def test_real_postgres18_managed_nonsuper_foundation_and_password_boundary():
             pytest.fail("postgres:18 fixture did not become ready")
 
         bootstrap = f"""
+CREATE ROLE cloudsqladmin
+    NOLOGIN CREATEROLE NOSUPERUSER NOCREATEDB
+    NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1;
+CREATE ROLE cloudsqlsuperuser
+    NOLOGIN CREATEROLE CREATEDB NOSUPERUSER
+    NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1;
 CREATE ROLE {admin}
     LOGIN CREATEROLE CREATEDB NOSUPERUSER
     PASSWORD '{admin_password}';
+GRANT cloudsqlsuperuser TO {admin}
+    WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
 CREATE ROLE canonical_brain_migration_owner
     NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
     NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1;
@@ -861,12 +1278,22 @@ CREATE ROLE canonical_brain_canary_bootstrap_login
 CREATE ROLE muncho_canary_writer_login
     NOLOGIN INHERIT PASSWORD NULL NOSUPERUSER NOCREATEDB NOCREATEROLE
     NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1;
+CREATE ROLE {LEGACY_ARCHIVE_OWNER}
+    NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
+    NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1;
 GRANT canonical_brain_canary_bootstrap
     TO canonical_brain_canary_bootstrap_login
-    WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
+    WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+UPDATE pg_catalog.pg_auth_members
+   SET grantor = (SELECT oid FROM pg_catalog.pg_roles
+                   WHERE rolname = 'cloudsqladmin')
+ WHERE roleid = (SELECT oid FROM pg_catalog.pg_roles
+                  WHERE rolname = 'canonical_brain_canary_bootstrap')
+   AND member = (SELECT oid FROM pg_catalog.pg_roles
+                  WHERE rolname = 'canonical_brain_canary_bootstrap_login');
 REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
-CREATE DATABASE muncho_canary_brain OWNER {admin};
+CREATE DATABASE muncho_canary_brain OWNER cloudsqlsuperuser;
 """.encode()
         _docker_psql(
             container,
@@ -937,7 +1364,7 @@ SELECT pg_catalog.has_schema_privilege(
             tuples_only=True,
             redactions=redactions,
         )
-        if least_privilege != b"f|t|t|0\n1\nt|f|f\n":
+        if least_privilege != b"f|t|t|1\n1\nt|f|f\n":
             pytest.fail("managed-nonsuper least-privilege contract drifted")
 
         # Phase-B-only authority: the external role creator grants the exact
@@ -1000,7 +1427,14 @@ SELECT rolcanlogin,
             container,
             b"""
 GRANT canonical_brain_writer TO muncho_canary_writer_login
-    WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
+    WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+UPDATE pg_catalog.pg_auth_members
+   SET grantor = (SELECT oid FROM pg_catalog.pg_roles
+                   WHERE rolname = 'cloudsqladmin')
+ WHERE roleid = (SELECT oid FROM pg_catalog.pg_roles
+                  WHERE rolname = 'canonical_brain_writer')
+   AND member = (SELECT oid FROM pg_catalog.pg_roles
+                  WHERE rolname = 'muncho_canary_writer_login');
 """,
             redactions=redactions,
         )
@@ -1028,6 +1462,13 @@ GRANT canonical_brain_writer TO muncho_canary_writer_login
         _docker_psql(
             container,
             b"""
+UPDATE pg_catalog.pg_auth_members
+   SET grantor = (SELECT oid FROM pg_catalog.pg_roles
+                   WHERE rolname = 'postgres')
+ WHERE roleid = (SELECT oid FROM pg_catalog.pg_roles
+                  WHERE rolname = 'canonical_brain_writer')
+   AND member = (SELECT oid FROM pg_catalog.pg_roles
+                  WHERE rolname = 'muncho_canary_writer_login');
 REVOKE canonical_brain_writer FROM muncho_canary_writer_login;
 ALTER ROLE muncho_canary_writer_login NOLOGIN PASSWORD NULL;
 GRANT muncho_canary_writer_login TO canonical_brain_writer
@@ -1078,6 +1519,67 @@ SELECT NOT rolcanlogin, rolpassword IS NULL
         if rejected_state != b"t|t\n":
             pytest.fail("forced-error path changed writer login/password state")
 
+        _docker_psql(
+            container,
+            b"""
+REVOKE muncho_canary_writer_login FROM canonical_brain_writer;
+""",
+            redactions=redactions,
+        )
+        restored_output = _docker_psql(
+            container,
+            success_input,
+            user=admin,
+            password=admin_password,
+            tuples_only=True,
+            redactions=redactions,
+        )
+        if not restored_output.endswith(b"t\n"):
+            pytest.fail("writer credential restoration proof was incomplete")
+        _docker_psql(
+            container,
+            b"""
+GRANT canonical_brain_writer TO muncho_canary_writer_login
+    WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+UPDATE pg_catalog.pg_auth_members
+   SET grantor = (SELECT oid FROM pg_catalog.pg_roles
+                   WHERE rolname = 'cloudsqladmin')
+ WHERE roleid = (SELECT oid FROM pg_catalog.pg_roles
+                  WHERE rolname = 'canonical_brain_writer')
+   AND member = (SELECT oid FROM pg_catalog.pg_roles
+                  WHERE rolname = 'muncho_canary_writer_login');
+
+CREATE SCHEMA canonical_brain
+    AUTHORIZATION canonical_brain_migration_owner;
+CREATE SCHEMA canonical_brain_legacy_quarantine
+    AUTHORIZATION canonical_brain_migration_owner;
+SET ROLE canonical_brain_migration_owner;
+CREATE FUNCTION canonical_brain.writer_ping(jsonb, jsonb)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+AS $writer_ping$
+    SELECT pg_catalog.jsonb_build_object('service', 'canonical_writer',
+                                         'protocol', 'v1')
+$writer_ping$;
+CREATE TABLE canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1 (
+    event_id uuid PRIMARY KEY
+);
+RESET ROLE;
+ALTER TABLE canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1
+    OWNER TO legacy_archive_source_owner;
+REVOKE ALL ON SCHEMA public FROM PUBLIC, canonical_brain_writer;
+REVOKE ALL ON SCHEMA canonical_brain_legacy_quarantine
+    FROM PUBLIC, canonical_brain_writer;
+REVOKE ALL ON TABLE public.canonical_event_log
+    FROM PUBLIC, canonical_brain_writer;
+REVOKE ALL ON TABLE
+    canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1
+    FROM PUBLIC, canonical_brain_writer;
+""",
+            redactions=redactions,
+        )
+
         logs = _sanitized_subprocess(
             ["docker", "logs", container],
             redactions=redactions,
@@ -1126,6 +1628,295 @@ SELECT pg_catalog.count(*), grantor.rolname
         )
         if bridge_survived != b"1|postgres\n":
             pytest.fail("different-admin PG18 grantor proof changed")
+
+        _docker_psql(
+            container,
+            f"REVOKE muncho_canary_writer_login FROM {admin};\n".encode(),
+            redactions=redactions,
+        )
+
+        def writer_observation() -> dict[str, object]:
+            output = _docker_psql(
+                container,
+                artifacts["observe"].payload,
+                user=foundation.SQL_USER,
+                password=writer_secret.decode("ascii"),
+                tuples_only=True,
+                redactions=redactions,
+            )
+            lines = [line for line in output.splitlines() if line.strip()]
+            if not lines:
+                pytest.fail("writer observation returned no JSON")
+            value = json.loads(lines[-1])
+            if not isinstance(value, dict):
+                pytest.fail("writer observation JSON was not an object")
+            return value
+
+        def bind_observation(
+            database_value: dict[str, object],
+        ) -> foundation.FoundationObservation:
+            unsigned = {
+                "schema": foundation.FOUNDATION_OBSERVATION_SCHEMA,
+                **database_value,
+                "tls_peer_certificate_sha256": TLS_PEER,
+                "legacy_truth": None,
+                "credential": _credential("installed"),
+            }
+            return foundation.FoundationObservation.from_mapping(
+                {
+                    **unsigned,
+                    "observation_sha256": foundation._sha256_json(unsigned),
+                }
+            )
+
+        false_terminal = writer_observation()
+        if false_terminal["temporary_admin_roles"] != [admin]:
+            pytest.fail("pre-delete observation lost the temporary administrator")
+        with pytest.raises(
+            foundation.CanonicalWriterFoundationError,
+            match="foundation_temporary_admin_authority_drifted",
+        ):
+            bind_observation(false_terminal)
+
+        archive_oid_before = _docker_psql(
+            container,
+            b"""
+SELECT class.oid
+  FROM pg_catalog.pg_class AS class
+  JOIN pg_catalog.pg_namespace AS namespace
+    ON namespace.oid = class.relnamespace
+ WHERE namespace.nspname = 'canonical_brain_legacy_quarantine'
+   AND class.relname = 'canonical_event_log_legacy_v1';
+""",
+            tuples_only=True,
+            redactions=redactions,
+        )
+        _docker_psql(
+            container,
+            f"DROP OWNED BY {admin};\n".encode(),
+            redactions=redactions,
+        )
+        _docker_psql(
+            container,
+            f"DROP OWNED BY {admin};\nDROP ROLE {admin};\n".encode(),
+            database="postgres",
+            redactions=redactions,
+        )
+        _docker_psql(
+            container,
+            b"""
+REVOKE ALL PRIVILEGES ON DATABASE muncho_canary_brain FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON DATABASE muncho_canary_brain FROM
+    canonical_brain_migration_owner,
+    canonical_brain_writer,
+    canonical_brain_canary_bootstrap,
+    canonical_brain_canary_bootstrap_login,
+    muncho_canary_writer_login;
+GRANT CONNECT ON DATABASE muncho_canary_brain TO
+    canonical_brain_writer,
+    canonical_brain_canary_bootstrap;
+REVOKE ALL ON SCHEMA public FROM
+    PUBLIC,
+    canonical_brain_migration_owner,
+    canonical_brain_writer,
+    canonical_brain_canary_bootstrap,
+    canonical_brain_canary_bootstrap_login,
+    muncho_canary_writer_login;
+GRANT USAGE ON SCHEMA public TO canonical_brain_migration_owner;
+REVOKE ALL ON SCHEMA canonical_brain_legacy_quarantine FROM
+    PUBLIC,
+    canonical_brain_writer;
+""",
+            redactions=redactions,
+        )
+
+        restricted = _docker_psql(
+            container,
+            b"""
+SELECT pg_catalog.has_schema_privilege(
+           'canonical_brain_writer', 'public', 'USAGE'
+       ), pg_catalog.has_schema_privilege(
+           'canonical_brain_writer',
+           'canonical_brain_legacy_quarantine', 'USAGE'
+       ), pg_catalog.has_table_privilege(
+           'canonical_brain_writer', 'public.canonical_event_log', 'SELECT'
+       ), pg_catalog.has_table_privilege(
+           'canonical_brain_writer',
+           'canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1',
+           'SELECT'
+       );
+""",
+            tuples_only=True,
+            redactions=redactions,
+        )
+        if restricted != b"f|f|f|f\n":
+            pytest.fail("writer schema/table observation boundary widened")
+
+        terminal_database_observation = writer_observation()
+        observation = bind_observation(terminal_database_observation)
+        if (
+            terminal_database_observation["database_owner"]
+            != foundation.DATABASE_OWNER_ROLE
+            or terminal_database_observation["temporary_admin_roles"] != []
+            or terminal_database_observation["event_log_shape"] != "canonical14"
+            or terminal_database_observation["event_log_owner"]
+            != foundation.MIGRATION_OWNER_ROLE
+            or terminal_database_observation["canonical_schema_owner"]
+            != foundation.MIGRATION_OWNER_ROLE
+            or terminal_database_observation["writer_ping_present"] is not True
+            or terminal_database_observation["legacy_archive_present"] is not True
+            or terminal_database_observation["legacy_archive_identity"]
+            != {
+                "oid": archive_oid_before.strip().decode("ascii"),
+                "owner": LEGACY_ARCHIVE_OWNER,
+                "relation_kind": "r",
+                "persistence": "p",
+                "owner_superuser": False,
+                "owner_create_database": False,
+                "owner_create_role": False,
+                "owner_replication": False,
+                "owner_bypass_row_security": False,
+                "owner_connection_limit": -1,
+                "owner_validity_is_unbounded": True,
+                "owner_configuration_is_empty": True,
+            }
+            or not observation.membership_ready
+        ):
+            pytest.fail("post-delete writer observation contract drifted")
+        membership_contract = {
+            (
+                row["granted_role"],
+                row["member_role"],
+                row["grantor"],
+                row["admin_option"],
+                row["inherit_option"],
+                row["set_option"],
+            )
+            for row in terminal_database_observation["memberships"]
+        }
+        if membership_contract != {
+            (
+                foundation.CANARY_BOOTSTRAP_ROLE,
+                foundation.CANARY_BOOTSTRAP_LOGIN,
+                foundation.PERSISTENT_MEMBERSHIP_GRANTOR,
+                False,
+                True,
+                False,
+            ),
+            (
+                foundation.WRITER_ROLE,
+                foundation.SQL_USER,
+                foundation.PERSISTENT_MEMBERSHIP_GRANTOR,
+                False,
+                True,
+                False,
+            ),
+        }:
+            pytest.fail("provider-native membership observation drifted")
+        archive_oid_after = _docker_psql(
+            container,
+            b"""
+SELECT class.oid
+  FROM pg_catalog.pg_class AS class
+  JOIN pg_catalog.pg_namespace AS namespace
+    ON namespace.oid = class.relnamespace
+ WHERE namespace.nspname = 'canonical_brain_legacy_quarantine'
+   AND class.relname = 'canonical_event_log_legacy_v1';
+""",
+            tuples_only=True,
+            redactions=redactions,
+        )
+        if not archive_oid_before.strip() or archive_oid_after != archive_oid_before:
+            pytest.fail("legacy archive identity was not preserved")
+
+        class _DockerWriterObservationSession:
+            username = foundation.SQL_USER
+            tls_peer_certificate_sha256 = TLS_PEER
+
+            def query(self, sql: str, *, maximum_rows: int) -> QueryResult:
+                assert maximum_rows == 1
+                output = _docker_psql(
+                    container,
+                    sql.encode("utf-8"),
+                    user=foundation.SQL_USER,
+                    password=writer_secret.decode("ascii"),
+                    tuples_only=True,
+                    redactions=redactions,
+                )
+                rows = [line for line in output.splitlines() if line.strip()]
+                if not rows:
+                    pytest.fail("writer re-observation returned no JSON")
+                return QueryResult(
+                    ("foundation_observation",),
+                    ((rows[-1].decode("utf-8"),),),
+                    "SELECT 1",
+                )
+
+        real_plan = foundation.build_foundation_adoption_plan(
+            REVISION,
+            observation,
+            _artifacts=artifacts,
+            _hba_collector=_hba,
+            _authentication_probe=lambda _enabled: {
+                "authenticated": True,
+                "user": foundation.SQL_USER,
+            },
+            _terminal_attestor=_attestation,
+            _clock=lambda: NOW,
+        )
+        real_store = _SecretStore("installed")
+        real_session = _DockerWriterObservationSession()
+        foundation._observe_for_plan(
+            real_plan,
+            real_session,
+            secret_store=real_store,
+            artifacts=artifacts,
+            expected_credential=observation.value["credential"],
+        )
+        _docker_psql(
+            container,
+            b"""
+DROP TABLE
+    canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1;
+SET ROLE canonical_brain_migration_owner;
+CREATE TABLE canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1 (
+    event_id uuid PRIMARY KEY
+);
+RESET ROLE;
+ALTER TABLE canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1
+    OWNER TO legacy_archive_source_owner;
+REVOKE ALL ON TABLE
+    canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1
+    FROM PUBLIC, canonical_brain_writer;
+""",
+            redactions=redactions,
+        )
+        replaced_archive_oid = _docker_psql(
+            container,
+            b"""
+SELECT class.oid
+  FROM pg_catalog.pg_class AS class
+  JOIN pg_catalog.pg_namespace AS namespace
+    ON namespace.oid = class.relnamespace
+ WHERE namespace.nspname = 'canonical_brain_legacy_quarantine'
+   AND class.relname = 'canonical_event_log_legacy_v1';
+""",
+            tuples_only=True,
+            redactions=redactions,
+        )
+        if replaced_archive_oid == archive_oid_after:
+            pytest.fail("same-name archive replacement did not change identity")
+        with pytest.raises(
+            foundation.CanonicalWriterFoundationError,
+            match="foundation_legacy_archive_changed_after_approval",
+        ):
+            foundation._observe_for_plan(
+                real_plan,
+                real_session,
+                secret_store=real_store,
+                artifacts=artifacts,
+                expected_credential=observation.value["credential"],
+            )
     finally:
         subprocess.run(
             ["docker", "rm", "-f", container],

@@ -1,0 +1,5 @@
+name: vertex_veo
+version: 1.0.0
+description: "Google Vertex AI Veo video generation plugin"
+author: Hermes Agent
+kind: backend

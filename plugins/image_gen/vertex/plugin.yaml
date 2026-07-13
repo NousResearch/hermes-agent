@@ -1,0 +1,5 @@
+name: vertex
+version: 1.0.0
+description: "Google Vertex AI Imagen/Gemini Image generation backend. Generates images via GCP project 'winter-environs-427409-r8' and gcloud CLI."
+author: Agnel
+kind: backend

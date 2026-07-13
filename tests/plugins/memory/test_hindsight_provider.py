@@ -288,7 +288,7 @@ class TestConfig:
             "llm_model": "gpt-4o-mini",
         })
 
-        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "copilot"
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
         assert env["HINDSIGHT_API_LLM_API_KEY"] == "copilot-api-token"
         assert env["HINDSIGHT_API_LLM_BASE_URL"] == "https://api.githubcopilot.com"
 
@@ -345,7 +345,7 @@ class TestConfig:
 
         p._get_client()
 
-        assert captured["llm_provider"] == "copilot"
+        assert captured["llm_provider"] == "openai"
         assert captured["llm_api_key"] == "copilot-api-token"
         assert captured["llm_base_url"] == "https://api.githubcopilot.com"
 
@@ -438,7 +438,7 @@ class TestPostSetup:
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
         assert profile_env.read_text() == (
-            "HINDSIGHT_API_LLM_PROVIDER=copilot\n"
+            "HINDSIGHT_API_LLM_PROVIDER=openai\n"
             "HINDSIGHT_API_LLM_API_KEY=copilot-api-token\n"
             "HINDSIGHT_API_LLM_MODEL=gpt-4o-mini\n"
             "HINDSIGHT_API_LOG_LEVEL=info\n"

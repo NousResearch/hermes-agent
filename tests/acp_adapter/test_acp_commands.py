@@ -1,4 +1,5 @@
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from acp.schema import TextContentBlock
@@ -64,6 +65,53 @@ def make_agent_and_state():
     conn = CaptureConn()
     acp_agent.on_connect(conn)
     return acp_agent, state, fake, conn
+
+
+def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
+    """ACP sessions persist to SessionDB; recall must receive the same DB handle."""
+    captured = {}
+    sentinel_db = NoopDb()
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+            captured.update(kwargs)
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m", "provider": "p"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "base_url": "u",
+                "api_key": "k",
+                "command": None,
+                "args": [],
+            },
+        ),
+    )
+
+    manager = SessionManager(db=sentinel_db)
+    agent = manager._make_agent(session_id="acp-session", cwd=".")
+
+    assert isinstance(agent, CapturingAgent)
+    assert captured["session_db"] is sentinel_db
+    assert captured["platform"] == "acp"
+    assert captured["session_id"] == "acp-session"
 
 
 @pytest.mark.asyncio

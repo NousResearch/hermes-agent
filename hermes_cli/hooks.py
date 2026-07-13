@@ -32,11 +32,11 @@ def hooks_command(args) -> None:
         print("Run 'hermes hooks --help' for details.")
         return
 
-    if sub in ("list", "ls"):
+    if sub in {"list", "ls"}:
         _cmd_list(args)
     elif sub == "test":
         _cmd_test(args)
-    elif sub in ("revoke", "remove", "rm"):
+    elif sub in {"revoke", "remove", "rm"}:
         _cmd_revoke(args)
     elif sub == "doctor":
         _cmd_doctor(args)
@@ -139,6 +139,15 @@ _DEFAULT_PAYLOADS = {
         "model": "gpt-4",
         "platform": "cli",
     },
+    "pre_verify": {
+        "session_id": "test-session",
+        "platform": "cli",
+        "model": "gpt-4",
+        "coding": True,
+        "attempt": 0,
+        "final_response": "All done — the change is applied.",
+        "changed_paths": ["src/app.tsx"],
+    },
     "on_session_start": {"session_id": "test-session"},
     "on_session_end": {"session_id": "test-session"},
     "on_session_finalize": {"session_id": "test-session"},
@@ -205,7 +214,7 @@ def _cmd_test(args) -> None:
 
     if getattr(args, "payload_file", None):
         try:
-            custom = json.loads(Path(args.payload_file).read_text())
+            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
             if isinstance(custom, dict):
                 payload.update(custom)
             else:
@@ -220,7 +229,7 @@ def _cmd_test(args) -> None:
     if getattr(args, "for_tool", None):
         specs = [
             s for s in specs
-            if s.event not in ("pre_tool_call", "post_tool_call")
+            if s.event not in {"pre_tool_call", "post_tool_call"}
             or s.matches_tool(args.for_tool)
         ]
 

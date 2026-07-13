@@ -4,6 +4,7 @@ description: Free meta-search via SearXNG — aggregates results from 70+ search
 version: 1.0.0
 author: hermes-agent
 license: MIT
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [search, searxng, meta-search, self-hosted, free, fallback]

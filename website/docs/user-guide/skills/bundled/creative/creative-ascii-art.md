@@ -19,6 +19,7 @@ ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.
 | Version | `4.0.0` |
 | Author | 0xbyt4, Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `ASCII`, `Art`, `Banners`, `Creative`, `Unicode`, `Text-Art`, `pyfiglet`, `figlet`, `cowsay`, `boxes` |
 | Related skills | [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) |
 

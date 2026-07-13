@@ -1,10 +1,13 @@
 import logging
+import ssl
 import time
-from typing import Any, Callable, Dict, Optional
+import urllib.error
+from typing import Any, Callable, Dict, Optional, TypeVar
 
 import httpx
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 DEFAULT_RETRY_CONFIG = {
     "max_attempts": 3,
@@ -14,32 +17,34 @@ DEFAULT_RETRY_CONFIG = {
 }
 
 RETRYABLE_ERRORS = (
+    ConnectionError,
+    TimeoutError,
     httpx.ConnectError,
     httpx.ReadTimeout,
     httpx.WriteTimeout,
     httpx.RemoteProtocolError,
     httpx.TransportError,
+    ssl.SSLError,
 )
-
-try:
-    import ssl
-    RETRYABLE_ERRORS += (ssl.SSLError,)
-except Exception:
-    pass
 
 
 def _is_retryable_exception(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    if isinstance(exc, urllib.error.URLError):
+        return isinstance(exc.reason, (OSError, TimeoutError))
     return isinstance(exc, RETRYABLE_ERRORS)
 
 
-def retryable_http_call(
-    request_fn: Callable[[], httpx.Response],
+def retryable_get(
+    request_fn: Callable[[], T],
     max_attempts: int = DEFAULT_RETRY_CONFIG["max_attempts"],
     base_delay: float = DEFAULT_RETRY_CONFIG["base_delay"],
     backoff_factor: float = DEFAULT_RETRY_CONFIG["backoff_factor"],
     max_delay: float = DEFAULT_RETRY_CONFIG["max_delay"],
     logger_extra: Optional[Dict[str, Any]] = None,
-) -> httpx.Response:
+) -> T:
+    """Retry an idempotent GET operation after transient transport failures."""
     extra = logger_extra or {}
     attempt = 0
     delay = base_delay
@@ -65,47 +70,3 @@ def retryable_http_call(
             )
             time.sleep(sleep_time)
             delay *= backoff_factor
-
-
-def retryable_post(
-    client: httpx.Client,
-    url: str,
-    json: Optional[Dict[str, Any]] = None,
-    data: Optional[Dict[str, Any]] = None,
-    headers: Optional[Dict[str, str]] = None,
-    timeout: Optional[float] = None,
-    **retry_kwargs,
-) -> httpx.Response:
-    def _post() -> httpx.Response:
-        kwargs = {}
-        if data is not None:
-            kwargs["data"] = data
-        elif json is not None:
-            kwargs["json"] = json
-        if headers is not None:
-            kwargs["headers"] = headers
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        return client.post(url, **kwargs)
-
-    return retryable_http_call(_post, **retry_kwargs)
-
-
-def retryable_get(
-    client: httpx.Client,
-    url: str,
-    params: Optional[Dict[str, Any]] = None,
-    headers: Optional[Dict[str, str]] = None,
-    timeout: Optional[float] = None,
-    **retry_kwargs,
-) -> httpx.Response:
-    def _get() -> httpx.Response:
-        kwargs = {}
-        if params is not None:
-            kwargs["params"] = params
-        if headers is not None:
-            kwargs["headers"] = headers
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        return client.get(url, **kwargs)
-    return retryable_http_call(_get, **retry_kwargs)

@@ -1,8 +1,8 @@
 ---
 name: parallel-orchestrator
-description: "Use when a task contains multiple independent read-only subtasks that can be safely delegated in parallel; decompose, fan out with delegate_task batch mode, then synthesize and verify key evidence."
+description: "Parallel fan-out for independent read-only subtasks."
 version: 1.0.0
-author: Hermes Agent
+author: web3blind + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 aliases:
@@ -179,18 +179,15 @@ delegate_task(
     tasks=[
         {
             "goal": "Analyze governance model for Ethereum and major L2s",
-            "context": "Original request: compare governance across several blockchains. Read-only research only. Return: summary, key mechanisms, risks, sources, confidence.",
-            "toolsets": ["web"]
+            "context": "Original request: compare governance across several blockchains. Read-only research only. Use only the tools already available to this parent run. Return: summary, key mechanisms, risks, sources, confidence."
         },
         {
             "goal": "Analyze governance model for Cosmos and Polkadot ecosystems",
-            "context": "Original request: compare governance across several blockchains. Read-only research only. Return: summary, key mechanisms, risks, sources, confidence.",
-            "toolsets": ["web"]
+            "context": "Original request: compare governance across several blockchains. Read-only research only. Use only the tools already available to this parent run. Return: summary, key mechanisms, risks, sources, confidence."
         },
         {
             "goal": "Analyze governance model for Solana, Near, and Move-based ecosystems",
-            "context": "Original request: compare governance across several blockchains. Read-only research only. Return: summary, key mechanisms, risks, sources, confidence.",
-            "toolsets": ["web"]
+            "context": "Original request: compare governance across several blockchains. Read-only research only. Use only the tools already available to this parent run. Return: summary, key mechanisms, risks, sources, confidence."
         }
     ]
 )
@@ -203,13 +200,11 @@ delegate_task(
     tasks=[
         {
             "goal": "Read-only review of authentication module",
-            "context": "Inspect files under src/auth and tests/auth. Do not edit files. Return critical issues, important issues, minor issues, and evidence with paths/lines.",
-            "toolsets": ["file", "terminal"]
+            "context": "Inspect files under src/auth and tests/auth. Do not edit files. Use static reads and non-mutating diagnostics only. Return critical issues, important issues, minor issues, and evidence with paths/lines."
         },
         {
             "goal": "Read-only review of API routing module",
-            "context": "Inspect files under src/api and tests/api. Do not edit files. Return critical issues, important issues, minor issues, and evidence with paths/lines.",
-            "toolsets": ["file", "terminal"]
+            "context": "Inspect files under src/api and tests/api. Do not edit files. Use static reads and non-mutating diagnostics only. Return critical issues, important issues, minor issues, and evidence with paths/lines."
         }
     ]
 )
@@ -296,19 +291,21 @@ Accessibility implications:
 Best use case:
 ```
 
-## Recommended Toolsets
+## Parent Tool Availability
 
-Use minimal child toolsets:
+Batch `delegate_task` items do not accept per-child tool controls in the current model schema. Children inherit the parent run's enabled tool surface. Do not document or pass model-facing per-task tool restrictions in the batch objects.
 
-- Web research: `["web"]`
-- GitHub/repo read-only inspection: `["terminal", "file"]`
-- Browser QA: `["browser"]` only if visual or interactive behavior matters
-- Document extraction: `["web"]` for URLs, `["file"]` for local docs
-- Mixed research + local files: `["web", "file"]`
+Instead, keep fan-out safe with prompt-level constraints:
 
-Avoid giving children broad toolsets by default. Fewer tools reduce cost, risk, and context noise.
+- Web research: tell children to use read-only public sources and return URLs.
+- GitHub/repo read-only inspection: tell children to use static file reads, `git diff`, `git show`, `git status`, collection-only tests, and equivalent non-mutating diagnostics.
+- Browser QA: use only when visual or interactive behavior matters, and keep actions read-only.
+- Document extraction: distinguish URL extraction from local document reads in the child context.
+- Mixed research + local files: name the allowed source classes and forbid writes explicitly.
 
-When giving children `terminal`, constrain commands to read-only inspection: `git diff`, `git show`, `git status`, `python -m pytest --collect-only`, static reads, and equivalent non-mutating diagnostics. Do not let children install packages, run formatters, update lockfiles, write reports, run migrations, start services that mutate state, or execute commands that modify the workspace.
+Avoid giving children broad permission by default. Fewer available tools in the parent run reduce cost, risk, and context noise; child prompts still need explicit boundaries.
+
+When children can use `terminal`, constrain commands to read-only inspection: `git diff`, `git show`, `git status`, `python -m pytest --collect-only`, static reads, and equivalent non-mutating diagnostics. Do not let children install packages, run formatters, update lockfiles, write reports, run migrations, start services that mutate state, or execute commands that modify the workspace.
 
 ## Output Contract
 
@@ -401,7 +398,7 @@ Do not let children edit files unless the user explicitly asked for implementati
 
 5. **Too many children.** More children can be slower and more expensive. Use 2–3 meaningful children unless the task clearly benefits from more.
 
-6. **Broad toolsets by habit.** Children should get only the tools required for their slice.
+6. **Broad parent tool surface by habit.** Start the parent run with only the tools the children will actually need for their slices.
 
 7. **Letting children perform side effects.** Subagents should not post, send, trade, deploy, merge, or mutate external systems during auto-parallel work.
 
@@ -417,7 +414,7 @@ Before final response:
 
 - [ ] The task was classified as safe for parallel read-only work, or explicit approval/isolation was used.
 - [ ] Each child had a distinct bounded scope.
-- [ ] Child toolsets were minimal.
+- [ ] The parent run's enabled tool surface was narrow enough for the delegated slices.
 - [ ] No child was asked to perform external side effects.
 - [ ] Results were synthesized, not pasted.
 - [ ] Coverage of the original request was checked.
@@ -431,7 +428,7 @@ Use this quick check before applying the skill to a real request:
 - [ ] Can the request be split into at least two independent slices?
 - [ ] Is the first wave read-only?
 - [ ] Does each child have a self-contained prompt and output schema?
-- [ ] Are child toolsets minimal?
+- [ ] Is the parent tool surface appropriate for every child slice?
 - [ ] Are `terminal` commands constrained to non-mutating inspection when used?
 - [ ] Is there a parent synthesis and evidence-verification step?
 - [ ] Would a parent interruption be acceptable? If not, use cron/background processes instead.

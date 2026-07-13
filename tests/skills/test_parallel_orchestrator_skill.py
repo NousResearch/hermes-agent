@@ -1,6 +1,7 @@
 """Regression coverage for the bundled Parallel Orchestrator skill."""
 
 import json
+import re
 from pathlib import Path
 
 from tools import skills_tool
@@ -21,7 +22,10 @@ def test_parallel_orchestrator_skill_frontmatter_is_valid():
 
     assert _validate_frontmatter(content) is None
     assert "name: parallel-orchestrator" in content
-    assert "description: \"Use when" in content
+    description = re.search(r'^description: "(.+)"$', content, re.MULTILINE)
+    assert description is not None
+    assert len(description.group(1)) < 60
+    assert "author: web3blind + Hermes Agent" in content
     assert "aliases:" in content
     assert "  - параллельно" in content
     assert "  - распараллелить" in content
@@ -61,7 +65,10 @@ def test_parallel_orchestrator_documents_safety_and_batch_contracts():
         "No child was asked to perform external side effects.",
         "Results were synthesized, not pasted.",
         "If there are more objects than the limit",
-        "When giving children `terminal`, constrain commands to read-only inspection",
+        "Parent Tool Availability",
+        "Children inherit the parent run's enabled tool surface",
+        "Do not document or pass model-facing per-task tool restrictions",
+        "When children can use `terminal`, constrain commands to read-only inspection",
         "Do not let children install packages, run formatters, update lockfiles",
     ]
     for phrase in required_phrases:
@@ -70,6 +77,8 @@ def test_parallel_orchestrator_documents_safety_and_batch_contracts():
     forbidden_vendor_references = ["OpenCode", "opencode", "OpenClaw", "openclaw"]
     for phrase in forbidden_vendor_references:
         assert phrase not in content
+
+    assert '"toolsets"' not in content
 
 
 def test_parallel_orchestrator_documents_delegate_task_limitations():

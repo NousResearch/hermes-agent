@@ -22,6 +22,7 @@ import pytest
 
 from hermes_cli.main import (
     _find_stale_dashboard_pids,
+    _is_hermes_dashboard_command,
     _kill_stale_dashboard_processes,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
@@ -46,6 +47,7 @@ def _refresh_bindings_against_live_module():
     the two pollutants above are load-bearing for their own tests.
     """
     global _find_stale_dashboard_pids
+    global _is_hermes_dashboard_command
     global _kill_stale_dashboard_processes
     global _warn_stale_dashboard_processes
 
@@ -54,6 +56,7 @@ def _refresh_bindings_against_live_module():
         live = importlib.import_module("hermes_cli.main")
 
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
+    _is_hermes_dashboard_command = live._is_hermes_dashboard_command
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
@@ -116,6 +119,28 @@ class TestFindStaleDashboardPids:
                 stderr="",
             )
             assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
+
+    def test_profiled_serve_and_dashboard_processes_match(self):
+        """Global profile flags sit between the entrypoint and subcommand."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(
+                        12345,
+                        "/venv/bin/python3 /venv/bin/hermes --profile learning "
+                        "serve --isolated --port 9124",
+                    ),
+                    _ps_line(12346, "python3 -m hermes_cli.main -p health serve"),
+                    _ps_line(12347, "hermes --profile=trading dashboard --no-open"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
+
+    def test_chat_prompt_mentioning_profiled_serve_is_not_matched(self):
+        command = "hermes chat -q restart hermes --profile learning serve"
+        assert _is_hermes_dashboard_command(command) is False
 
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:

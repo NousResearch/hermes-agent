@@ -5845,6 +5845,53 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+def _is_hermes_dashboard_command(command: str) -> bool:
+    """Return whether *command* launches a Hermes dashboard/serve process.
+
+    Hermes' global ``--profile`` flag appears before the subcommand, so a
+    profiled backend looks like ``hermes --profile learning serve`` rather
+    than containing the old literal ``"hermes serve"`` pattern.  Parse the
+    argv shape instead of relying on adjacent words.  Stopping at the first
+    recognized top-level subcommand also avoids treating a chat prompt that
+    merely mentions ``hermes serve`` as a server process.
+    """
+    try:
+        tokens = shlex.split(command, posix=sys.platform != "win32")
+    except ValueError:
+        tokens = command.split()
+
+    entry_index = None
+    for index, raw_token in enumerate(tokens):
+        token = raw_token.strip("\"'").replace("\\", "/")
+        basename = token.rsplit("/", 1)[-1].lower()
+        if (
+            basename in {"hermes", "hermes.exe"}
+            or token.endswith("hermes_cli/main.py")
+            or token == "hermes_cli.main"
+        ):
+            entry_index = index
+            break
+    if entry_index is None:
+        return False
+
+    value_flags = set(_TOP_LEVEL_VALUE_FLAGS) | {"-p", "--profile"}
+    index = entry_index + 1
+    while index < len(tokens):
+        token = tokens[index].strip("\"'")
+        if token in _BUILTIN_SUBCOMMANDS:
+            return token in {"dashboard", "serve"}
+        if token.startswith("-"):
+            if "=" not in token and token in value_flags and index + 1 < len(tokens):
+                index += 2
+            else:
+                index += 1
+            continue
+        # An unknown positional before a recognized subcommand is a chat
+        # query/plugin command, not a dashboard invocation.
+        return False
+    return False
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -5874,17 +5921,6 @@ def _find_stale_dashboard_pids(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-        # The headless backend (`hermes serve`) is the same long-lived server
-        # under a different command name — the desktop app spawns it. Reap it
-        # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5921,7 +5957,7 @@ def _find_stale_dashboard_pids(
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     if (
-                        any(p in current_cmd for p in patterns)
+                        _is_hermes_dashboard_command(current_cmd)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -5929,8 +5965,8 @@ def _find_stale_dashboard_pids(
                         except ValueError:
                             pass
         else:
-            # Linux / macOS: scan the process table via ps and match against
-            # the same explicit patterns list used on Windows.  Using ps
+            # Linux / macOS: scan the process table via ps and classify each
+            # command with the same argv-aware helper used on Windows. Using ps
             # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
             # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
             # greedy regex matching unrelated cmdlines that merely contain
@@ -5954,7 +5990,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _is_hermes_dashboard_command(command) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

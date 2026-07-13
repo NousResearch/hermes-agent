@@ -173,14 +173,19 @@ def apply_yaml_csafe_shim() -> bool:
     compiled regexes that get clobbered).  The C-backed loader is
     immune.  See the module docstring for the full rationale.
 
-    Returns True if the rebind was applied, False otherwise.  Reasons
-    for returning False:
+    Returns True if at least one rebind was applied, False otherwise.
+    Reasons for returning False:
 
       - Already applied on a previous call (idempotent).
       - PyYAML isn't importable in this venv.
       - libyaml C extension isn't available (no ``CSafeLoader``).
-      - Something else already replaced ``yaml.safe_load`` with a
-        non-PyYAML implementation; we leave that alone.
+      - Something else already replaced both ``yaml.safe_load`` and
+        ``yaml.safe_load_all`` with non-PyYAML implementations; we
+        leave those alone.
+
+    The two functions are checked and rebound independently: if only
+    one of them was customized upstream of us, the customized one is
+    preserved and the other still gets the CSafeLoader rebind.
 
     This function is platform-agnostic — the underlying bug is in
     PyYAML's parser code, not in any OS-specific layer, so the shim
@@ -202,31 +207,30 @@ def apply_yaml_csafe_shim() -> bool:
     if csafe is None:
         return False
 
-    current_safe_load = getattr(yaml, "safe_load", None)
-    if current_safe_load is None:
+    def _make_rebound(name, load_fn):
+        def rebound(stream):
+            return load_fn(stream, Loader=csafe)
+
+        rebound.__name__ = name
+        rebound.__qualname__ = name
+        rebound.__doc__ = (
+            "Parse YAML via the libyaml CSafeLoader.\n\n"
+            "Rebound by hermes_bootstrap.apply_yaml_csafe_shim to dodge "
+            "PyYAML pure-Python parser memory-corruption bugs."
+        )
+        return rebound
+
+    rebound_any = False
+    for name, load_fn in (("safe_load", yaml.load), ("safe_load_all", yaml.load_all)):
+        current = getattr(yaml, name, None)
+        if current is None or getattr(current, "__module__", "") != "yaml":
+            # Missing, or already replaced by someone else — leave it alone.
+            continue
+        setattr(yaml, name, _make_rebound(name, load_fn))
+        rebound_any = True
+
+    if not rebound_any:
         return False
-    if getattr(current_safe_load, "__module__", "") != "yaml":
-        return False
-
-    def safe_load(stream):  # type: ignore[no-redef]
-        return yaml.load(stream, Loader=csafe)
-
-    def safe_load_all(stream):  # type: ignore[no-redef]
-        return yaml.load_all(stream, Loader=csafe)
-
-    safe_load.__name__ = "safe_load"
-    safe_load.__qualname__ = "safe_load"
-    safe_load.__doc__ = (
-        "Parse a YAML document via the libyaml CSafeLoader.\n\n"
-        "Rebound by hermes_bootstrap.apply_yaml_csafe_shim to dodge "
-        "PyYAML pure-Python parser memory-corruption bugs."
-    )
-    safe_load_all.__name__ = "safe_load_all"
-    safe_load_all.__qualname__ = "safe_load_all"
-    safe_load_all.__doc__ = safe_load.__doc__
-
-    yaml.safe_load = safe_load
-    yaml.safe_load_all = safe_load_all
 
     _yaml_shim_applied = True
     return True

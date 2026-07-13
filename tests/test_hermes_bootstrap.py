@@ -356,29 +356,56 @@ class TestYamlCSafeShim:
         # First call already happened at import time.
         assert hb.apply_yaml_csafe_shim() is False
 
-    def test_shim_no_op_when_pyyaml_missing(self):
+    def test_shim_no_op_when_pyyaml_missing(self, monkeypatch):
         """If PyYAML isn't importable, the shim must silently no-op
         rather than raising — Hermes installs without YAML extras
         should still launch.
 
-        We simulate "yaml not installed" by replacing the cached
-        ``sys.modules['yaml']`` with a bare object that lacks both
-        ``safe_load`` and ``CSafeLoader``.  The shim's checks fall
-        through and it returns False without raising.
+        Setting ``sys.modules['yaml'] = None`` makes ``import yaml``
+        raise a real ImportError ("import of yaml halted"), so this
+        exercises the shim's except branch, not just a missing
+        attribute.
         """
         hb = _fresh_import()
         hb._yaml_shim_applied = False
 
-        import yaml as real_yaml
-
-        sys.modules["yaml"] = object()
-        try:
-            result = hb.apply_yaml_csafe_shim()
-        finally:
-            sys.modules["yaml"] = real_yaml
+        monkeypatch.setitem(sys.modules, "yaml", None)
+        result = hb.apply_yaml_csafe_shim()
 
         assert result is False
         assert hb._yaml_shim_applied is False
+
+    def test_shim_preserves_independently_customized_function(self, monkeypatch):
+        """safe_load and safe_load_all are guarded independently: if
+        someone customized only safe_load_all before the shim runs,
+        that customization survives while safe_load still gets the
+        CSafeLoader rebind."""
+        hb = _fresh_import()
+
+        import yaml
+
+        if not hasattr(yaml, "CSafeLoader"):
+            pytest.skip("libyaml C extension not installed; shim is a no-op")
+
+        def pristine_safe_load(stream):
+            raise NotImplementedError
+
+        pristine_safe_load.__module__ = "yaml"
+
+        def custom_safe_load_all(stream):
+            raise NotImplementedError
+
+        monkeypatch.setattr(yaml, "safe_load", pristine_safe_load)
+        monkeypatch.setattr(yaml, "safe_load_all", custom_safe_load_all)
+        hb._yaml_shim_applied = False
+
+        assert hb.apply_yaml_csafe_shim() is True
+        assert yaml.safe_load.__module__ == "hermes_bootstrap", (
+            "the un-customized safe_load should still get rebound"
+        )
+        assert yaml.safe_load_all is custom_safe_load_all, (
+            "a separately customized safe_load_all must not be clobbered"
+        )
 
     def test_shim_no_op_when_libyaml_missing(self, monkeypatch):
         """If PyYAML is installed but the C extension isn't (no

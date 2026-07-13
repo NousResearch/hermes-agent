@@ -541,31 +541,24 @@ def _resolve_active_context_length() -> int:
 
         base_url = model_cfg.get("base_url") or ""
         provider = model_cfg.get("provider") or ""
+        api_key = model_cfg.get("api_key") or ""
         config_context_length = model_cfg.get("context_length")
         if isinstance(config_context_length, int) and config_context_length > 0:
             pass  # valid override
         else:
             config_context_length = None
 
-        # When base_url is not set in model config, try custom_providers lookup
-        if not base_url:
-            try:
-                from hermes_cli.config import get_custom_provider_context_length
-                _cp_ctx = get_custom_provider_context_length(
-                    model_id, base_url="", config=cfg,
-                )
-                if _cp_ctx and config_context_length is None:
-                    config_context_length = _cp_ctx
-            except Exception:
-                pass
+        custom_providers = cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), list) else []
 
         from agent.model_metadata import get_model_context_length
         return int(
             get_model_context_length(
                 model_id,
                 base_url=base_url,
+                api_key=api_key,
                 provider=provider,
                 config_context_length=config_context_length,
+                custom_providers=custom_providers,
             )
             or 0
         )

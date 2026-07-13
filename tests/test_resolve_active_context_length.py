@@ -34,7 +34,9 @@ class TestResolveActiveContextLength:
             "gpt-4o",
             base_url="",
             provider="",
+            api_key="",
             config_context_length=200_000,
+            custom_providers=[],
         )
 
     def test_passes_base_url_and_provider(self):
@@ -59,7 +61,9 @@ class TestResolveActiveContextLength:
             "custom-model",
             base_url="https://my-endpoint.invalid/v1",
             provider="openai",
+            api_key="",
             config_context_length=None,
+            custom_providers=[],
         )
 
     def test_returns_zero_when_no_model(self):
@@ -104,5 +108,78 @@ class TestResolveActiveContextLength:
             "gpt-4o",
             base_url="",
             provider="",
+            api_key="",
             config_context_length=None,
+            custom_providers=[],
+        )
+
+    def test_forwards_custom_providers_and_api_key(self):
+        """custom_providers list and api_key should be forwarded."""
+        from model_tools import _resolve_active_context_length
+
+        mock_cfg = {
+            "model": {
+                "model": "named-provider-model",
+                "provider": "custom",
+                "api_key": "test-key-123",
+            },
+            "custom_providers": [
+                {
+                    "name": "my-provider",
+                    "base_url": "https://custom.invalid/v1",
+                    "models": {
+                        "named-provider-model": {"context_length": 64_000}
+                    }
+                }
+            ]
+        }
+        with (
+            patch("hermes_cli.config.load_config", return_value=mock_cfg),
+            patch("agent.model_metadata.get_model_context_length", return_value=64_000) as mock_gmcl,
+        ):
+            result = _resolve_active_context_length()
+
+        assert result == 64_000
+        mock_gmcl.assert_called_once_with(
+            "named-provider-model",
+            base_url="",
+            provider="custom",
+            api_key="test-key-123",
+            config_context_length=None,
+            custom_providers=mock_cfg["custom_providers"],
+        )
+
+    def test_named_custom_provider_without_base_url(self):
+        """When model references a named provider without base_url, custom_providers lookup still works."""
+        from model_tools import _resolve_active_context_length
+
+        mock_cfg = {
+            "model": {
+                "model": "gpt-4o",
+                "provider": "openai",
+            },
+            "custom_providers": [
+                {
+                    "name": "openai-custom",
+                    "base_url": "https://api.openai-custom.com/v1",
+                    "models": {
+                        "gpt-4o": {"context_length": 256_000}
+                    }
+                }
+            ]
+        }
+        with (
+            patch("hermes_cli.config.load_config", return_value=mock_cfg),
+            patch("agent.model_metadata.get_model_context_length", return_value=256_000) as mock_gmcl,
+        ):
+            result = _resolve_active_context_length()
+
+        assert result == 256_000
+        mock_gmcl.assert_called_once_with(
+            "gpt-4o",
+            base_url="",
+            provider="openai",
+            api_key="",
+            config_context_length=None,
+            custom_providers=mock_cfg["custom_providers"],
         )

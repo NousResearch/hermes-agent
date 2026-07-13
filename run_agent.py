@@ -476,6 +476,8 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        memory_provider_mode: str = None,
+        skip_memory_provider: bool = None,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -552,6 +554,8 @@ class AIAgent:
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
+            memory_provider_mode=memory_provider_mode,
+            skip_memory_provider=skip_memory_provider,
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
@@ -3322,7 +3326,8 @@ class AIAgent:
         """
         if self._memory_manager:
             try:
-                self._memory_manager.on_session_end(messages or [])
+                if getattr(self, "_memory_provider_auto_sync", True):
+                    self._memory_manager.on_session_end(messages or [])
             except Exception as e:
                 logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
@@ -3346,7 +3351,8 @@ class AIAgent:
         session_id — they just flush pending extraction now."""
         if self._memory_manager:
             try:
-                self._memory_manager.on_session_end(messages or [])
+                if getattr(self, "_memory_provider_auto_sync", True):
+                    self._memory_manager.on_session_end(messages or [])
             except Exception:
                 pass
         # Notify context engine of session end too — same lifecycle moment as
@@ -3402,6 +3408,10 @@ class AIAgent:
             return
         if not (self._memory_manager and final_response and original_user_message):
             return
+        # tools mode: provider tools are available but automatic turn sync /
+        # retain is disabled (cron safety). Explicit tool calls still work.
+        if not getattr(self, "_memory_provider_auto_sync", True):
+            return
         # Multimodal turns carry content as a list of typed parts; providers
         # expect plain strings, so flatten to text first (newline-joined for
         # memory, vs the default space-join used for log/trajectory previews).
@@ -3418,10 +3428,11 @@ class AIAgent:
                 response_text,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
-            )
+            if getattr(self, "_memory_provider_prefetch", True):
+                self._memory_manager.queue_prefetch_all(
+                    user_text,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 

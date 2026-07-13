@@ -198,6 +198,38 @@ def _normalize_job(raw: dict) -> dict:
     }
 
 
+def _annotate_wait_times(jobs: list[dict]) -> None:
+    """Annotate each job with ``wait_s`` — how long it sat idle before starting.
+
+    Wait time = ``started_at - max(completed_at of all jobs that finished
+    before this job started)``. Jobs with no predecessor (e.g. ``detect``)
+    get ``wait_s = 0``. Skipped jobs get ``wait_s = None``.
+
+    This is a timestamp heuristic, not a workflow-YAML dependency parse: it
+    infers dependencies from temporal ordering rather than ``needs:``
+    declarations. It's accurate for pipeline-shaped CI where the critical
+    path is linear at each stage (detect → parallel lanes → gate → report).
+    """
+    for j in jobs:
+        if is_skipped(j):
+            j["wait_s"] = None
+            continue
+        started = parse_ts(j.get("started_at"))
+        if started is None:
+            j["wait_s"] = None
+            continue
+        latest_dep_end: datetime | None = None
+        for other in jobs:
+            if other is j or is_skipped(other):
+                continue
+            other_end = parse_ts(other.get("completed_at"))
+            if other_end is None or other_end > started:
+                continue
+            if latest_dep_end is None or other_end > latest_dep_end:
+                latest_dep_end = other_end
+        j["wait_s"] = (started - latest_dep_end).total_seconds() if latest_dep_end else 0.0
+
+
 def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     """Collect job/step timings from the GitHub API.
 
@@ -248,6 +280,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     all_jobs = [_normalize_job(j) for j in direct + sub_jobs_raw]
     all_jobs = [j for j in all_jobs if j["status"] not in ("in_progress", "queued")]
     all_jobs.sort(key=lambda j: j.get("started_at") or "")
+    _annotate_wait_times(all_jobs)
 
     return {
         "run_id": run_id,
@@ -363,6 +396,8 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
 
     skipped = sum(1 for j in jobs_all if is_skipped(j))
     bl_skipped = sum(1 for j in bl_jobs_all if is_skipped(j))
+    total_wait = sum(j.get("wait_s") or 0 for j in jobs)
+    bl_total_wait = sum(j.get("wait_s") or 0 for j in bl_jobs)
 
     return {
         "wall": wall,
@@ -375,6 +410,8 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
         "no_baseline": no_baseline,
         "skipped": skipped,
         "bl_skipped": bl_skipped,
+        "total_wait": total_wait,
+        "bl_total_wait": bl_total_wait,
         "total_jobs": len(jobs_all),
     }
 
@@ -423,6 +460,12 @@ h2 { font-size: 18px; margin: 32px 0 12px; }
 }
 .gantt-bar:hover { color: #fff; z-index: 10; }
 .gantt-bar.current { background: #1f6feb; top: 5px; z-index: 2; }
+.gantt-bar.wait {
+  background: repeating-linear-gradient(
+    45deg, #30363d, #30363d 3px, transparent 3px, transparent 6px
+  );
+  top: 5px; z-index: 1; opacity: 0.6;
+}
 .gantt-bar.baseline {
   background: transparent; border: 1px dashed #8b949e; top: 2px; height: 24px; z-index: 1;
 }
@@ -533,11 +576,25 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
             d_text, d_cls = fmt_delta(dur, bl.get("duration_s"))
             delta_info = f' — {d_text}'
 
+        # Wait bar: shows idle time before the job started running
+        wait_bar = ""
+        wait_s = j.get("wait_s")
+        if wait_s and wait_s >= 1.0:
+            wait_left = (s - cur_t0).total_seconds() - wait_s
+            wait_left_pct = max(wait_left / total_s * 100, 0)
+            wait_width_pct = max(wait_s / total_s * 100, 0.3)
+            wait_bar = (
+                f'<div class="gantt-bar wait" '
+                f'style="left:{wait_left_pct:.2f}%;width:{wait_width_pct:.2f}%" '
+                f'title="{escape(j["name"])} — waited: {fmt_dur(wait_s)}"></div>'
+            )
+
         rows.append(
             f'<div class="gantt-row">'
             f'<div class="gantt-label" title="{escape(j["name"])}">{name_display}</div>'
             f'<div class="gantt-track">'
             f'{bl_bar}'
+            f'{wait_bar}'
             f'<div class="gantt-bar current" '
             f'style="left:{left:.2f}%;width:{width:.2f}%" '
             f'title="{escape(j["name"])}: {fmt_dur(dur)}{delta_info}"></div>'
@@ -555,6 +612,7 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
     legend = (
         '<div class="legend">'
         '<span><span class="legend-swatch" style="background:#1f6feb"></span>Current</span>'
+        '<span><span class="legend-swatch" style="background:repeating-linear-gradient(45deg,#30363d,#30363d 3px,transparent 3px,transparent 6px);opacity:0.6"></span>Wait</span>'
     )
     if baseline:
         legend += '<span><span class="legend-swatch" style="border:1px dashed #8b949e"></span>Baseline (main)</span>'
@@ -587,6 +645,8 @@ def _stats_cards(stats: dict) -> str:
         f'<div class="stat-value slower">{stats["slower"]}</div></div>',
         f'<div class="stat-card"><span class="stat-label">Unchanged</span>'
         f'<div class="stat-value neutral">{stats["unchanged"]}</div></div>',
+        f'<div class="stat-card"><span class="stat-label">Skipped</span>'
+        f'<div class="stat-value neutral">{stats["skipped"]}</div></div>',
         f'<div class="stat-card"><span class="stat-label">No Baseline</span>'
         f'<div class="stat-value neutral">{stats["no_baseline"]}</div></div>',
     ]
@@ -612,30 +672,37 @@ def _job_table(timings: dict, baseline: dict | None) -> str:
                 f'<td class="num neutral">skipped</td>'
                 f'<td class="num neutral">—</td>'
                 f'<td class="num neutral">—</td>'
+                f'<td class="num neutral">—</td>'
                 f'<td class="{concl_cls}" style="text-align:center">{concl_icon}</td>'
                 f'</tr>'
             )
             continue
 
         dur = j.get("duration_s")
+        wait = j.get("wait_s")
         bl = bl_map.get(j["name"])
         bl_dur = bl.get("duration_s") if bl and not is_skipped(bl) else None
+        bl_wait = bl.get("wait_s") if bl and not is_skipped(bl) else None
         delta_text, delta_cls = fmt_delta(dur, bl_dur)
+        wait_delta_text, wait_delta_cls = fmt_delta(wait, bl_wait)
 
         rows.append(
             f'<tr>'
             f'<td class="job-name">{name}</td>'
             f'<td class="num">{fmt_dur(dur)}</td>'
+            f'<td class="num">{fmt_dur(wait)}</td>'
             f'<td class="num">{fmt_dur(bl_dur)}</td>'
             f'<td class="num {delta_cls}">{delta_text}</td>'
+            f'<td class="num {wait_delta_cls}">{wait_delta_text}</td>'
             f'<td class="{concl_cls}" style="text-align:center">{concl_icon}</td>'
             f'</tr>'
         )
 
     return (
         '<table><thead><tr>'
-        '<th>Job</th><th class="num">Current</th><th class="num">Baseline</th>'
-        '<th class="num">Delta</th><th>Status</th>'
+        '<th>Job</th><th class="num">Run</th><th class="num">Wait</th>'
+        '<th class="num">Baseline</th><th class="num">Δ Run</th>'
+        '<th class="num">Δ Wait</th><th>Status</th>'
         '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
     )
 
@@ -652,10 +719,13 @@ def _step_details(timings: dict, baseline: dict | None) -> str:
         bl_steps = {s["name"]: s for s in bl.get("steps", [])}
 
         dur = j.get("duration_s") or 0
-        bl_dur = bl.get("duration_s") if bl else None
+        wait = j.get("wait_s")
+        bl_dur = bl.get("duration_s") if bl and not is_skipped(bl) else None
         delta_text, delta_cls = fmt_delta(dur, bl_dur)
 
         summary_text = f'{escape(j["name"])} — {fmt_dur(dur)}'
+        if wait is not None and wait >= 1.0:
+            summary_text += f' <span class="neutral">(wait {fmt_dur(wait)})</span>'
         if bl_dur is not None:
             summary_text += f' <span class="{delta_cls}">({delta_text})</span>'
 
@@ -811,9 +881,16 @@ def generate_summary(timings: dict, baseline: dict | None = None) -> str:
         compute_d = d
     lines.append(f"| Total compute | {fmt_dur(stats['compute'])} | {fmt_dur(stats['bl_compute'])} | {compute_d} |")
 
+    wait_d = ""
+    if stats["bl_total_wait"] is not None:
+        d, _ = fmt_delta(stats["total_wait"], stats["bl_total_wait"])
+        wait_d = d
+    lines.append(f"| Total wait | {fmt_dur(stats['total_wait'])} | {fmt_dur(stats['bl_total_wait'])} | {wait_d} |")
+
     lines.append(f"| Jobs faster | {stats['faster']} | — | — |")
     lines.append(f"| Jobs slower | {stats['slower']} | — | — |")
     lines.append(f"| Jobs unchanged | {stats['unchanged']} | — | — |")
+    lines.append(f"| Jobs skipped | {stats['skipped']} | {stats['bl_skipped']} | — |")
     lines.append(f"| Jobs without baseline | {stats['no_baseline']} | — | — |")
     lines.append("")
 

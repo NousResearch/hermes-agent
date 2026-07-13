@@ -4878,10 +4878,12 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     boot re-triggered the build. One process builds under an exclusive
     flock; the rest serve the existing dist (stale is acceptable) or, when
     no dist exists yet, block until the builder finishes.
+
+    Staleness is checked once, inside :func:`_do_build_web_ui`, after the
+    lock is held — so a process that queued behind the builder skips the
+    rebuild, and the (os.walk-based) check runs at most once per boot.
     """
     if not (web_dir / "package.json").exists():
-        return True
-    if not _web_ui_build_needed(web_dir):
         return True
     try:
         import fcntl
@@ -4904,10 +4906,6 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
                 return True
             # No dist at all (first-ever build): wait for the builder.
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        # Re-check under the lock: the previous holder may have finished
-        # the build while this process was waiting or racing for it.
-        if not _web_ui_build_needed(web_dir):
-            return True
         return _do_build_web_ui(web_dir, fatal=fatal)
     finally:
         lock_file.close()

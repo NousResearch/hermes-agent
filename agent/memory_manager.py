@@ -25,15 +25,124 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import inspect
-from typing import Any, Dict, List, Optional
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
+
+# How long shutdown_all() waits for in-flight background sync/prefetch work
+# to drain before abandoning it. A wedged provider must never block process
+# teardown indefinitely — the worker threads are daemon, so anything still
+# running past this window dies with the interpreter.
+_SYNC_DRAIN_TIMEOUT_S = 5.0
+
+
+def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
+    """Return a function-tool dict with a resolvable top-level ``name``.
+
+    Context engines and memory providers expose tool schemas via
+    ``get_tool_schemas()``. The expected shape is a bare function schema
+    (``{"name": ..., "description": ..., "parameters": ...}``) which callers
+    wrap as ``{"type": "function", "function": schema}``.
+
+    Some providers instead return an entry that is *already* in OpenAI tool
+    form (``{"type": "function", "function": {"name": ...}}``). Wrapping that
+    a second time produces ``{"type": "function", "function": {"type":
+    "function", "function": {...}}}`` whose ``function`` has no top-level
+    ``name``. Strict providers (e.g. DeepSeek) reject the *entire* request
+    with ``tools[N].function: missing field name`` (HTTP 400), so one bad
+    schema disables the whole toolset and breaks every turn (#47707).
+
+    This helper normalizes both shapes to the bare function schema and
+    returns ``None`` for anything without a resolvable name, so callers can
+    skip-with-warning rather than appending a nameless tool.
+    """
+    if not isinstance(schema, dict):
+        return None
+    # Unwrap an already-wrapped OpenAI tool entry.
+    if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
+        schema = schema["function"]
+        if not isinstance(schema, dict):
+            return None
+    name = schema.get("name", "")
+    if not name or not isinstance(name, str):
+        return None
+    return schema
+
+
+def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
+    """Return whether external memory-provider tools should be exposed."""
+    if enabled_toolsets is None:
+        return True
+    if not enabled_toolsets:
+        return False
+    if "memory" in enabled_toolsets:
+        return True
+
+    try:
+        from toolsets import resolve_toolset
+
+        return any("memory" in resolve_toolset(name) for name in enabled_toolsets)
+    except Exception:
+        logger.debug("Failed to resolve enabled toolsets for memory-provider tools", exc_info=True)
+        return False
+
+
+def inject_memory_provider_tools(agent: Any) -> int:
+    """Append external memory-provider tool schemas to an agent tool surface."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    tools = getattr(agent, "tools", None)
+    if not memory_manager or tools is None:
+        return 0
+
+    existing_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    if (
+        "memory" not in existing_tool_names
+        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
+    ):
+        return 0
+
+    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
+    if not callable(get_schemas):
+        return 0
+
+    valid_tool_names = getattr(agent, "valid_tool_names", None)
+    if valid_tool_names is None:
+        valid_tool_names = set()
+        agent.valid_tool_names = valid_tool_names
+
+    added = 0
+    for raw_schema in get_schemas():
+        schema = normalize_tool_schema(raw_schema)
+        if schema is None:
+            logger.warning(
+                "Memory provider returned a tool schema with no resolvable "
+                "name; skipping to avoid poisoning the request (%r)",
+                raw_schema,
+            )
+            continue
+        tool_name = schema["name"]
+        if tool_name in existing_tool_names:
+            continue
+        tools.append({"type": "function", "function": schema})
+        valid_tool_names.add(tool_name)
+        existing_tool_names.add(tool_name)
+        added += 1
+
+    return added
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +155,7 @@ _INTERNAL_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _INTERNAL_NOTE_RE = re.compile(
-    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as informational background data\.\]\s*',
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
 )
 
@@ -91,10 +200,12 @@ class StreamingContextScrubber:
     def __init__(self) -> None:
         self._in_span: bool = False
         self._buf: str = ""
+        self._at_block_boundary: bool = True
 
     def reset(self) -> None:
         self._in_span = False
         self._buf = ""
+        self._at_block_boundary = True
 
     def feed(self, text: str) -> str:
         """Return the visible portion of ``text`` after scrubbing.
@@ -121,19 +232,22 @@ class StreamingContextScrubber:
                 buf = buf[idx + len(self._CLOSE_TAG):]
                 self._in_span = False
             else:
-                idx = buf.lower().find(self._OPEN_TAG)
+                idx = self._find_boundary_open_tag(buf)
                 if idx == -1:
                     # No open tag — hold back a potential partial open tag
-                    held = self._max_partial_suffix(buf, self._OPEN_TAG)
+                    held = (
+                        self._max_pending_open_suffix(buf)
+                        or self._max_partial_suffix(buf, self._OPEN_TAG)
+                    )
                     if held:
-                        out.append(buf[:-held])
+                        self._append_visible(out, buf[:-held])
                         self._buf = buf[-held:]
                     else:
-                        out.append(buf)
+                        self._append_visible(out, buf)
                     return "".join(out)
                 # Emit text before the tag, enter span
                 if idx > 0:
-                    out.append(buf[:idx])
+                    self._append_visible(out, buf[:idx])
                 buf = buf[idx + len(self._OPEN_TAG):]
                 self._in_span = True
 
@@ -169,6 +283,55 @@ class StreamingContextScrubber:
                 return i
         return 0
 
+    def _find_boundary_open_tag(self, buf: str) -> int:
+        """Find an opening fence only when it starts a block-like span."""
+        buf_lower = buf.lower()
+        search_start = 0
+        while True:
+            idx = buf_lower.find(self._OPEN_TAG, search_start)
+            if idx == -1:
+                return -1
+            if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
+                return idx
+            search_start = idx + 1
+
+    def _max_pending_open_suffix(self, buf: str) -> int:
+        """Hold a complete boundary tag until the following char confirms it."""
+        if not buf.lower().endswith(self._OPEN_TAG):
+            return 0
+        idx = len(buf) - len(self._OPEN_TAG)
+        if not self._is_block_boundary(buf, idx):
+            return 0
+        return len(self._OPEN_TAG)
+
+    def _has_block_opener_suffix(self, buf: str, idx: int) -> bool:
+        after_idx = idx + len(self._OPEN_TAG)
+        if after_idx >= len(buf):
+            return False
+        return buf[after_idx] in "\r\n"
+
+    def _is_block_boundary(self, buf: str, idx: int) -> bool:
+        if idx == 0:
+            return self._at_block_boundary
+        preceding = buf[:idx]
+        last_newline = preceding.rfind("\n")
+        if last_newline == -1:
+            return self._at_block_boundary and preceding.strip() == ""
+        return preceding[last_newline + 1:].strip() == ""
+
+    def _append_visible(self, out: list[str], text: str) -> None:
+        if not text:
+            return
+        out.append(text)
+        self._update_block_boundary(text)
+
+    def _update_block_boundary(self, text: str) -> None:
+        last_newline = text.rfind("\n")
+        if last_newline != -1:
+            self._at_block_boundary = text[last_newline + 1:].strip() == ""
+        else:
+            self._at_block_boundary = self._at_block_boundary and text.strip() == ""
+
 
 def build_memory_context_block(raw_context: str) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
@@ -180,7 +343,8 @@ def build_memory_context_block(raw_context: str) -> str:
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
-        "NOT new user input. Treat as informational background data.]\n\n"
+        "NOT new user input. Treat as authoritative reference data — "
+        "this is the agent's persistent memory and should inform all responses.]\n\n"
         f"{clean}\n"
         "</memory-context>"
     )
@@ -197,6 +361,13 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        # Background executor for end-of-turn sync/prefetch. Lazily created on
+        # first use so the common builtin-only path spawns no extra threads.
+        # A single worker serializes a provider's writes (turn N must land
+        # before turn N+1) and caps thread growth at one per manager. See
+        # _submit_background() and the sync_all/queue_prefetch_all rationale.
+        self._sync_executor: Optional[ThreadPoolExecutor] = None
+        self._sync_executor_lock = threading.Lock()
 
     # -- Registration --------------------------------------------------------
 
@@ -226,9 +397,31 @@ class MemoryManager:
 
         self._providers.append(provider)
 
+        # Core tool names are reserved — a memory provider must never register
+        # a tool that shadows a built-in (e.g. ``clarify``, ``delegate_task``).
+        # Built-ins always win, so such a tool is dropped at agent init and
+        # would otherwise linger in ``_tool_to_provider`` and hijack dispatch
+        # (#40466). Reject it here, at the door, so it never enters the routing
+        # table at all — matching the built-ins-always-win invariant used by
+        # the TTS/browser/search provider registries.
+        from toolsets import _HERMES_CORE_TOOLS
+
+        _core_tool_names = set(_HERMES_CORE_TOOLS)
+
         # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
-            tool_name = schema.get("name", "")
+        for raw_schema in provider.get_tool_schemas():
+            schema = normalize_tool_schema(raw_schema)
+            if schema is None:
+                continue
+            tool_name = schema["name"]
+            if tool_name in _core_tool_names:
+                logger.warning(
+                    "Memory provider '%s' tool '%s' shadows a reserved core "
+                    "tool name; registration ignored. Core tools always win — "
+                    "rename the provider's tool to something unique.",
+                    provider.name, tool_name,
+                )
+                continue
             if tool_name and tool_name not in self._tool_to_provider:
                 self._tool_to_provider[tool_name] = provider
             elif tool_name in self._tool_to_provider:
@@ -281,16 +474,37 @@ class MemoryManager:
 
     # -- Prefetch / recall ---------------------------------------------------
 
+    @staticmethod
+    def _strip_skill_scaffolding(text: str) -> Optional[str]:
+        """Return memory-worthy user text, or None to skip the turn.
+
+        When a user invokes a /skill or /bundle, Hermes expands the turn into
+        a model-facing message that embeds the entire skill body. Feeding that
+        verbatim to memory providers pollutes their stores/embeddings with
+        prompt scaffolding instead of what the user actually asked. We recover
+        just the user's instruction here, once, for every provider — so this
+        is fixed for the whole provider fan-out, not per backend.
+
+        - Non-skill messages pass through unchanged.
+        - Skill turns with a user instruction return that instruction.
+        - Bare skill invocations (no instruction) return None → callers skip
+          the turn, since there is no user content worth remembering.
+        """
+        return extract_user_instruction_from_skill_message(text)
+
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Collect prefetch context from all providers.
 
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
         """
+        clean_query = self._strip_skill_scaffolding(query)
+        if not clean_query:
+            return ""
         parts = []
         for provider in self._providers:
             try:
-                result = provider.prefetch(query, session_id=session_id)
+                result = provider.prefetch(clean_query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -301,40 +515,209 @@ class MemoryManager:
         return "\n\n".join(parts)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
-        """Queue background prefetch on all providers for the next turn."""
-        for provider in self._providers:
-            try:
-                provider.queue_prefetch(query, session_id=session_id)
-            except Exception as e:
-                logger.debug(
-                    "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
-                    provider.name, e,
-                )
+        """Queue background prefetch on all providers for the next turn.
+
+        Provider work is dispatched to a background worker so a slow or
+        wedged provider can never block the caller. See ``sync_all`` for
+        the full rationale (agent stuck "running" minutes after a turn).
+        """
+        providers = list(self._providers)
+        if not providers:
+            return
+
+        clean_query = self._strip_skill_scaffolding(query)
+        if not clean_query:
+            return
+
+        def _run() -> None:
+            for provider in providers:
+                try:
+                    provider.queue_prefetch(clean_query, session_id=session_id)
+                except Exception as e:
+                    logger.debug(
+                        "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
+                        provider.name, e,
+                    )
+
+        self._submit_background(_run)
 
     # -- Sync ----------------------------------------------------------------
 
-    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Sync a completed turn to all providers."""
-        for provider in self._providers:
+    @staticmethod
+    def _provider_sync_accepts_messages(provider: MemoryProvider) -> bool:
+        """Return whether sync_turn accepts a messages keyword."""
+        try:
+            signature = inspect.signature(provider.sync_turn)
+        except (TypeError, ValueError):
+            return True
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return True
+        return "messages" in signature.parameters
+
+    def sync_all(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Sync a completed turn to all providers.
+
+        Runs on a background worker thread, NOT inline on the
+        turn-completion path. A provider's ``sync_turn`` may make a
+        blocking network/daemon call (a misconfigured Hindsight daemon
+        was observed blocking ~298s before failing); doing that inline
+        held ``run_conversation`` open long after the user saw their
+        response, so every interface (CLI, TUI, gateway) kept the agent
+        marked "running" for minutes and any follow-up message triggered
+        an aggressive interrupt. Dispatching off-thread means a slow or
+        broken provider can never stall the turn — the sync simply
+        completes (or fails, logged) in the background.
+
+        Writes are serialized through a single worker so turn N lands
+        before turn N+1; provider implementations don't need their own
+        ordering guarantees.
+        """
+        providers = list(self._providers)
+        if not providers:
+            return
+
+        clean_user_content = self._strip_skill_scaffolding(user_content)
+        if not clean_user_content:
+            return
+        user_content = clean_user_content
+
+        def _run() -> None:
+            for provider in providers:
+                try:
+                    if messages is not None and self._provider_sync_accepts_messages(provider):
+                        provider.sync_turn(
+                            user_content,
+                            assistant_content,
+                            session_id=session_id,
+                            messages=messages,
+                        )
+                    else:
+                        provider.sync_turn(
+                            user_content,
+                            assistant_content,
+                            session_id=session_id,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Memory provider '%s' sync_turn failed: %s",
+                        provider.name, e,
+                    )
+
+        self._submit_background(_run)
+
+    # -- Background dispatch -------------------------------------------------
+
+    def _submit_background(self, fn) -> None:
+        """Run ``fn`` on the manager's background worker.
+
+        The executor is created lazily and shared across calls. If the
+        executor can't be created or has already been shut down, ``fn``
+        runs inline as a last-resort fallback — losing the async benefit
+        but never losing the write itself. ``fn`` must do its own
+        per-provider error handling; this wrapper only guards executor
+        plumbing.
+        """
+        executor = self._get_sync_executor()
+        if executor is None:
+            # Executor unavailable (shut down / creation failed) — run
+            # inline rather than drop the work. Slow, but correct.
             try:
-                provider.sync_turn(user_content, assistant_content, session_id=session_id)
-            except Exception as e:
-                logger.warning(
-                    "Memory provider '%s' sync_turn failed: %s",
-                    provider.name, e,
-                )
+                fn()
+            except Exception as e:  # pragma: no cover - fn guards internally
+                logger.debug("Inline memory background task failed: %s", e)
+            return
+        try:
+            executor.submit(fn)
+        except RuntimeError:
+            # Executor was shut down between the get and the submit
+            # (teardown race). Fall back to inline.
+            try:
+                fn()
+            except Exception as e:  # pragma: no cover - fn guards internally
+                logger.debug("Inline memory background task failed: %s", e)
+
+    def _get_sync_executor(self) -> Optional[ThreadPoolExecutor]:
+        """Lazily create the single-worker background executor."""
+        if self._sync_executor is not None:
+            return self._sync_executor
+        with self._sync_executor_lock:
+            if self._sync_executor is None:
+                try:
+                    # Daemon workers (see tools.daemon_pool): a provider wedged
+                    # on a network call must never block interpreter exit —
+                    # stdlib ThreadPoolExecutor's atexit hook would join it
+                    # unconditionally even after shutdown(wait=False).
+                    from tools.daemon_pool import DaemonThreadPoolExecutor
+                    self._sync_executor = DaemonThreadPoolExecutor(
+                        max_workers=1,
+                        thread_name_prefix="mem-sync",
+                    )
+                except Exception as e:  # pragma: no cover - resource exhaustion
+                    logger.warning("Failed to create memory sync executor: %s", e)
+                    return None
+            return self._sync_executor
+
+    def flush_pending(self, timeout: Optional[float] = None) -> bool:
+        """Block until queued sync/prefetch work has drained.
+
+        Single-worker executor means submitting a sentinel and waiting on
+        it guarantees every previously-submitted task has run. Returns
+        True if the barrier completed within ``timeout`` (or no executor
+        exists), False on timeout. Used at real session boundaries and by
+        tests that need to assert provider state deterministically.
+        """
+        executor = self._sync_executor
+        if executor is None:
+            return True
+        try:
+            fut = executor.submit(lambda: None)
+        except RuntimeError:
+            # Executor already shut down — nothing pending.
+            return True
+        try:
+            fut.result(timeout=timeout)
+            return True
+        except Exception:
+            return False
 
     # -- Tools ---------------------------------------------------------------
 
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Collect tool schemas from all providers."""
+        """Collect tool schemas from all providers.
+
+        Reserved core tool names (``clarify``, ``delegate_task``, etc.) are
+        skipped — they are rejected from the routing table in
+        :meth:`add_provider`, so the manager must not advertise a schema it
+        will never route. Built-ins always win (#40466).
+        """
+        from toolsets import _HERMES_CORE_TOOLS
+
+        _core_tool_names = set(_HERMES_CORE_TOOLS)
         schemas = []
         seen = set()
         for provider in self._providers:
             try:
-                for schema in provider.get_tool_schemas():
-                    name = schema.get("name", "")
-                    if name and name not in seen:
+                for raw_schema in provider.get_tool_schemas():
+                    schema = normalize_tool_schema(raw_schema)
+                    if schema is None:
+                        logger.warning(
+                            "Memory provider '%s' returned a tool schema with "
+                            "no resolvable name; skipping (%r)",
+                            provider.name, raw_schema,
+                        )
+                        continue
+                    name = schema["name"]
+                    if name in _core_tool_names:
+                        continue
+                    if name not in seen:
                         schemas.append(schema)
                         seen.add(name)
             except Exception as e:
@@ -394,10 +777,60 @@ class MemoryManager:
             try:
                 provider.on_session_end(messages)
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     "Memory provider '%s' on_session_end failed: %s",
                     provider.name, e,
+                    exc_info=True,
                 )
+
+    def commit_session_boundary_async(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        new_session_id: str,
+        parent_session_id: str = "",
+        reason: str = "new_session",
+    ) -> None:
+        """Queue old-session extraction + provider rebinding as ONE serialized task.
+
+        Session rotation (/new) must deliver ``on_session_end`` (end-of-session
+        extraction — an LLM-bound call that can take seconds) strictly BEFORE
+        ``on_session_switch`` (which rebinds provider-internal ``_session_id`` /
+        turn buffers to the new session). Running extraction inline blocked the
+        /new command for the whole LLM round-trip (#16454); running it on an
+        ad-hoc thread raced the inline switch — providers key off internal
+        state, so a late ``on_session_end`` ran against post-switch bindings
+        (transcript misattributed to the new session id, double-ingest of the
+        old turn buffer, new-session buffers cleared).
+
+        Submitting BOTH hooks as one task on the manager's single background
+        worker gives both properties at a single chokepoint: the caller returns
+        immediately, and the worker's FIFO order serializes end→switch against
+        every other provider write (per-turn ``sync_all``, prefetches), which
+        already share the same worker. If the executor is unavailable,
+        ``_submit_background`` degrades to inline execution — the pre-#16454
+        synchronous behavior, slow but correct.
+        """
+        if not self._providers:
+            return
+        snapshot = list(messages or [])
+
+        def _run() -> None:
+            try:
+                self.on_session_end(snapshot)
+            except Exception as e:  # pragma: no cover - on_session_end guards per-provider
+                logger.warning("Session-boundary extraction failed: %s", e)
+            try:
+                self.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=True,
+                    reason=reason,
+                )
+            except Exception as e:  # pragma: no cover - on_session_switch guards per-provider
+                logger.warning("Session-boundary switch failed: %s", e)
+
+        self._submit_background(_run)
 
     def on_session_switch(
         self,
@@ -405,6 +838,7 @@ class MemoryManager:
         *,
         parent_session_id: str = "",
         reset: bool = False,
+        rewound: bool = False,
         **kwargs,
     ) -> None:
         """Notify all providers that the agent's session_id has rotated.
@@ -417,9 +851,21 @@ class MemoryManager:
         per-session state so subsequent writes land in the correct
         session's record. See ``MemoryProvider.on_session_switch`` for
         the full contract.
+
+        ``rewound=True`` signals that session_id is unchanged but the
+        transcript was truncated; providers caching per-turn document
+        state should invalidate.
         """
         if not new_session_id:
             return
+        # Only forward ``rewound`` when it's actually set. Passing it
+        # unconditionally would inject ``rewound=False`` into every
+        # provider's **kwargs for the common /resume, /branch, /new, and
+        # compression paths, polluting providers that capture extra kwargs
+        # (and breaking exact-dict assertions). The /undo path sets
+        # rewound=True explicitly; everyone else stays clean.
+        if rewound:
+            kwargs["rewound"] = True
         for provider in self._providers:
             try:
                 provider.on_session_switch(
@@ -469,11 +915,11 @@ class MemoryManager:
 
         accepted = [
             p for p in params
-            if p.kind in (
+            if p.kind in {
                 inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 inspect.Parameter.KEYWORD_ONLY,
-            )
+            }
         ]
         if len(accepted) >= 4:
             return "positional"
@@ -509,6 +955,87 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    # Actions the bridge mirrors to external providers. The built-in memory
+    # tool can also return non-mutating shapes (errors, staged-for-approval
+    # records); those are filtered out by ``notify_memory_tool_write`` before
+    # we ever reach a provider.
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+
+    @staticmethod
+    def _memory_tool_result_succeeded(result: Any) -> bool:
+        """True only when the built-in memory tool actually committed a write.
+
+        Fails closed: a string that isn't JSON, a non-dict result, a missing
+        ``success``, or a write staged for approval (``staged is True``) all
+        return False so external providers are never told about a write that
+        did not land.
+        """
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return False
+        if not isinstance(result, dict):
+            return False
+        return result.get("success") is True and result.get("staged") is not True
+
+    def notify_memory_tool_write(
+        self,
+        tool_result: Any,
+        tool_args: Dict[str, Any],
+        *,
+        build_metadata: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> None:
+        """Mirror a built-in memory tool call to external providers.
+
+        This is the single entry point the agent loop calls after running the
+        built-in ``memory`` tool. All the decisions about *whether* and *what*
+        to mirror live here, behind the manager interface — the loop only hands
+        over the raw tool result and args:
+
+        * gate on a committed (non-staged, successful) write,
+        * expand the single-op and batched (``operations``) shapes,
+        * keep only mutating actions (add/replace/remove),
+        * build per-op provenance metadata and forward ``old_text``.
+
+        ``build_metadata`` is an optional agent-side callable (the loop knows
+        session/task/tool-call provenance the manager does not) invoked once per
+        mirrored op.
+        """
+        if not self._memory_tool_result_succeeded(tool_result):
+            return
+
+        target = str(tool_args.get("target") or "memory")
+        operations = tool_args.get("operations")
+        if isinstance(operations, list) and operations:
+            raw_operations = operations
+        else:
+            raw_operations = [{
+                "action": tool_args.get("action"),
+                "content": tool_args.get("content"),
+                "old_text": tool_args.get("old_text"),
+            }]
+
+        for op in raw_operations:
+            if not isinstance(op, dict):
+                continue
+            action = str(op.get("action") or "")
+            if action not in self._MIRRORED_MEMORY_ACTIONS:
+                continue
+            try:
+                metadata = dict(build_metadata() if build_metadata else {})
+                old_text = op.get("old_text")
+                if old_text:
+                    metadata["old_text"] = str(old_text)
+                self.on_memory_write(
+                    action,
+                    target,
+                    str(op.get("content") or ""),
+                    metadata=metadata,
+                )
+            except Exception as e:
+                logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
+
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:
         """Notify all providers that a subagent completed."""
@@ -524,7 +1051,15 @@ class MemoryManager:
                 )
 
     def shutdown_all(self) -> None:
-        """Shut down all providers (reverse order for clean teardown)."""
+        """Shut down all providers (reverse order for clean teardown).
+
+        Drains the background sync/prefetch executor first (bounded by
+        ``_SYNC_DRAIN_TIMEOUT_S``) so a turn's final sync has a chance to
+        land before providers are torn down. The worker threads are
+        daemon, so anything still wedged past the drain window dies with
+        the interpreter rather than blocking exit.
+        """
+        self._drain_sync_executor()
         for provider in reversed(self._providers):
             try:
                 provider.shutdown()
@@ -533,6 +1068,52 @@ class MemoryManager:
                     "Memory provider '%s' shutdown failed: %s",
                     provider.name, e,
                 )
+
+    def _drain_sync_executor(self) -> None:
+        """Shut down the background executor, waiting briefly for drain.
+
+        Bounded by ``_SYNC_DRAIN_TIMEOUT_S``: a wedged provider must never
+        hang process/session teardown. We stop accepting new work and
+        cancel anything still queued, then wait at most the drain timeout
+        for the currently-running task on a watcher thread. The worker is
+        daemon, so an over-running task dies with the interpreter.
+        """
+        with self._sync_executor_lock:
+            executor = self._sync_executor
+            self._sync_executor = None
+        if executor is None:
+            return
+        try:
+            # Stop accepting new work and drop anything still queued, but
+            # do NOT block here — cancel_futures cancels not-yet-started
+            # tasks; the in-flight one keeps running on its daemon thread.
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Older Python without cancel_futures kwarg.
+            try:
+                executor.shutdown(wait=False)
+            except Exception as e:  # pragma: no cover
+                logger.debug("Memory sync executor shutdown failed: %s", e)
+            return
+        except Exception as e:  # pragma: no cover
+            logger.debug("Memory sync executor shutdown failed: %s", e)
+            return
+        # Give an in-flight sync a bounded chance to finish on a watcher
+        # thread so we don't block the caller past the drain timeout.
+        drainer = threading.Thread(
+            target=lambda: self._bounded_executor_wait(executor),
+            daemon=True,
+            name="mem-sync-drain",
+        )
+        drainer.start()
+        drainer.join(timeout=_SYNC_DRAIN_TIMEOUT_S)
+
+    @staticmethod
+    def _bounded_executor_wait(executor: ThreadPoolExecutor) -> None:
+        try:
+            executor.shutdown(wait=True)
+        except Exception as e:  # pragma: no cover
+            logger.debug("Memory sync executor drain wait failed: %s", e)
 
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers.

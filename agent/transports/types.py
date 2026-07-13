@@ -62,7 +62,7 @@ class ToolCall:
         return (self.provider_data or {}).get("response_item_id")
 
     @property
-    def extra_content(self) -> Optional[Dict[str, Any]]:
+    def extra_content(self) -> dict[str, Any] | None:
         """Gemini extra_content (thought_signature) from provider_data.
 
         Gemini 3 thinking models attach ``extra_content`` with a
@@ -120,6 +120,18 @@ class NormalizedResponse:
     def reasoning_details(self):
         pd = self.provider_data or {}
         return pd.get("reasoning_details")
+
+    @property
+    def anthropic_content_blocks(self):
+        """Verbatim, order-preserving Anthropic content blocks for a turn.
+
+        Present only when an Anthropic turn interleaves signed thinking with
+        tool_use — the one shape the parallel reasoning_details + tool_calls
+        lists reconstruct in the wrong order, invalidating thinking-block
+        signatures on replay. See agent/transports/anthropic.py.
+        """
+        pd = self.provider_data or {}
+        return pd.get("anthropic_content_blocks")
 
     @property
     def codex_reasoning_items(self):

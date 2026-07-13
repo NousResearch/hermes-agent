@@ -10,6 +10,7 @@ Run with:  python -m pytest tests/tools/test_file_read_guards.py -v
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -23,9 +24,9 @@ from tools.file_tools import (
     _is_blocked_device,
     _invalidate_dedup_for_path,
     _READ_DEDUP_STATUS_MESSAGE,
-    _get_max_read_chars,
     _DEFAULT_MAX_READ_CHARS,
     _read_tracker,
+    _file_ops_cache,
     notify_other_tool_call,
 )
 
@@ -57,15 +58,21 @@ def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
     return fake
 
 
+def _make_safe_tempdir(prefix: str) -> str:
+    """Create a temp dir outside macOS system-sensitive /private/var paths."""
+    return tempfile.mkdtemp(prefix=prefix, dir=os.getcwd())
+
+
 class _LocalShellEnv:
-    """Small local env stub for exercising real ShellFileOperations."""
+    """Small POSIX env stub for exercising real ShellFileOperations."""
 
     def __init__(self, cwd):
         self.cwd = cwd
+        self.cwd_owner = None
 
     def execute(self, command, cwd="", timeout=None, stdin_data=None):
         proc = subprocess.run(
-            ["bash", "-c", command],
+            ["/bin/sh", "-c", command],
             cwd=cwd or self.cwd,
             input=stdin_data,
             text=True,
@@ -98,12 +105,96 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertTrue(_is_blocked_device("/proc/12345/fd/2"))
 
     def test_proc_fd_other_not_blocked(self):
-        self.assertFalse(_is_blocked_device("/proc/self/fd/3"))
-        self.assertFalse(_is_blocked_device("/proc/self/maps"))
+        # The path-pattern check only blocklists /fd/0, /fd/1, /fd/2 as stdio
+        # aliases.  Higher-numbered fds are not pattern-blocked; whether they
+        # ultimately get blocked depends on realpath resolution (a separate
+        # concern, handled in test_symlink_to_blocked_device_is_blocked).
+        # Using the lower-level _is_blocked_device_path here keeps the
+        # assertion stable across environments where pytest workers happen to
+        # have fd 3 dup'd to a blocked device.
+        from tools.file_tools import _is_blocked_device_path
+
+        self.assertFalse(_is_blocked_device_path("/proc/self/fd/3"))
+
+    def test_proc_sensitive_pseudo_files_blocked(self):
+        """environ/cmdline/maps (and maps variants) under /proc/<pid> must be blocked (issue #4427)."""
+        for path in (
+            "/proc/self/environ",
+            "/proc/12345/environ",
+            "/proc/self/cmdline",
+            "/proc/99/cmdline",
+            "/proc/self/maps",
+            "/proc/1/maps",
+            "/proc/self/smaps",
+            "/proc/12345/smaps",
+            "/proc/self/smaps_rollup",
+            "/proc/99/smaps_rollup",
+            "/proc/self/numa_maps",
+            "/proc/1/numa_maps",
+            "/proc/self/mem",
+            "/proc/12345/mem",
+            "/proc/self/auxv",
+            "/proc/1/auxv",
+            "/proc/self/pagemap",
+            "/proc/99/pagemap",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
+    def test_proc_task_thread_sensitive_files_blocked(self):
+        """Per-thread /proc/<pid>/task/<tid>/<file> aliases leak the same data."""
+        for path in (
+            "/proc/self/task/1234/maps",
+            "/proc/self/task/1234/smaps",
+            "/proc/self/task/1234/auxv",
+            "/proc/self/task/1234/pagemap",
+            "/proc/self/task/1234/environ",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
+    def test_proc_legitimate_files_not_blocked(self):
+        """Top-level /proc files like cpuinfo and meminfo must remain accessible."""
+        for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):
+            self.assertFalse(_is_blocked_device(path), f"{path} should not be blocked")
+
+    def test_normpath_alias_to_blocked_device_is_blocked(self):
+        self.assertTrue(_is_blocked_device("/dev/../dev/zero"))
+        self.assertTrue(_is_blocked_device("/dev/./urandom"))
 
     def test_normal_files_not_blocked(self):
         self.assertFalse(_is_blocked_device("/tmp/test.py"))
         self.assertFalse(_is_blocked_device("/home/user/.bashrc"))
+
+    def test_symlink_to_blocked_device_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "zero-link")
+            try:
+                os.symlink("/dev/zero", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertTrue(_is_blocked_device(link_path))
+
+    def test_symlink_to_regular_file_not_blocked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = os.path.join(tmpdir, "regular.txt")
+            link_path = os.path.join(tmpdir, "regular-link")
+            with open(target_path, "w", encoding="utf-8") as handle:
+                handle.write("safe\n")
+            try:
+                os.symlink(target_path, link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertFalse(_is_blocked_device(link_path))
+
+    def test_symlink_to_blocked_alias_is_blocked_before_realpath(self):
+        if not os.path.exists("/dev/stdin"):
+            self.skipTest("/dev/stdin is not available on this platform")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "stdin-link")
+            try:
+                os.symlink("/dev/../dev/stdin", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertTrue(_is_blocked_device(link_path))
 
     def test_read_file_tool_rejects_device(self):
         """read_file_tool returns an error without any file I/O."""
@@ -111,13 +202,56 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("device file", result["error"])
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_tool_rejects_device_symlink_before_io(self, mock_ops):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "zero-link")
+            try:
+                os.symlink("/dev/zero", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            result = json.loads(read_file_tool(link_path, task_id="dev_link_test"))
+
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+        mock_ops.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_tool_rejects_task_cwd_relative_device_alias_symlink(self, mock_ops):
+        if not os.path.exists("/dev/stdin"):
+            self.skipTest("/dev/stdin is not available on this platform")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = os.path.join(tmpdir, "workspace")
+            process_cwd = os.path.join(tmpdir, "process")
+            os.mkdir(workspace)
+            os.mkdir(process_cwd)
+            link_path = os.path.join(workspace, "stdin-link")
+            try:
+                os.symlink("/dev/../dev/stdin", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(process_cwd)
+                with patch.dict(os.environ, {"TERMINAL_CWD": workspace}, clear=False):
+                    result = json.loads(read_file_tool("stdin-link", task_id="dev_rel_link_test"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+        mock_ops.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Character-count limits
 # ---------------------------------------------------------------------------
 
 class TestCharacterCountGuard(unittest.TestCase):
-    """Large reads should be rejected with guidance to use offset/limit."""
+    """Oversized reads are truncated on a line boundary (nearai/ironclaw#5029),
+    not rejected — the model gets the head of the file plus a next_offset."""
 
     def setUp(self):
         _read_tracker.clear()
@@ -126,28 +260,69 @@ class TestCharacterCountGuard(unittest.TestCase):
         _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops")
-    @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
-    def test_oversized_read_rejected(self, _mock_limit, mock_ops):
-        """A read that returns >max chars is rejected."""
-        big_content = "x" * (_DEFAULT_MAX_READ_CHARS + 1)
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    def test_oversized_multiline_read_truncated_with_continuation(self, _mock_limit, mock_ops):
+        """A read whose many lines exceed the char budget is trimmed to the
+        last complete line and offers a next_offset, instead of returning an
+        error with no content."""
+        # 50 lines of 100 chars each = ~5050 chars, well over the 1000 budget.
+        big_content = "\n".join(f"{i}|" + "z" * 98 for i in range(1, 51))
         mock_ops.return_value = _make_fake_ops(
             content=big_content,
-            total_lines=5000,
-            file_size=len(big_content) + 100,  # bigger than content
+            total_lines=50,
+            file_size=len(big_content),
         )
         result = json.loads(read_file_tool("/tmp/huge.txt", task_id="big"))
-        self.assertIn("error", result)
-        self.assertIn("safety limit", result["error"])
-        self.assertIn("offset and limit", result["error"])
-        self.assertIn("total_lines", result)
+        # No hard rejection — content is present.
+        self.assertNotIn("error", result)
+        self.assertIn("content", result)
+        self.assertTrue(result["content"])
+        # Truncation metadata for the model to paginate.
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["truncated_by"], "bytes")
+        self.assertIn("next_offset", result)
+        self.assertGreater(result["next_offset"], 1)
+        # Body fits the budget (allowing for redaction not growing it).
+        self.assertLessEqual(len(result["content"]), 1000)
+        self.assertIn("offset", result["hint"])
 
     @patch("tools.file_tools._get_file_ops")
-    def test_small_read_not_rejected(self, mock_ops):
-        """Normal-sized reads pass through fine."""
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    def test_single_oversized_line_clamped_not_empty(self, _mock_limit, mock_ops):
+        """A single line larger than the whole budget is clamped (never empty)
+        and the cursor still advances by one line."""
+        big_content = "1|" + "q" * 5000  # one line, no newline, > budget
+        mock_ops.return_value = _make_fake_ops(
+            content=big_content, total_lines=1, file_size=len(big_content),
+        )
+        result = json.loads(read_file_tool("/tmp/oneline.txt", task_id="oneline"))
+        self.assertNotIn("error", result)
+        self.assertTrue(result["content"])  # not empty
+        self.assertEqual(result["next_offset"], 2)  # advanced past line 1
+        # The hint must disclose that the line was clamped mid-line and its
+        # remainder is unreachable via offset pagination.
+        self.assertIn("clamped mid-line", result["hint"])
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    def test_multiline_truncation_hint_has_no_clamp_note(self, _mock_limit, mock_ops):
+        """Ordinary multi-line truncation must NOT carry the clamp note."""
+        big_content = "\n".join(f"{i}|" + "z" * 98 for i in range(1, 51))
+        mock_ops.return_value = _make_fake_ops(
+            content=big_content, total_lines=50, file_size=len(big_content),
+        )
+        result = json.loads(read_file_tool("/tmp/manylines.txt", task_id="manylines"))
+        self.assertTrue(result["truncated"])
+        self.assertNotIn("clamped mid-line", result["hint"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_small_read_not_truncated(self, mock_ops):
+        """Normal-sized reads pass through fine with no truncation flag."""
         mock_ops.return_value = _make_fake_ops(content="short\n", file_size=6)
         result = json.loads(read_file_tool("/tmp/small.txt", task_id="small"))
         self.assertNotIn("error", result)
         self.assertIn("content", result)
+        self.assertNotEqual(result.get("truncated_by"), "bytes")
 
     @patch("tools.file_tools._get_file_ops")
     @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
@@ -162,6 +337,49 @@ class TestCharacterCountGuard(unittest.TestCase):
         self.assertIn("content", result)
 
 
+class TestTruncateToCharBudget(unittest.TestCase):
+    """Unit tests for the line-boundary char-budget trimmer."""
+
+    def _fn(self):
+        from tools.file_tools import _truncate_to_char_budget
+        return _truncate_to_char_budget
+
+    def test_fits_unchanged(self):
+        fn = self._fn()
+        text = "1|a\n2|b\n3|c"
+        out, lines, trunc = fn(text, 1000)
+        self.assertEqual(out, text)
+        self.assertEqual(lines, 3)
+        self.assertFalse(trunc)
+
+    def test_trims_on_line_boundary(self):
+        fn = self._fn()
+        # 3 lines of 10 chars; budget fits ~2 lines.
+        text = "\n".join("x" * 10 for _ in range(5))  # 5 lines, 54 chars
+        out, lines, trunc = fn(text, 25)
+        self.assertTrue(trunc)
+        # Output ends on a complete line (no partial line at the tail).
+        self.assertFalse(out.endswith("x" * 3) and len(out.split("\n")[-1]) != 10)
+        self.assertEqual(lines, out.count("\n") + 1)
+        self.assertLessEqual(len(out), 25)
+
+    def test_single_line_over_budget_clamped(self):
+        fn = self._fn()
+        text = "y" * 500  # single line, no newline
+        out, lines, trunc = fn(text, 100)
+        self.assertTrue(trunc)
+        self.assertEqual(lines, 1)
+        self.assertEqual(len(out), 100)  # clamped to budget
+        self.assertNotEqual(out, "")  # never empty
+
+    def test_empty_content(self):
+        fn = self._fn()
+        out, lines, trunc = fn("", 100)
+        self.assertEqual(out, "")
+        self.assertEqual(lines, 0)
+        self.assertFalse(trunc)
+
+
 # ---------------------------------------------------------------------------
 # File deduplication
 # ---------------------------------------------------------------------------
@@ -171,7 +389,7 @@ class TestFileDedup(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
-        self._tmpdir = tempfile.mkdtemp()
+        self._tmpdir = _make_safe_tempdir("hermes-dedup-")
         self._tmpfile = os.path.join(self._tmpdir, "dedup_test.txt")
         with open(self._tmpfile, "w") as f:
             f.write("line one\nline two\n")
@@ -216,7 +434,7 @@ class TestFileDedup(unittest.TestCase):
         ))
 
         self.assertIn("error", result)
-        self.assertIn("internal read_file status text", result["error"])
+        self.assertIn("internal read_file display text", result["error"])
         fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
@@ -240,7 +458,7 @@ class TestFileDedup(unittest.TestCase):
         ))
 
         self.assertIn("error", result)
-        self.assertIn("internal read_file status text", result["error"])
+        self.assertIn("internal read_file display text", result["error"])
         fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
@@ -321,15 +539,16 @@ class TestTaskAwareFileDedup(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
+        _file_ops_cache.clear()
         self._old_cwd = os.getcwd()
-        self._tmpdir = tempfile.mkdtemp()
+        self._tmpdir = _make_safe_tempdir("hermes-task-dedup-")
         self._host_dir = os.path.join(self._tmpdir, "host")
         self._live_dir = os.path.join(self._tmpdir, "live")
         os.mkdir(self._host_dir)
         os.mkdir(self._live_dir)
-        with open(os.path.join(self._host_dir, "same.txt"), "w") as f:
+        with open(os.path.join(self._host_dir, "same.txt"), "w", encoding="utf-8") as f:
             f.write("host version\n")
-        with open(os.path.join(self._live_dir, "same.txt"), "w") as f:
+        with open(os.path.join(self._live_dir, "same.txt"), "w", encoding="utf-8") as f:
             f.write("live v1\n")
         os.chdir(self._host_dir)
         self._task_id = "dedup-live-cwd-test"
@@ -337,6 +556,7 @@ class TestTaskAwareFileDedup(unittest.TestCase):
     def tearDown(self):
         os.chdir(self._old_cwd)
         _read_tracker.clear()
+        _file_ops_cache.clear()
         try:
             os.unlink(os.path.join(self._host_dir, "same.txt"))
             os.unlink(os.path.join(self._live_dir, "same.txt"))
@@ -346,12 +566,21 @@ class TestTaskAwareFileDedup(unittest.TestCase):
         except OSError:
             pass
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_write_invalidates_dedup_using_task_live_cwd(self, mock_ops):
-        mock_ops.return_value = ShellFileOperations(_LocalShellEnv(self._live_dir))
+    @unittest.skipIf(sys.platform == "win32", "ShellFileOperations test helper uses POSIX /bin/sh")
+    def test_write_invalidates_dedup_using_task_live_cwd(self):
+        live_path = os.path.realpath(os.path.join(self._live_dir, "same.txt"))
+        host_path = os.path.realpath(os.path.join(self._host_dir, "same.txt"))
+        dedup_key = (live_path, 1, 500)
+        _file_ops_cache[self._task_id] = ShellFileOperations(_LocalShellEnv(self._live_dir))
 
         first = json.loads(read_file_tool("same.txt", task_id=self._task_id))
         self.assertIn("live v1", first.get("content", ""))
+        self.assertIn(dedup_key, _read_tracker[self._task_id]["dedup"])
+        self.assertNotIn(
+            (host_path, 1, 500),
+            _read_tracker[self._task_id]["dedup"],
+            "test must prove the read was tracked against the live task cwd",
+        )
 
         write_result = json.loads(write_file_tool(
             "same.txt",
@@ -359,6 +588,7 @@ class TestTaskAwareFileDedup(unittest.TestCase):
             task_id=self._task_id,
         ))
         self.assertNotIn("error", write_result)
+        self.assertNotIn(dedup_key, _read_tracker[self._task_id]["dedup"])
 
         second = json.loads(read_file_tool("same.txt", task_id=self._task_id))
         self.assertNotEqual(second.get("dedup"), True)
@@ -651,12 +881,15 @@ class TestConfigOverride(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 50})
     def test_custom_config_lowers_limit(self, _mock_cfg, mock_ops):
-        """A config value of 50 should reject reads over 50 chars."""
+        """A config value of 50 should trigger truncation for reads over 50 chars,
+        with the configured limit reflected in the continuation hint."""
         mock_ops.return_value = _make_fake_ops(content="x" * 60, file_size=60)
         result = json.loads(read_file_tool("/tmp/cfgtest.txt", task_id="cfg1"))
-        self.assertIn("error", result)
-        self.assertIn("safety limit", result["error"])
-        self.assertIn("50", result["error"])  # should show the configured limit
+        self.assertNotIn("error", result)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["truncated_by"], "bytes")
+        self.assertIn("50", result["hint"])  # should show the configured limit
+        self.assertLessEqual(len(result["content"]), 50)
 
     @patch("tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 500_000})
@@ -685,7 +918,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
-        self._tmpdir = tempfile.mkdtemp()
+        self._tmpdir = _make_safe_tempdir("hermes-write-dedup-")
         self._tmpfile = os.path.join(self._tmpdir, "write_dedup.txt")
         with open(self._tmpfile, "w") as f:
             f.write("original content\n")

@@ -109,6 +109,40 @@ def test_non_openrouter_rows_passed_through_unchanged(monkeypatch):
     assert result[1]["models"] == ["gemini-3-flash-preview"]
 
 
+def test_include_moa_adds_virtual_provider_with_named_presets(monkeypatch):
+    """Gateway pickers opt into a virtual MoA provider so presets are tappable."""
+    base = [_make_provider("minimax", models=["MiniMax-M3"])]
+    moa_config = {
+        "moa": {
+            "default_preset": "battle",
+            "presets": {
+                "battle": {"enabled": True},
+                "smart": {"enabled": True},
+            },
+        }
+    }
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: moa_config)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: pytest.fail("should not be called"))
+
+    result = model_switch.list_picker_providers(
+        current_provider="moa",
+        max_models=50,
+        include_moa=True,
+    )
+
+    assert [p["slug"] for p in result] == ["moa", "minimax"]
+    moa = result[0]
+    assert moa["name"] == "Mixture of Agents"
+    assert moa["is_current"] is True
+    assert moa["source"] == "virtual"
+    assert moa["models"] == ["battle", "smart"]
+    assert moa["total_models"] == 2
+
+
 def test_empty_models_row_dropped(monkeypatch):
     """Built-in provider with an empty ``models`` list is dropped."""
     base = [
@@ -190,8 +224,11 @@ def test_max_models_caps_openrouter_live_output(monkeypatch):
 
 
 def test_passthrough_kwargs_to_base(monkeypatch):
-    """All kwargs (current_provider, user_providers, custom_providers, max_models)
-    must be forwarded to ``list_authenticated_providers`` unchanged.
+    """All kwargs must be forwarded to ``list_authenticated_providers`` unchanged.
+
+    The gateway /model picker passes ``current_base_url`` and ``current_model``
+    so custom endpoint grouping can mark the current row. Dropping those kwargs
+    regressed Telegram/Discord into the text-list fallback.
     """
     captured = {}
 
@@ -205,12 +242,54 @@ def test_passthrough_kwargs_to_base(monkeypatch):
 
     model_switch.list_picker_providers(
         current_provider="openrouter",
+        current_base_url="http://x",
+        current_model="openai/gpt-5.4",
         user_providers={"foo": {"api": "http://x"}},
         custom_providers=[{"name": "bar", "base_url": "http://y"}],
         max_models=12,
     )
 
     assert captured["current_provider"] == "openrouter"
+    assert captured["current_base_url"] == "http://x"
+    assert captured["current_model"] == "openai/gpt-5.4"
     assert captured["user_providers"] == {"foo": {"api": "http://x"}}
     assert captured["custom_providers"] == [{"name": "bar", "base_url": "http://y"}]
     assert captured["max_models"] == 12
+
+
+def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
+    """Interactive picker should preserve current custom endpoint semantics."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [])
+
+    result = model_switch.list_picker_providers(
+        current_provider="custom:ollama",
+        current_base_url="http://localhost:11434/v1",
+        current_model="glm-5.1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Ollama — GLM 5.1",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "ollama",
+                "model": "glm-5.1",
+            },
+            {
+                "name": "Ollama — Qwen3",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "ollama",
+                "model": "qwen3",
+            },
+        ],
+        max_models=50,
+    )
+
+    custom_rows = [p for p in result if p.get("is_user_defined")]
+    assert len(custom_rows) == 1
+    row = custom_rows[0]
+    assert row["slug"] == "custom:ollama"
+    assert row["is_current"] is True
+    assert row["models"] == ["glm-5.1", "qwen3"]

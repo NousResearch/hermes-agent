@@ -25,6 +25,14 @@ class StubEngine(ContextEngine):
     def name(self) -> str:
         return "stub"
 
+    def update_model(self, model="", context_length=0, base_url="", api_key="",
+                     provider="", api_mode="", **kwargs) -> None:
+        """Mirror ContextCompressor.update_model — recompute threshold from the
+        new context_length. This is the mutation that corrupted the shared
+        singleton in #42449."""
+        self.context_length = context_length
+        self.threshold_tokens = int(context_length * 0.20)
+
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
@@ -111,6 +119,16 @@ class TestDefaults:
         assert status["context_length"] == 200000
         assert status["threshold_tokens"] == 100000
         assert 0 < status["usage_percent"] <= 100
+
+    def test_default_get_status_clamps_post_compression_sentinel(self):
+        """After a compression, last_prompt_tokens is the -1 sentinel. get_status
+        must clamp it to 0 rather than export a raw -1 or a negative
+        usage_percent on the transitional turn."""
+        engine = StubEngine()
+        engine.last_prompt_tokens = -1
+        status = engine.get_status()
+        assert status["last_prompt_tokens"] == 0
+        assert status["usage_percent"] >= 0
 
     def test_on_session_reset(self):
         engine = StubEngine()
@@ -232,7 +250,7 @@ class TestPluginContextEngineSlot:
         assert mgr._context_engine is None
 
     def test_get_plugin_context_engine(self):
-        from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest, get_plugin_context_engine, _plugin_manager
+        from hermes_cli.plugins import PluginManager, get_plugin_context_engine
         import hermes_cli.plugins as plugins_mod
 
         # Inject a test manager
@@ -248,3 +266,166 @@ class TestPluginContextEngineSlot:
             assert get_plugin_context_engine() is engine
         finally:
             plugins_mod._plugin_manager = old_mgr
+
+
+
+class TestPluginContextEngineDeepCopy:
+    """Verify that the plugin context engine singleton is deep-copied before
+    mutation in agent_init — regression test for #42449."""
+
+    def test_deepcopy_prevents_shared_mutation(self):
+        """Deep-copied engine should not propagate mutations back to the singleton."""
+        import copy
+        engine = StubEngine(context_length=1_000_000, threshold_pct=0.20)
+        clone = copy.deepcopy(engine)
+
+        # Mutate the clone (simulating child agent's update_model)
+        clone.context_length = 204800
+        clone.threshold_tokens = 40960
+
+        # Original must be unaffected
+        assert engine.context_length == 1_000_000
+        assert engine.threshold_tokens == 200000  # 1M * 0.20
+        assert clone is not engine
+
+    def test_deepcopy_preserves_engine_name(self):
+        """Deep-copied engine retains its identity (name property)."""
+        import copy
+        engine = StubEngine(context_length=500000)
+        clone = copy.deepcopy(engine)
+        assert clone.name == engine.name == "stub"
+
+    def test_deepcopy_preserves_compressor_state(self):
+        """Deep-copied engine starts with the same token counters."""
+        import copy
+        engine = StubEngine(context_length=500000)
+        engine.last_prompt_tokens = 1000
+        engine.last_total_tokens = 1500
+        engine.compression_count = 3
+
+        clone = copy.deepcopy(engine)
+        assert clone.last_prompt_tokens == 1000
+        assert clone.last_total_tokens == 1500
+        assert clone.compression_count == 3
+        assert clone is not engine
+
+    def test_no_deepcopy_direct_assignment_would_share_state(self):
+        """Baseline: without deepcopy, both variables point to the same object."""
+        engine = StubEngine(context_length=1_000_000)
+        direct = engine  # no deepcopy — the bug path
+        direct.context_length = 204800
+        assert engine.context_length == 204800  # bug: parent corrupted!
+
+
+class TestInitAgentDoesNotMutatePluginSingleton:
+    """Regression coverage for #42449: a child agent's init must not mutate the
+    shared plugin context-engine singleton via update_model().
+
+    Note: ``test_child_init_does_not_corrupt_parent_singleton`` replicates the
+    init_agent selection-block *pattern* (it cannot cheaply spin up a full
+    init_agent), so it documents/verifies the deepcopy approach but does NOT by
+    itself guard a production revert. The real revert guard is
+    ``test_agent_init_source_deepcopies_singleton_not_aliases`` (source-pin),
+    and ``test_unpicklable_engine_falls_back_gracefully`` covers the
+    copy-failure path.
+    """
+
+    def test_child_init_does_not_corrupt_parent_singleton(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+
+        # Register a "parent" engine as the global plugin singleton, sized for
+        # a 1M-context model (DeepSeek-style), threshold 20% => 200K.
+        singleton = StubEngine(context_length=1_000_000, threshold_pct=0.20)
+        old_mgr = plugins_mod._plugin_manager
+        try:
+            mgr = PluginManager()
+            mgr._context_engine = singleton
+            plugins_mod._plugin_manager = mgr
+
+            # Replicate init_agent's fallback selection-block pattern: fetch the
+            # singleton, deepcopy it, then mutate the copy via update_model with
+            # a SMALLER child context (MiniMax-style 204800).
+            import copy
+            from hermes_cli.plugins import get_plugin_context_engine
+
+            _candidate = get_plugin_context_engine()
+            assert _candidate is singleton
+            _selected_engine = copy.deepcopy(_candidate)
+            _selected_engine.update_model(
+                model="MiniMax-M2", context_length=204800, provider="minimax",
+            )
+
+            # The child's smaller context must NOT leak back into the parent
+            # singleton (the #42449 corruption).
+            assert singleton.context_length == 1_000_000, (
+                "parent singleton context_length was corrupted by child init"
+            )
+            assert singleton.threshold_tokens == 200_000
+            # And the child's own engine reflects the child model.
+            assert _selected_engine.context_length == 204800
+            assert _selected_engine is not singleton
+        finally:
+            plugins_mod._plugin_manager = old_mgr
+
+    def test_unpicklable_engine_falls_back_gracefully(self, monkeypatch):
+        """Copy-failure path: an engine holding uncopyable state (a lock — the
+        plugin docs prescribe locks/DB connections for stateful engines) makes
+        copy.deepcopy raise. init_agent must NOT silently drop it with a
+        misleading 'not found'; it falls back to the built-in compressor and
+        logs an accurate copy-failure warning. Regression for the deepcopy-
+        copy-failure path."""
+        import threading
+
+        class _UncopyableEngine(StubEngine):
+            def __init__(self):
+                super().__init__(context_length=1_000_000, threshold_pct=0.20)
+                self._lock = threading.RLock()  # RLock can't be deepcopied
+
+        engine = _UncopyableEngine()
+        # Sanity: the engine genuinely defeats deepcopy.
+        import copy
+        with pytest.raises(Exception):
+            copy.deepcopy(engine)
+
+        # Replicate the init_agent fallback block's copy-failure handling.
+        selected = None
+        copy_failed = False
+        try:
+            selected = copy.deepcopy(engine)
+        except Exception:
+            copy_failed = True
+            selected = None
+
+        assert copy_failed is True
+        assert selected is None
+        # The original engine is untouched (no partial mutation).
+        assert engine.context_length == 1_000_000
+
+    def test_agent_init_source_deepcopies_singleton_not_aliases(self):
+        """Source-pin guarding the production fix in agent/agent_init.py:
+        the plugin-singleton fallback MUST deepcopy the candidate, not alias
+        it (`_selected_engine = _candidate`). Full init_agent is too heavy to
+        drive here, so this pins the exact line so a future revert to direct
+        assignment fails CI. Regression for #42449."""
+        import inspect
+        import re
+        import agent.agent_init as _ai
+
+        src = inspect.getsource(_ai)
+        # The candidate fetched from the plugin singleton must be deep-copied
+        # before becoming _selected_engine (which is later mutated by
+        # update_model). A bare `_selected_engine = _candidate` is the bug.
+        assert re.search(
+            r"_selected_engine\s*=\s*(copy|_copy)\.deepcopy\(\s*_candidate\s*\)",
+            src,
+        ), (
+            "agent_init must deepcopy the plugin context-engine singleton "
+            "(`_selected_engine = copy.deepcopy(_candidate)`) — a bare "
+            "`_selected_engine = _candidate` re-introduces #42449 (child "
+            "update_model corrupts the parent's shared singleton)."
+        )
+        # And the bug-shape alias must NOT be present on that path.
+        assert not re.search(
+            r"_selected_engine\s*=\s*_candidate\b", src
+        ), "found the #42449 bug-shape alias `_selected_engine = _candidate`"

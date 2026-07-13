@@ -30,7 +30,15 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
     return {
       type: 'send',
       message: o.message,
-      notice: typeof o.notice === 'string' ? o.notice : undefined,
+      notice: typeof o.notice === 'string' ? o.notice : undefined
+    }
+  }
+
+  if (t === 'prefill' && typeof o.message === 'string') {
+    return {
+      type: 'prefill',
+      message: o.message,
+      notice: typeof o.notice === 'string' ? o.notice : undefined
     }
   }
 

@@ -51,6 +51,7 @@ from hermes_cli.config import (
 )
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
+from agent.process_bootstrap import _get_proxy_for_base_url
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -3442,6 +3443,7 @@ def refresh_codex_oauth_pure(
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
     with httpx.Client(
         timeout=timeout,
+        proxy=_codex_auth_proxy_url(),
         headers={
             "Accept": "application/json",
             "User-Agent": CODEX_OAUTH_USER_AGENT,
@@ -7265,12 +7267,18 @@ def _xai_oauth_device_code_login(
     }
 
 
+def _codex_auth_proxy_url() -> Optional[str]:
+    """Return the env-configured proxy URL for OpenAI Codex auth endpoints."""
+    return _get_proxy_for_base_url("https://auth.openai.com")
+
+
 def _codex_device_code_login() -> Dict[str, Any]:
     """Run the OpenAI device code login flow and return credentials dict."""
     import time as _time
 
     issuer = "https://auth.openai.com"
     client_id = CODEX_OAUTH_CLIENT_ID
+    proxy_url = _codex_auth_proxy_url()
 
     # Step 1: Request device code. OpenAI's auth endpoint rate-limits this
     # request (HTTP 429) when login is attempted too often from the same
@@ -7280,7 +7288,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         try:
-            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            with httpx.Client(timeout=httpx.Timeout(15.0), proxy=proxy_url) as client:
                 resp = client.post(
                     f"{issuer}/api/accounts/deviceauth/usercode",
                     json={"client_id": client_id},
@@ -7355,7 +7363,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     code_resp = None
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(15.0), proxy=proxy_url) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
                 poll_resp = client.post(
@@ -7396,7 +7404,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
         )
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(15.0), proxy=proxy_url) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
                 data={

@@ -9,6 +9,8 @@ from typing import List, Optional
 
 import os
 
+from agent.process_bootstrap import _get_proxy_for_base_url
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
@@ -101,6 +103,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=10,
+            proxy=_get_proxy_for_base_url("https://chatgpt.com/backend-api/codex"),
         )
         if resp.status_code != 200:
             return []

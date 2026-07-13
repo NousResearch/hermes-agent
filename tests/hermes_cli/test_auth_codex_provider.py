@@ -905,6 +905,29 @@ def test_refresh_falls_back_to_generic_message_on_unparseable_body(monkeypatch):
     assert "status 401" in str(err)
 
 
+def test_refresh_codex_uses_env_proxy(monkeypatch):
+    """Codex token refresh must route through HTTPS_PROXY/ALL_PROXY."""
+    response = _StubHTTPResponse(
+        200,
+        {"access_token": "new-at", "refresh_token": "new-rt", "expires_in": 3600},
+    )
+
+    captured = {}
+
+    def _factory(*args, **kwargs):
+        captured["proxy"] = kwargs.get("proxy")
+        return _StubHTTPClient(response)
+
+    monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:2080")
+    for key in ("HTTP_PROXY", "ALL_PROXY", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+    refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    assert captured.get("proxy") == "http://127.0.0.1:2080"
+
+
 def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
     """429 from the token endpoint is a usage-quota cap, not an auth failure.
 
@@ -1093,3 +1116,41 @@ def test_device_code_login_non_429_error_unchanged(monkeypatch):
         auth_mod._codex_device_code_login()
 
     assert exc_info.value.code == "device_code_request_error"
+
+
+def test_device_code_login_uses_env_proxy(monkeypatch):
+    """Codex device-code flow must route through HTTPS_PROXY/ALL_PROXY."""
+    from hermes_cli import auth as auth_mod
+
+    captured = {}
+    seq = iter(
+        [
+            _FakeResp(200, {"user_code": "ABCD", "device_auth_id": "dev-1", "interval": "5"}),
+            _FakeResp(200, {"authorization_code": "auth-code", "code_verifier": "verifier"}),
+            _FakeResp(200, {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}),
+        ]
+    )
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, *args, **kwargs):
+            return next(seq)
+
+    def _factory(*args, **kwargs):
+        captured["proxy"] = kwargs.get("proxy")
+        return _FakeClient()
+
+    monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:2080")
+    for key in ("HTTP_PROXY", "ALL_PROXY", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+    auth_mod._codex_device_code_login()
+
+    assert captured.get("proxy") == "http://127.0.0.1:2080"

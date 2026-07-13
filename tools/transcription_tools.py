@@ -12,6 +12,7 @@ Provides speech-to-text transcription with six providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+  - **whisper_http** — OpenAI-compatible or OpenClaw-style HTTP Whisper services.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -91,6 +92,9 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+DEFAULT_WHISPER_HTTP_BASE_URL = os.getenv("STT_WHISPER_HTTP_BASE_URL", "http://127.0.0.1:8000")
+DEFAULT_WHISPER_HTTP_PATH = os.getenv("STT_WHISPER_HTTP_PATH", "/v1/audio/transcriptions")
+DEFAULT_WHISPER_HTTP_TIMEOUT = 30
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -827,6 +831,9 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "whisper_http":
+            return "whisper_http"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > xai > elevenlabs -
@@ -1380,6 +1387,222 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
+# Provider: whisper_http (OpenAI-compatible or OpenClaw-style HTTP STT)
+# ---------------------------------------------------------------------------
+
+
+def _join_http_endpoint(base_url: str, path: str) -> str:
+    """Join a configured base URL and endpoint path without dropping path prefixes."""
+    return urljoin(f"{base_url.rstrip('/')}/", path.lstrip("/"))
+
+
+def _extract_whisper_http_transcript(payload: Any) -> str:
+    """Normalize common Whisper HTTP response shapes to plain transcript text."""
+    if isinstance(payload, str):
+        return payload.strip()
+
+    if isinstance(payload, dict):
+        for key in ("text", "transcript", "transcription", "result"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        segments = payload.get("segments")
+        if isinstance(segments, list):
+            parts = []
+            for segment in segments:
+                if isinstance(segment, dict):
+                    text = segment.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+                elif isinstance(segment, str) and segment.strip():
+                    parts.append(segment.strip())
+            return " ".join(parts).strip()
+
+        return ""
+
+    return str(payload).strip() if payload is not None else ""
+
+
+def _parse_whisper_http_response(response: Any) -> str:
+    content_type = str(response.headers.get("content-type", "")).lower()
+    text = str(response.text or "").strip()
+    if "json" in content_type or text.startswith("{") or text.startswith("["):
+        try:
+            return _extract_whisper_http_transcript(response.json())
+        except Exception:
+            logger.debug("Whisper HTTP response advertised JSON but could not be parsed")
+    return _extract_whisper_http_transcript(text)
+
+
+def _transcribe_whisper_http(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe with a local/remote Whisper HTTP service.
+
+    Supported shapes:
+      - OpenAI-compatible ``POST /v1/audio/transcriptions``
+      - OpenClaw-style ``POST /inference``
+
+    Both are multipart uploads. ``/inference`` services vary on the file field
+    name, so Hermes tries the likely field first and falls back once on common
+    validation failures unless ``stt.whisper_http.file_field`` is explicit.
+    """
+    import requests
+
+    stt_config = _load_stt_config()
+    http_config = stt_config.get("whisper_http", {})
+    base_url = str(
+        http_config.get("base_url")
+        or os.getenv("WHISPER_HTTP_BASE_URL")
+        or DEFAULT_WHISPER_HTTP_BASE_URL
+    ).strip().rstrip("/")
+    path = str(
+        http_config.get("path")
+        or http_config.get("transcribe_path")
+        or DEFAULT_WHISPER_HTTP_PATH
+    ).strip() or DEFAULT_WHISPER_HTTP_PATH
+    language = str(
+        http_config.get("language")
+        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+        or ""
+    ).strip()
+    api_key = str(
+        http_config.get("api_key")
+        or os.getenv("WHISPER_HTTP_API_KEY")
+        or ""
+    ).strip()
+    try:
+        timeout = float(http_config.get("timeout", DEFAULT_WHISPER_HTTP_TIMEOUT))
+    except (TypeError, ValueError):
+        timeout = DEFAULT_WHISPER_HTTP_TIMEOUT
+
+    if not base_url:
+        return {
+            "success": False,
+            "transcript": "",
+            "provider": "whisper_http",
+            "error": "stt.whisper_http.base_url is required for whisper_http",
+        }
+
+    endpoint = _join_http_endpoint(base_url, path)
+    headers: Dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    data: Dict[str, str] = {}
+    if model_name:
+        data["model"] = model_name
+    if language:
+        data["language"] = language
+    response_format = http_config.get("response_format")
+    if response_format:
+        data["response_format"] = str(response_format)
+
+    configured_field = (
+        http_config.get("file_field")
+        or http_config.get("fileField")
+    )
+    if configured_field:
+        file_fields = [str(configured_field)]
+    elif path.rstrip("/").endswith("/inference"):
+        file_fields = ["audio_file", "file"]
+    else:
+        file_fields = ["file", "audio_file"]
+
+    last_error = ""
+    for index, file_field in enumerate(file_fields):
+        try:
+            with open(file_path, "rb") as audio_file:
+                files = {
+                    file_field: (
+                        Path(file_path).name,
+                        audio_file,
+                        "application/octet-stream",
+                    )
+                }
+                response = requests.post(
+                    endpoint,
+                    headers=headers,
+                    data=data,
+                    files=files,
+                    timeout=timeout,
+                )
+
+            if (
+                not configured_field
+                and response.status_code in {400, 404, 422}
+                and index + 1 < len(file_fields)
+            ):
+                last_error = response.text.strip()[:300]
+                continue
+
+            if response.status_code >= 400:
+                detail = response.text.strip()[:300] or response.reason
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "provider": "whisper_http",
+                    "error": f"Whisper HTTP error (HTTP {response.status_code}): {detail}",
+                }
+
+            transcript_text = _parse_whisper_http_response(response)
+            if not transcript_text:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "provider": "whisper_http",
+                    "error": "Whisper HTTP returned empty transcript",
+                }
+
+            logger.info(
+                "Transcribed %s via Whisper HTTP (%s, %d chars)",
+                Path(file_path).name,
+                endpoint,
+                len(transcript_text),
+            )
+            return {
+                "success": True,
+                "transcript": transcript_text,
+                "provider": "whisper_http",
+            }
+
+        except PermissionError:
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "whisper_http",
+                "error": f"Permission denied: {file_path}",
+            }
+        except requests.exceptions.Timeout:
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "whisper_http",
+                "error": f"Whisper HTTP request timed out after {timeout:g}s",
+            }
+        except requests.exceptions.ConnectionError as e:
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "whisper_http",
+                "error": f"Whisper HTTP connection error: {e}",
+            }
+        except Exception as e:
+            logger.error("Whisper HTTP transcription failed: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "whisper_http",
+                "error": f"Whisper HTTP transcription failed: {e}",
+            }
+
+    return {
+        "success": False,
+        "transcript": "",
+        "provider": "whisper_http",
+        "error": f"Whisper HTTP request failed: {last_error or 'unknown error'}",
+    }
+
+# ---------------------------------------------------------------------------
 # Provider: mistral (Voxtral Transcribe API)
 # ---------------------------------------------------------------------------
 
@@ -1678,6 +1901,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         openai_cfg = stt_config.get("openai") or {}
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(file_path, model_name)
+
+    if provider == "whisper_http":
+        whisper_http_cfg = stt_config.get("whisper_http", {})
+        model_name = model or whisper_http_cfg.get("model", DEFAULT_STT_MODEL)
+        return _transcribe_whisper_http(file_path, model_name)
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral") or {}

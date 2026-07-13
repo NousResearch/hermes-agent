@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with built-in cloud, local, and local-HTTP providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -28,6 +28,8 @@ Convert text to speech with ten providers:
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
+| **Silero HTTP** | Good | Free (local service) | Optional bearer token |
+| **Piper HTTP** | Good | Free (local service) | Optional bearer token |
 
 ### Platform Delivery
 
@@ -43,7 +45,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "silero_http" | "piper_http"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -95,6 +97,17 @@ tts:
     # noise_w_scale: 0.8
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
+  silero_http:
+    base_url: "http://127.0.0.1:9000"
+    path: "/tts"
+    speaker: "eugene"
+    # api_key: ""                               # Optional bearer token
+  piper_http:
+    base_url: "http://127.0.0.1:8088"
+    path: "/tts"
+    voice_id: "en_US-lessac-medium"
+    output_format: "wav"                        # "wav" | "mp3" | "ogg"
+    # api_key: ""                               # Optional bearer token
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
@@ -177,6 +190,8 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Silero HTTP** usually outputs WAV and needs **ffmpeg** to convert for Telegram voice bubbles
+- **Piper HTTP** can output WAV/MP3/OGG; set `tts.piper_http.output_format: ogg` if your server returns Opus-compatible audio
 
 ```bash
 # Ubuntu/Debian
@@ -236,6 +251,20 @@ tts:
 ```
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
+
+### Local HTTP providers
+
+Use `silero_http`, `piper_http`, and `whisper_http` when you already run a local voice service that speaks the OpenClaw/OpenAI-compatible HTTP contract. These built-ins exist for common local voice servers with stable request/response shapes: they use normal `config.yaml` keys, produce regular `MEDIA:` responses for gateways, and do not require shell commands or plugin boilerplate.
+
+Pick a different surface when the backend does not match that HTTP shape:
+
+| Backend shape | Recommended surface |
+|---|---|
+| OpenClaw/OpenAI-compatible local HTTP service | Built-in `silero_http`, `piper_http`, or `whisper_http` |
+| A CLI that reads text/audio and writes a file | Command provider |
+| A Python SDK, OAuth flow, dynamic voice list, or custom streaming behavior | Plugin provider |
+
+`piper_http.output_format` accepts `wav`, `mp3`, or `ogg`. Hermes writes the output file with the matching suffix for both default paths and caller-supplied paths, so gateways and local playback can infer the codec from the file name.
 
 ### Custom command providers
 
@@ -416,6 +445,7 @@ Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automat
 | **Local Whisper** (default) | Good | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
+| **Whisper HTTP** | Depends on local service | Free (local service) | Optional bearer token |
 
 :::info Zero Config
 Local transcription works out of the box when `faster-whisper` is installed. If that's unavailable, Hermes can also use a local `whisper` CLI from common install locations (like `/opt/homebrew/bin`) or a custom command via `HERMES_LOCAL_STT_COMMAND`.
@@ -426,7 +456,7 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai"
+  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "whisper_http"
   local:
     model: "base"             # tiny, base, small, medium, large-v3
   openai:
@@ -435,6 +465,11 @@ stt:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
     model: "grok-stt"         # xAI Grok STT
+  whisper_http:
+    base_url: "http://127.0.0.1:8000"
+    path: "/v1/audio/transcriptions"
+    model: "whisper-1"
+    language: "en"
 ```
 
 ### Provider Details
@@ -456,6 +491,8 @@ stt:
 **Mistral API (Voxtral Transcribe)** — Requires `MISTRAL_API_KEY`. Uses Mistral's [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) models. Supports 13 languages, speaker diarization, and word-level timestamps. Install with `cd ~/.hermes/hermes-agent && uv pip install -e ".[mistral]"`.
 
 **xAI Grok STT** — Requires `XAI_API_KEY`. Posts to `https://api.x.ai/v1/stt` as multipart/form-data. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Groq — explicitly set `stt.provider: xai` to force it.
+
+**Whisper HTTP** — Posts multipart audio to a local OpenAI-compatible or OpenClaw-style Whisper endpoint. Use it for services such as a local `whisper.cpp`, faster-whisper, or OpenClaw transcription server that is already exposed over HTTP. Use an STT command provider instead when the backend is only a CLI, and a plugin when the backend needs SDK-level auth or richer lifecycle hooks.
 
 **Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
 
@@ -564,7 +601,7 @@ The shell command runs under the same user as Hermes with full filesystem access
 
 ### Python plugin providers (STT)
 
-For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 6 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
+For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the built-in providers and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
 
 #### When to pick which (STT)
 

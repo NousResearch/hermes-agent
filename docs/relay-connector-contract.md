@@ -97,8 +97,13 @@ Frames (connector → gateway, over the WS):
 
 `PassthroughForward` is the wire form of a forwarded passthrough-plane request
 (Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method,
-path, headers: [[k,v],…], bodyB64}`. The body is base64-encoded so arbitrary
-bytes survive the newline-delimited-JSON transport; the gateway base64-decodes
+path, headers: [[k,v],…], bodyB64, profile?}`. `profile` is optional — the
+connector stamps it when NAS resolves the target profile for a Team-Gateway
+interaction; omitting it (single-profile gateways) preserves legacy routing to
+the default `agent:main` session namespace, mirroring the `profile` field the
+`inbound` frame's `SessionSource` already carries (#60586). The body is
+base64-encoded so arbitrary bytes survive the newline-delimited-JSON transport;
+the gateway base64-decodes
 back to the exact bytes the connector forwarded (the connector already verified
 the provider signature and stripped any shared-identity credential at the edge —
 §6 — so the gateway re-processes a sanitized, token-free body and acts on it via

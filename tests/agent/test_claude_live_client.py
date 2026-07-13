@@ -13,6 +13,7 @@ sent.
 
 import json
 import os
+import sys
 import threading
 
 import pytest
@@ -324,6 +325,79 @@ def test_env_scrub_removes_billing_diversion_vars(monkeypatch):
         assert key not in env, f"{key} leaked into child env"
     assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "oauth-keep-me"
     assert env.get("HOME")
+
+
+def test_delta_is_robust_to_compression_relocating_assistant_boundary():
+    """After compression the summary lands as an assistant message, so the last
+    assistant is no longer the previous turn. The warm delta must still send only
+    the newest user turn, not re-send post-summary history."""
+    compressed = [
+        {"role": "system", "content": "SYS"},
+        {"role": "assistant", "content": "[summary of earlier turns]"},  # compression artifact
+        {"role": "user", "content": "older question that was already sent"},
+        {"role": "assistant", "content": "older answer"},
+        {"role": "user", "content": "the brand new question"},
+    ]
+    assert c._delta_user_text(compressed) == "the brand new question"
+
+
+def test_build_turn_content_passes_data_uri_images():
+    """A user turn carrying a data: image is forwarded as content blocks (text +
+    image), not silently reduced to text."""
+    png = "data:image/png;base64,iVBORw0KGgoAAAANS"
+    messages = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "what is in this image?"},
+            {"type": "image_url", "image_url": {"url": png}},
+        ]},
+    ]
+    content = c._build_turn_content(messages, full=False)
+    assert isinstance(content, list)
+    text_block = next(b for b in content if b["type"] == "text")
+    image_block = next(b for b in content if b["type"] == "image")
+    assert "what is in this image" in text_block["text"]
+    assert image_block["source"] == {
+        "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgoAAAANS",
+    }
+
+
+def test_build_turn_content_passes_http_image_and_plain_text():
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": "describe"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/a.jpg"}},
+    ]}]
+    content = c._build_turn_content(messages, full=False)
+    image_block = next(b for b in content if b["type"] == "image")
+    assert image_block["source"] == {"type": "url", "url": "https://example.com/a.jpg"}
+    # No images → plain string, not a list.
+    assert c._build_turn_content([{"role": "user", "content": "hi"}], full=False) == "hi"
+
+
+def test_fingerprint_ignores_volatile_prompt_tail():
+    """Two system prompts differing only in the day-granularity date, session id,
+    model, and provider lines must hash the same so a day-rollover or identity
+    refresh does not evict the warm cache."""
+    base = "You are Hermes.\nStable instruction block.\n<!-- hermes-cache-boundary -->"
+    day1 = base + "\nConversation started: Monday, July 13, 2026\nSession ID: abc\nModel: sonnet\nProvider: claude-cli"
+    day2 = base + "\nConversation started: Tuesday, July 14, 2026\nSession ID: abc\nModel: sonnet\nProvider: claude-cli"
+    assert c._fingerprint_system_prompt(day1) == c._fingerprint_system_prompt(day2)
+    # A genuine instruction change still differs.
+    changed = base.replace("Stable instruction block.", "Different instructions.")
+    assert c._fingerprint_system_prompt(changed) != c._fingerprint_system_prompt(day1)
+
+
+def test_mcp_config_uses_this_interpreter(wired, monkeypatch):
+    """The bridge must be launched with Hermes's own interpreter, not a bare
+    python3 that may be missing in claude's spawn env on a server."""
+    monkeypatch.delenv("HERMES_CLAUDE_LIVE_PYTHON", raising=False)
+    client = _client("conv-interp")
+    client._tool_server.start()
+    client._tools_path = "/tmp/tools.json"
+    path, _ = client._mcp_config_path()
+    cfg = json.loads(open(path).read())
+    assert cfg["mcpServers"]["hermes"]["command"] == sys.executable
+    client.close()
 
 
 def test_resume_spawn_marks_prior_context():

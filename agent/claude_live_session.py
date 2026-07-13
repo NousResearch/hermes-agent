@@ -46,6 +46,7 @@ _DEFAULT_RESUME_QUIET_S = 45.0    # Warm/resume: shorter first-output budget.
 _DEFAULT_TOOL_QUIET_S = 300.0     # Quiet budget while a tool_use is outstanding.
 _DEFAULT_TURN_HARD_DEADLINE_S = 1800.0  # Absolute backstop per turn.
 _TEARDOWN_GRACE_S = 5.0
+_MAX_REASSEMBLY_BYTES = 8 * 1024 * 1024  # cap the split-object reassembly buffer
 
 
 def _env_float(name: str, default: float) -> float:
@@ -180,12 +181,16 @@ class _StdoutReader:
                     self.events.put(json.loads(line))
                     self._buf = ""
                 except json.JSONDecodeError:
-                    # stream-json occasionally splits a large object; buffer.
+                    # stream-json occasionally splits a large object; buffer and
+                    # retry. Cap the buffer so a run of unparseable output cannot
+                    # grow it without bound or wedge the reader on garbage.
                     self._buf += line
                     try:
                         self.events.put(json.loads(self._buf))
                         self._buf = ""
                     except json.JSONDecodeError:
+                        if len(self._buf) > _MAX_REASSEMBLY_BYTES:
+                            self._buf = ""  # give up on this fragment, resync
                         continue
         except Exception:
             pass
@@ -268,7 +273,19 @@ class LiveSession:
         )
         if hasattr(os, "setsid"):
             kwargs["start_new_session"] = True
-        self.proc = self._popen(argv, **kwargs)
+        try:
+            self.proc = self._popen(argv, **kwargs)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"claude live session: cannot launch `{self.config.command}` "
+                "(the Claude Code CLI is not installed or not on PATH). Install "
+                "it with `npm install -g @anthropic-ai/claude-code` and set "
+                "HERMES_CLAUDE_CLI_COMMAND if it lives elsewhere."
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                f"claude live session: failed to launch `{self.config.command}`: {exc}"
+            ) from exc
         if self.proc.stdin is None or self.proc.stdout is None:
             self.teardown()
             raise RuntimeError("claude live session: no stdin/stdout pipes")

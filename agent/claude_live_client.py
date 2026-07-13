@@ -26,6 +26,31 @@ dispatcher, with their normal display/guardrails). Only the NEW user turn is
 sent each call — the warm process remembers prior turns — so Hermes should keep
 its system prompt stable (volatile per-turn context belongs in the user turn;
 a changed system prompt is a fingerprint change and forces a respawn).
+
+Known divergences from the raw Messages-API / OAuth path (intentional, by
+design of "Claude Code owns the model call"):
+
+  * Sampling knobs (temperature, top_p, penalties, seed, logprobs) are not
+    forwarded; claude -p does not expose them. Such kwargs are ignored, not
+    errored.
+  * Streaming is turn-granular, not token-granular: the client collects the full
+    turn then re-emits it as stream chunks. The user sees the reply when the turn
+    completes, not typed out live. (Partial-message forwarding is a possible
+    future improvement; --include-partial-messages is already set.)
+  * No mid-turn interrupt: once a turn is in flight the only way to stop it is to
+    tear the session down.
+  * Hermes's own message history does not contain the intra-turn tool_use /
+    tool_result exchanges (they live in Claude Code's transcript); tools still
+    execute through Hermes's dispatcher with real guardrails, but session
+    export/replay is turn-level, not tool-step-level.
+
+Long-session efficiency: ordinary Hermes context compression does NOT respawn
+(the rebuilt system prompt is byte-identical, so the fingerprint is unchanged and
+the warm process keeps its cache, which is better than the API path that loses
+cache at each compression). The volatile identity tail (date/session/model/
+provider) is stripped from the fingerprint so a day-rollover does not evict the
+cache either. Genuine respawns only happen on a model/effort switch, an auth or
+tool change, or a crash.
 """
 
 from __future__ import annotations
@@ -34,6 +59,7 @@ import json
 import os
 import secrets
 import socket
+import sys
 import tempfile
 import threading
 import weakref
@@ -308,12 +334,19 @@ def _write_stable(name_prefix: str, content: str, suffix: str) -> tuple[str, str
     from agent.claude_live_session import _sha256_short
 
     digest = _sha256_short(content)
-    path = _live_state_dir() / f"{name_prefix}-{digest}{suffix}"
+    return _write_keyed(name_prefix, content, digest, suffix), digest
+
+
+def _write_keyed(name_prefix: str, content: str, key: str, suffix: str) -> str:
+    """Write ``content`` to a file named by ``key`` (not by content hash), first
+    write wins. Lets us keep a byte-stable path while the content carries a
+    volatile tail that must not change the path/fingerprint."""
+    path = _live_state_dir() / f"{name_prefix}-{key}{suffix}"
     if not path.exists():
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.with_suffix(path.suffix + f".{secrets.token_hex(4)}.tmp")
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, path)
-    return str(path), digest
+    return str(path)
 
 
 def _system_prompt_text(messages: list[dict[str, Any]]) -> str:
@@ -325,6 +358,34 @@ def _system_prompt_text(messages: list[dict[str, Any]]) -> str:
                 parts.append(rendered)
     body = "\n\n".join(parts).strip()
     return body + _CACHE_BOUNDARY_MARKER
+
+
+# Hermes appends a volatile tail to its (otherwise byte-stable) system prompt:
+# a day-granularity "Conversation started" date, and Session ID / Model /
+# Provider identity lines (agent/system_prompt.py). These change across a
+# day-rollover or a model switch, which would otherwise flip the fingerprint and
+# force a cache-resetting respawn on a long session. We strip them from the
+# fingerprint hash ONLY (the file still carries the real prompt): the model is a
+# separate fingerprint field so a real model switch still respawns, and the true
+# start-date correctly sticks for the life of the session.
+_VOLATILE_PROMPT_LINE_PREFIXES = (
+    "Conversation started:",
+    "Session ID:",
+    "Model:",
+    "Provider:",
+)
+
+
+def _fingerprint_system_prompt(system_prompt: str) -> str:
+    """The system prompt with its volatile identity tail removed, used only to
+    compute the session fingerprint so cosmetic per-day / per-identity changes
+    do not evict the warm cache."""
+    kept = [
+        line
+        for line in system_prompt.splitlines()
+        if not line.strip().startswith(_VOLATILE_PROMPT_LINE_PREFIXES)
+    ]
+    return "\n".join(kept).strip()
 
 
 def _render_turn_slice(messages: list[dict[str, Any]]) -> str:
@@ -345,16 +406,33 @@ def _render_turn_slice(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(rendered).strip()
 
 
+def _last_user_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        if isinstance(message, dict) and str(message.get("role")).lower() == "user":
+            return message
+    return None
+
+
 def _delta_user_text(messages: list[dict[str, Any]]) -> str:
-    """The NEW turn to send to a WARM process: everything after the last
-    assistant message, minus system messages (the process already holds prior
-    turns in its own transcript, so resending them would duplicate context)."""
+    """The NEW turn to send to a WARM process: the latest user message only.
+
+    The warm process already holds the full prior transcript in its own context,
+    so we send just the new human turn (Hermes injects per-turn recall / plugin
+    context INTO this user message, so it rides along). Keying on the last user
+    message rather than "everything after the last assistant" is robust to
+    context compression, which can relocate the assistant boundary (the summary
+    lands as an assistant message) and would otherwise re-send already-delivered
+    turns and duplicate context in the warm process."""
+    last_user = _last_user_message(messages)
+    if last_user is not None:
+        return _render_message_content(last_user.get("content"))
+    # No user message (unusual for a warm turn) — fall back to the post-assistant
+    # tail so we still send something coherent.
     last_assistant = -1
     for idx, message in enumerate(messages):
         if isinstance(message, dict) and str(message.get("role")).lower() == "assistant":
             last_assistant = idx
-    tail = messages[last_assistant + 1:] if last_assistant >= 0 else messages
-    return _render_turn_slice(tail)
+    return _render_turn_slice(messages[last_assistant + 1:] if last_assistant >= 0 else messages)
 
 
 def _full_history_text(messages: list[dict[str, Any]]) -> str:
@@ -363,6 +441,54 @@ def _full_history_text(messages: list[dict[str, Any]]) -> str:
     messages. Without this, a respawn triggered by a live /model or /effort
     switch would send only the latest turn and silently lose all prior context."""
     return _render_turn_slice(messages)
+
+
+def _extract_image_blocks(message: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Convert OpenAI image_url blocks on a message into Claude stream-json image
+    blocks so vision inputs (e.g. a photo from a chat gateway) reach the model
+    instead of being silently dropped. data: URIs become base64 sources; http(s)
+    URLs become url sources; anything unparseable is skipped (a text note is
+    added separately by the caller)."""
+    if not message or not isinstance(message.get("content"), list):
+        return []
+    blocks: list[dict[str, Any]] = []
+    for item in message["content"]:
+        if not isinstance(item, dict) or item.get("type") != "image_url":
+            continue
+        url = (item.get("image_url") or {}).get("url") if isinstance(item.get("image_url"), dict) else None
+        if not isinstance(url, str) or not url:
+            continue
+        if url.startswith("data:"):
+            try:
+                header, data = url.split(",", 1)
+                media_type = header.split(";")[0].removeprefix("data:") or "image/png"
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": data},
+                })
+            except Exception:
+                continue
+        elif url.startswith(("http://", "https://")):
+            blocks.append({"type": "image", "source": {"type": "url", "url": url}})
+    return blocks
+
+
+def _build_turn_content(messages: list[dict[str, Any]], *, full: bool) -> Any:
+    """Build the stream-json user-envelope content for a turn.
+
+    Returns a plain string when there are no images, or a list of content blocks
+    ([text, image, ...]) when the latest user turn carries images so vision
+    inputs are forwarded. ``full`` selects the fresh-process reseed (whole
+    history) vs the warm-process delta (latest user turn)."""
+    text = _full_history_text(messages) if full else _delta_user_text(messages)
+    image_blocks = _extract_image_blocks(_last_user_message(messages))
+    if not image_blocks:
+        return text
+    content: list[dict[str, Any]] = []
+    if text:
+        content.append({"type": "text", "text": text})
+    content.extend(image_blocks)
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -458,10 +584,15 @@ class ClaudeLiveClient:
     def _mcp_config_path(self) -> tuple[str, str]:
         """Write the --mcp-config that points claude's bridge at our socket."""
         bridge = str(Path(__file__).with_name("hermes_mcp_bridge.py"))
+        # Default to THIS interpreter (Hermes's venv python), not a bare
+        # "python3" that may be absent or a different build in claude's spawn
+        # env (common on servers). The bridge itself is stdlib-only, but the
+        # interpreter must exist and be launchable or every tool call fails.
+        python_bin = os.getenv("HERMES_CLAUDE_LIVE_PYTHON") or sys.executable or "python3"
         config = {
             "mcpServers": {
                 _TOOL_NAMESPACE: {
-                    "command": os.getenv("HERMES_CLAUDE_LIVE_PYTHON", "python3"),
+                    "command": python_bin,
                     "args": [bridge],
                     "env": {
                         "HERMES_MCP_BRIDGE_SOCKET": self._tool_server.socket_path,
@@ -513,7 +644,14 @@ class ClaudeLiveClient:
         )
         mcp_config_path, mcp_hash = self._mcp_config_path()
         system_prompt = _system_prompt_text(messages)
-        system_prompt_path, sys_hash = _write_stable("sysprompt", system_prompt, ".txt")
+        # Fingerprint on the volatile-stripped prompt so a day-rollover or the
+        # identity lines do not respawn; write the REAL prompt, content-addressed
+        # by that stable hash so the first turn's start-date sticks (first write
+        # for a given hash wins).
+        from agent.claude_live_session import _sha256_short
+
+        sys_hash = _sha256_short(_fingerprint_system_prompt(system_prompt))
+        system_prompt_path = _write_keyed("sysprompt", system_prompt, sys_hash, ".txt")
         env = build_live_subprocess_env()
         argv = self._build_argv(
             model=model,
@@ -587,16 +725,15 @@ class ClaudeLiveClient:
         return completion
 
     @staticmethod
-    def _turn_text(session: Any, messages: list[dict[str, Any]]) -> str:
+    def _turn_content(session: Any, messages: list[dict[str, Any]]) -> Any:
         """Full prior history for a fresh process (seed), delta for a warm one.
 
         A warm process already holds the transcript, so resending history would
         duplicate context and evict the cache; a fresh process (first turn or a
         fingerprint-drift respawn from a /model or /effort switch) holds nothing
-        and must be seeded with the whole conversation or it loses all context."""
-        if session.has_prior_context:
-            return _delta_user_text(messages)
-        return _full_history_text(messages)
+        and must be seeded with the whole conversation or it loses all context.
+        Returns a string, or a content-block list when the turn carries images."""
+        return _build_turn_content(messages, full=not session.has_prior_context)
 
     def _run_turn(
         self, config: LiveSessionConfig, messages: list[dict[str, Any]]
@@ -608,27 +745,42 @@ class ClaudeLiveClient:
         registry = get_registry()
         key = self._session_key()
         session = registry.get_or_create(key, config)
+        last = session
         try:
             result = session.send_turn(
-                self._turn_text(session, messages),
+                self._turn_content(session, messages),
                 fresh=not session.has_prior_context,
             )
         except RuntimeError:
             recovered = registry.recover(key)
             if recovered is None:
                 raise
+            last = recovered
             result = recovered.send_turn(
-                self._turn_text(recovered, messages),
+                self._turn_content(recovered, messages),
                 fresh=not recovered.has_prior_context,
             )
 
         if (result.timed_out or not result.result_event) and not result.text:
             recovered = registry.recover(key)
             if recovered is not None:
+                last = recovered
                 result = recovered.send_turn(
-                    self._turn_text(recovered, messages),
+                    self._turn_content(recovered, messages),
                     fresh=not recovered.has_prior_context,
                 )
+
+        # A turn that still produced nothing is a failure the user must see, with
+        # the child's stderr tail (auth error, rate limit, crash) surfaced rather
+        # than swallowed into an empty reply.
+        if (result.timed_out or not result.result_event) and not result.text:
+            detail = last.stderr_tail() if hasattr(last, "stderr_tail") else ""
+            reason = "timed out" if result.timed_out else "ended without a result"
+            raise RuntimeError(
+                "claude-cli live session: turn " + reason
+                + (f" (claude stderr: {detail[-800:]})" if detail else
+                   " (no output from claude; check `claude` auth and connectivity)")
+            )
         return result
 
     # -- result shaping -----------------------------------------------------

@@ -9001,3 +9001,136 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_make_agent_registers_configured_shell_hooks(monkeypatch, tmp_path):
+    """Desktop/TUI backend must wire ``hooks:`` onto the plugin manager.
+
+    ``pre_llm_call`` is fired from agent/turn_context.py by every AIAgent,
+    so a frontend that never calls ``register_from_config`` silently drops
+    every configured shell hook.  ``_make_agent`` is the single agent-build
+    chokepoint shared by the stdio TUI host and the ``hermes serve`` WS host.
+    """
+    from unittest.mock import MagicMock
+
+    from agent import shell_hooks
+    from hermes_cli.plugins import get_plugin_manager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+
+    hooks_cfg = {
+        "hooks_auto_accept": True,
+        "hooks": {"pre_llm_call": [{"command": "/bin/true", "timeout": 5}]},
+    }
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+
+    manager = get_plugin_manager()
+    before = list(manager._hooks.get("pre_llm_call", []))
+    shell_hooks.reset_for_tests()
+    try:
+        with (
+            patch("hermes_cli.config.load_config", return_value=hooks_cfg),
+            patch(
+                "tui_gateway.server._load_cfg",
+                return_value={"agent": {"system_prompt": ""},
+                              "model": {"default": "glm-5"}},
+            ),
+            patch("tui_gateway.server._get_db", return_value=MagicMock()),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value=fake_runtime,
+            ),
+            patch("run_agent.AIAgent"),
+        ):
+            server._make_agent("sid-hooks", "key-hooks")
+
+        after = manager._hooks.get("pre_llm_call", [])
+        assert len(after) == len(before) + 1, (
+            "no shell hook registered on the plugin manager by the Desktop "
+            "backend's agent-build path"
+        )
+    finally:
+        manager._hooks["pre_llm_call"] = before
+        shell_hooks.reset_for_tests()
+
+
+def test_make_agent_skips_shell_hooks_for_non_launch_profile(monkeypatch, tmp_path):
+    """A non-launch-profile build must NOT register its ``hooks:`` block.
+
+    The plugin manager is a process-global singleton and its shell-hook
+    callbacks carry no profile guard, yet every AIAgent fires pre_llm_call
+    through it.  In the desktop's app-global remote mode one backend serves
+    every local profile, building a non-launch profile's agent under
+    ``set_hermes_home_override(that profile)``.  If ``_make_agent`` registered
+    THAT profile's hooks here they would leak onto the shared manager and fire
+    on every OTHER profile's turns — cross-profile command execution and double
+    context injection.  Only the launch profile (no active override) owns the
+    process's hooks.  This fails on the pre-gate code (the hook registers under
+    the override) and passes once registration is gated on no active override.
+    """
+    from unittest.mock import MagicMock
+
+    from agent import shell_hooks
+    from hermes_cli.plugins import get_plugin_manager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+
+    hooks_cfg = {
+        "hooks_auto_accept": True,
+        "hooks": {"pre_llm_call": [{"command": "/bin/false", "timeout": 5}]},
+    }
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+
+    manager = get_plugin_manager()
+    before = list(manager._hooks.get("pre_llm_call", []))
+    shell_hooks.reset_for_tests()
+    # Simulate the app-global remote build path: another profile's HERMES_HOME
+    # is bound for the duration of the build (server._build does this at :1376).
+    home_token = set_hermes_home_override(str(profile_home))
+    try:
+        with (
+            patch("hermes_cli.config.load_config", return_value=hooks_cfg),
+            patch(
+                "tui_gateway.server._load_cfg",
+                return_value={"agent": {"system_prompt": ""},
+                              "model": {"default": "glm-5"}},
+            ),
+            patch("tui_gateway.server._get_db", return_value=MagicMock()),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value=fake_runtime,
+            ),
+            patch("run_agent.AIAgent"),
+        ):
+            server._make_agent("sid-hooks-b", "key-hooks-b")
+
+        after = manager._hooks.get("pre_llm_call", [])
+        assert len(after) == len(before), (
+            "a non-launch profile's shell hook leaked onto the process-global "
+            "plugin manager during an app-global remote agent build"
+        )
+    finally:
+        reset_hermes_home_override(home_token)
+        manager._hooks["pre_llm_call"] = before
+        shell_hooks.reset_for_tests()

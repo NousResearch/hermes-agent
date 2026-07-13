@@ -4537,6 +4537,37 @@ def _make_agent(
     except Exception:
         pass
 
+    # Register declarative shell hooks from config, but ONLY for the launch
+    # profile (no active HERMES_HOME override).  Every AIAgent fires
+    # pre_llm_call from agent/turn_context.py, and the callbacks only exist if
+    # some frontend called register_from_config — this package is the only
+    # backend behind Hermes Desktop / the TUI (both the stdio entry host and
+    # the `hermes serve` WS host build every agent through _make_agent), so
+    # without this the user's whole `hooks:` block silently never runs there.
+    #
+    # The gate matters because the plugin manager is a process-global singleton
+    # and its shell-hook callbacks carry no profile guard.  In app-global remote
+    # mode one backend serves every local profile, and a non-launch profile's
+    # build runs here under set_hermes_home_override(profile) (see _build);
+    # registering ITS config would append that profile's commands onto the
+    # shared manager and fire them on every OTHER profile's turns — cross-
+    # profile execution plus double context injection.  The process's hooks
+    # belong to the launch profile alone.  No TTY here, same as gateway/run.py:
+    # accept_hooks=False lets register_from_config resolve consent from
+    # HERMES_ACCEPT_HOOKS / hooks_auto_accept.  Registration is idempotent, and
+    # failures are logged but must never block an agent build.
+    if get_hermes_home_override() is None:
+        try:
+            from agent.shell_hooks import register_from_config
+            from hermes_cli.config import load_config
+
+            register_from_config(load_config(), accept_hooks=False)
+        except Exception:
+            logger.debug(
+                "shell-hook registration failed at TUI agent build",
+                exc_info=True,
+            )
+
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))

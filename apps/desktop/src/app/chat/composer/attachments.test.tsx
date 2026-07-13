@@ -33,10 +33,7 @@ describe('AttachmentList', () => {
   it('renders empty list without error', () => {
     renderWithI18n(<AttachmentList attachments={[]} />)
 
-    const container =
-      screen.getByTestId?.('composer-attachments') ?? document.querySelector('[data-slot="composer-attachments"]')
-
-    expect(container).toBeDefined()
+    expect(document.querySelector('[data-slot="composer-attachments"]')).toBeDefined()
   })
 
   it('does not crash when attachments array contains undefined entries', () => {

@@ -101,6 +101,28 @@ describe('extractClipboardImageBlobs', () => {
 
     expect(extractClipboardImageBlobs(clipboard)).toEqual([image])
   })
+
+  it('treats multiple native image representations as one screenshot paste', () => {
+    const png = new File([new Uint8Array([1, 2, 3])], 'screenshot.png', {
+      type: 'image/png',
+      lastModified: 1_700_000_000_000
+    })
+    const tiff = new File([new Uint8Array([4, 5, 6, 7])], 'screenshot.tiff', {
+      type: 'image/tiff',
+      lastModified: 1_700_000_000_001
+    })
+
+    const clipboard = {
+      files: { length: 0, item: () => null },
+      getData: () => '',
+      items: [
+        { kind: 'file', type: 'image/png', getAsFile: () => png },
+        { kind: 'file', type: 'image/tiff', getAsFile: () => tiff }
+      ]
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toEqual([png])
+  })
 })
 
 describe('blobDedupeKey', () => {

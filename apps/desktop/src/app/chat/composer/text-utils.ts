@@ -52,6 +52,10 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
         push(item.getAsFile())
       }
     }
+
+    if (blobs.length > 0) {
+      return [blobs[0]!]
+    }
   }
 
   // Chromium/Electron expose the same pasted image on both `items` and `files`.
@@ -63,10 +67,10 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
         push(file)
       }
     }
-  }
 
-  if (blobs.length > 0) {
-    return blobs
+    if (blobs.length > 0) {
+      return [blobs[0]!]
+    }
   }
 
   const text = clipboard.getData('text/plain').trim()

@@ -75,6 +75,7 @@ export function useComposerDrop({
     }
 
     event.preventDefault()
+    event.stopPropagation()
     resetDragState()
 
     const candidates = extractDroppedFiles(event.dataTransfer)

@@ -68,7 +68,7 @@ All bonuses clamped to [-0.3, 0.3].
 
 ## Production Validation
 
-The full engine (with project-specific safelist, language-specific regex patterns, and source classification from a separate Phase 5b pipeline) has been scoring 128 memory entries. Key observations:
+The full engine (with project-specific safelist, Chinese regex patterns, and source classification from a separate Phase 5b pipeline) has been scoring 162 memory entries daily for 4 months. Key observations:
 
 - **0 false evictions**: No user-stated critical facts have been flagged for eviction
 - **3:1 signal ratio**: ~75% of entries fall into long-term/permanent tiers, ~25% into review/evict tiers — manageable churn

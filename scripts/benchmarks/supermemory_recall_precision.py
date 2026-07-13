@@ -12,13 +12,12 @@ import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from plugins.memory import supermemory as supermemory_module  # noqa: E402
 from plugins.memory.supermemory import SupermemoryMemoryProvider  # noqa: E402
 
 DEFAULT_FIXTURE = ROOT / "tests/fixtures/supermemory_recall_benchmark.json"
@@ -37,10 +36,29 @@ def _validate_fixture(fixture: dict[str, Any]) -> None:
     _require_unique(fixture["cases"], "query", "cases")
 
 
+class _TracedContent(str):
+    """Fixture text that reports when the production formatter renders it."""
+
+    _doc_id: str
+    _on_render: Callable[[str], None]
+
+    def __new__(cls, content: str, doc_id: str, on_render: Callable[[str], None]):
+        instance = super().__new__(cls, content)
+        instance._doc_id = doc_id
+        instance._on_render = on_render
+        return instance
+
+    def __format__(self, format_spec: str) -> str:
+        rendered = super().__format__(format_spec)
+        self._on_render(self._doc_id)
+        return rendered
+
+
 class FixtureClient:
     """Read-only fake client returning one checked-in response per query."""
 
     def __init__(self, cases: list[dict[str, Any]], documents: dict[str, dict[str, Any]]):
+        self._selection_trace: Callable[[str], None] | None = None
         self._cases = {
             case["query"]: {
                 "static": list(case.get("static", [])),
@@ -60,7 +78,12 @@ class FixtureClient:
     def get_profile(self, query: str | None = None, *, container_tag: str | None = None) -> dict[str, Any]:
         del container_tag
         case = self._cases[query or ""]
-        content = lambda doc_id: self._documents[doc_id]["content"]
+
+        def content(doc_id: str) -> str:
+            value = self._documents[doc_id]["content"]
+            if self._selection_trace is None:
+                return value
+            return _TracedContent(value, doc_id, self._selection_trace)
 
         def search_result(result: list[Any]) -> dict[str, Any]:
             doc_id = result[0]
@@ -89,27 +112,17 @@ def load_fixture(path: Path = DEFAULT_FIXTURE) -> dict[str, Any]:
 def _prefetch_with_selection_trace(
     provider: SupermemoryMemoryProvider,
     query: str,
-    documents: dict[str, dict[str, Any]],
 ) -> tuple[str, list[str]]:
-    """Run the real prefetch path while recording formatter inputs by ID."""
+    """Run prefetch while fixture values report actual formatter rendering."""
     selected_ids: list[str] = []
-    ids_by_content = {document["content"]: doc_id for doc_id, document in documents.items()}
-    original_formatter = supermemory_module._format_prefetch_context
-
-    def tracing_formatter(static_facts, dynamic_facts, search_results, max_results):
-        statics, dynamics, search = supermemory_module._deduplicate_recall(
-            static_facts, dynamic_facts, search_results
-        )
-        selected_ids.extend(ids_by_content[item] for item in statics[:max_results])
-        selected_ids.extend(ids_by_content[item] for item in dynamics[:max_results])
-        selected_ids.extend(item["id"] for item in search[:max_results] if item.get("memory"))
-        return original_formatter(static_facts, dynamic_facts, search_results, max_results)
-
-    supermemory_module._format_prefetch_context = tracing_formatter
+    client = provider._client
+    if not isinstance(client, FixtureClient):
+        raise TypeError("selection tracing requires FixtureClient")
+    client._selection_trace = selected_ids.append
     try:
         context = provider.prefetch(query)
     finally:
-        supermemory_module._format_prefetch_context = original_formatter
+        client._selection_trace = None
     return context, selected_ids
 
 
@@ -144,7 +157,7 @@ def evaluate(fixture: dict[str, Any]) -> dict[str, Any]:
 
     for case in cases:
         provider.on_turn_start(case.get("turn", 2), case["query"])
-        _, selected = _prefetch_with_selection_trace(provider, case["query"], documents)
+        _, selected = _prefetch_with_selection_trace(provider, case["query"])
         selected_k = selected[:k]
         expected = set(case["expected_ids"])
         false_positive_ids = [doc_id for doc_id in selected if doc_id not in expected]

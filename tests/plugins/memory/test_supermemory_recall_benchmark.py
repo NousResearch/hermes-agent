@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from scripts.benchmarks.supermemory_recall_precision import FixtureClient, evaluate, load_fixture
+from plugins.memory import supermemory as supermemory_module
+from plugins.memory.supermemory import SupermemoryMemoryProvider
+from scripts.benchmarks.supermemory_recall_precision import (
+    FixtureClient,
+    _prefetch_with_selection_trace,
+    evaluate,
+    load_fixture,
+)
 
 FIXTURE = Path(__file__).parents[2] / "fixtures/supermemory_recall_benchmark.json"
 EXPECTED_CATEGORIES = {
@@ -125,3 +132,41 @@ def test_selected_ids_are_traced_without_content_substring_matching():
     identity_case = next(case for case in report["cases"] if case["id"] == "identity-02")
 
     assert identity_case["selected_ids"] == ["identity_style", "status_worker"]
+
+
+def test_selected_ids_match_items_emitted_by_formatter_policy(monkeypatch):
+    documents = {
+        "shared": {"content": "Shared durable fact", "label": "durable", "class": "identity"},
+        "dynamic": {"content": "Recent transient status", "label": "transient", "class": "status"},
+        "search": {"content": "Search-only result", "label": "transient", "class": "search"},
+    }
+    cases = [{
+        "query": "trace actual formatter output",
+        "static": ["shared"],
+        "dynamic": ["dynamic"],
+        "search": [["shared", 0.99], ["search", 0.98]],
+    }]
+    provider = SupermemoryMemoryProvider()
+    provider._active = True
+    provider._auto_recall = True
+    provider._max_recall_results = 5
+    provider._profile_frequency = 50
+    provider._client = FixtureClient(cases, documents)  # type: ignore[assignment]
+    provider.on_turn_start(1, cases[0]["query"])
+
+    production_formatter = supermemory_module._format_prefetch_context
+    emitted_ids = []
+
+    def one_total_result_formatter(static_facts, dynamic_facts, search_results, max_results):
+        del dynamic_facts, search_results, max_results
+        emitted_ids.append("shared")
+        return production_formatter(static_facts[:1], [], [], 1)
+
+    monkeypatch.setattr(supermemory_module, "_format_prefetch_context", one_total_result_formatter)
+
+    context, selected_ids = _prefetch_with_selection_trace(provider, cases[0]["query"])
+
+    assert "Shared durable fact" in context
+    assert "Recent transient status" not in context
+    assert "Search-only result" not in context
+    assert selected_ids == emitted_ids == ["shared"]

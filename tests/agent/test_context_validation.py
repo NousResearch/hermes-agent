@@ -600,6 +600,45 @@ def test_memory_backup_recovery_report_markdown_summarizes_privacy_check_without
     assert "citrine" not in rendered
 
 
+def test_memory_backup_recovery_report_redacts_content_like_write_ids_without_values(tmp_path):
+    vault = tmp_path / "vault"
+    note = vault / "memories" / "privacy-id.md"
+    note.parent.mkdir(parents=True)
+    private_content = "Client Kestrel private token sapphire stays hidden."
+    note.write_text(f"# Privacy id\n\nPinned memory: {private_content}\n", encoding="utf-8")
+
+    report = build_memory_backup_recovery_report(
+        [
+            MemoryRecoveryWrite(
+                id=private_content,
+                content=private_content,
+                important=True,
+                pinned=True,
+                journaled=True,
+                synced=True,
+                local_indexed=True,
+                durable_note_terms=("Client Kestrel", "sapphire"),
+            )
+        ],
+        note_index=LocalNoteIndex.from_path(vault),
+        last_successful_sync_at="2026-07-13T00:35:00Z",
+    )
+
+    assert not report.ok
+    assert len(report.redacted_diagnostic_ids) == 1
+    redacted_id = report.redacted_diagnostic_ids[0]
+    assert redacted_id.startswith("memory-id-redacted-")
+    assert report.protected_from_gc_ids == (redacted_id,)
+    assert report.diagnostics["checks"]["redacted_diagnostic_id"] == 1
+
+    rendered = report.to_markdown()
+    assert "redacted diagnostic id" in rendered
+    assert redacted_id in rendered
+    assert "Client Kestrel" not in rendered
+    assert "sapphire" not in rendered
+    assert private_content not in str(report.diagnostics)
+
+
 def test_memory_backup_recovery_report_tracks_refinement_run_without_values(tmp_path):
     vault = tmp_path / "vault"
     note = vault / "memories" / "epsilon.md"

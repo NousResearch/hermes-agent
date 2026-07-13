@@ -190,6 +190,22 @@ class MemoryRecoveryWrite:
         return self.important or self.pinned
 
 
+def _memory_report_write_id(write: MemoryRecoveryWrite) -> str:
+    """Return a diagnostics-safe write id for redacted memory reports.
+
+    Callers should normally provide stable opaque ids.  If a caller accidentally
+    passes the raw memory content as the id, the report must not echo it back in
+    markdown or diagnostics; use a deterministic hash placeholder instead.
+    """
+    raw_id = str(write.id).strip() or "memory-write"
+    normalized_id = _normalize(raw_id)
+    normalized_content = _normalize(write.content)
+    if normalized_content and normalized_content in normalized_id:
+        digest = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()
+        return f"memory-id-redacted-{digest[:16]}"
+    return raw_id
+
+
 @dataclass(frozen=True)
 class _JournaledMemoryWrite:
     """Internal redaction-safe snapshot recovered directly from the WAL."""
@@ -543,6 +559,7 @@ class MemoryBackupRecoveryReport:
     recovery_warnings_by_id: dict[str, tuple[str, ...]] = field(default_factory=dict)
     obsidian_conflict_ids: tuple[str, ...] = ()
     obsidian_conflict_sources_by_id: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    redacted_diagnostic_ids: tuple[str, ...] = ()
     diagnostics: dict[str, object] = field(default_factory=dict)
 
     @property
@@ -564,6 +581,7 @@ class MemoryBackupRecoveryReport:
             and not self.unresolved_conflicts
             and not self.recovery_warnings_by_id
             and not self.obsidian_conflict_ids
+            and not self.redacted_diagnostic_ids
             and not privacy_failed
         )
 
@@ -610,6 +628,7 @@ class MemoryBackupRecoveryReport:
         _extend_id_lines(lines, "recoverable local index", self.recoverable_index_ids)
         _extend_id_lines(lines, "unrecoverable local index", self.unrecoverable_index_ids)
         _extend_id_lines(lines, "protected from GC", self.protected_from_gc_ids)
+        _extend_id_lines(lines, "redacted diagnostic id", self.redacted_diagnostic_ids)
         lines.append("")
 
         lines.append("## Sync retry plan")
@@ -854,61 +873,65 @@ def build_memory_backup_recovery_report(
     recovery_warnings: dict[str, tuple[str, ...]] = {}
     obsidian_conflict_ids: list[str] = []
     obsidian_conflict_sources: dict[str, tuple[str, ...]] = {}
+    redacted_diagnostic_ids: list[str] = []
 
     for write in snapshots:
+        diagnostic_id = _memory_report_write_id(write)
+        if diagnostic_id != (str(write.id).strip() or "memory-write"):
+            redacted_diagnostic_ids.append(diagnostic_id)
         if write.synced and not write.journaled:
-            sync_without_journal.append(write.id)
+            sync_without_journal.append(diagnostic_id)
         if write.recovery_warnings:
-            recovery_warnings[write.id] = write.recovery_warnings
+            recovery_warnings[diagnostic_id] = write.recovery_warnings
         if write.needs_durable_protection:
-            protected.append(write.id)
+            protected.append(diagnostic_id)
             if write.synced and not last_successful_sync_at:
-                missing_sync_checkpoint.append(write.id)
+                missing_sync_checkpoint.append(diagnostic_id)
             if write.id in proposed_gc_deletes:
                 rule = str(gc_rules.get(write.id, "")).strip()
                 audit_log_id = gc_audit_log_ids_by_write.get(write.id)
                 if rule and (write.id in audited_gc_deletes or audit_log_id):
-                    approved_gc_deletes.append(write.id)
-                    gc_audit_by_id[write.id] = rule
+                    approved_gc_deletes.append(diagnostic_id)
+                    gc_audit_by_id[diagnostic_id] = rule
                     if audit_log_id:
-                        gc_approval_audit_log_ids[write.id] = audit_log_id
+                        gc_approval_audit_log_ids[diagnostic_id] = audit_log_id
                 else:
-                    blocked_gc_deletes.append(write.id)
+                    blocked_gc_deletes.append(diagnostic_id)
             if not write.journaled:
-                missing_journal.append(write.id)
+                missing_journal.append(diagnostic_id)
 
             note_terms = write.durable_note_terms or (write.content,)
-            note_hits = note_index.search(write.id, note_terms)
+            note_hits = note_index.search(diagnostic_id, note_terms)
             if len(note_hits) > 1:
-                obsidian_conflict_ids.append(write.id)
-                obsidian_conflict_sources[write.id] = tuple(hit.source for hit in note_hits)
+                obsidian_conflict_ids.append(diagnostic_id)
+                obsidian_conflict_sources[diagnostic_id] = tuple(hit.source for hit in note_hits)
             if not note_hits:
-                missing_notes.append(write.id)
+                missing_notes.append(diagnostic_id)
 
             if not write.local_indexed:
-                missing_index.append(write.id)
+                missing_index.append(diagnostic_id)
                 sources: list[str] = []
                 if write.journaled:
                     sources.append("journal")
                 if note_hits:
                     sources.append("durable_note")
                 if write.journaled or note_hits:
-                    recoverable.append(write.id)
-                    recovery_sources[write.id] = tuple(sources)
+                    recoverable.append(diagnostic_id)
+                    recovery_sources[diagnostic_id] = tuple(sources)
                     startup_tasks.append(
-                        MemoryStartupRecoveryTask(write_id=write.id, sources=tuple(sources))
+                        MemoryStartupRecoveryTask(write_id=diagnostic_id, sources=tuple(sources))
                     )
                 else:
-                    unrecoverable.append(write.id)
+                    unrecoverable.append(diagnostic_id)
 
         if write.journaled and not write.synced:
-            retryable.append(write.id)
+            retryable.append(diagnostic_id)
             if (
                 write.sync_retry_attempts
                 or write.next_sync_retry_at
                 or write.last_sync_error_code
             ):
-                sync_retry_plans[write.id] = {
+                sync_retry_plans[diagnostic_id] = {
                     "attempts": write.sync_retry_attempts,
                     "next_retry_at": write.next_sync_retry_at or "unknown",
                     "last_error_code": write.last_sync_error_code or "unknown",
@@ -916,7 +939,7 @@ def build_memory_backup_recovery_report(
 
         if write.conflict_key:
             conflict_groups.setdefault(write.conflict_key, []).append(write.content)
-            conflict_id_groups.setdefault(write.conflict_key, []).append(write.id)
+            conflict_id_groups.setdefault(write.conflict_key, []).append(diagnostic_id)
 
     conflicts = detect_context_conflicts(conflict_groups)
     conflict_write_ids = {
@@ -935,6 +958,7 @@ def build_memory_backup_recovery_report(
         "gc_delete_audit_count": len(gc_audit_by_id),
         "recovery_warning_count": len(recovery_warnings),
         "obsidian_conflict_count": len(obsidian_conflict_ids),
+        "redacted_diagnostic_id_count": len(redacted_diagnostic_ids),
         "recovery_status": "ok"
         if not (
             missing_journal
@@ -947,6 +971,7 @@ def build_memory_backup_recovery_report(
             or conflicts
             or recovery_warnings
             or obsidian_conflict_ids
+            or redacted_diagnostic_ids
         )
         else "needs_attention",
         "checks": {
@@ -963,6 +988,7 @@ def build_memory_backup_recovery_report(
             "conflict_keys": len(conflict_write_ids),
             "recovery_warnings": len(recovery_warnings),
             "obsidian_conflicts": len(obsidian_conflict_ids),
+            "redacted_diagnostic_id": len(redacted_diagnostic_ids),
         },
     }
     privacy_payload = json.dumps(
@@ -995,6 +1021,7 @@ def build_memory_backup_recovery_report(
             "recovery_warnings_by_id": recovery_warnings,
             "obsidian_conflict_ids": obsidian_conflict_ids,
             "obsidian_conflict_sources_by_id": obsidian_conflict_sources,
+            "redacted_diagnostic_ids": redacted_diagnostic_ids,
             "diagnostics": diagnostics,
         },
         sort_keys=True,
@@ -1027,6 +1054,7 @@ def build_memory_backup_recovery_report(
         recovery_warnings_by_id=recovery_warnings,
         obsidian_conflict_ids=tuple(obsidian_conflict_ids),
         obsidian_conflict_sources_by_id=obsidian_conflict_sources,
+        redacted_diagnostic_ids=tuple(redacted_diagnostic_ids),
         diagnostics=diagnostics,
     )
 

@@ -1519,7 +1519,7 @@ updates:
 #   # stability. If you bind 127.0.0.1 but reach the dashboard through a
 #   # reverse proxy or SSH tunnel, set ws_ping_interval/ws_ping_timeout > 0
 #   # so half-open proxy/tunnel sockets are detected.
-#   graceful_shutdown_timeout: 2.0  # uvicorn graceful wait, seconds
+#   graceful_shutdown_timeout: 2    # uvicorn graceful wait, whole seconds
 #   hard_exit_grace: 5.0            # SIGTERM fallback os._exit grace, seconds
 #   ws_ping_interval: 0.0           # 0 = off on loopback, 20s on public binds
 #   ws_ping_timeout: 0.0            # 0 = off on loopback, 20s on public binds

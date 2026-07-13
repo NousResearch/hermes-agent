@@ -2076,7 +2076,7 @@ DEFAULT_CONFIG = {
         # set ws_ping_interval/ws_ping_timeout > 0 when 127.0.0.1 is reached
         # through a reverse proxy or SSH tunnel and half-open sockets need
         # active detection.
-        "graceful_shutdown_timeout": 2.0,  # seconds for uvicorn graceful wait
+        "graceful_shutdown_timeout": 2,  # whole seconds for uvicorn graceful wait
         "hard_exit_grace": 5.0,  # seconds before SIGTERM fallback os._exit(0)
         "ws_ping_interval": 0.0,  # 0 = default (off on loopback, 20s on public)
         "ws_ping_timeout": 0.0,  # 0 = default (off on loopback, 20s on public)

@@ -137,7 +137,7 @@ _log = logging.getLogger(__name__)
 # Bound uvicorn's graceful shutdown below ``hermes dashboard --stop``'s 3s
 # SIGTERM poll so both systemd and the in-repo stop command avoid unbounded
 # waits on open WebSocket tasks.
-_DASHBOARD_GRACEFUL_SHUTDOWN_TIMEOUT = 2.0
+_DASHBOARD_GRACEFUL_SHUTDOWN_TIMEOUT = 2
 _DASHBOARD_HARD_EXIT_GRACE = 5.0
 
 
@@ -185,7 +185,7 @@ def _positive_dashboard_seconds(
     return seconds if math.isfinite(seconds) and seconds > 0 else default
 
 
-def _dashboard_shutdown_timeouts(config: Dict[str, Any]) -> tuple[float, float]:
+def _dashboard_shutdown_timeouts(config: Dict[str, Any]) -> tuple[int, float]:
     graceful = _positive_dashboard_seconds(
         config,
         "graceful_shutdown_timeout",
@@ -193,6 +193,9 @@ def _dashboard_shutdown_timeouts(config: Dict[str, Any]) -> tuple[float, float]:
     )
     if graceful is None:
         graceful = _DASHBOARD_GRACEFUL_SHUTDOWN_TIMEOUT
+    # Uvicorn's public config contract accepts whole seconds. Round fractional
+    # YAML values up so compatibility input never shortens the requested bound.
+    graceful_seconds = max(1, math.ceil(graceful))
     hard_exit = _positive_dashboard_seconds(
         config,
         "hard_exit_grace",
@@ -200,7 +203,7 @@ def _dashboard_shutdown_timeouts(config: Dict[str, Any]) -> tuple[float, float]:
     )
     if hard_exit is None:
         hard_exit = _DASHBOARD_HARD_EXIT_GRACE
-    return graceful, max(hard_exit, graceful + 2.0)
+    return graceful_seconds, max(hard_exit, graceful_seconds + 2.0)
 
 
 def _dashboard_ws_ping(
@@ -948,7 +951,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
     },
     "dashboard.graceful_shutdown_timeout": {
-        "type": "number",
+        "type": "integer",
         "description": "Seconds uvicorn waits for dashboard connections/tasks during shutdown",
     },
     "dashboard.hard_exit_grace": {

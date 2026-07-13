@@ -223,8 +223,21 @@ def test_dashboard_shutdown_timeouts_enforce_hard_exit_cushion():
         },
     })
 
-    assert graceful == 4.0
+    assert graceful == 4
+    assert isinstance(graceful, int)
     assert hard_exit == 6.0
+
+
+def test_dashboard_shutdown_timeouts_round_fractional_grace_up():
+    graceful, hard_exit = web_server._dashboard_shutdown_timeouts({
+        "dashboard": {
+            "graceful_shutdown_timeout": 1.2,
+            "hard_exit_grace": 3,
+        },
+    })
+
+    assert graceful == 2
+    assert hard_exit == 4.0
 
 
 def test_dashboard_shutdown_timeouts_reject_non_finite_values():

@@ -5478,6 +5478,35 @@ def test_respond_unpacks_sid_tuple_correctly():
         server._answers.pop("rid-x", None)
 
 
+def test_approval_respond_forwards_denial_reason():
+    server._sessions["approval-reason"] = _session()
+    try:
+        with patch(
+            "tools.approval.resolve_gateway_approval", return_value=True
+        ) as resolve:
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "approval.respond",
+                    "params": {
+                        "session_id": "approval-reason",
+                        "choice": "deny",
+                        "reason": "Not allowed for this command",
+                    },
+                }
+            )
+
+        assert resp["result"] == {"resolved": True}
+        resolve.assert_called_once_with(
+            "session-key",
+            "deny",
+            resolve_all=False,
+            reason="Not allowed for this command",
+        )
+    finally:
+        server._sessions.pop("approval-reason", None)
+
+
 # ---------------------------------------------------------------------------
 # /model switch and other agent-mutating commands must reject while the
 # session is running.  agent.switch_model() mutates self.model, self.provider,

@@ -322,6 +322,185 @@ async def test_inbound_reaction_routes_as_synthetic_text_event(adapter):
 
 
 @pytest.mark.asyncio
+async def test_inbound_reaction_role_only_user_routes_with_role_authorization(adapter):
+    """A guild member allowed only by role reaches the gateway with its role signal."""
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = {77}
+    bot_user = adapter._client.user
+
+    member = SimpleNamespace(
+        display_name="RoleOnlyUser",
+        bot=False,
+        roles=[SimpleNamespace(id=77)],
+    )
+    guild = SimpleNamespace(
+        id=999,
+        name="Test Server",
+        get_member=MagicMock(return_value=member),
+    )
+    channel = _make_mock_channel(bot_user, guild=guild)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+    payload = _make_reaction_payload(user_id=42, member=member, guild_id=999)
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.role_authorized is True
+    assert event.source.guild_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_in_non_allowed_channel_is_ignored(adapter, monkeypatch):
+    """A restrictive allowed-channel policy applies before reaction dispatch."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+    guild = SimpleNamespace(id=111, name="Test Server")
+    channel = _make_mock_channel(bot_user, channel_id=123, guild=guild)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    await adapter._handle_inbound_reaction(_make_reaction_payload(guild_id=111), "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_in_ignored_channel_is_ignored(adapter, monkeypatch):
+    """Ignored-channel policy wins even when the channel is explicitly allowed."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "123")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "123")
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+    guild = SimpleNamespace(id=111, name="Test Server")
+    channel = _make_mock_channel(bot_user, channel_id=123, guild=guild)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    await adapter._handle_inbound_reaction(_make_reaction_payload(guild_id=111), "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_remove_from_role_authorized_bot_is_ignored(adapter):
+    """A removal by a role-holding bot cannot enter the synthetic event path."""
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = {77}
+    bot_user = adapter._client.user
+    reactor = SimpleNamespace(
+        display_name="RoleBot",
+        bot=True,
+        roles=[SimpleNamespace(id=77)],
+    )
+    guild = SimpleNamespace(
+        id=999,
+        name="Test Server",
+        get_member=MagicMock(return_value=reactor),
+    )
+    channel = _make_mock_channel(bot_user, guild=guild)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+    payload = _make_reaction_payload(user_id=42, member=None, guild_id=999)
+
+    await adapter._handle_inbound_reaction(payload, "removed")
+
+    guild.get_member.assert_called_once_with(42)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_in_parent_allowed_thread_routes_with_parent_source(adapter, monkeypatch):
+    """Thread reactions inherit the parent allowlist and retain parent context."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "123")
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+    guild = SimpleNamespace(id=111, name="Test Server")
+    thread = sys.modules["discord"].Thread()
+    thread.id = 456
+    thread.name = "test-thread"
+    thread.parent_id = 123
+    thread.guild = guild
+    thread.fetch_message = AsyncMock(return_value=SimpleNamespace(author=bot_user, id=1))
+    adapter._client.get_channel = MagicMock(return_value=thread)
+    payload = _make_reaction_payload(channel_id=456, guild_id=111)
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "456"
+    assert event.source.parent_chat_id == "123"
+    assert build_session_key(event.source).endswith("discord:thread:456:456")
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_is_ignored_when_all_channels_are_ignored(adapter, monkeypatch):
+    """Wildcard ignored-channel policy blocks an otherwise allowed reaction."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "123")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "*")
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+    guild = SimpleNamespace(id=111, name="Test Server")
+    channel = _make_mock_channel(bot_user, channel_id=123, guild=guild)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    await adapter._handle_inbound_reaction(_make_reaction_payload(guild_id=111), "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_in_thread_with_ignored_parent_is_ignored(adapter, monkeypatch):
+    """Thread reactions inherit parent ignored-channel policy."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "123")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "123")
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+    guild = SimpleNamespace(id=111, name="Test Server")
+    thread = sys.modules["discord"].Thread()
+    thread.id = 456
+    thread.name = "test-thread"
+    thread.parent_id = 123
+    thread.guild = guild
+    thread.fetch_message = AsyncMock(return_value=SimpleNamespace(author=bot_user, id=1))
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    await adapter._handle_inbound_reaction(
+        _make_reaction_payload(channel_id=456, guild_id=111),
+        "added",
+    )
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_add_from_role_authorized_bot_is_ignored(adapter):
+    """A role-holding bot cannot use the add-event member payload for admission."""
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = {77}
+    bot_user = adapter._client.user
+    reactor = SimpleNamespace(
+        display_name="RoleBot",
+        bot=True,
+        roles=[SimpleNamespace(id=77)],
+    )
+    guild = SimpleNamespace(id=999, name="Test Server", get_member=MagicMock())
+    channel = _make_mock_channel(bot_user, guild=guild)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    await adapter._handle_inbound_reaction(
+        _make_reaction_payload(user_id=42, member=reactor, guild_id=999),
+        "added",
+    )
+
+    guild.get_member.assert_not_called()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_inbound_reaction_on_non_bot_message_ignored(adapter):
     """Reactions on messages NOT authored by the bot should be ignored."""
     adapter.handle_message = AsyncMock()
@@ -361,11 +540,14 @@ async def test_inbound_reaction_disallowed_user_ignored(adapter):
     """Reactions from users not in the allowlist should be ignored."""
     adapter.handle_message = AsyncMock()
     adapter._allowed_user_ids = {"100", "200"}
+    channel = _make_mock_channel(adapter._client.user)
+    adapter._client.get_channel = MagicMock(return_value=channel)
 
     payload = _make_reaction_payload(user_id=42)  # 42 not in allowlist
 
     await adapter._handle_inbound_reaction(payload, "added")
 
+    channel.fetch_message.assert_not_awaited()
     adapter.handle_message.assert_not_awaited()
 
 

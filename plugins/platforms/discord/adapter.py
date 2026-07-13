@@ -1696,8 +1696,71 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
             if payload.user_id == self._client.user.id:
                 return
-            if not self._is_allowed_user(str(payload.user_id)):
-                return
+            channel = self._client.get_channel(payload.channel_id)
+            if channel is None:
+                channel = await self._client.fetch_channel(payload.channel_id)
+
+            guild = getattr(channel, "guild", None)
+            is_dm = isinstance(channel, discord.DMChannel) or guild is None
+            channel_ids = {str(channel.id)}
+            parent_channel_id = None
+            if isinstance(channel, discord.Thread):
+                parent_channel_id = self._get_parent_channel_id(channel)
+                if parent_channel_id:
+                    channel_ids.add(parent_channel_id)
+            if not is_dm:
+                allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+                if allowed_channels_raw:
+                    allowed_channels = {
+                        channel_id.strip()
+                        for channel_id in allowed_channels_raw.split(",")
+                        if channel_id.strip()
+                    }
+                    if "*" not in allowed_channels and not (channel_ids & allowed_channels):
+                        logger.debug(
+                            "[%s] Ignoring reaction in non-allowed channel: %s",
+                            self.name,
+                            channel_ids,
+                        )
+                        return
+                ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+                ignored_channels = {
+                    channel_id.strip()
+                    for channel_id in ignored_channels_raw.split(",")
+                    if channel_id.strip()
+                }
+                if "*" in ignored_channels or channel_ids & ignored_channels:
+                    logger.debug(
+                        "[%s] Ignoring reaction in ignored channel: %s",
+                        self.name,
+                        channel_ids,
+                    )
+                    return
+            reactor = payload.member
+            if reactor is None and guild is not None:
+                get_member = getattr(guild, "get_member", None)
+                if callable(get_member):
+                    reactor = get_member(payload.user_id)
+            allowed_users = getattr(self, "_allowed_user_ids", set())
+            allowed_roles = getattr(self, "_allowed_role_ids", set())
+            if getattr(reactor, "bot", False):
+                # Preserve the reaction surface's existing ID-only behavior for
+                # bot reactors. A configured role allowlist never admits a bot.
+                if allowed_users:
+                    if str(payload.user_id) not in allowed_users:
+                        return
+                elif allowed_roles:
+                    return
+                role_authorized = False
+            else:
+                if not self._is_allowed_user(
+                    str(payload.user_id),
+                    reactor,
+                    guild=guild,
+                    is_dm=is_dm,
+                ):
+                    return
+                role_authorized = bool(allowed_roles)
 
             # Dedup: Discord RESUME replays events after reconnects
             emoji = str(payload.emoji)
@@ -1705,27 +1768,26 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._dedup.is_duplicate(dedup_key):
                 return
 
-            channel = self._client.get_channel(payload.channel_id)
-            if channel is None:
-                channel = await self._client.fetch_channel(payload.channel_id)
-
             message = await channel.fetch_message(payload.message_id)
             if message.author != self._client.user:
                 return
 
             synthetic_text = f"reaction:{action}:{emoji}"
 
-            # Resolve reactor display name
-            user_name = str(payload.user_id)
-            if payload.member and hasattr(payload.member, "display_name"):
-                user_name = payload.member.display_name
+            # Resolve reactor display name. For removals payload.member is absent,
+            # so preserve the resolved guild member's identity when available.
+            user_name = getattr(reactor, "display_name", None) or str(payload.user_id)
 
+            is_thread = isinstance(channel, discord.Thread)
             chat_type = "dm"
             chat_name = str(payload.channel_id)
-            if hasattr(channel, "guild") and channel.guild:
-                chat_type = "group"
-                chat_name = getattr(channel, "name", str(channel.id))
-                chat_name = f"{channel.guild.name} / #{chat_name}"
+            if guild:
+                chat_type = "thread" if is_thread else "group"
+                chat_name = (
+                    self._format_thread_chat_name(channel)
+                    if is_thread
+                    else f"{guild.name} / #{getattr(channel, 'name', channel.id)}"
+                )
 
             source = self.build_source(
                 chat_id=str(payload.channel_id),
@@ -1733,6 +1795,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 chat_type=chat_type,
                 user_id=str(payload.user_id),
                 user_name=user_name,
+                is_bot=getattr(reactor, "bot", False),
+                guild_id=str(guild.id) if guild else None,
+                parent_chat_id=parent_channel_id,
+                thread_id=str(channel.id) if is_thread else None,
+                message_id=str(payload.message_id),
+                role_authorized=role_authorized,
             )
 
             event = MessageEvent(

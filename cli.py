@@ -4970,7 +4970,7 @@ class HermesCLI:
             if hasattr(self.agent, "_todo_store"):
                 try:
                     from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+                    self.agent._todo_store = TodoStore.for_session(self.session_id)
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
@@ -5091,7 +5091,7 @@ class HermesCLI:
             if hasattr(self.agent, "_todo_store"):
                 try:
                     from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+                    self.agent._todo_store = TodoStore.for_session(self.session_id)
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
@@ -5227,7 +5227,7 @@ class HermesCLI:
             if hasattr(self.agent, "_todo_store"):
                 try:
                     from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+                    self.agent._todo_store = TodoStore.for_session(self.session_id)
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):

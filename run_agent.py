@@ -1672,9 +1672,10 @@ class AIAgent:
             "max_tokens": max_tokens,
         }
         
-        # In-memory todo list for task planning (one per agent/session)
+        # Todo list for task planning. Persistence is session-scoped, so a
+        # gateway restart recovers this session without leaking into another.
         from tools.todo_tool import TodoStore
-        self._todo_store = TodoStore()
+        self._todo_store = TodoStore.for_session(self.session_id)
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -9113,6 +9114,13 @@ class AIAgent:
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+                # Compression starts a continuation session; carry its current
+                # todo list forward into that session's isolated persistence.
+                from tools.todo_tool import TodoStore
+                todos = self._todo_store.read()
+                self._todo_store = TodoStore.for_session(self.session_id)
+                if todos:
+                    self._todo_store.write(todos)
                 self._session_db_created = False
                 self._session_db.create_session(
                     session_id=self.session_id,

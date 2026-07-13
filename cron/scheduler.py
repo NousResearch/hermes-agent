@@ -2617,10 +2617,44 @@ def run_job(
 
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
+    #
+    # Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which
+    # only watches the agent's run_conversation below): SessionDB.__init__
+    # opens/migrates state.db synchronously and has no timeout of its own
+    # against a wedged sqlite3.connect (e.g. a stale flock left by a crashed
+    # sibling process). An unbounded hang here is invisible to every other
+    # cron safeguard, because it happens BEFORE _submit_with_guard's future
+    # exists — the finally block that releases the job from
+    # _running_job_ids never runs, so the job stays wedged "running" until
+    # the whole gateway process is restarted, silently skipping every
+    # scheduled fire in between with "already running — skipping".
     _session_db = None
     try:
         from hermes_state import SessionDB
-        _session_db = SessionDB()
+        _raw_session_db_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+        try:
+            _session_db_timeout = float(_raw_session_db_timeout) if _raw_session_db_timeout else 10.0
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using default 10s",
+                _raw_session_db_timeout,
+            )
+            _session_db_timeout = 10.0
+        _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+        finally:
+            # Don't wait for a wedged connect() to unwind — abandon the
+            # worker thread (same pattern as the agent inactivity timeout
+            # further down) rather than blocking shutdown on it too.
+            _session_db_pool.shutdown(wait=False)
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
+            "without a session store for this run instead of blocking it "
+            "forever",
+            job.get("id", "?"), _session_db_timeout,
+        )
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 

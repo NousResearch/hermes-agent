@@ -101,6 +101,38 @@ def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monke
     ]
 
 
+def test_remove_custom_provider_tolerates_null_base_url_entry(tmp_path, monkeypatch):
+    """A ``base_url: null`` entry (hand-edited config.yaml, or a prior bug
+    that wrote an incomplete entry) must not crash the removal menu — the
+    user needs to be able to select and remove exactly that broken entry.
+
+    ``entry.get("base_url", "")`` returns ``None`` (not the "" default)
+    because the key is present, so a bare ``.replace()``/``.rstrip()`` on it
+    raised AttributeError before the menu could even render.
+    """
+    from hermes_cli.main import _remove_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+
+    cfg = load_config()
+    cfg["custom_providers"] = [
+        {"name": "Broken", "base_url": None},
+        {"name": "Local B", "base_url": "http://localhost:8002/v1"},
+    ]
+    save_config(cfg)
+
+    responses = iter(["1"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    _remove_custom_provider(cfg)
+
+    reloaded = load_config()
+    assert reloaded["custom_providers"] == [
+        {"name": "Local B", "base_url": "http://localhost:8002/v1"},
+    ]
+
+
 def test_named_custom_provider_model_picker_falls_back_on_menu_runtime_error(tmp_path, monkeypatch):
     from hermes_cli.main import _model_flow_named_custom
 

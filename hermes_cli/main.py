@@ -3836,7 +3836,7 @@ def _remove_custom_provider(config):
     for entry in providers:
         if isinstance(entry, dict):
             name = entry.get("name", "unnamed")
-            url = entry.get("base_url", "")
+            url = entry.get("base_url") or ""
             short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
             choices.append(f"{name} ({short_url})")
         else:

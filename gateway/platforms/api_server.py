@@ -997,6 +997,25 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return 0
 
+    def interrupt_active_runs(self, reason: str) -> int:
+        """Interrupt active API-run agents during gateway shutdown.
+
+        The gateway drain accounts for API-server work through
+        ``active_agent_work_count()``, but those agents are owned by this
+        adapter rather than ``GatewayRunner._running_agents``.  Expose the same
+        cooperative interrupt used by ``POST /v1/runs/{run_id}/stop`` so a
+        shutdown timeout can stop long-running API work before process teardown.
+        """
+        interrupted = 0
+        for run_id, agent in list(self._active_run_agents.items()):
+            try:
+                agent.interrupt(reason)
+                interrupted += 1
+                logger.debug("[api_server] interrupted active run %s during shutdown", run_id)
+            except Exception as exc:
+                logger.debug("[api_server] failed interrupting active run %s: %s", run_id, exc)
+        return interrupted
+
     @staticmethod
     def _gateway_is_draining() -> bool:
         """Whether the owning gateway currently refuses new agent turns."""

@@ -144,6 +144,15 @@ class TestAPIServerAdapterWorkCount:
 
         assert adapter.active_agent_work_count() == 1
 
+    def test_interrupt_active_runs_interrupts_adapter_owned_agents(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        adapter._active_run_agents = {"run-1": agent}
+
+        assert adapter.interrupt_active_runs("gateway shutdown") == 1
+
+        agent.interrupt.assert_called_once_with("gateway shutdown")
+
 
 class TestDrainWaitsForApiWork:
     @pytest.mark.asyncio
@@ -208,6 +217,17 @@ class TestDrainWaitsForApiWork:
         _snapshot, timed_out = await runner._drain_active_agents(0.1)
 
         assert timed_out is True
+
+    def test_shutdown_interrupt_reaches_api_server_runs(self):
+        runner, _adapter = make_restart_runner()
+        api = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        api._active_run_agents = {"run-1": agent}
+        runner.adapters = {Platform.API_SERVER: api}
+
+        runner._interrupt_running_agents("gateway shutdown")
+
+        agent.interrupt.assert_called_once_with("gateway shutdown")
 
     @pytest.mark.asyncio
     async def test_drain_still_waits_for_chat_cron_and_api_work(self):

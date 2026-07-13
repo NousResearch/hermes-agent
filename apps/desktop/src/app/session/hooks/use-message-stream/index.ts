@@ -347,6 +347,7 @@ export function useMessageStream({
           ...state,
           messages: nextMessages,
           streamId: null,
+          interimBoundaryPending: true,
           sawAssistantPayload: state.sawAssistantPayload || Boolean(authoritativeText)
         }
       })
@@ -416,12 +417,14 @@ export function useMessageStream({
             busy: false,
             needsInput: false,
             pendingBranchGroup: null,
+            interimBoundaryPending: false,
             streamId: null,
             turnStartedAt: null
           }
         }
 
         const streamId = state.streamId
+        const interimBoundaryPending = state.interimBoundaryPending
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
         const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
@@ -484,7 +487,7 @@ export function useMessageStream({
             const existing = prev[index]
             const existingText = chatMessageText(existing).trim()
 
-            if (existing.pending || (finalText && existingText === finalText)) {
+            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
@@ -506,6 +509,7 @@ export function useMessageStream({
           ...state,
           messages: nextMessages,
           streamId: null,
+          interimBoundaryPending: false,
           pendingBranchGroup: null,
           awaitingResponse: false,
           busy: false,
@@ -571,6 +575,7 @@ export function useMessageStream({
           ...state,
           messages: nextMessages,
           streamId: null,
+          interimBoundaryPending: false,
           pendingBranchGroup: null,
           sawAssistantPayload: true,
           awaitingResponse: false,

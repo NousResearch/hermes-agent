@@ -52,6 +52,7 @@ export function createClientSessionState(
     awaitingResponse: false,
     streamId: null,
     sawAssistantPayload: false,
+    interimBoundaryPending: false,
     pendingBranchGroup: null,
     interrupted: false,
     needsInput: false,

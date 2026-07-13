@@ -41,6 +41,7 @@ def test_agent_callback_emits_interim_message_without_settling_turn(server, monk
         "_emit",
         lambda event, sid, payload=None: emitted.append((event, sid, payload)),
     )
+    monkeypatch.setattr(server, "_load_interim_assistant_messages", lambda: True)
 
     callback = server._agent_cbs("sid-1")["interim_assistant_callback"]
     callback("full attempted reply", already_streamed=False)
@@ -54,3 +55,26 @@ def test_agent_callback_emits_interim_message_without_settling_turn(server, monk
     ]
     assert server._sessions["sid-1"]["inflight_turn"] is inflight_turn
     assert server._sessions["sid-1"]["running"] is True
+
+
+@pytest.mark.parametrize(
+    ("display", "expected"),
+    [
+        ({}, True),
+        ({"interim_assistant_messages": True}, True),
+        ({"interim_assistant_messages": False}, False),
+        ({"interim_assistant_messages": "off"}, False),
+    ],
+)
+def test_load_interim_assistant_messages_honors_display_config(
+    server, monkeypatch, display, expected
+):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": display})
+
+    assert server._load_interim_assistant_messages() is expected
+
+
+def test_agent_callbacks_omit_interim_delivery_when_disabled(server, monkeypatch):
+    monkeypatch.setattr(server, "_load_interim_assistant_messages", lambda: False)
+
+    assert "interim_assistant_callback" not in server._agent_cbs("sid-1")

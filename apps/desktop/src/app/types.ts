@@ -152,6 +152,8 @@ export interface ClientSessionState {
   awaitingResponse: boolean
   streamId: string | null
   sawAssistantPayload: boolean
+  /** True after message.interim finalized a bubble in the still-running turn. */
+  interimBoundaryPending: boolean
   pendingBranchGroup: string | null
   interrupted: boolean
   /** A blocking clarify prompt is waiting on the user for this session. Drives

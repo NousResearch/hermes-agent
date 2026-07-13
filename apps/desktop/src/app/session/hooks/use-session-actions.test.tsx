@@ -416,6 +416,7 @@ describe('resumeSession failure recovery', () => {
             busy: false,
             cwd: '',
             fast: false,
+            interimBoundaryPending: false,
             interrupted: false,
             messages: [],
             model: '',

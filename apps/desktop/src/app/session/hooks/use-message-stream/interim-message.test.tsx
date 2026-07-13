@@ -141,6 +141,7 @@ describe('useMessageStream message.interim', () => {
     expect(currentState).toMatchObject({
       awaitingResponse: false,
       busy: true,
+      interimBoundaryPending: true,
       pendingBranchGroup: BRANCH_GROUP,
       streamId: null,
       turnStartedAt
@@ -160,10 +161,34 @@ describe('useMessageStream message.interim', () => {
     expect(currentState).toMatchObject({
       awaitingResponse: false,
       busy: false,
+      interimBoundaryPending: false,
       pendingBranchGroup: null,
       streamId: null,
       turnStartedAt: null
     })
+    expectCompletionSideEffects(1)
+    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps an identical final completion distinct from an already-streamed interim reply', async () => {
+    await mountStream()
+
+    emit('message.start')
+    emit('message.delta', { text: 'same reply' })
+    emit('message.interim', { already_streamed: true, text: 'same reply' })
+
+    expect(assistantMessages()).toHaveLength(1)
+    expect(chatMessageText(assistantMessages()[0]!)).toBe('same reply')
+    expect(assistantMessages()[0]!.pending).toBe(false)
+    expect(currentState!.interimBoundaryPending).toBe(true)
+    const interimId = assistantMessages()[0]!.id
+
+    emit('message.complete', { text: 'same reply' })
+
+    expect(assistantMessages()).toHaveLength(2)
+    expect(assistantMessages().map(chatMessageText)).toEqual(['same reply', 'same reply'])
+    expect(assistantMessages()[1]!.id).not.toBe(interimId)
+    expect(currentState).toMatchObject({ busy: false, interimBoundaryPending: false, streamId: null })
     expectCompletionSideEffects(1)
     expect(hydrateFromStoredSession).not.toHaveBeenCalled()
   })

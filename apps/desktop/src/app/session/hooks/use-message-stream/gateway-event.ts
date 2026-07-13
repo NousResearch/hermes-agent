@@ -335,6 +335,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             busy: true,
             awaitingResponse: true,
             sawAssistantPayload: false,
+            interimBoundaryPending: false,
             interrupted: false,
             turnStartedAt: Date.now()
           }

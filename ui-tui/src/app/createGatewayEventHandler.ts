@@ -946,11 +946,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.recordMessageDelta(ev.payload ?? {})
 
         return
+      case 'message.interim': {
+        const text = ev.payload?.text
 
-      case 'message.interim':
-        turnController.recordInterimMessage(ev.payload.text)
+        if (typeof text === 'string' && text.trim()) {
+          turnController.recordInterimMessage(text)
+        }
 
         return
+      }
+
       case 'message.complete': {
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 

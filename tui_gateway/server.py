@@ -2869,6 +2869,14 @@ def _load_show_reasoning() -> bool:
     return bool((_load_cfg().get("display") or {}).get("show_reasoning", True))
 
 
+def _load_interim_assistant_messages() -> bool:
+    """Whether Desktop/Ink should surface complete assistant messages mid-turn."""
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        return True
+    return is_truthy_value(display.get("interim_assistant_messages", True))
+
+
 def _load_memory_notifications() -> str:
     """Self-improvement review notification mode from config.yaml.
 
@@ -4173,7 +4181,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
 
 
 def _agent_cbs(sid: str) -> dict:
-    return {
+    callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
@@ -4185,11 +4193,6 @@ def _agent_cbs(sid: str) -> dict:
         ),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        "interim_assistant_callback": lambda text, *, already_streamed=False: _emit(
-            "message.interim",
-            sid,
-            {"text": str(text), "already_streamed": bool(already_streamed)},
-        ),
         "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
         # Affection reaction (ily / <3 / good bot) → hearts. Core-detected, so
         # the TUI heart and desktop floating hearts share one signal.
@@ -4232,6 +4235,17 @@ def _agent_cbs(sid: str) -> dict:
             timeout=30,
         ),
     }
+
+    if _load_interim_assistant_messages():
+        callbacks["interim_assistant_callback"] = (
+            lambda text, *, already_streamed=False: _emit(
+                "message.interim",
+                sid,
+                {"text": str(text), "already_streamed": bool(already_streamed)},
+            )
+        )
+
+    return callbacks
 
 
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:

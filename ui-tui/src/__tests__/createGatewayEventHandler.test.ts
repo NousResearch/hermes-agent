@@ -570,6 +570,7 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ type: 'message.start' })
     onEvent({ payload: { text: 'full attempted reply' }, type: 'message.delta' })
+    expect(() => onEvent({ type: 'message.interim' } as any)).not.toThrow()
     onEvent({
       payload: { already_streamed: false, text: 'full attempted reply' },
       type: 'message.interim'

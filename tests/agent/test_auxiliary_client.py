@@ -676,6 +676,52 @@ class TestBuildCodexClient:
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
+    def test_pool_without_token_uses_canonical_runtime_resolver(self):
+        """A stale pool selection must not mask usable runtime Codex auth."""
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value=""),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "api_key": "runtime-codex-token",
+                    "base_url": "https://runtime.example.test/codex/",
+                },
+            ) as resolve_runtime,
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client("gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        resolve_runtime.assert_called_once_with(
+            requested="openai-codex", target_model="gpt-5.4"
+        )
+        assert mock_openai.call_args.kwargs["api_key"] == "runtime-codex-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://runtime.example.test/codex"
+
+    def test_codex_runtime_resolver_absence_fails_cleanly(self):
+        """No selected, direct, or runtime credential remains an unavailable client."""
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value=""),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={"api_key": "", "base_url": ""},
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client("gpt-5.4")
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
         from agent.auxiliary_client import _build_codex_client

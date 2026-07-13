@@ -2507,14 +2507,32 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
         else:
             codex_token = _read_codex_access_token()
-            if not codex_token:
-                return None, None
             base_url = _CODEX_AUX_BASE_URL
     else:
         codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
         base_url = _CODEX_AUX_BASE_URL
+
+    # A selected pool entry can be temporarily unavailable even when the
+    # canonical runtime resolver can refresh or choose a usable Codex OAuth
+    # credential. MoA slots arrive here through ``call_llm`` and must share the
+    # main runtime's resolver rather than degrading to an env-key-only failure.
+    if not codex_token:
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(
+                requested="openai-codex", target_model=model
+            )
+            codex_token = str(runtime.get("api_key") or "").strip()
+            base_url = (
+                str(runtime.get("base_url") or "").strip().rstrip("/")
+                or _CODEX_AUX_BASE_URL
+            )
+        except Exception as exc:
+            logger.debug("Auxiliary client: Codex runtime resolution failed: %s", exc)
+
+    if not codex_token:
+        return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token,

@@ -135,6 +135,98 @@ class TestControlSocketPath:
         assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
 
 
+class TestConnectionRecovery:
+    """Stale ControlMaster socket recovery: ssh exits 255 for client-side
+    connection failures (man ssh), distinct from the remote command's own
+    exit code — recovery must key off that, not just any 255."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_connection(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run",
+                            lambda *a, **k: subprocess.CompletedProcess([], 0))
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
+                            lambda *a, **k: MagicMock(stdout=iter([]),
+                                                      stderr=iter([]),
+                                                      stdin=MagicMock()))
+        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
+
+    def test_detects_known_broken_connection_signatures(self):
+        env = SSHEnvironment(host="h", user="u")
+        assert env._is_connection_broken(255, "ssh: connect to host h port 22: Connection refused")
+        assert env._is_connection_broken(
+            255, "Control socket connect(/tmp/x.sock): No such file or directory"
+        )
+
+    def test_ignores_non_255_returncode(self):
+        env = SSHEnvironment(host="h", user="u")
+        assert not env._is_connection_broken(1, "Connection refused")
+
+    def test_ignores_unrelated_255_exit(self):
+        """A remote command that itself exits 255 must not trigger recovery."""
+        env = SSHEnvironment(host="h", user="u")
+        assert not env._is_connection_broken(255, "custom script exited with status 255")
+
+    def test_execute_reconnects_and_retries_once(self, monkeypatch):
+        from tools.environments.base import BaseEnvironment
+
+        env = SSHEnvironment(host="h", user="u")
+        calls = {"n": 0}
+
+        def fake_execute(self, command, cwd="", **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"output": "Connection refused", "returncode": 255}
+            return {"output": "ok", "returncode": 0}
+
+        monkeypatch.setattr(BaseEnvironment, "execute", fake_execute)
+        monkeypatch.setattr(env, "_reconnect", lambda: True)
+
+        result = env.execute("echo hi")
+        assert result == {"output": "ok", "returncode": 0}
+        assert calls["n"] == 2
+
+    def test_execute_does_not_retry_when_reconnect_fails(self, monkeypatch):
+        from tools.environments.base import BaseEnvironment
+
+        env = SSHEnvironment(host="h", user="u")
+        calls = {"n": 0}
+
+        def fake_execute(self, command, cwd="", **kwargs):
+            calls["n"] += 1
+            return {"output": "Connection refused", "returncode": 255}
+
+        monkeypatch.setattr(BaseEnvironment, "execute", fake_execute)
+        monkeypatch.setattr(env, "_reconnect", lambda: False)
+
+        result = env.execute("echo hi")
+        assert result == {"output": "Connection refused", "returncode": 255}
+        assert calls["n"] == 1
+
+    def test_reconnect_removes_stale_socket_and_reinits_session(self, monkeypatch, tmp_path):
+        env = SSHEnvironment(host="h", user="u")
+        stale = tmp_path / "stale.sock"
+        stale.write_text("")
+        env.control_socket = stale
+
+        established = {"n": 0}
+        monkeypatch.setattr(env, "_establish_connection",
+                            lambda: established.__setitem__("n", established["n"] + 1))
+        monkeypatch.setattr(env, "init_session", lambda: None)
+
+        assert env._reconnect() is True
+        assert not stale.exists()
+        assert established["n"] == 1
+
+    def test_reconnect_returns_false_when_establish_fails(self, monkeypatch):
+        env = SSHEnvironment(host="h", user="u")
+
+        def _raise():
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(env, "_establish_connection", _raise)
+        assert env._reconnect() is False
+
+
 class TestTerminalToolConfig:
     def test_ssh_persistent_default_true(self, monkeypatch):
         """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""

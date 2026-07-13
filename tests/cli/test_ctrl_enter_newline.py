@@ -70,6 +70,24 @@ def test_local_wezterm_preserves_newline():
             assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
+def test_local_warp_terminal_preserves_newline_and_leaves_ctrl_j_unbound():
+    import cli as cli_mod
+    from prompt_toolkit.key_binding import KeyBindings
+
+    def submit_handler(event):
+        return None
+
+    with patch.object(sys, "platform", "linux"):
+        with patch.dict(os.environ, {"TERM_PROGRAM": "WarpTerminal"}, clear=True):
+            assert cli_mod._preserve_ctrl_enter_newline() is True
+            kb = KeyBindings()
+            cli_mod._bind_prompt_submit_keys(kb, submit_handler)
+
+    bindings = {tuple(getattr(key, "value", key) for key in binding.keys): binding.handler for binding in kb.bindings}
+    assert bindings[("c-m",)] is submit_handler
+    assert ("c-j",) not in bindings
+
+
 def test_local_kitty_preserves_newline():
     import cli as cli_mod
     with patch.object(sys, "platform", "linux"):

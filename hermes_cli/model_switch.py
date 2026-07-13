@@ -1767,6 +1767,19 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+        # External-process providers (copilot-acp, claude-cli): the local CLI
+        # binary IS the credential. Surface them in the picker whenever the
+        # binary resolves on PATH, so users can switch without first writing a
+        # manual auth-store marker via the web "connect" card.
+        if not has_creds and overlay.auth_type == "external_process":
+            try:
+                from hermes_cli.auth import get_external_process_provider_status
+                if get_external_process_provider_status(hermes_slug).get("configured"):
+                    has_creds = True
+            except Exception as exc:
+                logger.debug(
+                    "External-process status check failed for %s: %s", hermes_slug, exc
+                )
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code

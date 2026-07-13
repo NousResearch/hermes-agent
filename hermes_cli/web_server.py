@@ -8091,6 +8091,35 @@ def _copilot_acp_status() -> Dict[str, Any]:
     }
 
 
+def _claude_cli_status() -> Dict[str, Any]:
+    """Status for claude-cli — credentials are owned by the Claude Code CLI.
+
+    The `claude` binary makes the network call with its own OAuth session, so
+    Hermes can't inspect the token. What it CAN verify cheaply is whether the
+    binary resolves on PATH — the prerequisite for this provider to work.
+    """
+    try:
+        from hermes_cli.auth import get_external_process_provider_status
+        status = get_external_process_provider_status("claude-cli")
+    except Exception as e:
+        return {"logged_in": False, "error": str(e)}
+    available = bool(status.get("configured"))
+    resolved = status.get("resolved_command")
+    return {
+        "logged_in": False,
+        "source": "claude_cli",
+        "source_label": (
+            f"Managed by the Claude Code CLI ({resolved})"
+            if available and resolved
+            else "Claude Code CLI not found on PATH — install Claude Code"
+        ),
+        "available": available,
+        "token_preview": None,
+        "expires_at": None,
+        "has_refresh_token": False,
+    }
+
+
 # Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
 # can't be derived from the unified provider catalog: the OAuth ``flow`` shape,
 # the per-provider ``status_fn``, the ``cli_command`` fallback, and curated
@@ -8160,6 +8189,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "copilot /login",
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
+    },
+    {
+        "id": "claude-cli",
+        "name": "Claude Code CLI (subscription usage, no API key)",
+        "flow": "external",
+        "cli_command": "claude /login",
+        "docs_url": "https://docs.claude.com/en/docs/claude-code",
+        "status_fn": _claude_cli_status,
     },
     # ── Anthropic / Claude entries sit at the bottom: the API-key path
     # first, then the subscription OAuth path (which only works with extra

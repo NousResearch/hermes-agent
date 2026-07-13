@@ -1072,6 +1072,7 @@
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
+          boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
           selectedIds,
           failedIds,
@@ -1092,6 +1093,7 @@
           taskId: selectedTaskId,
           boardSlug: board,
           onClose: function () { setSelectedTaskId(null); },
+          onOpenTask: setSelectedTaskId,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -1887,6 +1889,7 @@
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
     const [icon, setIcon] = useState("");
+    const [projectDirectory, setProjectDirectory] = useState("");
     const [switchTo, setSwitchTo] = useState(true);
     const [submitting, setSubmitting] = useState(false);
     const [err, setErr] = useState(null);
@@ -1911,6 +1914,7 @@
         name: name.trim() || autoName || undefined,
         description: description.trim() || undefined,
         icon: icon.trim() || undefined,
+        default_workdir: projectDirectory.trim() || undefined,
         switch: switchTo,
       }).catch(function (e) {
         setErr(String(e && e.message ? e.message : e));
@@ -1965,6 +1969,27 @@
               placeholder: "What goes on this board?",
               className: "h-8",
             }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" },
+              tx(t, "projectDirectory", "Project directory"), " ",
+              h("span", { className: "text-muted-foreground" },
+                tx(t, "projectDirectoryHint", "(recommended)"))),
+            h(Input, {
+              value: projectDirectory,
+              onChange: function (e) { setProjectDirectory(e.target.value); },
+              placeholder: tx(t, "projectDirectoryPlaceholder",
+                "Absolute path to the project folder"),
+              title: tx(t, "projectDirectoryHelp",
+                "Git projects use preserved worktrees. Other folders use the directory directly. Leave blank only for temporary work."),
+              className: "h-8",
+              autoCapitalize: "none",
+              autoCorrect: "off",
+              spellCheck: false,
+            }),
+            h("div", { className: "text-xs text-muted-foreground" },
+              tx(t, "projectDirectoryExplanation",
+                "Sets the default location for task files so project output is preserved.")),
           ),
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs" }, tx(t, "icon", "Icon"), " ",
@@ -2384,6 +2409,7 @@
         return h(Column, {
           key: col.name,
           column: col,
+          boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
           failedIds: props.failedIds,
@@ -2504,6 +2530,8 @@
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
+        defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
+        defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || "",
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });
         },
@@ -2745,12 +2773,13 @@
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
-    // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
-    // takes a path (dispatcher derives one from the assignee profile otherwise);
-    // `dir` requires a path. Backend enforces the rule — we only hide/show the
-    // input here to save vertical space in the common `scratch` case.
-    const [workspaceKind, setWorkspaceKind] = useState("scratch");
-    const [workspacePath, setWorkspacePath] = useState("");
+    // A board with a configured workdir defaults to a persistent workspace:
+    // worktree for git repositories, dir for ordinary directories. Boards
+    // without one keep scratch for disposable research and ops tasks.
+    const defaultWorkspaceKind = props.defaultWorkspaceKind || "scratch";
+    const defaultWorkspacePath = props.defaultWorkspacePath || "";
+    const [workspaceKind, setWorkspaceKind] = useState(defaultWorkspaceKind);
+    const [workspacePath, setWorkspacePath] = useState(defaultWorkspacePath);
     // Goal-mode: when on, the dispatched worker runs the Ralph-style /goal
     // loop — a judge re-checks the card after each turn and the worker keeps
     // going in the same session until done, or the turn budget runs out
@@ -2793,15 +2822,15 @@
       }
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind("scratch"); setWorkspacePath("");
+      setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
     };
 
     const showPathInput = workspaceKind !== "scratch";
     const pathPlaceholder = workspaceKind === "dir"
-      ? tx(t, "workspacePathDir", "workspace path (required, e.g. ~/projects/my-app)")
+      ? tx(t, "workspacePathDir", "workspace path (required without a board workdir)")
       : tx(t, "workspacePathOptional",
-          "workspace path (optional, derived from assignee if blank)");
+          "repository path (optional when the board has a workdir)");
 
     return h("div", { className: "hermes-kanban-inline-create" },
       h("textarea", {
@@ -2877,12 +2906,15 @@
       h("div", { className: "flex gap-2" },
         h(Select, Object.assign({
           value: workspaceKind,
-          title: "scratch: isolated temp dir (default). worktree: git worktree on the assignee profile. dir: exact path (required below).",
-          className: "h-7 text-xs w-28",
+          title: "Choose whether task files are temporary or preserved after completion.",
+          className: "h-7 text-xs flex-1",
         }, selectChangeHandler(setWorkspaceKind)),
-          h(SelectOption, { value: "scratch" }, "scratch"),
-          h(SelectOption, { value: "worktree" }, "worktree"),
-          h(SelectOption, { value: "dir" }, "dir"),
+          h(SelectOption, { value: "scratch" },
+            tx(t, "workspaceScratch", "Temporary — deleted on completion")),
+          h(SelectOption, { value: "worktree" },
+            tx(t, "workspaceWorktree", "Git worktree — preserved")),
+          h(SelectOption, { value: "dir" },
+            tx(t, "workspaceDir", "Directory — preserved")),
         ),
         showPathInput ? h(Input, {
           value: workspacePath,
@@ -2891,6 +2923,11 @@
           className: "h-7 text-xs flex-1",
         }) : null,
       ),
+      workspaceKind === "scratch" ? h("div", {
+        className: "text-xs text-destructive",
+        role: "alert",
+      }, tx(t, "workspaceScratchWarning",
+        "This workspace and any files left in it are deleted when the task completes.")) : null,
       h(Select, Object.assign({
         value: parent,
         className: "h-7 text-xs",
@@ -3186,6 +3223,10 @@
           onDeleteAttachment: handleDeleteAttachment,
           uploadBusy: uploadBusy,
           uploadErr: uploadErr,
+          onOpenTask: function (taskId) {
+            props.onClose();
+            if (props.onOpenTask) props.onOpenTask(taskId);
+          },
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -3322,6 +3363,7 @@
     const events = props.data.events || [];
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
+    const childResults = props.data.child_results || [];
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
@@ -3392,9 +3434,61 @@
         onAddChild: props.onAddChild,
         onRemoveChild: props.onRemoveChild,
       }),
-      t.result ? h("div", { className: "hermes-kanban-section" },
-        h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
-        h(MarkdownBlock, { source: t.result, enabled: props.renderMarkdown }),
+      (function () {
+        var finalResult = t.result || t.latest_summary || null;
+        var isDone = t.status === "done";
+        var isParent = links.children.length > 0;
+        if (finalResult) {
+          var label = t.result
+            ? tx(i18n, "result", "Result")
+            : tx(i18n, "finalResult", "Final Result (run summary)");
+          return h("div", { className: "hermes-kanban-section" },
+            h("div", { className: "hermes-kanban-section-head" }, label),
+            h(MarkdownBlock, { source: finalResult, enabled: props.renderMarkdown }),
+          );
+        }
+        if (isDone && isParent) {
+          return h("div", { className: "hermes-kanban-section" },
+            h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
+            h("div", { className: "hermes-kanban-done-no-result hermes-kanban-done-parent-note" },
+              tx(i18n, "doneParentNote",
+                "This card is an orchestrator / parent task. Review the child results section for the substantive work."),
+            ),
+          );
+        }
+        if (isDone) {
+          return h("div", { className: "hermes-kanban-section" },
+            h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
+            h("div", { className: "hermes-kanban-done-no-result" },
+              tx(i18n, "doneNoResult",
+                "No final result was recorded. Check Run History, Logs, or Child Tasks for the worker output."),
+            ),
+          );
+        }
+        return null;
+      })(),
+      childResults.length > 0 ? h("div", { className: "hermes-kanban-section" },
+        h("div", { className: "hermes-kanban-section-head" },
+          `${tx(i18n, "childResults", "Child Results")} (${childResults.length})`),
+        childResults.map(function (child) {
+          var childResult = child.result || child.latest_summary || null;
+          return h("div", { key: child.id, className: "hermes-kanban-comment" },
+            h("div", { className: "hermes-kanban-comment-head" },
+              h("span", { className: "hermes-kanban-comment-author" },
+                `${child.id} · ${child.title || tx(i18n, "untitled", "(untitled)")}`),
+              h(Badge, { variant: "outline" }, child.status),
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-diag-action-btn",
+                onClick: function () { if (props.onOpenTask) props.onOpenTask(child.id); },
+              }, tx(i18n, "open", "Open")),
+            ),
+            childResult
+              ? h(MarkdownBlock, { source: childResult, enabled: props.renderMarkdown })
+              : h("div", { className: "text-xs text-muted-foreground" },
+                  tx(i18n, "noChildResult", "No result recorded yet.")),
+          );
+        }),
       ) : null,
       h(AttachmentsSection, {
         attachments: attachments,

@@ -20,12 +20,14 @@ on the real OS.
 
 from unittest.mock import patch
 
-
+from tools.environments.base import BaseEnvironment
 from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
+    _bash_safe_path,
     _make_run_env,
     _msys_to_windows_path,
+    _quote_bash_path,
     _resolve_safe_cwd,
     _sanitize_subprocess_env,
     _windows_to_msys_path,
@@ -110,6 +112,42 @@ class TestWindowsToMsysPath:
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _windows_to_msys_path("/tmp/foo") == "/tmp/foo"
         assert _windows_to_msys_path(r"\\server\share") == r"\\server\share"
+
+
+# ---------------------------------------------------------------------------
+# _bash_safe_path / _quote_bash_path — shell-script interpolation
+# ---------------------------------------------------------------------------
+
+class TestBashSafePath:
+    def test_native_windows_path_becomes_msys(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _bash_safe_path(r"C:\Users\alice\notes.txt") == "/c/Users/alice/notes.txt"
+
+    def test_forward_slash_native_path_becomes_msys(self, monkeypatch):
+        """Production get_temp_dir emits C:/... — still needs /c/... rewrite."""
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert (
+            _bash_safe_path("C:/Users/Alexander/.hermes/cache/terminal/hermes-snap-x.sh")
+            == "/c/Users/Alexander/.hermes/cache/terminal/hermes-snap-x.sh"
+        )
+
+    def test_mixed_msys_path_normalizes_backslashes(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        mixed = r"/c/Users/Alexander\Documents\NewTEST\readme.txt"
+        assert _bash_safe_path(mixed) == "/c/Users/Alexander/Documents/NewTEST/readme.txt"
+
+    def test_noop_off_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        path = r"/c/Users\Alexander\Documents"
+        assert _bash_safe_path(path) == path
+
+    def test_quote_bash_path_quotes_mixed_windows_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        quoted = _quote_bash_path(
+            r"C:\Users\Alexander\AppData\Local\Temp\hermes-snap-abc.sh"
+        )
+        assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-abc.sh" in quoted
+        assert "\\" not in quoted
 
 
 # ---------------------------------------------------------------------------
@@ -326,3 +364,61 @@ class TestWrapCommandWindowsNativeCwd:
 
         assert "builtin cd -- /c/Users/liush 2>/dev/null || true" in captured["script"]
         assert r"C:\Users\liush" not in captured["script"]
+
+    def test_init_session_bootstrap_quotes_snapshot_paths_in_msys_form(self, monkeypatch):
+        """Snapshot paths must reach bash as /c/... — C:/... still trips MSYS
+        arg conversion during bash -l and surfaces as \\drivers\\etc."""
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        captured = {}
+
+        def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+            captured["script"] = cmd_string
+            raise RuntimeError("stop after capturing bootstrap")
+
+        monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)
+
+        # Production shape: get_temp_dir forces forward slashes but keeps C:.
+        snap = "C:/Users/Alexander/.hermes/cache/terminal/hermes-snap-deadbeef.sh"
+        with patch.object(LocalEnvironment, "__init__", lambda self, **kw: None):
+            env = LocalEnvironment.__new__(LocalEnvironment)
+            BaseEnvironment.__init__(
+                env,
+                cwd=r"C:\Users\Alexander\Documents",
+                timeout=10,
+            )
+            env._snapshot_path = snap
+            env._cwd_file = snap + ".cwd"
+            env.init_session()
+
+        script = captured["script"]
+        assert "/c/Users/Alexander/.hermes/cache/terminal/hermes-snap-deadbeef.sh" in script
+        assert "C:/Users/Alexander" not in script
+        assert r"C:\Users\Alexander" not in script
+
+    def test_init_session_bootstrap_rewrites_backslash_snapshot_paths(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        captured = {}
+
+        def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+            captured["script"] = cmd_string
+            raise RuntimeError("stop after capturing bootstrap")
+
+        monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)
+
+        snap = r"C:\Users\Alexander\AppData\Local\Temp\hermes-snap-deadbeef.sh"
+        with patch.object(LocalEnvironment, "__init__", lambda self, **kw: None):
+            env = LocalEnvironment.__new__(LocalEnvironment)
+            BaseEnvironment.__init__(
+                env,
+                cwd=r"C:\Users\Alexander\Documents",
+                timeout=10,
+            )
+            env._snapshot_path = snap
+            env._cwd_file = snap + ".cwd"
+            env.init_session()
+
+        script = captured["script"]
+        assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
+        assert r"C:\Users\Alexander\AppData" not in script

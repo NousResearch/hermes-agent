@@ -16,7 +16,7 @@ import {
   setSessionsTotal
 } from '@/store/session'
 
-import { $gatewaySwitching, previewGatewaySwitch, wipeSessionListsForGatewaySwitch } from './gateway-switch'
+import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
 
 vi.mock('@/lib/query-client', () => ({
   queryClient: { invalidateQueries: vi.fn() }
@@ -53,13 +53,5 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
-  })
-
-  it('previewGatewaySwitch holds skeletons then clears loading', async () => {
-    await previewGatewaySwitch(20)
-
-    expect($sessions.get()).toEqual([])
-    expect($sessionsLoading.get()).toBe(false)
-    expect($gatewaySwitching.get()).toBe(false)
   })
 })

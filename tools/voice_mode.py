@@ -13,6 +13,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1040,6 +1041,22 @@ def stop_playback() -> None:
         pass
 
 
+def _is_wsl2_env() -> bool:
+    """Return True when running inside WSL2 (Windows Subsystem for Linux 2).
+
+    Reads /proc/version and checks for the Microsoft kernel signature.
+    Returns False on any error (non-WSL Linux, Docker, SSH, etc.).
+    Extracted as a module-level function so tests can patch it directly
+    without fighting builtins.open patching complexity.
+    """
+    try:
+        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
+            return "microsoft" in _fv.read().lower()
+    except OSError:
+        return False
+
+
+
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file through the default output device.
 
@@ -1088,6 +1105,56 @@ def play_audio_file(file_path: str) -> bool:
 
     if system == "Darwin":
         players.append(["afplay", file_path])
+
+    # WSL2 PowerShell fallback: when running in WSL without a PulseAudio
+    # bridge, ffplay and aplay have no audio device. If powershell.exe and
+    # ffmpeg are available, convert the audio to a uniquely-named WAV in the
+    # Windows %TEMP% directory and play it via Media.SoundPlayer -- which
+    # always has a working audio device on the Windows host (#17608).
+    # A unique suffix prevents concurrent Hermes TTS calls from colliding on
+    # the same filename. The WAV is deleted in the shell pipeline on success,
+    # and in a separate cleanup pass (try/except) on failure so the Windows
+    # temp dir does not accumulate stale files.
+    if system == "Linux" and shutil.which("powershell.exe") and shutil.which("ffmpeg"):
+        if _is_wsl2_env():
+            try:
+                import tempfile
+                import uuid
+                _win_tmp_raw = subprocess.check_output(
+                    ["cmd.exe", "/c", "echo %TEMP%"],
+                    stderr=subprocess.DEVNULL, timeout=3,
+                ).decode(errors="replace").strip()
+                _win_tmp_wsl = subprocess.check_output(
+                    ["wslpath", "-u", _win_tmp_raw],
+                    stderr=subprocess.DEVNULL, timeout=3,
+                ).decode(errors="replace").strip()
+                if _win_tmp_wsl:
+                    # Unique suffix prevents concurrent TTS playback collision.
+                    _unique = uuid.uuid4().hex[:8]
+                    _wsl_wav = os.path.join(_win_tmp_wsl, f"hermes-tts-{_unique}.wav")
+                    _win_wav = subprocess.check_output(
+                        ["wslpath", "-w", _wsl_wav],
+                        stderr=subprocess.DEVNULL, timeout=3,
+                    ).decode(errors="replace").strip()
+                    if _win_wav:
+                        _win_wav_safe = _win_wav.replace("'", "''")
+                        _ps_script = (
+                            f"(New-Object Media.SoundPlayer '{_win_wav_safe}').PlaySync()"
+                        )
+                        _ps_cmd = " && ".join([
+                            shlex.join(["ffmpeg", "-i", file_path, "-f", "wav",
+                                        _wsl_wav, "-loglevel", "quiet", "-y"]),
+                            shlex.join(["powershell.exe", "-NoProfile", "-Command",
+                                        _ps_script]),
+                        ])
+                        # Cleanup in a subshell regardless of success/failure.
+                        _cleanup = shlex.join(["rm", "-f", _wsl_wav])
+                        _full_cmd = f"( {_ps_cmd} ); {_cleanup}"
+                        # Use full path so the which(cmd[0]) check in the player loop passes.
+                        players.insert(0, ["/bin/sh", "-c", _full_cmd])
+            except Exception:
+                pass  # WSL path resolution failed; fall through to ffplay/aplay
+
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
     if system == "Linux":
         players.append(["aplay", "-q", file_path])
@@ -1100,9 +1167,14 @@ def play_audio_file(file_path: str) -> bool:
                 with _playback_lock:
                     _active_playback = proc
                 proc.wait(timeout=300)
+                rc = proc.returncode
                 with _playback_lock:
                     _active_playback = None
-                return True
+                if rc == 0:
+                    return True
+                # Non-zero exit: player failed (e.g. WSL ffplay/aplay with no
+                # audio device). Fall through to the next player in the list.
+                logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
             except subprocess.TimeoutExpired:
                 logger.warning("System player %s timed out, killing process", cmd[0])
                 proc.kill()

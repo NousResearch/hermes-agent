@@ -1476,3 +1476,129 @@ class TestSilenceCallbackLock:
         recorder.cancel()
         with recorder._lock:
             assert recorder._on_silence_stop is None
+
+
+class TestWSL2PowerShellFallback:
+    """Regression tests for WSL2 PowerShell TTS fallback (PR #17608).
+
+    On WSL2 without a PulseAudio bridge, ffplay/aplay have no audio device.
+    play_audio_file() should insert a PowerShell-based player at the front
+    of the player list when powershell.exe and ffmpeg are available.
+    """
+
+    def _fake_check_output(self, responses):
+        """Build a subprocess.check_output side_effect from a list of responses."""
+        it = iter(responses)
+        def _side_effect(cmd, **kwargs):
+            return next(it)
+        return _side_effect
+
+    def test_wsl2_powershell_player_inserted_first(self, monkeypatch, sample_wav):
+        """When WSL2 is detected and powershell.exe + ffmpeg are available,
+        a sh -c pipeline must be inserted before ffplay/aplay in the player list."""
+        from unittest.mock import patch, MagicMock
+        from tools import voice_mode as vm
+
+        captured_players = []
+
+        def _capture_popen(cmd, **kw):
+            captured_players.append(list(cmd))
+            m = MagicMock()
+            m.returncode = 0
+            m.wait = MagicMock(return_value=0)
+            return m
+
+        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+             patch("tools.voice_mode.shutil.which",
+                   side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay", "sh") else (x if x.startswith("/") else None)), \
+             patch("tools.voice_mode.subprocess.check_output",
+                   side_effect=self._fake_check_output([
+                       b"C:/Temp\r\n",
+                       b"/mnt/c/Temp\n",
+                       b"C:/Temp/hermes.wav\n",
+                   ])), \
+             patch("tools.voice_mode.subprocess.Popen", side_effect=_capture_popen):
+            vm.play_audio_file(str(sample_wav))
+
+        assert captured_players, "No players were tried"
+        first_cmd = captured_players[0]
+        assert first_cmd[0] in ("/bin/sh", "sh") and first_cmd[1] == "-c", (
+            f"Expected sh -c as first player, got {first_cmd}"
+        )
+        assert "powershell.exe" in first_cmd[2]
+        assert "PlaySync" in first_cmd[2]
+
+
+    def test_wsl2_unique_temp_filename(self, monkeypatch, tmp_path, sample_wav):
+        """Two concurrent calls must use different temp WAV filenames."""
+        from unittest.mock import patch, MagicMock
+        from tools import voice_mode as vm
+
+        filenames = []
+
+        def _capture_check_output(cmd, **kwargs):
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "TEMP" in cmd_str:
+                return b"C:\\Temp\r\n"
+            if "wslpath" in cmd_str and "-u" in cmd_str:
+                return b"/mnt/c/Temp\n"
+            if "wslpath" in cmd_str and "-w" in cmd_str:
+                # Extract the WSL path from cmd to get the unique filename
+                wsl_path = cmd[-1] if isinstance(cmd[-1], str) else cmd[-1].decode()
+                filenames.append(wsl_path.split("/")[-1])
+                return f"C:\\Temp\\{wsl_path.split('/')[-1]}\n".encode()
+            return b""
+
+        def _fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/version":
+                import io
+                return io.StringIO("Linux Microsoft WSL2")
+            return open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=_fake_open), \
+             patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay") else None), \
+             patch("subprocess.check_output", side_effect=_capture_check_output), \
+             patch("subprocess.Popen", return_value=MagicMock(returncode=0, wait=lambda **k: 0)), \
+             patch("tools.voice_mode._playback_lock"), \
+             patch("tools.voice_mode._active_playback", None):
+            vm.play_audio_file(str(sample_wav))
+            vm.play_audio_file(str(sample_wav))
+
+        # Each call should have used a different filename
+        if len(filenames) >= 2:
+            assert filenames[0] != filenames[1], (
+                "Concurrent TTS calls must use unique temp WAV filenames"
+            )
+
+    def test_non_wsl_skips_powershell_fallback(self, monkeypatch, sample_wav):
+        """On non-WSL Linux, the PowerShell player must not be inserted."""
+        from unittest.mock import patch, MagicMock
+        from tools import voice_mode as vm
+
+        captured_players = []
+
+        def _capture_popen(cmd, **kw):
+            captured_players.append(cmd)
+            m = MagicMock()
+            m.returncode = 0
+            m.wait.return_value = 0
+            return m
+
+        def _fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/version":
+                import io
+                return io.StringIO("Linux version 5.15.0-generic #72-Ubuntu")
+            return open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=_fake_open), \
+             patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("ffplay", "aplay") else None), \
+             patch("subprocess.Popen", side_effect=_capture_popen), \
+             patch("tools.voice_mode._playback_lock"), \
+             patch("tools.voice_mode._active_playback", None):
+            vm.play_audio_file(str(sample_wav))
+
+        assert captured_players, "No players were tried"
+        for cmd in captured_players:
+            assert not (cmd[0] == "sh" and "powershell" in " ".join(str(c) for c in cmd)), (
+                "PowerShell player must not appear on non-WSL Linux"
+            )

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
+import {
+  isModelPickerRefreshShortcut,
+  providerIndexAfterClearingFilter
+} from '../components/modelPicker.js'
 import type { ModelOptionProvider } from '../gatewayTypes.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
@@ -50,5 +53,18 @@ describe('ModelPicker provider filtering', () => {
     ]
 
     expect(providerIndexAfterClearingFilter(rows, p)).toBe(0)
+  })
+})
+
+describe('ModelPicker refresh shortcut', () => {
+  it('refreshes from either picker list', () => {
+    expect(isModelPickerRefreshShortcut('provider', 'r', true)).toBe(true)
+    expect(isModelPickerRefreshShortcut('model', 'r', true)).toBe(true)
+  })
+
+  it('does not intercept filtering or credential input', () => {
+    expect(isModelPickerRefreshShortcut('provider', 'r', false)).toBe(false)
+    expect(isModelPickerRefreshShortcut('key', 'r', true)).toBe(false)
+    expect(isModelPickerRefreshShortcut('disconnect', 'r', true)).toBe(false)
   })
 })

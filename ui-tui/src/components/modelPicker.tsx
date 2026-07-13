@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
@@ -18,6 +18,10 @@ const MAX_WIDTH = 90
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
+
+export function isModelPickerRefreshShortcut(stage: Stage, ch: string, ctrl: boolean) {
+  return (stage === 'provider' || stage === 'model') && ctrl && ch === 'r'
+}
 
 export function providerIndexAfterClearingFilter(providerRows: ProviderRow[], provider: ModelOptionProvider | undefined) {
   if (!provider) {
@@ -57,10 +61,11 @@ export function ModelPicker({
   // has an actual constraint to truncate against.
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
 
-  useEffect(() => {
+  const loadModels = useCallback((refresh: boolean) => {
+    setLoading(true)
     gw.request<ModelOptionsResponse>('model.options', {
       ...(sessionId ? { session_id: sessionId } : {}),
-      ...(initialRefresh ? { refresh: true } : {}),
+      ...(refresh ? { refresh: true } : {}),
       // The TUI picker shows the full provider universe with setup
       // affordances ("paste KEY to activate"), so opt into unconfigured
       // rows — the backend now defaults to the configured subset for
@@ -95,7 +100,11 @@ export function ModelPicker({
         setErr(rpcErrorMessage(e))
         setLoading(false)
       })
-  }, [gw, initialRefresh, sessionId])
+  }, [gw, sessionId])
+
+  useEffect(() => {
+    loadModels(initialRefresh)
+  }, [initialRefresh, loadModels])
 
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
@@ -186,6 +195,13 @@ export function ModelPicker({
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
+    if (isModelPickerRefreshShortcut(stage, ch, key.ctrl)) {
+      setFilter('')
+      loadModels(true)
+
+      return
+    }
+
     // Key entry stage handles its own input
     if (stage === 'key') {
       if (keySaving) {
@@ -615,7 +631,7 @@ export function ModelPicker({
           persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
           {allowPersistGlobal ? ' · ^g toggle' : ' only'}
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close</OverlayHint>
+        <OverlayHint t={t}>↑/↓ select · Enter choose · ^r refresh · ^d disconnect · Esc clear/back · q close</OverlayHint>
       </Box>
     )
   }
@@ -684,7 +700,9 @@ export function ModelPicker({
         {allowPersistGlobal ? ' · ^g toggle' : ' only'}
       </Text>
       <OverlayHint t={t}>
-        {models.length ? '↑/↓ select · Enter switch · Esc clear/back · q close' : 'Esc back · q close'}
+        {models.length
+          ? '↑/↓ select · Enter switch · ^r refresh · Esc clear/back · q close'
+          : '^r refresh · Esc back · q close'}
       </OverlayHint>
     </Box>
   )

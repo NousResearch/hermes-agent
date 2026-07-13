@@ -196,6 +196,24 @@ def cron_tick():
     tick(verbose=True)
 
 
+def cron_runs(job_id: Optional[str] = None, limit: int = 20):
+    """Show indexed durable cron execution history."""
+    from cron.executions import list_executions
+
+    records = list_executions(job_id=job_id, limit=limit)
+    if not records:
+        print("No cron execution attempts recorded.")
+        return
+    for record in records:
+        print(
+            f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
+            f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
+            f"{record.get('claimed_at', '?')}"
+        )
+        if record.get("error"):
+            print(f"    {record['error']}")
+
+
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
@@ -440,6 +458,10 @@ def cron_command(args):
         cron_tick()
         return 0
 
+    if subcmd in {"runs", "history"}:
+        cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
+        return 0
+
     if subcmd in {"create", "add"}:
         return cron_create(args)
 
@@ -459,5 +481,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick]")
     sys.exit(1)

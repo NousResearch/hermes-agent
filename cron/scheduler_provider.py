@@ -82,6 +82,12 @@ class CronScheduler(ABC):
         Built-in: no-op (it re-reads jobs.json on every tick)."""
         return None
 
+    def recover_interrupted(self) -> int:
+        """Run profile-local attempt recovery for every provider lifecycle."""
+        from cron.executions import recover_interrupted_executions
+
+        return recover_interrupted_executions()
+
     def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
         """Run a single job NOW via the shared orchestrator. Called by the
         inbound fire webhook when an external scheduler signals a job is due.
@@ -171,11 +177,10 @@ class InProcessCronScheduler(CronScheduler):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
-        from cron.executions import recover_interrupted_executions
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
-        recovered = recover_interrupted_executions()
+        recovered = self.recover_interrupted()
         if recovered:
             logger.warning(
                 "Marked %d interrupted cron execution(s) unknown after restart",

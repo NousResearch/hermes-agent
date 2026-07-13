@@ -225,6 +225,20 @@ On each tick Hermes:
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
+### Execution history
+
+Hermes records each claimed cron attempt in the profile-local
+`~/.hermes/cron/executions.db` before executor or provider dispatch. Attempts
+move through `claimed`, `running`, and one immutable terminal state:
+`completed`, `failed`, or `unknown`. After restart, Hermes marks an abandoned
+attempt `unknown` only when the original PID and process-start fingerprint prove
+that its owner is gone. Unknown attempts are audit records and are never
+automatically rerun.
+
+Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
+`history`). Terminal history is bounded; active attempts are never pruned. The
+ledger is included in quick backups.
+
 ## Delivery options
 
 When scheduling jobs, you specify where the output goes:

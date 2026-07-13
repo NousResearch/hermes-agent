@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -12,8 +13,7 @@ from pathlib import Path
 def _point_ledger(monkeypatch, tmp_path):
     import cron.executions as executions
 
-    monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.json")
-    monkeypatch.setattr(executions, "EXECUTIONS_LOCK_FILE", tmp_path / "cron" / ".executions.lock")
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
     return executions
 
 
@@ -39,6 +39,78 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
     assert persisted == [completed]
 
 
+def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("immutable", source="builtin")
+    executions.mark_execution_running(record["id"])
+    executions.finish_execution(record["id"], success=True)
+
+    assert executions.finish_execution(
+        record["id"], success=False, error="late writer"
+    ) is None
+    assert executions.latest_execution("immutable")["status"] == "completed"
+
+
+def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 3)
+    inflight = executions.create_execution("live", source="builtin")
+    executions.mark_execution_running(inflight["id"])
+    for index in range(8):
+        row = executions.create_execution(f"done-{index}", source="builtin")
+        executions.finish_execution(row["id"], success=True)
+
+    records = executions.list_executions(limit=100)
+    assert len([row for row in records if row["status"] == "completed"]) == 3
+    assert executions.latest_execution("live")["status"] == "running"
+
+
+def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    executions.EXECUTIONS_FILE.parent.mkdir(parents=True)
+    executions.EXECUTIONS_FILE.write_bytes(b"not a sqlite database")
+
+    with __import__("pytest").raises(sqlite3.DatabaseError):
+        executions.create_execution("new", source="builtin")
+    assert executions.EXECUTIONS_FILE.read_bytes() == b"not a sqlite database"
+
+
+def test_execution_history_is_paginated(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    ids = []
+    for _index in range(5):
+        row = executions.create_execution("paged", source="builtin")
+        executions.finish_execution(row["id"], success=True)
+        ids.append(row["id"])
+
+    first = executions.list_executions(job_id="paged", limit=2)
+    second = executions.list_executions(
+        job_id="paged", limit=2, before_claimed_at=first[-1]["claimed_at"]
+    )
+    assert [row["id"] for row in first] == list(reversed(ids))[:2]
+    assert set(row["id"] for row in first).isdisjoint(row["id"] for row in second)
+
+
+def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    row = executions.create_execution("cli-job", source="builtin")
+    executions.finish_execution(row["id"], success=False, error="boom")
+    from hermes_cli.cron import cron_runs
+
+    cron_runs("cli-job", limit=10)
+
+    output = capsys.readouterr().out
+    assert row["id"] in output
+    assert "failed" in output
+    assert "boom" in output
+
+
+def test_quick_backup_includes_execution_ledger():
+    from hermes_cli.backup import _QUICK_STATE_FILES
+
+    assert "cron/executions.db" in _QUICK_STATE_FILES
+
+
 def test_failed_execution_keeps_error(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
 
@@ -61,13 +133,27 @@ def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_
 def test_recovery_does_not_mark_other_live_owner_unknown(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("other-live", source="builtin")
-    records = json.loads(executions.EXECUTIONS_FILE.read_text())["executions"]
-    records[0]["process_id"] = "another-import"
-    records[0]["pid"] = os.getpid()
-    executions.EXECUTIONS_FILE.write_text(json.dumps({"version": 1, "executions": records}))
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            "UPDATE executions SET process_id=?, pid=? WHERE id=?",
+            ("another-import", os.getpid(), record["id"]),
+        )
 
     assert executions.recover_interrupted_executions() == 0
     assert executions.latest_execution("other-live")["status"] == "claimed"
+
+
+def test_recovery_rejects_recycled_pid(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("recycled", source="builtin")
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            "UPDATE executions SET process_id=?, process_started_at=? WHERE id=?",
+            ("old-import", -1, record["id"]),
+        )
+
+    assert executions.recover_interrupted_executions() == 1
+    assert executions.latest_execution("recycled")["status"] == "unknown"
 
 
 def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
@@ -119,6 +205,36 @@ def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
     # Recovery only classifies the old attempt. It must not manufacture a new
     # claimed record (which would imply an automatic retry).
     assert [r["status"] for r in records] == ["unknown"]
+
+
+def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch):
+    import cron.scheduler as scheduler
+
+    class BrokenPool:
+        def submit(self, _callable):
+            raise ValueError("executor rejected")
+
+    finished = []
+    monkeypatch.setattr(
+        scheduler, "create_execution",
+        lambda *_args, **_kwargs: {"id": "exec-submit-fail"},
+    )
+    monkeypatch.setattr(
+        scheduler, "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [{"id": "submit-fail"}])
+    monkeypatch.setattr(scheduler, "advance_next_run", lambda _job_id: None)
+    monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: BrokenPool())
+
+    assert scheduler.tick(verbose=False, sync=False) == 0
+    assert finished == [
+        ("exec-submit-fail", {
+            "success": False,
+            "error": "Executor dispatch failed: executor rejected",
+        })
+    ]
+    assert "submit-fail" not in scheduler.get_running_job_ids()
 
 
 def test_run_one_job_records_running_then_terminal(monkeypatch):

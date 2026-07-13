@@ -769,6 +769,7 @@ _QUICK_STATE_FILES = (
     ".env",
     "auth.json",
     "cron/jobs.json",
+    "cron/executions.db",
     "gateway_state.json",
     "channel_directory.json",
     "channel_aliases.json",

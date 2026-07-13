@@ -109,8 +109,7 @@ class ChronosCronScheduler(CronScheduler):
         # A new provider lifecycle cannot prove what an interrupted prior
         # process did. Classify those attempts unknown for audit only; do not
         # requeue them here.
-        from cron.executions import recover_interrupted_executions
-        recover_interrupted_executions()
+        self.recover_interrupted()
         try:
             self.reconcile()
         except Exception as e:

@@ -458,6 +458,21 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+# Continuation nudge for Codex/Responses turns that came back with only
+# internal reasoning (no visible content, no tool calls).  When the interim
+# assistant message also carries no encrypted reasoning items and no
+# replayable message items, _chat_messages_to_responses_input emits nothing
+# for it — a bare retry would be byte-identical to the request that just
+# failed, so the model (observed: grok-4.20 on xai-oauth) deterministically
+# repeats the reasoning-only response until the retry budget is exhausted.
+_CODEX_INCOMPLETE_NUDGE = (
+    "[System: Your previous response contained only internal reasoning and "
+    "never produced a visible answer or tool call. Do not keep thinking. "
+    "Produce your final answer as plain text now (or make the tool call "
+    "you were planning).]"
+)
+
+
 # Shared recovery hint appended to every content-policy refusal message. Both
 # the HTTP-200 refusal path (``finish_reason=content_filter``) and the
 # exception path (a provider moderation error classified as
@@ -4425,6 +4440,33 @@ def run_conversation(
                         agent._emit_interim_assistant_message(interim_msg)
 
                 if agent._codex_incomplete_retries < 3:
+                    # When the interim message has nothing the Responses
+                    # input converter will replay (no visible content, no
+                    # encrypted reasoning items, no replayable message
+                    # items — plain-text reasoning only), a bare retry is
+                    # byte-identical to the request that just came back
+                    # incomplete and fails the same way every time
+                    # (observed with grok-4.20 on xai-oauth, whose
+                    # reasoning items lack encrypted_content).  Append a
+                    # user-role nudge so the retry actually differs and
+                    # explicitly asks for the final answer.
+                    interim_replayable = (
+                        interim_has_content
+                        or interim_has_codex_reasoning
+                        or interim_has_codex_message_items
+                    )
+                    if not interim_replayable:
+                        _last_msg = messages[-1] if messages else None
+                        _already_nudged = (
+                            isinstance(_last_msg, dict)
+                            and _last_msg.get("role") == "user"
+                            and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
+                        )
+                        if not _already_nudged:
+                            messages.append({
+                                "role": "user",
+                                "content": _CODEX_INCOMPLETE_NUDGE,
+                            })
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
                     agent._session_messages = messages

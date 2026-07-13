@@ -2806,3 +2806,72 @@ def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_d
     assert all(not any(item.get("type") == "reasoning" for item in payload["input"]) for payload in request_payloads)
     assert agent._codex_reasoning_replay_enabled is True
     assert result["messages"][0].get("codex_reasoning_items") is None
+
+
+def test_run_conversation_codex_nudges_after_unreplayable_reasoning_only_interim(monkeypatch):
+    """A reasoning-only interim with NO encrypted_content (the shape
+    grok-4.20 on xai-oauth returns when it never emits a message output
+    item) replays as nothing — without a nudge every continuation request
+    is byte-identical to the one that just came back incomplete."""
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_reasoning_only_response(
+            encrypted_content=None,
+            summary_text="Thinking about the repo structure...",
+        ),
+        _codex_message_response("Final answer."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("analyze repo")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Final answer."
+    assert len(requests) == 2
+
+    replay_input = requests[1]["input"]
+    nudges = [
+        item for item in replay_input
+        if isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+    ]
+    assert len(nudges) == 1, (
+        "Continuation after an unreplayable reasoning-only interim must "
+        "append the nudge user message; otherwise the retry request is "
+        "identical to the one that just failed."
+    )
+
+
+def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
+    """An interim that carries visible content replays fine — the nudge
+    must not fire and pollute the conversation."""
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_incomplete_message_response("Partial visible content."),
+        _codex_message_response("Done."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("analyze repo")
+
+    assert result["completed"] is True
+    replay_input = requests[1]["input"]
+    assert not any(
+        isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+        for item in replay_input
+    )

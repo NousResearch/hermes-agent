@@ -43,5 +43,8 @@
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "^6.0.3",
     "vite": "^8.0.16"
+  },
+  "engines": {
+    "npm": ">=11.10.0"
   }
 }

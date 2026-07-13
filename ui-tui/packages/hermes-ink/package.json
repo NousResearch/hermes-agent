@@ -50,5 +50,8 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.1"
+  },
+  "engines": {
+    "npm": ">=11.10.0"
   }
 }

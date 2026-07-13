@@ -99,6 +99,11 @@ def test_worker_production_commands_require_lock_wrapper(monkeypatch):
         "--operation deploy -- python3 -u release.py"
     )
     assert pl.production_delivery_guard(
+        f"{Path(sys.executable).with_name('hermes')} kanban lock run "
+        "--project NousResearch/hermes-agent --operation deploy -- "
+        "echo $(python3 -u release.py)"
+    )
+    assert pl.production_delivery_guard(
         "hermes kanban lock run --project owner/repo --operation deploy -- true && vercel --prod"
     )
     assert pl.production_delivery_guard("bash -c 'vercel --prod'")

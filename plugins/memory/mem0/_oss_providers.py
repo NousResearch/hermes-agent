@@ -42,7 +42,7 @@ EMBEDDER_PROVIDERS: dict[str, dict[str, Any]] = {
 VECTOR_PROVIDERS: dict[str, dict[str, Any]] = {
     "qdrant": {
         "label": "Qdrant",
-        "default_config": {"path": os.path.expanduser("~/.hermes/mem0_qdrant")},
+        "default_config": {},
         "pip_dep": "qdrant-client",
     },
     "pgvector": {

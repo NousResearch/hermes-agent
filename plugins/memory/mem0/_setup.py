@@ -152,8 +152,7 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     vector_def = VECTOR_PROVIDERS[vector_id]
     vector_config = dict(vector_def["default_config"])
     if vector_id == "qdrant":
-        if flags.get("oss_vector_path"):
-            vector_config["path"] = flags["oss_vector_path"]
+        vector_config["path"] = flags.get("oss_vector_path") or str(get_hermes_home() / "mem0_qdrant")
         if flags.get("oss_vector_url"):
             vector_config.pop("path", None)
             vector_config["url"] = flags["oss_vector_url"]

@@ -146,6 +146,21 @@ class TestBuildOSSConfig:
         oss, _ = build_oss_config(flags)
         assert oss["vector_store"]["config"]["path"] == "/data/qdrant"
 
+    def test_default_qdrant_path_tracks_active_profile(self, tmp_path, monkeypatch):
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        profile_a.mkdir()
+        profile_b.mkdir()
+        flags = parse_flags(["--mode", "oss", "--oss-llm-key", "sk-oai"])
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_a))
+        first, _ = build_oss_config(flags)
+        monkeypatch.setenv("HERMES_HOME", str(profile_b))
+        second, _ = build_oss_config(flags)
+
+        assert first["vector_store"]["config"]["path"] == str(profile_a / "mem0_qdrant")
+        assert second["vector_store"]["config"]["path"] == str(profile_b / "mem0_qdrant")
+
 
 class TestWriteEnv:
 

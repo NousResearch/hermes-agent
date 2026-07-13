@@ -13,6 +13,7 @@ import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -21,6 +22,7 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
@@ -117,6 +119,20 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
+
+        // Config is profile-scoped, but session.info also arrives for background
+        // sessions. Only an active-session event from the currently active
+        // gateway may reconcile the foreground cache. Requiring the renderer's
+        // source tag prevents an event queued before a profile swap from being
+        // attributed to the newly active profile.
+        if (
+          isActiveEvent &&
+          typeof payload?.approval_mode === 'string' &&
+          event.profile &&
+          normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())
+        ) {
+          reconcileApprovalModeForProfile(event.profile, payload.approval_mode)
+        }
 
         if (apply) {
           if (modelChanged) {

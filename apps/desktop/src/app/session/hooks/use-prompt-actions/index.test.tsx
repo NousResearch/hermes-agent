@@ -1350,7 +1350,18 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 
   it('still creates a new session for a genuine new-chat draft (no stored session selected)', async () => {
-    const createBackendSessionForSend = vi.fn(async () => RUNTIME_SESSION_ID)
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    // Mirror the real createBackendSessionForSend: a successful create
+    // re-homes the active runtime ref to the session it minted BEFORE
+    // returning. An inert stub here is what let the new-chat drift-abort
+    // regression ship green.
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = RUNTIME_SESSION_ID
+
+      return RUNTIME_SESSION_ID
+    })
+
     const calls: string[] = []
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -1363,6 +1374,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     render(
       <Harness
         activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
         createBackendSessionForSend={createBackendSessionForSend}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
@@ -1495,6 +1507,107 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
       session_id: STORED_SESSION_A
     })
+  })
+
+  it('submits the first prompt of a new chat — the create pipeline re-homing selection/route is not user drift', async () => {
+    // Regression for the #54527 guard breaking every NEW chat: on a fresh draft
+    // (no stored session, no runtime session) createBackendSessionForSend
+    // legitimately sets selectedStoredSessionIdRef + navigates to the new
+    // session's route. Comparing against the pre-create (null) baseline made
+    // the guard read that self-inflicted move as a user switch and abort, so
+    // prompt.submit never fired: the message vanished, no DB row was ever
+    // persisted, and the desktop stranded on a route whose REST reads 404
+    // ("Session not found").
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/'
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    // Mirror the real createBackendSessionForSend: on success it re-homes the
+    // refs AND the route to the session it just created.
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = 'rt-new-chat'
+      selectedStoredSessionIdRef.current = 'stored-new-chat'
+      routeToken = '/stored-new-chat'
+
+      return 'rt-new-chat'
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('first message of a brand-new chat')).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
+      session_id: 'rt-new-chat'
+    })
+  })
+
+  it('aborts when the user switches sessions during the tail of a successful create', async () => {
+    // createBackendSessionForSend awaits once more (armed-YOLO apply) AFTER
+    // committing the refs and returning a real id, so a switch in that window
+    // escapes its internal null-return drift check. The active ref is the
+    // tell: every switch path retargets it synchronously, so it no longer
+    // equals the id create returned. The submit must abort, not adopt the
+    // switched-to context as its re-pinned baseline.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/'
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      // The user switched to Session B during the post-commit await: the
+      // switch path re-homed all three context markers before create returned.
+      activeSessionIdRef.current = RUNTIME_SESSION_B
+      selectedStoredSessionIdRef.current = STORED_SESSION_B
+      routeToken = `/${STORED_SESSION_B}`
+
+      return 'rt-new-chat'
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('message that must not land in session B')).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
   })
 })
 

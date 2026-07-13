@@ -1,0 +1,12 @@
+# systemd --user drop-in: route a service's egress through the SOCKS5 proxy.
+# Rendered by scripts/vpn-exit.sh wire-service <unit> into
+# ~/.config/systemd/user/<unit>.service.d/10-proxy.conf
+#
+# socks5h:// (not socks5://) so DNS resolves through the tunnel and does not leak.
+# NO_PROXY keeps loopback / control-plane traffic direct.
+
+[Service]
+Environment=HTTPS_PROXY=@PROXY_URL@
+Environment=HTTP_PROXY=@PROXY_URL@
+Environment=ALL_PROXY=@PROXY_URL@
+Environment=NO_PROXY=127.0.0.1,localhost,::1

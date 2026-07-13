@@ -1,0 +1,22 @@
+# wireproxy config: WireGuard client + local SOCKS5 listener.
+# Fill in the values from your Surfshark WireGuard config (dashboard export).
+# This file holds a PRIVATE KEY — keep it 0600 and NEVER commit it.
+
+[Interface]
+# Your client private key (Surfshark dashboard -> WireGuard -> Manual config).
+PrivateKey = <YOUR_WIREGUARD_PRIVATE_KEY>
+# Address assigned by the provider (example shape; use what the export gives you).
+Address = 10.14.0.2/16
+DNS = 162.252.172.57, 149.154.159.92
+
+[Peer]
+# Provider server public key + endpoint for the exit location you chose.
+PublicKey = <SERVER_PUBLIC_KEY>
+Endpoint = <your-surfshark-endpoint>:51820
+# Route everything through the tunnel.
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+
+# Expose the tunnel as a local SOCKS5 proxy on 127.0.0.1:<port>.
+[Socks5]
+BindAddress = 127.0.0.1:@SOCKS_PORT@

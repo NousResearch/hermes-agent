@@ -93,6 +93,23 @@ class TestAPIServerAdapterWorkCount:
 
         assert adapter.active_agent_work_count() == 3
 
+    def test_does_not_double_count_started_run_agent(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter._inflight_agent_runs = 0
+        adapter._active_run_tasks = {"run-1": _RunTask()}
+        adapter._active_run_agents = {"run-1": object()}
+
+        assert adapter.active_agent_work_count() == 1
+
+    def test_interrupt_active_runs_interrupts_adapter_owned_agents(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        adapter._active_run_agents = {"run-1": agent}
+
+        assert adapter.interrupt_active_runs("gateway shutdown") == 1
+
+        agent.interrupt.assert_called_once_with("gateway shutdown")
+
 
 class TestDrainWaitsForApiWork:
 
@@ -138,6 +155,50 @@ class TestDrainWaitsForApiWork:
 
                 allow_task.set()
                 _snapshot, timed_out = await drain_task
+
+        assert timed_out is False
+
+    @pytest.mark.asyncio
+    async def test_drain_times_out_if_api_run_outlives_the_window(self):
+        runner, _adapter = make_restart_runner()
+        runner.adapters = {Platform.API_SERVER: _make_api_adapter(queued_ids=["run-1"])}
+
+        _snapshot, timed_out = await runner._drain_active_agents(0.1)
+
+        assert timed_out is True
+
+    def test_shutdown_interrupt_reaches_api_server_runs(self):
+        runner, _adapter = make_restart_runner()
+        api = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        api._active_run_agents = {"run-1": agent}
+        runner.adapters = {Platform.API_SERVER: api}
+
+        runner._interrupt_running_agents("gateway shutdown")
+
+        agent.interrupt.assert_called_once_with("gateway shutdown")
+
+    @pytest.mark.asyncio
+    async def test_drain_still_waits_for_chat_cron_and_api_work(self):
+        import cron.scheduler as sched
+
+        runner, _adapter = make_restart_runner()
+        runner._running_agents = {"session-1": MagicMock()}
+        sched._running_job_ids.add("job-1")
+        runner.adapters = {Platform.API_SERVER: _make_api_adapter(queued_ids=["run-1"])}
+
+        async def finish_all():
+            await asyncio.sleep(0.12)
+            runner._running_agents.clear()
+            sched._running_job_ids.discard("job-1")
+            runner.adapters[Platform.API_SERVER]._active_run_tasks.clear()
+
+        task = asyncio.create_task(finish_all())
+        try:
+            _snapshot, timed_out = await runner._drain_active_agents(2.0)
+        finally:
+            await task
+            sched._running_job_ids.discard("job-1")
 
         assert timed_out is False
 

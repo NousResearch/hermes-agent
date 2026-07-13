@@ -326,17 +326,35 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_environment(tmp_path, monkeypatch):
+def _hermetic_environment(tmp_path, monkeypatch, request):
     """Blank out all credential/behavioral env vars so local and CI match.
 
     Also redirects HOME and HERMES_HOME to per-test tempdirs so code that
     reads ``~/.hermes/*`` can't touch the real one, and pins TZ/LANG so
     datetime/locale-sensitive tests are deterministic.
     """
+    live_credential_passthrough = {}
+    if (
+        request.node.get_closest_marker("integration")
+        and request.node.path.name == "test_kanban_orchestrated_coding_smoke.py"
+    ):
+        for name in (
+            "DEEPSEEK_API_KEY",
+            "OPENROUTER_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "OPENCODE_GO_BASE_URL",
+        ):
+            value = os.environ.get(name)
+            if value:
+                live_credential_passthrough[name] = value
+
     # 1. Blank every credential-shaped env var that's currently set.
     for name in list(os.environ.keys()):
         if _looks_like_credential(name):
             monkeypatch.delenv(name, raising=False)
+
+    for name, value in live_credential_passthrough.items():
+        monkeypatch.setenv(name, value)
 
     # 2. Blank behavioral HERMES_* vars that could change test semantics.
     for name in _HERMES_BEHAVIORAL_VARS:

@@ -12,6 +12,7 @@ import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { asText } from '@/lib/text'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -33,6 +34,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSelectedStoredSessionId,
   setSessions,
   setTurnStartedAt,
   setYoloActive
@@ -116,6 +118,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
+        // The live stored session key. After a compression the backend rotates
+        // it to the continuation session (see _sync_session_key_after_compress),
+        // so re-anchoring the sidebar to this value keeps the active-session
+        // indicator on the live row instead of stranding it on the ended parent.
+        const storedSessionKey = asText(payload?.session_key).trim()
 
         if (apply) {
           if (modelChanged) {
@@ -169,12 +176,29 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (sessionId && hasStatePatch) {
-          updateSessionState(sessionId, state => ({
-            ...state,
-            ...statePatch,
-            branch: statePatch.branch ?? state.branch,
-            cwd: statePatch.cwd ?? state.cwd
-          }))
+          // Pass the live key as storedSessionId so the runtime→stored mapping
+          // (and the sidebar working dot) re-anchors to the continuation row
+          // when it rotates. `undefined` when absent = leave the mapping as-is.
+          updateSessionState(
+            sessionId,
+            state => ({
+              ...state,
+              ...statePatch,
+              branch: statePatch.branch ?? state.branch,
+              cwd: statePatch.cwd ?? state.cwd
+            }),
+            storedSessionKey || undefined
+          )
+        } else if (sessionId && storedSessionKey) {
+          // No runtime-state patch this tick, but the key may still have rotated
+          // (compression) — re-anchor the mapping without mutating other state.
+          updateSessionState(sessionId, state => state, storedSessionKey)
+        }
+
+        if (isActiveEvent && storedSessionKey) {
+          // Move the sidebar's selection highlight with the focused session's
+          // live key so a mid-turn compression doesn't drop the active indicator.
+          setSelectedStoredSessionId(storedSessionKey)
         }
 
         if (apply) {

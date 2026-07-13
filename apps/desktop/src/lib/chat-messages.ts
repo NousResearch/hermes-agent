@@ -77,6 +77,10 @@ export type GatewayEventPayload = {
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string
+  // session.info — the live stored session key; rotates to the continuation
+  // session after a compression, so the sidebar can re-anchor the active
+  // indicator instead of leaving it stuck on the ended parent row.
+  session_key?: string
   // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
   label?: string
   index?: number

@@ -114,6 +114,7 @@ _BILLING_PATTERNS = [
     "billing hard limit",
     "exceeded your current quota",
     "account is deactivated",
+    "exceeded your monthly quota",  # GitHub Copilot monthly quota exhaustion
     "plan does not include",
     "out of extra usage",  # Anthropic OAuth Pro/Max overage bucket depleted (HTTP 400)
     "out of funds",

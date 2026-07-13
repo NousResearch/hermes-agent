@@ -224,6 +224,13 @@ class TestClassify402:
         )
         assert result.reason == FailoverReason.billing
 
+    def test_copilot_monthly_quota(self):
+        """Copilot 'exceeded your monthly quota' is billing, should fallback."""
+        error = RuntimeError("You have exceeded your monthly quota (Request ID: A540:22A007:3849658:44F52D9:6A541F53)")
+        result = classify_api_error(error, provider="copilot-acp", model="auto")
+        assert result.reason == FailoverReason.billing
+        assert result.should_fallback is True
+
 
 # ── Test: Full classification pipeline ─────────────────────────────────
 

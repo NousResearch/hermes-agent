@@ -360,6 +360,19 @@ describe('createGatewayEventHandler', () => {
     expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('folds commentary.delta into the thinking lane so Codex narration stays visible', () => {
+    const appended: Msg[] = []
+    const narration = 'Reading the screenshot before I put numbers around it.'
+
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { text: narration }, type: 'commentary.delta' } as any)
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+    expect(appended[0]?.thinking).toBe(narration)
+    expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
+  })
+
   it('filters spinner/status-only reasoning noise from completed thinking', () => {
     const appended: Msg[] = []
     const streamed = '(¬_¬) synthesizing...\nactual plan\n( ͡° ͜ʖ ͡°) pondering...\nnext step'

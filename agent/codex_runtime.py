@@ -617,6 +617,7 @@ def _consume_codex_event_stream(
     model: str,
     on_text_delta=None,
     on_reasoning_delta=None,
+    on_commentary_delta=None,
     on_first_delta=None,
     on_event=None,
     interrupt_check=None,
@@ -649,6 +650,9 @@ def _consume_codex_event_stream(
       once a function_call event is seen (so tool-call turns don't bleed text
       into the chat).
     * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta``.
+    * ``on_commentary_delta(str)`` — fires per ``response.output_text.delta``
+      belonging to a ``commentary``/``analysis``-phase message item: mid-turn
+      progress narration, distinct from both reasoning and the final answer.
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
@@ -695,8 +699,9 @@ def _consume_codex_event_stream(
         # Track the phase of the active streamed message item.  Codex/Harmony
         # ``commentary``/``analysis`` text is mid-turn preamble/progress
         # narration, never the final answer.  We still collect completed output
-        # items for replay, but route those deltas to the reasoning callback so
-        # they display like thinking text instead of assistant content.
+        # items for replay, but route those deltas to the dedicated commentary
+        # callback so they display in their own lane instead of being conflated
+        # with genuine reasoning or assistant content.
         if event_type == "response.output_item.added":
             item = _event_field(event, "item")
             item_type = _item_field(item, "type", "")
@@ -713,13 +718,13 @@ def _consume_codex_event_stream(
             delta_text = _event_field(event, "delta", "")
             is_commentary_delta = active_message_phase in {"commentary", "analysis"}
             if delta_text and is_commentary_delta:
-                # Commentary streams through the reasoning channel, not the
-                # visible answer stream (and stays out of output_text).
-                if on_reasoning_delta is not None:
+                # Commentary streams through its own channel, not the visible
+                # answer stream (and stays out of output_text).
+                if on_commentary_delta is not None:
                     try:
-                        on_reasoning_delta(delta_text)
+                        on_commentary_delta(delta_text)
                     except Exception:
-                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+                        logger.debug("Codex stream on_commentary_delta raised", exc_info=True)
             elif delta_text:
                 collected_text_deltas.append(delta_text)
                 if not has_tool_calls:
@@ -846,6 +851,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
+    # Reset the once-only commentary guard for this API call — see
+    # _fire_commentary_delta / build_assistant_message.
+    agent._codex_commentary_delivered = False
 
     def _on_text_delta(text: str) -> None:
         agent._codex_streamed_text_parts.append(text)
@@ -853,6 +861,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _on_reasoning_delta(text: str) -> None:
         agent._fire_reasoning_delta(text)
+
+    def _on_commentary_delta(text: str) -> None:
+        agent._fire_commentary_delta(text)
 
     def _on_event(event: Any) -> None:
         # TTFB watchdog and activity touch — runs once per SSE event.
@@ -893,6 +904,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     model=api_kwargs.get("model"),
                     on_text_delta=_on_text_delta,
                     on_reasoning_delta=_on_reasoning_delta,
+                    on_commentary_delta=_on_commentary_delta,
                     on_first_delta=on_first_delta,
                     on_event=_on_event,
                     interrupt_check=_interrupt_check,

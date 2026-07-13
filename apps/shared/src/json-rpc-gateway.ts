@@ -7,6 +7,7 @@ export type GatewayEventName =
   | 'thinking.delta'
   | 'reasoning.delta'
   | 'reasoning.available'
+  | 'commentary.delta'
   | 'status.update'
   | 'tool.start'
   | 'tool.progress'

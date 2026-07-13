@@ -364,7 +364,15 @@ export interface SessionInfo {
 }
 
 export interface SessionMessage {
+  /** Exact Codex assistant message items (with phase/id) persisted for
+   *  Responses replay. Raw DB rows deliver this as a JSON string; gateway
+   *  history delivers it decoded. Commentary derives from it on reload. */
+  codex_message_items?: unknown
   codex_reasoning_items?: unknown
+  /** Codex commentary/analysis narration — user-facing mid-turn progress,
+   *  derived server-side from phase-bearing codex_message_items. Distinct
+   *  from reasoning: renders in the "Working" lane, not "Thinking". */
+  commentary?: null | string
   content: unknown
   context?: unknown
   name?: string

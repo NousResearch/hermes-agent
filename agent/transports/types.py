@@ -143,6 +143,12 @@ class NormalizedResponse:
         pd = self.provider_data or {}
         return pd.get("codex_message_items")
 
+    @property
+    def commentary(self) -> str | None:
+        """Codex commentary/analysis narration — distinct from reasoning."""
+        pd = self.provider_data or {}
+        return pd.get("commentary")
+
 
 # ---------------------------------------------------------------------------
 # Factory helpers

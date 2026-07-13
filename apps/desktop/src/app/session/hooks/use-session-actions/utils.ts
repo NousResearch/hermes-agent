@@ -1,5 +1,5 @@
 import { getSession } from '@/hermes'
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, COMMENTARY_PART_TYPE } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -41,13 +41,36 @@ function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
 }
 
 function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): ChatMessage {
-  if (message.parts.some(part => part.type === 'reasoning')) {
-    return message
+  let parts = message.parts
+
+  // Reasoning and commentary (the Codex "Working" lane) are preserved
+  // independently — a hydrated message may carry one but not the other.
+  // Preserved reasoning leads; preserved commentary slots after any
+  // reasoning already present, so the final order is always reasoning →
+  // commentary → visible text, matching the live-streamed layout.
+  if (!parts.some(part => part.type === 'reasoning')) {
+    const lane = previous.parts.filter(part => part.type === 'reasoning')
+
+    if (lane.length) {
+      parts = [...lane, ...parts]
+    }
   }
 
-  const reasoningParts = previous.parts.filter(part => part.type === 'reasoning')
+  if (!parts.some(part => part.type === COMMENTARY_PART_TYPE)) {
+    const lane = previous.parts.filter(part => part.type === COMMENTARY_PART_TYPE)
 
-  return reasoningParts.length ? { ...message, parts: [...reasoningParts, ...message.parts] } : message
+    if (lane.length) {
+      let insertAt = 0
+
+      while (insertAt < parts.length && parts[insertAt].type === 'reasoning') {
+        insertAt += 1
+      }
+
+      parts = [...parts.slice(0, insertAt), ...lane, ...parts.slice(insertAt)]
+    }
+  }
+
+  return parts === message.parts ? message : { ...message, parts }
 }
 
 function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {

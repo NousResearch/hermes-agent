@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
+  appendCommentaryPart,
   appendReasoningPart,
   chatMessageText,
+  COMMENTARY_PART_TYPE,
+  commentaryPartText,
   preserveLocalAssistantErrors,
   renderMediaTags,
   toChatMessages,
@@ -219,6 +222,154 @@ describe('interleaved reasoning/text coalescing', () => {
     expect(parts.map(p => p.type)).toEqual(['reasoning', 'tool-call', 'reasoning'])
     expect((parts[0] as { text: string }).text).toBe('before tool')
     expect((parts[2] as { text: string }).text).toBe('after tool')
+  })
+
+  it('coalesces commentary deltas across interleaved reasoning/text', () => {
+    // Codex Working-lane narration behaves like the other streaming
+    // channels: transparent to text/reasoning within a segment so a
+    // reasoning burst can't shred one narration sentence into two parts.
+    let parts: ChatMessagePart[] = appendCommentaryPart([], 'Reading ')
+    parts = appendReasoningPart(parts, 'planning')
+    parts = appendCommentaryPart(parts, 'the file.')
+
+    expect(parts.map(p => p.type)).toEqual([COMMENTARY_PART_TYPE, 'reasoning'])
+    expect(commentaryPartText(parts[0])).toBe('Reading the file.')
+    expect((parts[1] as { text: string }).text).toBe('planning')
+  })
+
+  it('keeps text contiguous across an interleaved commentary burst', () => {
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me ')
+    parts = appendCommentaryPart(parts, 'checking...')
+    parts = appendAssistantTextPart(parts, 'finish the sentence.')
+
+    expect(parts.map(p => p.type)).toEqual(['text', COMMENTARY_PART_TYPE])
+    expect((parts[0] as { text: string }).text).toBe('Let me finish the sentence.')
+  })
+
+  it('does not merge commentary across a tool call', () => {
+    let parts: ChatMessagePart[] = appendCommentaryPart([], 'before tool')
+    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
+    parts = appendCommentaryPart(parts, 'after tool')
+
+    expect(parts.map(p => p.type)).toEqual([COMMENTARY_PART_TYPE, 'tool-call', COMMENTARY_PART_TYPE])
+    expect(commentaryPartText(parts[0])).toBe('before tool')
+    expect(commentaryPartText(parts[2])).toBe('after tool')
+  })
+})
+
+describe('commentary reload mapping', () => {
+  it('maps a stored commentary field into the Working lane ahead of the tool step', () => {
+    // The realistic Codex reload shape: a commentary-bearing tool-call turn
+    // (empty content) followed by the tool result and the final answer.
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        commentary: 'Reading the screenshot first.',
+        content: '',
+        reasoning: 'Planning the analysis',
+        timestamp: 1
+      },
+      { role: 'tool', content: 'analyzed', tool_call_id: 'tc-1', tool_name: 'vision_analyze', timestamp: 2 },
+      { role: 'assistant', content: 'The total is $42.', timestamp: 3 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].parts.map(p => p.type)).toEqual([
+      'reasoning',
+      COMMENTARY_PART_TYPE,
+      'tool-call',
+      'text'
+    ])
+    expect(commentaryPartText(messages[0].parts[1])).toBe('Reading the screenshot first.')
+  })
+
+  it('keeps a commentary-only assistant turn visible', () => {
+    const messages = toChatMessages([
+      { role: 'assistant', commentary: 'Checking the logs.', content: '', timestamp: 1 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].parts.map(p => p.type)).toEqual([COMMENTARY_PART_TYPE])
+  })
+
+  it('derives commentary from raw codex_message_items (JSON string, DB-row shape)', () => {
+    // The /api/sessions/{id}/messages hydration path ships raw DB rows:
+    // codex_message_items arrives as a JSON string and there is no derived
+    // commentary field.
+    const items = JSON.stringify([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Reading the screenshot first.' }],
+        id: 'msg_1',
+        phase: 'commentary'
+      }
+    ])
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        codex_message_items: items,
+        content: '',
+        reasoning: 'Planning',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc-1', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { role: 'tool', content: 'ok', tool_call_id: 'tc-1', tool_name: 'terminal', timestamp: 2 },
+      { role: 'assistant', content: 'Done.', timestamp: 3 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].parts.map(p => p.type)).toEqual(['reasoning', COMMENTARY_PART_TYPE, 'tool-call', 'text'])
+    expect(commentaryPartText(messages[0].parts[1])).toBe('Reading the screenshot first.')
+  })
+
+  it('does not double-render legacy sessions that flattened commentary into reasoning', () => {
+    // Pre-split rows (e.g. state.db id=46579): the narration lives BOTH in the
+    // reasoning column and in the phase-bearing codex_message_items. The
+    // Working lane owns it; the Thinking lane keeps only genuine reasoning.
+    const narration =
+      'I’m reading the screenshot itself before I put numbers around it.'
+    const legacyReasoning = `**Planning image-based pricing analysis**\n\n<!-- -->\n**Reviewing model routing**\n\n<!-- -->\n\n${narration}`
+    const items = JSON.stringify([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: narration }],
+        id: 'msg_legacy',
+        phase: 'commentary'
+      }
+    ])
+
+    const messages = toChatMessages([
+      { role: 'assistant', codex_message_items: items, content: '', reasoning: legacyReasoning, timestamp: 1 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].parts.map(p => p.type)).toEqual(['reasoning', COMMENTARY_PART_TYPE])
+    const reasoningText = (messages[0].parts[0] as { text: string }).text
+    expect(reasoningText).toContain('Planning image-based pricing analysis')
+    expect(reasoningText).not.toContain('screenshot')
+    expect(commentaryPartText(messages[0].parts[1])).toBe(narration)
+  })
+
+  it('does not derive commentary from final_answer items on raw rows', () => {
+    const items = JSON.stringify([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Done.' }],
+        phase: 'final_answer'
+      }
+    ])
+    const messages = toChatMessages([
+      { role: 'assistant', codex_message_items: items, content: 'Done.', timestamp: 1 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].parts.map(p => p.type)).toEqual(['text'])
   })
 })
 

@@ -2278,6 +2278,7 @@ export const en: Translations = {
           : `Will resume when ${count} background tasks finish`,
       thinking: 'Thinking',
       today: time => `Today, ${time}`,
+      working: 'Working',
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',
       refresh: 'Refresh',

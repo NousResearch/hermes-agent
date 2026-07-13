@@ -659,6 +659,7 @@ export type GatewayEvent =
       session_id?: string
       type: 'reasoning.delta' | 'reasoning.available'
     }
+  | { payload?: { text?: string }; session_id?: string; type: 'commentary.delta' }
   | {
       payload: { count?: number; index?: number; label?: string; text?: string }
       session_id?: string

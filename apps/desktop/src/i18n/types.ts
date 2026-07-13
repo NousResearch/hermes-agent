@@ -1903,6 +1903,7 @@ export interface Translations {
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       today: (time: string) => string
+      working: string
       yesterday: (time: string) => string
       copy: string
       refresh: string

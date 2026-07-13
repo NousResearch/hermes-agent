@@ -422,6 +422,10 @@ class ResponsesApiTransport(ProviderTransport):
             provider_data["codex_message_items"] = msg.codex_message_items
         if msg and hasattr(msg, "reasoning_details") and msg.reasoning_details:
             provider_data["reasoning_details"] = msg.reasoning_details
+        if msg and getattr(msg, "commentary", None):
+            # Mid-turn commentary/analysis narration — its own semantic lane,
+            # never merged into reasoning or the final answer.
+            provider_data["commentary"] = msg.commentary
 
         return NormalizedResponse(
             content=msg.content if msg else None,

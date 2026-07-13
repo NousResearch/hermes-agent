@@ -1943,3 +1943,112 @@ def test_slow_completion_does_not_block_fast_handler(completion_method, server):
     assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
 
     released.set()
+
+
+# ── Codex commentary lane ────────────────────────────────────────────
+
+
+def test_agent_cbs_commentary_callback_emits_commentary_delta(server, monkeypatch):
+    """Codex commentary narration gets its own event, never reasoning.delta."""
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload))
+    )
+
+    cbs = server._agent_cbs("sid-1")
+    assert "commentary_callback" in cbs
+    cbs["commentary_callback"]("Reading the screenshot first.")
+
+    assert emitted == [
+        ("commentary.delta", "sid-1", {"text": "Reading the screenshot first."})
+    ]
+
+
+def _commentary_item(text, phase="commentary"):
+    return {
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{"type": "output_text", "text": text}],
+        "id": "msg_1",
+        "phase": phase,
+    }
+
+
+def test_history_to_messages_derives_commentary_from_codex_message_items(server):
+    """Reload reconstructs the Working lane from phase-bearing message items.
+
+    A Codex commentary turn persists with empty content + tool_calls; it must
+    survive _history_to_messages instead of being elided like other
+    content-less tool-call turns, and the commentary text must ride a
+    dedicated field (not reasoning).
+    """
+    history = [
+        {"role": "user", "content": "analyze this"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "**Planning image-based pricing analysis**",
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "vision_analyze", "arguments": "{}"}}
+            ],
+            "codex_message_items": [_commentary_item("Reading the screenshot first.")],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+        {"role": "assistant", "content": "The total is $42."},
+    ]
+
+    messages = server._history_to_messages(history)
+
+    assert messages == [
+        {"role": "user", "text": "analyze this"},
+        {
+            "role": "assistant",
+            "text": "",
+            "reasoning": "**Planning image-based pricing analysis**",
+            "commentary": "Reading the screenshot first.",
+        },
+        {
+            "role": "tool",
+            "name": "vision_analyze",
+            "context": server._tool_ctx("vision_analyze", {}),
+        },
+        {"role": "assistant", "text": "The total is $42."},
+    ]
+
+
+def test_history_to_messages_ignores_final_answer_phase_items(server):
+    """final_answer items are the normal answer, not commentary."""
+    history = [
+        {
+            "role": "assistant",
+            "content": "The total is $42.",
+            "codex_message_items": [
+                _commentary_item("The total is $42.", phase="final_answer")
+            ],
+        },
+    ]
+
+    messages = server._history_to_messages(history)
+
+    assert messages == [{"role": "assistant", "text": "The total is $42."}]
+
+
+def test_history_to_messages_still_elides_plain_toolcall_turns(server):
+    """Non-commentary content-less tool-call turns keep their existing elision."""
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+
+    messages = server._history_to_messages(history)
+
+    assert messages == [
+        {"role": "tool", "name": "terminal", "context": server._tool_ctx("terminal", {})}
+    ]

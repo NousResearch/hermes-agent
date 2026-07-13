@@ -41,10 +41,14 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
 
 const ThinkingDisclosure: FC<{
   children: ReactNode
+  /** Header label; defaults to the "Thinking" string. The commentary lane
+   *  passes "Working" to keep narration visually distinct from reasoning. */
+  label?: ReactNode
   messageRunning?: boolean
   pending?: boolean
+  slot?: string
   timerKey?: string
-}> = ({ children, messageRunning = false, pending = false, timerKey }) => {
+}> = ({ children, label, messageRunning = false, pending = false, slot = 'aui_thinking-disclosure', timerKey }) => {
   const { t } = useI18n()
   // `null` = no explicit user toggle yet, defer to the streaming default.
   // The default is "auto-open while streaming, auto-collapse when done" so
@@ -91,7 +95,7 @@ const ThinkingDisclosure: FC<{
   return (
     <div
       className="text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)"
-      data-slot="aui_thinking-disclosure"
+      data-slot={slot}
       ref={enterRef}
     >
       <DisclosureRow onToggle={() => setUserOpen(!open)} open={open}>
@@ -102,7 +106,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            {t.assistant.thread.thinking}
+            {label ?? t.assistant.thread.thinking}
           </span>
           {pending && (
             <ActivityTimerText
@@ -174,6 +178,43 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   )
 }
 
+// Codex commentary/analysis narration — the "Working" lane. Reuses the
+// disclosure chrome from Thinking but stays a separate surface so genuine
+// reasoning and user-facing progress narration never share a header. The
+// part arrives as assistant-ui's `data` part (name: "commentary"); its
+// status is `running` only while it is the last part of a running message,
+// which is exactly the live-streaming window.
+const CommentaryDataPart: FC<{ data?: { text?: unknown }; status?: { type: string } }> = ({ data, status }) => {
+  const { t } = useI18n()
+  const messageId = useAuiState(s => s.message.id)
+  const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const threadRunning = useAuiState(s => s.thread.isRunning)
+  const text = typeof data?.text === 'string' ? data.text : ''
+  const pending = threadRunning && messageRunning && status?.type === 'running'
+
+  // Empty narration renders no header — same rule as the reasoning group.
+  if (!text.trim()) {
+    return null
+  }
+
+  return (
+    <ThinkingDisclosure
+      label={t.assistant.thread.working}
+      messageRunning={messageRunning}
+      pending={pending}
+      slot="aui_commentary-disclosure"
+      timerKey={`commentary:${messageId}`}
+    >
+      <MarkdownTextContent
+        containerClassName="text-xs leading-snug text-muted-foreground/85"
+        containerProps={{ 'data-slot': 'aui_commentary-text' } as ComponentProps<'div'>}
+        isRunning={pending}
+        text={text.trimStart()}
+      />
+    </ThinkingDisclosure>
+  )
+}
+
 const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ text, status }) => {
   const displayText = text.trimStart()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
@@ -197,6 +238,7 @@ const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ te
 // remount, but combined with the previous ToolFallback group-swap it was a
 // big chunk of the per-delta work.
 export const MESSAGE_PARTS_COMPONENTS = {
+  data: { by_name: { commentary: CommentaryDataPart } },
   Reasoning: ReasoningTextPart,
   ReasoningGroup: ReasoningAccordionGroup,
   Text: MarkdownText,

@@ -91,6 +91,106 @@ export function reasoningPart(text: string): ChatMessagePart {
   return { type: 'reasoning', text }
 }
 
+/** Codex commentary/analysis narration — user-facing mid-turn progress,
+ *  semantically distinct from reasoning and from the final answer. Rides
+ *  assistant-ui's data-part extension point (the part union is closed) and
+ *  renders via `MESSAGE_PARTS_COMPONENTS.data.by_name.commentary`. */
+export const COMMENTARY_PART_TYPE = 'data-commentary' as const
+
+export function commentaryPart(text: string): ChatMessagePart {
+  return { type: COMMENTARY_PART_TYPE, data: { text } }
+}
+
+export function commentaryPartText(part: ChatMessagePart): string {
+  if (part.type !== COMMENTARY_PART_TYPE) {
+    return ''
+  }
+
+  const data = (part as { data?: { text?: unknown } }).data
+
+  return typeof data?.text === 'string' ? data.text : ''
+}
+
+const COMMENTARY_PHASES = new Set(['commentary', 'analysis'])
+
+/** Commentary text for a stored message: the gateway's derived field when
+ *  present, otherwise reconstructed from the persisted phase-bearing
+ *  codex_message_items (raw DB rows ship those as a JSON string). */
+export function commentaryFromSessionMessage(message: SessionMessage): string {
+  if (typeof message.commentary === 'string' && message.commentary.trim()) {
+    return message.commentary
+  }
+
+  let items = message.codex_message_items
+
+  if (typeof items === 'string') {
+    try {
+      items = JSON.parse(items)
+    } catch {
+      return ''
+    }
+  }
+
+  if (!Array.isArray(items)) {
+    return ''
+  }
+
+  const texts: string[] = []
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') {
+      continue
+    }
+
+    const { content, phase } = item as { content?: unknown; phase?: unknown }
+
+    if (typeof phase !== 'string' || !COMMENTARY_PHASES.has(phase.trim().toLowerCase()) || !Array.isArray(content)) {
+      continue
+    }
+
+    for (const part of content) {
+      const text = part && typeof part === 'object' ? (part as { text?: unknown }).text : undefined
+
+      if (typeof text === 'string' && text.trim()) {
+        texts.push(text)
+      }
+    }
+  }
+
+  return texts.join('\n\n').trim()
+}
+
+/** Sessions persisted before the commentary/reasoning split stored the
+ *  narration flattened INTO the reasoning column while the same text also
+ *  lives in codex_message_items. Deriving the Working lane on reload would
+ *  then show the narration twice, so remove commentary chunks from the
+ *  reasoning display. Substring-guarded (min length) so a coincidental
+ *  short overlap can't eat genuine reasoning. */
+export function stripCommentaryFromReasoning(reasoning: string, commentary: string): string {
+  if (!reasoning || !commentary) {
+    return reasoning
+  }
+
+  let result = reasoning
+
+  for (const chunk of commentary.split('\n\n')) {
+    const candidate = chunk.trim()
+
+    if (candidate.length >= 12 && result.includes(candidate)) {
+      result = result.replace(candidate, '')
+    }
+  }
+
+  if (result === reasoning) {
+    return reasoning
+  }
+
+  return result
+    .replace(/(\n\s*<!--\s*-->\s*)+(\n|$)/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
 
 const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
@@ -190,40 +290,62 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
+type StreamChannel = 'commentary' | 'reasoning' | 'text'
+
+const STREAM_PART: Record<StreamChannel, (text: string) => ChatMessagePart> = {
+  commentary: commentaryPart,
   reasoning: reasoningPart,
   text: textPart
 }
 
+const STREAM_PART_TYPE: Record<StreamChannel, ChatMessagePart['type']> = {
+  commentary: COMMENTARY_PART_TYPE,
+  reasoning: 'reasoning',
+  text: 'text'
+}
+
+// Streaming channels are mutually transparent (see appendStreamPart below);
+// any other part type bounds the current segment.
+const STREAM_TRANSPARENT_TYPES = new Set<string>(['text', 'reasoning', COMMENTARY_PART_TYPE])
+
+function appendStreamDelta(part: ChatMessagePart, delta: string): ChatMessagePart {
+  if (part.type === COMMENTARY_PART_TYPE) {
+    return commentaryPart(`${commentaryPartText(part)}${delta}`)
+  }
+
+  return { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
+}
+
 // Coalesce a streaming delta into the most recent same-type part within the
 // current segment, where a segment is bounded by any non-streaming part (a
-// tool call, image, …). The opposite streaming channel (text <-> reasoning) is
-// transparent, so a reasoning burst between two content deltas can't shred one
-// sentence into text / Thinking / text — the fragmentation models that
-// interleave reasoning_content + content otherwise produce. Tool calls still
-// open a fresh part, preserving narration order across steps.
+// tool call, image, …). The other streaming channels (text <-> reasoning <->
+// commentary) are transparent, so a reasoning burst between two content deltas
+// can't shred one sentence into text / Thinking / text — the fragmentation
+// models that interleave reasoning_content + content otherwise produce. Tool
+// calls still open a fresh part, preserving narration order across steps.
 function appendStreamPart(
   parts: ChatMessagePart[],
-  type: 'reasoning' | 'text',
+  channel: StreamChannel,
   delta: string
 ): { index: number; parts: ChatMessagePart[] } {
   const next = [...parts]
+  const partType = STREAM_PART_TYPE[channel]
 
   for (let i = next.length - 1; i >= 0; i--) {
     const part = next[i]
 
-    if (part.type === type) {
-      next[i] = { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
+    if (part.type === partType) {
+      next[i] = appendStreamDelta(part, delta)
 
       return { index: i, parts: next }
     }
 
-    if (part.type !== 'text' && part.type !== 'reasoning') {
+    if (!STREAM_TRANSPARENT_TYPES.has(part.type)) {
       break
     }
   }
 
-  next.push(STREAM_PART[type](delta))
+  next.push(STREAM_PART[channel](delta))
 
   return { index: next.length - 1, parts: next }
 }
@@ -234,6 +356,10 @@ export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMes
 
 export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
   return appendStreamPart(parts, 'reasoning', delta).parts
+}
+
+export function appendCommentaryPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
+  return appendStreamPart(parts, 'commentary', delta).parts
 }
 
 export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
@@ -770,13 +896,24 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const displayContent = displayContentForMessage(message.role, content)
     const parts: ChatMessagePart[] = []
 
-    const reasoning =
+    const rawReasoning =
       message.reasoning ||
       message.reasoning_content ||
       (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
 
+    // Codex commentary narration: mid-turn progress that precedes tool calls
+    // and the final answer — its own "Working" lane between reasoning and the
+    // text part. Legacy rows flattened the same narration into reasoning, so
+    // the reasoning display drops it to avoid a Thinking/Working double-up.
+    const commentary = message.role === 'assistant' ? commentaryFromSessionMessage(message) : ''
+    const reasoning = commentary ? stripCommentaryFromReasoning(rawReasoning, commentary) : rawReasoning
+
     if (reasoning && message.role === 'assistant') {
       parts.push(reasoningPart(reasoning))
+    }
+
+    if (commentary) {
+      parts.push(commentaryPart(commentary))
     }
 
     if (displayContent) {

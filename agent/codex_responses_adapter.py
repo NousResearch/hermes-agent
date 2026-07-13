@@ -1043,6 +1043,37 @@ def _extract_responses_message_text(item: Any) -> str:
     return "".join(chunks).strip()
 
 
+def commentary_text_from_message_items(items: Any) -> str:
+    """Join Codex commentary/analysis narration from persisted message items.
+
+    Commentary is never stored in ``reasoning``/``reasoning_content`` — the
+    durable record is the phase-bearing ``codex_message_items`` kept for
+    Responses replay. Display surfaces (TUI gateway reload, CLI recap,
+    messaging show_reasoning) derive the narration from those items via this
+    helper. Accepts the decoded list or the JSON-encoded column value.
+    """
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except (json.JSONDecodeError, TypeError):
+            return ""
+    if not isinstance(items, list):
+        return ""
+    parts: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        phase = item.get("phase")
+        if not isinstance(phase, str) or phase.strip().lower() not in {"commentary", "analysis"}:
+            continue
+        for part in item.get("content") or []:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+    return "\n\n".join(parts).strip()
+
+
 def _extract_responses_reasoning_text(item: Any) -> str:
     """Extract a compact reasoning text from a Responses reasoning item."""
     summary = getattr(item, "summary", None)
@@ -1150,6 +1181,7 @@ def _normalize_codex_response(
 
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
+    commentary_parts: List[str] = []
     reasoning_items_raw: List[Dict[str, Any]] = []
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
@@ -1219,11 +1251,13 @@ def _normalize_codex_response(
                 # (Codex CLI excludes it from last-message extraction; issues
                 # #24933 / #41293).  Keep it out of assistant content so it
                 # can't be concatenated into — or leak as — the final response,
-                # but surface it through the reasoning channel so the CLI/
-                # gateway display it like thinking text.  The exact message
-                # item is still preserved below for replay/cache continuity.
+                # and out of the reasoning lane so genuine chain-of-thought
+                # summaries and user-facing narration stay semantically
+                # distinct (persisted ``reasoning`` fields must hold reasoning
+                # only).  The exact message item is still preserved below for
+                # replay/cache continuity.
                 if is_commentary_phase:
-                    reasoning_parts.append(message_text)
+                    commentary_parts.append(message_text)
                 else:
                     content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
@@ -1366,6 +1400,7 @@ def _normalize_codex_response(
         reasoning="\n\n".join(reasoning_parts).strip() if reasoning_parts else None,
         reasoning_content=None,
         reasoning_details=None,
+        commentary="\n\n".join(commentary_parts).strip() if commentary_parts else None,
         codex_reasoning_items=reasoning_items_raw or None,
         codex_message_items=message_items_raw or None,
     )

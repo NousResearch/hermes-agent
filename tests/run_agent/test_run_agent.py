@@ -4793,7 +4793,7 @@ class TestRunConversation:
         agent.max_tokens = None
         requested_caps = []
 
-        def _fake_build_api_kwargs(api_messages):
+        def _fake_build_api_kwargs(api_messages, tools_for_api=None):
             ephemeral = getattr(agent, "_ephemeral_max_output_tokens", None)
             if ephemeral is not None:
                 agent._ephemeral_max_output_tokens = None
@@ -6304,6 +6304,28 @@ class TestBuildApiKwargsAnthropicMaxTokens:
                 assert call_args[1].get("max_tokens") is None
             else:
                 assert call_args[0][3] is None
+
+    def test_request_local_tool_cache_markers_reach_anthropic_kwargs(self, agent):
+        from agent.prompt_caching import apply_tool_cache_control
+
+        agent.api_mode = "anthropic_messages"
+        agent.reasoning_config = None
+        cached_tools = apply_tool_cache_control(agent.tools, cache_ttl="1h")
+
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+            mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "tools": []}
+            agent._build_api_kwargs(
+                [{"role": "user", "content": "test"}],
+                tools_for_api=cached_tools,
+            )
+            _, kwargs = mock_build.call_args
+            if not kwargs:
+                kwargs = dict(zip(
+                    ["model", "messages", "tools", "max_tokens", "reasoning_config"],
+                    mock_build.call_args[0],
+                ))
+
+            assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
 class TestAnthropicImageFallback:

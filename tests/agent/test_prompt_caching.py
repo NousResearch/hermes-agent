@@ -5,6 +5,8 @@ from agent.prompt_caching import (
     _apply_cache_marker,
     _can_carry_marker,
     apply_anthropic_cache_control,
+    apply_tool_cache_control,
+    prepare_tools_for_api,
 )
 
 
@@ -194,6 +196,69 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count <= 4
+
+    def test_reserved_breakpoint_reduces_message_markers(self):
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+        ]
+        full = apply_anthropic_cache_control(msgs, reserved_breakpoints=0)
+        reserved = apply_anthropic_cache_control(msgs, reserved_breakpoints=1)
+
+        def _count_markers(items):
+            count = 0
+            for msg in items:
+                content = msg.get("content")
+                if isinstance(content, list):
+                    count += sum(
+                        1 for part in content
+                        if isinstance(part, dict) and "cache_control" in part
+                    )
+                elif "cache_control" in msg:
+                    count += 1
+            return count
+
+        assert _count_markers(reserved) == _count_markers(full) - 1
+
+
+class TestToolCacheControl:
+    def test_apply_tool_cache_control_marks_last_tool_only(self):
+        tools = [
+            {"type": "function", "function": {"name": "a"}},
+            {"type": "function", "function": {"name": "b"}},
+        ]
+        result = apply_tool_cache_control(tools)
+        assert "cache_control" not in result[0]
+        assert result[1]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in tools[1]
+
+    def test_prepare_tools_for_api_returns_original_list_when_caching_off(self):
+        tools = [{"type": "function", "function": {"name": "only"}}]
+        result, reserved = prepare_tools_for_api(
+            tools,
+            use_prompt_caching=False,
+        )
+        assert result is tools
+        assert reserved == 0
+
+    def test_prepare_tools_for_api_marks_request_local_copy_when_caching_on(self):
+        tools = [
+            {"type": "function", "function": {"name": "a"}},
+            {"type": "function", "function": {"name": "b"}},
+        ]
+        result, reserved = prepare_tools_for_api(
+            tools,
+            use_prompt_caching=True,
+            cache_ttl="1h",
+        )
+        assert result is not tools
+        assert reserved == 1
+        assert "cache_control" not in tools[1]
+        assert result[1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
     def test_tool_loop_empty_assistant_and_tool_messages_do_not_consume_breakpoints(self):
         """Tool loops should keep breakpoints on messages that can carry markers."""

@@ -57,7 +57,7 @@ from agent.model_metadata import (
     save_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
-from agent.prompt_caching import apply_anthropic_cache_control
+from agent.prompt_caching import apply_anthropic_cache_control, prepare_tools_for_api
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -885,10 +885,18 @@ def run_conversation(
             for idx, pfm in enumerate(agent.prefill_messages):
                 api_messages.insert(sys_offset + idx, pfm.copy())
 
+        tools_for_api, reserved_tool_breakpoints = prepare_tools_for_api(
+            agent.tools,
+            use_prompt_caching=agent._use_prompt_caching,
+            cache_ttl=agent._cache_ttl,
+        )
+
         # Apply Anthropic prompt caching for Claude models on native
         # Anthropic, OpenRouter, and third-party Anthropic-compatible
         # gateways. Auto-detected: if ``_use_prompt_caching`` is set,
-        # inject cache_control breakpoints (system + last 3 messages)
+        # inject cache_control breakpoints (system + last 3 messages),
+        # holding one slot back when the request also transmits a
+        # cache-marked tools array.
         # to reduce input token costs by ~75% on multi-turn
         # conversations.
         if agent._use_prompt_caching:
@@ -896,6 +904,7 @@ def run_conversation(
                 api_messages,
                 cache_ttl=agent._cache_ttl,
                 native_anthropic=agent._use_native_cache_layout,
+                reserved_breakpoints=reserved_tool_breakpoints,
             )
 
         # Safety net: strip orphaned tool results / add stubs for missing
@@ -1163,7 +1172,10 @@ def run_conversation(
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
-                api_kwargs = agent._build_api_kwargs(api_messages)
+                api_kwargs = agent._build_api_kwargs(
+                    api_messages,
+                    tools_for_api=tools_for_api,
+                )
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":

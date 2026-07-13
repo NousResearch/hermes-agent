@@ -9,7 +9,7 @@ Pure functions -- no class state, no AIAgent dependency.
 """
 
 import copy
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
@@ -85,11 +85,13 @@ def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
     native_anthropic: bool = False,
+    reserved_breakpoints: int = 0,
 ) -> List[Dict[str, Any]]:
     """Apply system_and_3 caching strategy to messages for Anthropic models.
 
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system
-    messages, all at the same TTL.
+    messages, all at the same TTL. ``reserved_breakpoints`` holds back slots
+    for other cacheable request sections such as tool schemas.
 
     Returns:
         Deep copy of messages with cache_control breakpoints injected.
@@ -106,7 +108,7 @@ def apply_anthropic_cache_control(
         _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
-    remaining = 4 - breakpoints_used
+    remaining = max(0, 4 - breakpoints_used - reserved_breakpoints)
     non_sys = [
         i
         for i in range(len(messages))
@@ -117,3 +119,35 @@ def apply_anthropic_cache_control(
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
 
     return messages
+
+
+def apply_tool_cache_control(
+    tools: Optional[List[Dict[str, Any]]],
+    cache_ttl: str = "5m",
+) -> Optional[List[Dict[str, Any]]]:
+    """Return a request-local tool list with cache_control on the last tool."""
+    if not tools:
+        return tools
+
+    result = list(tools)
+    last = copy.deepcopy(result[-1])
+    last["cache_control"] = _build_marker(cache_ttl)
+    result[-1] = last
+    return result
+
+
+def prepare_tools_for_api(
+    tools: Optional[List[Dict[str, Any]]],
+    *,
+    use_prompt_caching: bool,
+    cache_ttl: str = "5m",
+) -> Tuple[Optional[List[Dict[str, Any]]], int]:
+    """Build the transmitted tool list and reserved breakpoint count.
+
+    The returned list is request-local when prompt caching is active, so the
+    marked tool schema is sent only on the current API call.
+    """
+    if not tools or not use_prompt_caching:
+        return tools, 0
+
+    return apply_tool_cache_control(tools, cache_ttl=cache_ttl), 1

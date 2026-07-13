@@ -55,11 +55,10 @@ def _get_git_commit(project_root: Path) -> str:
     """Return short git commit hash, or '(unknown)'.
 
     Source installs and dev images resolve this live via ``git rev-parse``.
-    The published Docker image excludes ``.git`` from the build context, so
-    that lookup always fails — we fall back to the baked-in build SHA written
-    to ``<project_root>/.hermes_build_sha`` by the Dockerfile's
-    ``HERMES_GIT_SHA`` build-arg (see ``hermes_cli/build_info.py``).
-    The output format is identical regardless of source.
+    Packaged artifacts may not carry ``.git``, so that lookup can fail. We
+    then derive the short display from the package-relative exact build
+    metadata in ``hermes_cli/build_info.py``. The output format is identical
+    regardless of source.
     """
     try:
         result = subprocess.run(
@@ -74,9 +73,8 @@ def _get_git_commit(project_root: Path) -> str:
     except Exception:
         pass
 
-    # Fall back to the build-time baked SHA (populated in published Docker
-    # images, absent otherwise).  Defers the import so the dump module
-    # stays cheap on non-dump code paths.
+    # Fall back to package-relative build metadata. Defers the import so the
+    # dump module stays cheap on non-dump code paths.
     try:
         from hermes_cli.build_info import get_build_sha
         baked = get_build_sha(short=8)

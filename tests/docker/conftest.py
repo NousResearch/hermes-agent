@@ -12,6 +12,7 @@ the repo's Dockerfile once per session.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import time
@@ -19,7 +20,10 @@ from collections.abc import Iterator
 
 import pytest
 
+from hermes_cli.build_info import get_source_revision
+
 IMAGE_TAG = os.environ.get("HERMES_TEST_IMAGE", "hermes-agent-harness:latest")
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _docker_available() -> bool:
@@ -49,7 +53,15 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 - pytest hook
 
 
 @pytest.fixture(scope="session")
-def built_image() -> str:
+def built_image_source_revision() -> str | None:
+    """Revision passed into locally built images, or ``None`` when unprovable."""
+    if os.environ.get("HERMES_TEST_IMAGE"):
+        return None
+    return get_source_revision(REPO_ROOT)
+
+
+@pytest.fixture(scope="session")
+def built_image(built_image_source_revision: str | None) -> str:
     """Build the image once per test session.
 
     Override with ``HERMES_TEST_IMAGE`` env var to point at a pre-built
@@ -57,11 +69,15 @@ def built_image() -> str:
     """
     if os.environ.get("HERMES_TEST_IMAGE"):
         return IMAGE_TAG
-    repo_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", ".."),
-    )
+    command = ["docker", "build", "-t", IMAGE_TAG]
+    if built_image_source_revision is not None:
+        command.extend([
+            "--build-arg",
+            f"HERMES_GIT_SHA={built_image_source_revision}",
+        ])
+    command.append(str(REPO_ROOT))
     result = subprocess.run(
-        ["docker", "build", "-t", IMAGE_TAG, repo_root],
+        command,
         capture_output=True, text=True, timeout=1200,
     )
     assert result.returncode == 0, (

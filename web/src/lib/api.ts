@@ -1779,6 +1779,9 @@ export interface StatusResponse {
   hermes_home: string;
   latest_config_version: number;
   release_date: string;
+  /** Full lowercase source SHA for the serving artifact, or null when the
+   * exact revision cannot be proven. Missing on older Hermes releases. */
+  source_revision?: string | null;
   version: string;
 }
 

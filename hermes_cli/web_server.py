@@ -53,6 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from hermes_cli.build_info import get_source_revision
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -120,6 +121,7 @@ except ImportError:
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
+_SOURCE_REVISION = get_source_revision()
 
 # ---------------------------------------------------------------------------
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
@@ -2711,6 +2713,7 @@ async def get_status(profile: Optional[str] = None):
         # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
         status = {
             "version": __version__,
+            "source_revision": _SOURCE_REVISION,
             "release_date": __release_date__,
             "config_version": current_ver,
             "latest_config_version": latest_ver,

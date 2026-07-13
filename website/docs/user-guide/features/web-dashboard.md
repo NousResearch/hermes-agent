@@ -412,7 +412,10 @@ a chat under the selected profile.
 
 ### GET /api/status
 
-Returns agent version, gateway status, platform states, and active session count.
+Returns the agent version, optional exact `source_revision` (a full lowercase
+40-character Git SHA or `null`), gateway status, platform states, and active
+session count. Packaged artifacts report their embedded build revision; a
+source checkout reports `HEAD` only while its working tree is clean.
 
 ### GET /api/sessions
 

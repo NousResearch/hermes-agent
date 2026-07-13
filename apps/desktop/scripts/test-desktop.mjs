@@ -286,6 +286,8 @@ function launchFresh() {
 //   - The Hermes Agent Python payload is NOT shipped (it's fetched at first
 //     launch via install.ps1's stage protocol).
 //   - install-stamp.json IS shipped in resources/ with a valid commit + branch.
+//   - hermes_cli/_build_metadata.json carries the same exact source revision
+//     (or null for a deliberately dirty local package).
 //   - node-pty IS shipped inside app.asar.unpacked/dist/node_modules/node-pty
 //     with package.json + lib/ + at least one .node binary (the renderer's
 //     integrated terminal needs this; see Phase 1F.6).
@@ -322,6 +324,24 @@ function validateBundle() {
   }
   if (!stamp.branch || typeof stamp.branch !== 'string') {
     die(`install-stamp.json is missing the branch field: ${JSON.stringify(stamp)}`)
+  }
+
+  const metadataPath = path.join(APP.resourcesPath, 'hermes_cli', '_build_metadata.json')
+  if (!exists(metadataPath)) {
+    die(`Missing package-relative Hermes build metadata: ${metadataPath}`)
+  }
+  let buildMetadata
+  try {
+    buildMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'))
+  } catch (err) {
+    die(`Hermes build metadata is not valid JSON: ${err.message}`)
+  }
+  const expectedRevision = stamp.dirty ? null : stamp.commit
+  if (buildMetadata.source_revision !== expectedRevision) {
+    die(
+      `Desktop build identity disagrees with install stamp: ` +
+        `${JSON.stringify(buildMetadata)} vs ${JSON.stringify(stamp)}`
+    )
   }
 
   // Positive assertion: node-pty native deps shipped

@@ -198,7 +198,9 @@ Web Dashboard 暴露了一个供前端使用的 REST API。你也可以直接调
 
 ### GET /api/status
 
-返回 agent 版本、gateway 状态、平台状态和活跃会话数。
+返回 agent 版本、可选的精确 `source_revision`（完整的小写 40 字符 Git SHA，
+无法证明时为 `null`）、gateway 状态、平台状态和活跃会话数。打包产物会报告构建时嵌入的
+revision；源码 checkout 仅在工作树干净时报告其 `HEAD`。
 
 ### GET /api/sessions
 

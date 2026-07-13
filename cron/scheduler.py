@@ -400,6 +400,7 @@ def _consume_interrupted_flag(job_id: str) -> bool:
 # ticker thread.  A persistent single-thread executor preserves ordering across
 # ticks while keeping dispatch fire-and-forget, the same as the parallel pool.
 _sequential_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_TERMINAL_CWD_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 class _ReadWriteLock:
@@ -425,11 +426,19 @@ class _ReadWriteLock:
         self._writer_active = False
         self._writers_waiting = 0
 
-    def acquire_read(self) -> None:
+    def acquire_read(self, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         with self._cond:
             while self._writer_active or self._writers_waiting > 0:
-                self._cond.wait()
+                if deadline is None:
+                    self._cond.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
             self._readers += 1
+            return True
 
     def release_read(self) -> None:
         with self._cond:
@@ -437,15 +446,23 @@ class _ReadWriteLock:
             if self._readers == 0:
                 self._cond.notify_all()
 
-    def acquire_write(self) -> None:
+    def acquire_write(self, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         with self._cond:
             self._writers_waiting += 1
             try:
                 while self._writer_active or self._readers > 0:
-                    self._cond.wait()
+                    if deadline is None:
+                        self._cond.wait()
+                        continue
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._cond.wait(remaining)
             finally:
                 self._writers_waiting -= 1
             self._writer_active = True
+            return True
 
     def release_write(self) -> None:
         with self._cond:
@@ -2758,17 +2775,27 @@ def run_job(
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
 
     _holds_cwd_write = _job_workdir is not None
-    if _holds_cwd_write:
-        _terminal_cwd_lock.acquire_write()
-    else:
-        _terminal_cwd_lock.acquire_read()
+    _cwd_lock_acquired = False
 
-    # Everything after the acquire MUST live inside this try, so the finally
-    # below always releases the lock even if the env override or any later
-    # statement raises.  A leaked writer would deadlock the whole scheduler
-    # (every future job blocks on acquire_*); a leaked reader blocks all
-    # future writers.  Acquire itself can't leak (it either blocks or returns).
+    # Everything from acquire onward MUST live inside this try, so timeout or
+    # body failures return a normal cron failure and the finally below releases
+    # the lock only if it was actually acquired.
     try:
+        if _holds_cwd_write:
+            _cwd_lock_acquired = _terminal_cwd_lock.acquire_write(
+                timeout=_TERMINAL_CWD_LOCK_TIMEOUT_SECONDS
+            )
+        else:
+            _cwd_lock_acquired = _terminal_cwd_lock.acquire_read(
+                timeout=_TERMINAL_CWD_LOCK_TIMEOUT_SECONDS
+            )
+        if not _cwd_lock_acquired:
+            raise TimeoutError(
+                f"Cron job '{job_name}' timed out waiting for TERMINAL_CWD "
+                f"{'write' if _holds_cwd_write else 'read'} lock after "
+                f"{_TERMINAL_CWD_LOCK_TIMEOUT_SECONDS:g}s"
+            )
+
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -3325,10 +3352,11 @@ def run_job(
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Release the cwd lock now that the env is restored, so a waiting
         # workdir job (or queued reader) can proceed without seeing the override.
-        if _holds_cwd_write:
-            _terminal_cwd_lock.release_write()
-        else:
-            _terminal_cwd_lock.release_read()
+        if _cwd_lock_acquired:
+            if _holds_cwd_write:
+                _terminal_cwd_lock.release_write()
+            else:
+                _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:

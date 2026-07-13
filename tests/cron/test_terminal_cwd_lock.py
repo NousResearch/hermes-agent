@@ -11,6 +11,7 @@ These tests assert that contract.
 """
 
 import threading
+import time
 
 
 def _lock():
@@ -84,6 +85,30 @@ def test_writer_waits_for_active_reader():
     assert order == ["reader-release", "writer-acquire"]
 
 
+def test_writer_acquire_times_out_behind_active_reader():
+    """Bounded acquire prevents a stuck reader from blocking a writer forever."""
+    lock = _lock()
+    lock.acquire_read()
+    started = time.monotonic()
+    try:
+        assert lock.acquire_write(timeout=0.01) is False
+    finally:
+        lock.release_read()
+    assert time.monotonic() - started < 1.0
+
+
+def test_reader_acquire_times_out_behind_active_writer():
+    """Bounded acquire prevents a stuck writer from blocking readers forever."""
+    lock = _lock()
+    lock.acquire_write()
+    started = time.monotonic()
+    try:
+        assert lock.acquire_read(timeout=0.01) is False
+    finally:
+        lock.release_write()
+    assert time.monotonic() - started < 1.0
+
+
 def test_reader_never_observes_writer_override():
     """Regression: the cross-pool TERMINAL_CWD corruption.
 
@@ -132,6 +157,29 @@ def test_reader_never_observes_writer_override():
     assert not wt.is_alive() and not rt.is_alive()
     # The reader saw the restored value, never the writer's /project/A override.
     assert observations == ["<scheduler>"]
+
+
+def test_run_job_fails_fast_when_cwd_lock_is_stuck(tmp_path, monkeypatch):
+    """A leaked writer must not wedge a later cron job's worker forever."""
+    import cron.scheduler as sched
+
+    monkeypatch.setattr(sched, "_TERMINAL_CWD_LOCK_TIMEOUT_SECONDS", 0.01)
+    sched._terminal_cwd_lock.acquire_write()
+    try:
+        job = {
+            "id": "blocked-reader",
+            "name": "blocked-reader",
+            "prompt": "hi",
+        }
+
+        start = time.monotonic()
+        success, _out, _final, error = sched.run_job(job)
+    finally:
+        sched._terminal_cwd_lock.release_write()
+
+    assert success is False
+    assert "TERMINAL_CWD read lock" in (error or "")
+    assert time.monotonic() - start < 10.0
 
 
 def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):

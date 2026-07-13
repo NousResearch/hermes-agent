@@ -90,4 +90,19 @@ describe('subagent liveness reconciliation', () => {
     reconcileActiveSubagents([snapshot()], 1_000 + SUBAGENT_ORPHAN_GRACE_MS * 2, false)
     expect(idsFor('remote')).toEqual(['remote'])
   })
+
+  it('does not let an active id in one profile retain a stale row in another', () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+
+    spawn('local', 'shared-id', 'running', 'default')
+    spawn('remote', 'shared-id', 'running', 'remote')
+    reconcileActiveSubagents(
+      [snapshot([], 'default'), snapshot(['shared-id'], 'remote')],
+      1_000 + SUBAGENT_LIVENESS_GRACE_MS + 1
+    )
+    nowSpy.mockRestore()
+
+    expect($subagentsBySession.get().local).toBeUndefined()
+    expect(idsFor('remote')).toEqual(['shared-id'])
+  })
 })

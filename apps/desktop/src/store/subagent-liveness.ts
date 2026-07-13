@@ -33,22 +33,54 @@ export function reconcileActiveSubagents(
   allProfilesAuthoritative = true
 ): void {
   const current = $subagentsBySession.get()
-  const items = Object.values(current).flat()
-  const byId = new Map(items.map(item => [item.id, item]))
-  const authoritativeProfiles = new Set(snapshots.map(item => normProfile(item.profile)))
-  const keepIds = new Set(snapshots.flatMap(item => item.activeIds).filter(Boolean))
+  const itemsByProfile = new Map<string, Map<string, SubagentProgress>>()
+  const authoritativeProfiles = new Set<string>()
+  const keepIdsByProfile = new Map<string, Set<string>>()
+
+  for (const item of Object.values(current).flat()) {
+    const profile = normProfile(item.profile)
+    const byId = itemsByProfile.get(profile) ?? new Map<string, SubagentProgress>()
+
+    byId.set(item.id, item)
+    itemsByProfile.set(profile, byId)
+  }
+
+  for (const snapshot of snapshots) {
+    const profile = normProfile(snapshot.profile)
+    const keepIds = keepIdsByProfile.get(profile) ?? new Set<string>()
+
+    authoritativeProfiles.add(profile)
+
+    for (const id of snapshot.activeIds) {
+      if (id) {
+        keepIds.add(id)
+      }
+    }
+
+    keepIdsByProfile.set(profile, keepIds)
+  }
 
   // Preserve missing parents while an authoritative descendant is still live,
   // otherwise nested children would jump to the tree root during reconciliation.
-  for (const activeId of keepIds) {
-    let parentId = byId.get(activeId)?.parentId ?? null
-    const seen = new Set<string>()
+  for (const [profile, keepIds] of keepIdsByProfile) {
+    const byId = itemsByProfile.get(profile)
 
-    while (parentId && !seen.has(parentId)) {
-      seen.add(parentId)
-      keepIds.add(parentId)
-      parentId = byId.get(parentId)?.parentId ?? null
+    for (const activeId of keepIds) {
+      let parentId = byId?.get(activeId)?.parentId ?? null
+      const seen = new Set<string>()
+
+      while (parentId && !seen.has(parentId)) {
+        seen.add(parentId)
+        keepIds.add(parentId)
+        parentId = byId?.get(parentId)?.parentId ?? null
+      }
     }
+  }
+
+  const keepIdsAnywhere = new Set<string>()
+
+  for (const keepIds of keepIdsByProfile.values()) {
+    keepIds.forEach(id => keepIdsAnywhere.add(id))
   }
 
   let changed = false
@@ -56,7 +88,9 @@ export function reconcileActiveSubagents(
 
   for (const [sid, list] of Object.entries(current)) {
     const retained = list.filter(item => {
-      if (isTerminal(item) || keepIds.has(item.id)) {
+      const keepIds = keepIdsByProfile.get(normProfile(item.profile))
+
+      if (isTerminal(item) || (item.profile ? keepIds?.has(item.id) : keepIdsAnywhere.has(item.id))) {
         return true
       }
 

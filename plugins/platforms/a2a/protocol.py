@@ -372,14 +372,19 @@ def build_task(
     *,
     created_at: str = "",
 ) -> dict:
-    """Build an A2A v1.0 Task object for a message/send result."""
+    """Build an A2A v1.0 Task object for a message/send result.
+
+    ``created_at`` is accepted for call-site compatibility but not serialized —
+    the A2A v1.0 ``Task`` proto (``lf.a2a.v1.Task``) has no ``createdAt`` or
+    ``lastModified`` field.  Strict ProtoJSON parsers (e.g. a2a-sdk 1.1.0)
+    reject unknown fields, so we must not include them.  The spec's §5.6.1
+    timestamp-format example mentions them but they are not in the proto.
+    """
     now = now_iso()
     task: dict[str, Any] = {
         "id": task_id,
         "contextId": context_id,
         "status": {"state": state, "timestamp": now},
-        "createdAt": created_at or now,
-        "lastModified": now,
     }
     if agent_text:
         task["status"]["message"] = text_message(ROLE_AGENT, agent_text, context_id)
@@ -417,14 +422,29 @@ def artifact_update(task_id: str, context_id: str, text: str) -> dict:
     }
 
 
-def sse_data(payload: dict) -> str:
-    """Encode one StreamResponse as an SSE data frame (member-name discriminated)."""
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+def sse_data(payload: dict, req_id: Any = None) -> str:
+    """Encode one StreamResponse as a JSON-RPC-wrapped SSE data frame.
+
+    A2A v1.0 §9.4 requires each SSE frame to be a full JSON-RPC response:
+    ``{"jsonrpc":"2.0","id":<req_id>,"result":{StreamResponse}}``.  Emitting a
+    bare StreamResponse (the REST binding shape) breaks JSON-RPC clients that
+    expect the envelope, including the official a2a-sdk.
+    """
+    if req_id is not None:
+        envelope = jsonrpc_result(req_id, payload)
+    else:
+        envelope = payload  # legacy/fallback — no envelope
+    return f"data: {json.dumps(envelope, ensure_ascii=False)}\n\n"
 
 
 def sse_done() -> str:
-    """SSE stream-closure marker — terminal state is implied by closure in v1.0."""
-    return "event: done\ndata: {}\n\n"
+    """SSE stream-closure marker — a comment, not a parseable data frame.
+
+    A2A v1.0 signals terminal state by closing the stream.  Emitting
+    ``data: {}`` causes JSON-RPC clients to try parsing an empty response and
+    fail.  An SSE comment line (``: done``) is ignored by all SSE parsers.
+    """
+    return ": done\n\n"
 
 
 # --------------------------------------------------------------------------

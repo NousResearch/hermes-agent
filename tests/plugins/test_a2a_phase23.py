@@ -55,7 +55,8 @@ def _make_live_adapter(monkeypatch, reply_fn=None):
 
 def _post_sse(url, body):
     """POST a JSON-RPC request and return the parsed SSE stream as
-    (data_payloads, event_names)."""
+    (data_payloads, event_names).  Unwraps the JSON-RPC envelope from
+    each data frame so callers see bare StreamResponse objects."""
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"}, method="POST",
@@ -66,11 +67,17 @@ def _post_sse(url, body):
     for block in raw.split("\n\n"):
         for line in block.splitlines():
             if line.startswith("event: "):
-                events.append(line[len("event: "):].strip())
+                events.append(line[len("event:"):].strip())
             elif line.startswith("data: "):
                 data = line[len("data: "):].strip()
                 if data:
-                    payloads.append(json.loads(data))
+                    obj = json.loads(data)
+                    # Unwrap JSON-RPC envelope: {"jsonrpc":"2.0","id":...,"result":{...}}
+                    if isinstance(obj, dict) and "jsonrpc" in obj and "result" in obj:
+                        payloads.append(obj["result"])
+                    else:
+                        payloads.append(obj)
+            # SSE comment lines (": done") are ignored — not data frames.
     return payloads, events
 
 
@@ -127,8 +134,32 @@ class TestStreamResponseFormat:
         # No event-name line: v1.0 discriminates by member presence.
         assert "event:" not in chunk
 
+    def test_sse_data_jsonrpc_envelope(self):
+        """A2A v1.0 §9.4: SSE frames must be JSON-RPC-wrapped when req_id is
+        provided.  Bare StreamResponse (REST binding) breaks a2a-sdk clients."""
+        chunk = protocol.sse_data({"statusUpdate": {"taskId": "t"}}, req_id="42")
+        assert chunk.startswith("data: ")
+        obj = json.loads(chunk[len("data: "):].strip())
+        assert obj["jsonrpc"] == "2.0"
+        assert obj["id"] == "42"
+        assert "result" in obj
+        assert obj["result"]["statusUpdate"]["taskId"] == "t"
+
+    def test_sse_data_no_envelope_without_req_id(self):
+        """Without req_id, sse_data falls back to bare payload for legacy callers."""
+        chunk = protocol.sse_data({"statusUpdate": {"taskId": "t"}})
+        obj = json.loads(chunk[len("data: "):].strip())
+        assert "jsonrpc" not in obj
+        assert obj["statusUpdate"]["taskId"] == "t"
+
     def test_sse_done_marker(self):
-        assert protocol.sse_done() == "event: done\ndata: {}\n\n"
+        """v1.0 signals stream completion by closing the stream.  The done
+        marker is an SSE comment (``: done``), not a parseable data frame —
+        emitting ``data: {}`` breaks JSON-RPC clients that try to parse it."""
+        done = protocol.sse_done()
+        assert ": done" in done
+        assert "data:" not in done  # no data frame for SDK to parse
+        assert done.endswith("\n\n")
 
 
 @pytest.mark.integration
@@ -164,7 +195,7 @@ class TestStreamingEndToEnd:
             assert len(artifacts) == 1
             assert "ECHO:" in protocol.extract_text(artifacts[0]["artifact"])
 
-            assert events == ["done"]
+            assert events == []  # v1.0: stream closure is the terminal signal, no event frame
             await adapter.disconnect()
 
         asyncio.run(run())
@@ -189,7 +220,7 @@ class TestStreamingEndToEnd:
             artifacts = [p for p in payloads if "artifactUpdate" in p]
             assert artifacts and "ECHO:" in protocol.extract_text(
                 artifacts[0]["artifactUpdate"]["artifact"])
-            assert events == ["done"]
+            assert events == []  # v1.0: stream closure is the terminal signal, no event frame
             await adapter.disconnect()
 
         asyncio.run(run())

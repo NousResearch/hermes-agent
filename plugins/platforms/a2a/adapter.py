@@ -964,21 +964,25 @@ class A2AAdapter(BasePlatformAdapter):
         handler.wfile.write(chunk.encode("utf-8"))
         handler.wfile.flush()
 
-    def _emit_terminal(self, handler, task_id: str, context_id: str, state: str, reply: str) -> None:
+    def _emit_terminal(self, handler, task_id: str, context_id: str, state: str, reply: str,
+                       req_id: Any = None) -> None:
         """Emit the final artifact/status events and close the stream (v1.0:
-        closure signals terminal state, no ``final`` field)."""
+        closure signals terminal state, no ``final`` field).
+
+        ``req_id`` is threaded into JSON-RPC-wrapped SSE frames per §9.4."""
         if reply and state == protocol.STATE_COMPLETED:
             self._sse_write(handler, protocol.sse_data(
-                protocol.artifact_update(task_id, context_id, reply)))
+                protocol.artifact_update(task_id, context_id, reply), req_id))
             self._sse_write(handler, protocol.sse_data(
-                protocol.status_update(task_id, context_id, state)))
+                protocol.status_update(task_id, context_id, state), req_id))
         else:
             self._sse_write(handler, protocol.sse_data(
-                protocol.status_update(task_id, context_id, state, reply)))
+                protocol.status_update(task_id, context_id, state, reply), req_id))
         self._sse_write(handler, protocol.sse_done())
 
     def _rpc_message_stream(self, handler, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None) -> None:
-        """Handle message/stream as an SSE response of StreamResponse events."""
+        """Handle message/stream as an SSE response of JSON-RPC-wrapped
+        StreamResponse events (A2A v1.0 §9.4)."""
         protocol.metrics.streams_started += 1
         self._sse_headers(handler)
 
@@ -989,19 +993,21 @@ class A2AAdapter(BasePlatformAdapter):
                     handler, terminal["id"], terminal["contextId"],
                     terminal["status"]["state"],
                     protocol.extract_text(terminal.get("status", {}).get("message", {}) or {}),
+                    req_id=req_id,
                 )
                 return
 
             task_id, context_id = pending["task_id"], pending["context_id"]
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(
-                protocol.build_task(task_id, context_id, protocol.STATE_SUBMITTED, created_at=pending["created_iso"]))))
+                protocol.build_task(task_id, context_id, protocol.STATE_SUBMITTED, created_at=pending["created_iso"])),
+                req_id))
             self._sse_write(handler, protocol.sse_data(
-                protocol.status_update(task_id, context_id, protocol.STATE_WORKING)))
+                protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
 
             state, reply = self._await_reply(
                 pending, keepalive=lambda: self._sse_write(handler, ": keepalive\n\n"))
             state, reply = self._finalize_task(pending, state, reply)
-            self._emit_terminal(handler, task_id, context_id, state, reply)
+            self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: stream client disconnected")
 
@@ -1030,7 +1036,7 @@ class A2AAdapter(BasePlatformAdapter):
                         state, reply = rec["state"], rec.get("reply", "")
                         break
                     self._sse_write(handler, ": keepalive\n\n")
-            self._emit_terminal(handler, task_id, rec["context_id"], state, reply)
+            self._emit_terminal(handler, task_id, rec["context_id"], state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: subscribe client disconnected")
 

@@ -2333,6 +2333,7 @@ export const en: Translations = {
     loading: 'Loading StudyOS…',
     retry: 'Retry',
     examDate: 'Exam date',
+    deadline: 'Deadline',
     phase: 'Phase',
     timezone: 'Timezone',
     range: 'Range',

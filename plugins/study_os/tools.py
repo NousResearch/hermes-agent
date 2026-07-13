@@ -12,6 +12,8 @@ from typing import Any, Iterable
 
 from plugins.study_os.schemas import (
     DEFAULT_PROMPT_POLICY,
+    PROJECT_SCHEMA_VERSION,
+    PROJECT_SCHEMA_VERSION_V1,
     PROJECT_ID_RE,
     SCHEDULE_ID_RE,
     validate_study_project,
@@ -167,7 +169,10 @@ def _read_project_manifest(vault: Path, project_id: Any = None) -> dict[str, Any
     data = _read_json_file(path)
     ok, validated = validate_study_project(data)
     if not ok:
-        raise ValueError("; ".join(validated))
+        validation_errors = validated if isinstance(validated, list) else ["Invalid project manifest"]
+        raise ValueError("; ".join(validation_errors))
+    if not isinstance(validated, dict):
+        raise ValueError("Project validator returned invalid data")
     return validated
 
 
@@ -737,7 +742,10 @@ def _cluster_errors(errors: list[dict[str, str]]) -> dict[str, Any]:
             cause_concept[(cause, c_name)] += 1
             concept_causes.setdefault(c_name, set()).add(cause)
 
-    pairs = [{"cause": c, "concept": n, "count": cnt} for (c, n), cnt in cause_concept.most_common()]
+    pairs: list[dict[str, Any]] = [
+        {"cause": c, "concept": n, "count": cnt}
+        for (c, n), cnt in cause_concept.most_common()
+    ]
     repeated = [p for p in pairs if p["count"] >= 3]
     deep = [
         {"concept": name, "causes": sorted(causes), "cause_count": len(causes)}
@@ -2561,6 +2569,7 @@ def _now_iso() -> str:
 
 def _default_project_manifest(args: dict[str, Any]) -> dict[str, Any]:
     now = _now_iso()
+    requested_schema_version = str(args.get("schema_version") or PROJECT_SCHEMA_VERSION_V1).strip()
     requested_domain_pack = str(args.get("domain_pack") or "").strip()
     requested_domain = str(args.get("domain") or "").strip()
     requested_exam_type = str(args.get("exam_type") or "").strip()
@@ -2593,23 +2602,31 @@ def _default_project_manifest(args: dict[str, Any]) -> dict[str, Any]:
             "workspace_type": "skill-vault",
             "subjects": [{"id": "learning", "label": "Learning"}],
         }
-    return {
-        "schema_version": "study_project.v1",
+    common: dict[str, Any] = {
+        "schema_version": requested_schema_version,
         "project_id": str(args.get("project_id") or defaults["project_id"]).strip(),
         "title": str(args.get("title") or defaults["title"]).strip(),
         "domain": str(args.get("domain") or defaults["domain"]).strip(),
-        "exam_type": str(args.get("exam_type") or defaults["exam_type"]).strip(),
-        "exam_date": str(args.get("exam_date") or defaults["exam_date"]).strip(),
         "timezone": str(args.get("timezone") or "Asia/Shanghai").strip(),
         "phase": str(args.get("phase") or defaults["phase"]).strip(),
         "domain_pack": str(args.get("domain_pack") or defaults["domain_pack"]).strip(),
         "workspace_type": str(args.get("workspace_type") or defaults["workspace_type"]).strip(),
         "artifact_policy": str(args.get("artifact_policy") or "lightweight").strip(),
-        "subjects": args.get("subjects") if isinstance(args.get("subjects"), list) else defaults["subjects"],
         "prompt_policy": dict(DEFAULT_PROMPT_POLICY),
         "created_at": now,
         "updated_at": now,
     }
+    if requested_schema_version == PROJECT_SCHEMA_VERSION:
+        common["tracks"] = args.get("tracks") if isinstance(args.get("tracks"), list) else []
+        common["objectives"] = args.get("objectives") if isinstance(args.get("objectives"), list) else []
+        deadline = args.get("deadline")
+        if deadline is not None and str(deadline).strip():
+            common["deadline"] = str(deadline).strip()
+        return common
+    common["exam_type"] = str(args.get("exam_type") or defaults["exam_type"]).strip()
+    common["exam_date"] = str(args.get("exam_date") or defaults["exam_date"]).strip()
+    common["subjects"] = args.get("subjects") if isinstance(args.get("subjects"), list) else defaults["subjects"]
+    return common
 
 
 def handle_study_project(args: dict[str, Any], **_kwargs) -> str:
@@ -2620,7 +2637,10 @@ def handle_study_project(args: dict[str, Any], **_kwargs) -> str:
             manifest = _default_project_manifest(args)
             ok, validated = validate_study_project(manifest)
             if not ok:
-                return _err("VALIDATION_FAILED", "; ".join(validated))
+                validation_errors = validated if isinstance(validated, list) else ["Invalid project manifest"]
+                return _err("VALIDATION_FAILED", "; ".join(validation_errors))
+            if not isinstance(validated, dict):
+                return _err("VALIDATION_FAILED", "Project validator returned invalid data")
             project_id = validated["project_id"]
             manifest_path = _project_manifest_path(vault, project_id)
             _write_text(manifest_path, _json(validated))
@@ -2690,7 +2710,8 @@ def _schedule_template(project: dict[str, Any]) -> dict[str, Any]:
             "status": "planned",
         }
     else:
-        subject_id = project.get("subjects", [{}])[0].get("id", "learning")
+        groups = project.get("tracks") if project.get("schema_version") == PROJECT_SCHEMA_VERSION else project.get("subjects")
+        subject_id = (groups or [{}])[0].get("id", "learning")
         phase_title = "Discovery"
         phase_goal = "Map one concrete learning objective to lightweight notes and source anchors"
         event = {
@@ -2747,6 +2768,8 @@ def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
             ok, validated = validate_study_schedule(data, project=project)
             if not ok:
                 return _err("VALIDATION_FAILED", "; ".join(validated), {"errors": validated})
+            if not isinstance(validated, dict):
+                return _err("VALIDATION_FAILED", "Schedule validator returned invalid data")
             path = _schedule_path(vault, project["project_id"], validated["schedule_id"])
             _write_text(path, _json(validated))
             return _ok({"schedule": validated, "path": path.relative_to(vault).as_posix()})
@@ -2757,7 +2780,7 @@ def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
                 try:
                     data = _read_json_file(path)
                     ok, validated = validate_study_schedule(data, project=project)
-                    if not ok:
+                    if not ok or not isinstance(validated, dict):
                         continue
                     schedules.append(
                         {
@@ -2829,6 +2852,7 @@ def handle_study_prompt_context(args: dict[str, Any], **_kwargs) -> str:
         domain_skill = {
             "kaoyan.v1": "study-kaoyan",
             "engineering.v1": "study-engineering",
+            "research.v1": "study-research",
         }.get(domain_pack)
         if domain_skill:
             fragment, warning = _read_prompt_fragment("domain", _skill_path(domain_skill), int(policy["domain_max_chars"]))
@@ -3174,6 +3198,11 @@ STUDY_PROJECT_SCHEMA = {
         "properties": {
             "vault_path": _VAULT_PROP,
             "action": {"type": "string", "enum": ["init", "select", "status", "update_prompt_summary"]},
+            "schema_version": {
+                "type": "string",
+                "enum": ["study_project.v1", "study_project.v2"],
+                "description": "Use study_project.v2 for domain-neutral projects with observable objectives.",
+            },
             "project_id": {"type": "string", "description": "StudyOS project id, e.g. kaoyan-2027."},
             "title": {"type": "string"},
             "domain": {"type": "string"},
@@ -3188,6 +3217,9 @@ STUDY_PROJECT_SCHEMA = {
             },
             "artifact_policy": {"type": "string", "description": "Persistence style such as lightweight or full."},
             "subjects": {"type": "array", "items": {"type": "object"}},
+            "tracks": {"type": "array", "items": {"type": "object"}},
+            "objectives": {"type": "array", "items": {"type": "object"}},
+            "deadline": {"type": "string", "description": "Optional ISO date for a v2 learning project."},
             "summary": {"type": "string", "description": "Prompt summary markdown for update_prompt_summary."},
         },
         "required": ["action"],

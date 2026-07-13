@@ -16,7 +16,7 @@ function validStudyProject() {
     subjects: [
       { id: 'math', label: '数学', target_score: 120 },
       { id: 'english', label: '英语一', target_score: 75 },
-      { id: 'politics', label: '政治', target_score: 75 },
+      { id: 'politics', label: '政治', target_score: 75 }
     ],
     prompt_policy: {
       base_max_chars: 2000,
@@ -24,10 +24,10 @@ function validStudyProject() {
       domain_max_chars: 2000,
       project_summary_max_chars: 1200,
       total_max_chars: 6000,
-      updates_apply: 'next_session',
+      updates_apply: 'next_session'
     },
     created_at: '2026-06-28T00:00:00+08:00',
-    updated_at: '2026-06-28T00:00:00+08:00',
+    updated_at: '2026-06-28T00:00:00+08:00'
   }
 }
 
@@ -45,8 +45,8 @@ function validStudySchedule() {
         title: '基础阶段',
         start: '2026-07-01',
         end: '2026-09-30',
-        goal: '完成核心考点覆盖',
-      },
+        goal: '完成核心考点覆盖'
+      }
     ],
     events: [
       {
@@ -59,9 +59,44 @@ function validStudySchedule() {
         duration_minutes: 120,
         goals: ['整理导数定义例题'],
         source_curriculum: '一元函数微分学',
-        status: 'planned',
-      },
+        status: 'planned'
+      }
+    ]
+  }
+}
+
+function validLearningProjectV2() {
+  return {
+    schema_version: 'study_project.v2',
+    project_id: 'research-agents',
+    title: 'Agent Systems Research',
+    domain: 'research',
+    timezone: 'Asia/Shanghai',
+    phase: 'replication',
+    domain_pack: 'research.v1',
+    workspace_type: 'hybrid',
+    artifact_policy: 'lightweight',
+    deadline: '2026-12-01',
+    tracks: [{ id: 'methods', label: 'Methods' }],
+    objectives: [
+      {
+        objective_id: 'reproduce-routing-result',
+        capability: 'Reproduce and explain one routing result.',
+        success_criteria: ['Record the command.', 'Explain one limitation.'],
+        evidence_targets: ['execution', 'explanation'],
+        source_anchors: [{ kind: 'paper', ref: 'doi:10.0000/example', locator: 'section 4' }]
+      }
     ],
+    prompt_policy: {
+      base_max_chars: 2000,
+      intent_max_chars: 2500,
+      domain_max_chars: 2000,
+      project_summary_max_chars: 1200,
+      total_max_chars: 6000,
+      updates_apply: 'next_session'
+    },
+    created_at: '2026-07-13T09:00:00+08:00',
+    updated_at: '2026-07-13T09:00:00+08:00'
   }
 }
 
@@ -81,6 +116,19 @@ describe('StudyOS schema guards', () => {
       throw new Error(scheduleResult.errors.join('\n'))
     }
     expect(scheduleResult.data).toBe(schedule)
+  })
+
+  it('accepts domain-neutral v2 projects without exam placeholders', () => {
+    const project = validLearningProjectV2()
+    const result = validateStudyProject(project)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      throw new Error(result.errors.join('\n'))
+    }
+    expect(result.data.schema_version).toBe('study_project.v2')
+    expect(result.data.exam_date).toBeUndefined()
+    expect(result.data.objectives?.[0]?.objective_id).toBe('reproduce-routing-result')
   })
 
   it('rejects malformed schedules without throwing', () => {

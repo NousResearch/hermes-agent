@@ -51,17 +51,35 @@ export interface StudySubject {
   target_score?: number
 }
 
+export interface StudyObjective {
+  objective_id: string
+  capability: string
+  success_criteria: string[]
+  evidence_targets: string[]
+  source_anchors?: Array<{
+    kind: string
+    ref: string
+    version?: string
+    locator?: string
+  }>
+}
+
 export interface StudyProject {
-  schema_version: 'study_project.v1'
+  schema_version: 'study_project.v1' | 'study_project.v2'
   project_id: string
   title: string
   domain: string
-  exam_type: string
-  exam_date: string
+  exam_type?: string
+  exam_date?: string
+  deadline?: string
   timezone: string
   phase: string
   domain_pack: string
-  subjects: StudySubject[]
+  workspace_type?: string
+  artifact_policy?: string
+  subjects?: StudySubject[]
+  tracks?: StudySubject[]
+  objectives?: StudyObjective[]
   prompt_policy: {
     base_max_chars: number
     intent_max_chars: number

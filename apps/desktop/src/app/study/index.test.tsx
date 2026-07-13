@@ -26,7 +26,7 @@ function project() {
     subjects: [
       { id: 'math', label: '数学', target_score: 120 },
       { id: 'english', label: '英语一', target_score: 75 },
-      { id: 'politics', label: '政治', target_score: 75 },
+      { id: 'politics', label: '政治', target_score: 75 }
     ],
     prompt_policy: {
       base_max_chars: 2000,
@@ -34,10 +34,10 @@ function project() {
       domain_max_chars: 2000,
       project_summary_max_chars: 1200,
       total_max_chars: 6000,
-      updates_apply: 'next_session',
+      updates_apply: 'next_session'
     },
     created_at: '2026-06-28T00:00:00+08:00',
-    updated_at: '2026-06-28T00:00:00+08:00',
+    updated_at: '2026-06-28T00:00:00+08:00'
   }
 }
 
@@ -55,8 +55,8 @@ function schedule() {
         title: '基础阶段',
         start: '2026-07-01',
         end: '2026-09-30',
-        goal: '完成核心考点覆盖',
-      },
+        goal: '完成核心考点覆盖'
+      }
     ],
     events: [
       {
@@ -69,9 +69,54 @@ function schedule() {
         duration_minutes: 120,
         goals: ['整理导数定义例题'],
         source_curriculum: '一元函数微分学',
-        status: 'planned',
-      },
-    ],
+        status: 'planned'
+      }
+    ]
+  }
+}
+
+function learningProject() {
+  return {
+    ...project(),
+    schema_version: 'study_project.v2',
+    project_id: 'research-agents',
+    title: 'Agent Systems Research',
+    domain: 'research',
+    domain_pack: 'research.v1',
+    phase: 'replication',
+    deadline: '2026-12-01',
+    exam_type: undefined,
+    exam_date: undefined,
+    subjects: undefined,
+    workspace_type: 'hybrid',
+    artifact_policy: 'lightweight',
+    tracks: [{ id: 'methods', label: 'Methods' }],
+    objectives: [
+      {
+        objective_id: 'reproduce-routing-result',
+        capability: 'Reproduce and explain one routing result.',
+        success_criteria: ['Record the command.', 'Explain one limitation.'],
+        evidence_targets: ['execution', 'explanation']
+      }
+    ]
+  }
+}
+
+function researchSchedule() {
+  const base = schedule()
+  return {
+    ...base,
+    schedule_id: 'research-agents-master-plan',
+    project_id: 'research-agents',
+    title: 'Agent Systems Research Plan',
+    events: [
+      {
+        ...base.events[0],
+        id: 'evt-20260701-routing-replication',
+        title: 'Replicate routing result',
+        subject_id: 'methods'
+      }
+    ]
   }
 }
 
@@ -98,9 +143,9 @@ beforeEach(() => {
         title: s.title,
         timezone: s.timezone,
         range: s.range,
-        event_count: s.events.length,
-      },
-    ],
+        event_count: s.events.length
+      }
+    ]
   })
   getStudySchedule.mockResolvedValue(s)
 })
@@ -138,5 +183,33 @@ describe('StudyView', () => {
 
     expect(await screen.findByText('This StudyOS schedule is invalid and was not rendered.')).toBeTruthy()
     await waitFor(() => expect(screen.queryByText('数学：导数定义整理')).toBeNull())
+  })
+
+  it('renders domain-neutral projects with tracks and a deadline', async () => {
+    const p = learningProject()
+    const s = researchSchedule()
+    getStudyProjects.mockResolvedValue({ configured: true, projects: [p], vault_path: '/tmp/vault' })
+    getStudySchedules.mockResolvedValue({
+      project_id: p.project_id,
+      schedules: [
+        {
+          schedule_id: s.schedule_id,
+          project_id: s.project_id,
+          title: s.title,
+          timezone: s.timezone,
+          range: s.range,
+          event_count: s.events.length
+        }
+      ]
+    })
+    getStudySchedule.mockResolvedValue(s)
+
+    await renderStudy()
+
+    expect(await screen.findAllByText('Agent Systems Research')).not.toHaveLength(0)
+    expect(screen.getByText('Deadline')).toBeTruthy()
+    expect(screen.getAllByText('2026-12-01')).not.toHaveLength(0)
+    expect(await screen.findByText('Methods：Replicate routing result')).toBeTruthy()
+    expect(screen.queryByText(/undefined/)).toBeNull()
   })
 })

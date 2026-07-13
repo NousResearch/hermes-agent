@@ -6,21 +6,16 @@ platforms: [linux, macos, windows]
 
 # StudyOS Router
 
-StudyOS keeps durable project evidence under `.StudyOS/`. Use
-`study_activity(resource, action, data)` for project state and records; use
-`study_coach` only for conclusions grounded in recorded attempts.
+Keep durable project evidence under `.StudyOS/`. Use `study_activity` for state
+and records; use `study_coach` only for evidence-grounded conclusions.
 
 ## Shared Flow
 
-1. Check `study_activity(resource="project", action="status")`. Initialize a
-   project only when the user asks to set one up; do not create a project for a
-   one-off explanation.
-2. Load turn-local context with `prompt_context.load` and the matching intent.
-   Never mutate system prompts.
-3. Read existing notes, schedules, records, or attempts before proposing a
-   change. State unknowns rather than inventing learner history.
-4. Perform one focused learning action. Persist only requested or completed
-   outcomes, then report what was read, written, and left unchanged.
+1. Check `study_activity(resource="project", action="status")`; initialize only
+   when asked, never for a one-off explanation.
+2. Load `prompt_context.load` for the intent. Never mutate system prompts.
+3. Read relevant records before changing them; state unknown history.
+4. Perform one focused action and persist only requested, completed outcomes.
 
 ## Route
 
@@ -32,15 +27,18 @@ StudyOS keeps durable project evidence under `.StudyOS/`. Use
 | Teach or practice a concept | `teaching`: `study-teach` |
 | Exam, weekly, or error diagnosis | `assessment` / `error_analysis`: `study-assessment` |
 
-Use `study-kaoyan` for `kaoyan.v1` and `study-engineering` for
-`engineering.v1`. Use `study-lesson` only for a requested or genuinely visual
-concept; use `study-grill` only for a strategic decision.
+Route `kaoyan.v1`, `engineering.v1`, and `research.v1` to `study-kaoyan`,
+`study-engineering`, and `study-research`. Reserve `study-lesson` for visual
+needs and `study-grill` for strategic decisions.
 
 ## Evidence Rules
 
-Record an `attempt` only after a learner response or other concrete evidence.
-Do not infer mastery from fluent chat, review counts, or plans. Candidate
-pattern changes are not applied automatically. Persist an accepted conclusion
-as a `learning_record` (LearningRecord), a strategic choice as a `decision`
-(LearningDecisionRecord), and a completed schedule only after it validates. Desktop calendars read saved
-`study_schedule.v1` artifacts.
+Record an `attempt` only after a learner response or concrete observation. Do
+not infer mastery from fluent chat, review counts, or plans; never auto-apply a
+candidate pattern. Use LearningRecord for demonstrated progress and
+LearningDecisionRecord for accepted strategy. Save only validated schedules.
+
+For a focused loop, call `study_coach.start` with a contract, perform its
+ActivitySpec, submit evaluated evidence through `study_coach.advance`, then
+`snapshot` or `finish`. Active state is turn-local user context, never system
+prompt content.

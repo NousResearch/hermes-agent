@@ -14,23 +14,19 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from plugins.study_os.activities import activity_adapter_for
 from plugins.study_os import tools as legacy
 from plugins.study_os.schemas import (
     ATTEMPT_SCHEMA_VERSION,
+    EVIDENCE_DIMENSIONS,
     PATTERN_PROPOSAL_SCHEMA_VERSION,
     validate_pattern_proposal,
     validate_study_attempt,
 )
+from plugins.study_os.runtime import LearningRuntime, LearningRuntimeError
 
 
-MASTERY_DIMENSIONS = (
-    "recall",
-    "recognition",
-    "execution",
-    "explanation",
-    "near_transfer",
-    "far_transfer",
-)
+MASTERY_DIMENSIONS = EVIDENCE_DIMENSIONS
 
 ANSWER_HEADING_RE = re.compile(
     r"^#{1,6}\s*(?:答案|解析|解答|参考答案|solution|answer)\s*$",
@@ -119,6 +115,9 @@ def _record_attempt(args: dict[str, Any]) -> str:
     project = _project(vault, args.get("project_id"))
     result = str(args.get("result") or "").strip()
     default_score = {"correct": 1.0, "partial": 0.5, "incorrect": 0.0, "abandoned": 0.0}.get(result)
+    score = args.get("score")
+    if score is None:
+        score = default_score
     occurred_at = str(args.get("occurred_at") or datetime.now().astimezone().isoformat(timespec="seconds"))
     attempt = {
         "schema_version": ATTEMPT_SCHEMA_VERSION,
@@ -128,15 +127,21 @@ def _record_attempt(args: dict[str, Any]) -> str:
         "occurred_at": occurred_at,
         "response": str(args.get("response") or "").strip(),
         "result": result,
-        "score": args.get("score", default_score),
+        "score": score,
         "duration_seconds": args.get("duration_seconds"),
         "hints_used": args.get("hints_used", 0),
         "self_confidence": args.get("self_confidence"),
         "evaluator_confidence": args.get("evaluator_confidence"),
+        "evaluator": args.get("evaluator"),
+        "assistance": args.get("assistance"),
         "transfer_level": args.get("transfer_level"),
         "concepts": args.get("concepts", []),
         "patterns": args.get("patterns", []),
+        "objective_ids": args.get("objective_ids", []),
         "diagnoses": args.get("diagnoses", []),
+        "source_anchors": args.get("source_anchors"),
+        "artifact_refs": args.get("artifact_refs"),
+        "activity_kind": args.get("activity_kind"),
         "source": args.get("source"),
         "session_id": args.get("session_id"),
         "revision_of": args.get("revision_of"),
@@ -250,10 +255,16 @@ def handle_study_review_submission(args: dict[str, Any], **_kwargs: Any) -> str:
             "duration_seconds": duration,
             "hints_used": args.get("hints_used", 0),
             "self_confidence": confidence,
+            "evaluator": args.get("evaluator"),
+            "assistance": args.get("assistance"),
             "transfer_level": args.get("transfer_level", "execution"),
             "concepts": note.get("concepts", []),
             "patterns": note.get("patterns", []),
+            "objective_ids": args.get("objective_ids", []),
             "diagnoses": args.get("diagnoses", []),
+            "source_anchors": args.get("source_anchors"),
+            "artifact_refs": args.get("artifact_refs"),
+            "activity_kind": args.get("activity_kind", "review"),
             "source": note["path"],
             "session_id": args.get("session_id"),
         }
@@ -336,7 +347,10 @@ def _proposal_activity(action: str, args: dict[str, Any]) -> str:
         proposal.setdefault("created_at", datetime.now().astimezone().isoformat(timespec="seconds"))
         ok, validated = validate_pattern_proposal(proposal)
         if not ok:
-            return legacy._err("VALIDATION_FAILED", "; ".join(validated), {"errors": validated})
+            validation_errors = validated if isinstance(validated, list) else ["Invalid pattern proposal"]
+            return legacy._err("VALIDATION_FAILED", "; ".join(validation_errors), {"errors": validation_errors})
+        if not isinstance(validated, dict):
+            return legacy._err("VALIDATION_FAILED", "Pattern proposal validator returned invalid data")
         known_ids = {attempt.get("attempt_id") for attempt in _all_attempts(vault, project["project_id"])}
         missing = [item for item in validated["evidence_attempt_ids"] if item not in known_ids]
         if missing:
@@ -438,6 +452,31 @@ def _attempt_score(attempt: dict[str, Any]) -> float:
     return float(score) if isinstance(score, (int, float)) else 0.0
 
 
+def _assistance_level(attempt: dict[str, Any]) -> str:
+    assistance = attempt.get("assistance")
+    if isinstance(assistance, dict) and assistance.get("level"):
+        return str(assistance["level"])
+    return "unrecorded"
+
+
+def _evaluator_kind(attempt: dict[str, Any]) -> str:
+    evaluator = attempt.get("evaluator")
+    if isinstance(evaluator, dict) and evaluator.get("kind"):
+        return str(evaluator["kind"])
+    return "unprovenanced"
+
+
+def _independently_verified(attempt: dict[str, Any]) -> bool:
+    evaluator = attempt.get("evaluator")
+    if not isinstance(evaluator, dict) or evaluator.get("kind") not in {"agent", "program", "human"}:
+        return False
+    confidence = evaluator.get("confidence")
+    evaluator_is_credible = confidence is None or (
+        isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and confidence >= 0.5
+    )
+    return _attempt_score(attempt) >= 0.8 and _assistance_level(attempt) == "independent" and evaluator_is_credible
+
+
 def _diagnosis(attempts: list[dict[str, Any]]) -> dict[str, Any]:
     diagnosis_groups: dict[tuple[str, str], list[str]] = defaultdict(list)
     concept_attempts: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -481,11 +520,27 @@ def _diagnosis(attempts: list[dict[str, Any]]) -> dict[str, Any]:
     dimensions: dict[str, dict[str, Any]] = {}
     for dimension in MASTERY_DIMENSIONS:
         items = dimension_attempts.get(dimension, [])
+        successful = [item for item in items if _attempt_score(item) >= 0.8]
+        independently_verified = [item for item in items if _independently_verified(item)]
+        if independently_verified:
+            verification_status = "independent"
+        elif successful:
+            verification_status = "supported"
+        elif items:
+            verification_status = "developing"
+        else:
+            verification_status = "unobserved"
         dimensions[dimension] = {
             "status": "observed" if items else "unobserved",
+            "verification_status": verification_status,
             "attempt_count": len(items),
             "average_score": round(sum(_attempt_score(item) for item in items) / len(items), 3) if items else None,
             "evidence_attempt_ids": [str(item.get("attempt_id")) for item in items],
+            "independently_verified_attempt_ids": [
+                str(item.get("attempt_id")) for item in independently_verified
+            ],
+            "assistance_provenance": dict(sorted(Counter(_assistance_level(item) for item in items).items())),
+            "evaluator_provenance": dict(sorted(Counter(_evaluator_kind(item) for item in items).items())),
         }
     midpoint = len(attempts) // 2
     score_delta = None
@@ -529,12 +584,29 @@ def _recommendations(diagnosis: dict[str, Any]) -> list[dict[str, Any]]:
             "reason": "High-confidence errors need explicit prediction before feedback",
             "evidence_attempt_ids": diagnosis["calibration"]["high_confidence_error_attempt_ids"],
         })
-    transfer = diagnosis["transfer_evidence"]
-    if diagnosis["attempt_count"] and not (transfer.get("near_transfer") or transfer.get("far_transfer")):
+    supported_dimensions = [
+        (dimension, result)
+        for dimension, result in diagnosis["mastery_dimensions"].items()
+        if result.get("verification_status") == "supported"
+    ]
+    if supported_dimensions:
+        dimension, result = supported_dimensions[0]
+        recommendations.append({
+            "priority": "medium",
+            "intervention": "independence_probe",
+            "evidence_dimension": dimension,
+            "reason": f"{dimension} has successful but not independently verified evidence",
+            "evidence_attempt_ids": result["evidence_attempt_ids"],
+        })
+    transfer_verified = any(
+        diagnosis["mastery_dimensions"][dimension].get("verification_status") == "independent"
+        for dimension in ("near_transfer", "far_transfer")
+    )
+    if diagnosis["attempt_count"] and not transfer_verified:
         recommendations.append({
             "priority": "medium",
             "intervention": "near_transfer_probe",
-            "reason": "No transfer evidence has been recorded yet",
+            "reason": "No independently verified transfer evidence has been recorded yet",
             "evidence_attempt_ids": [],
         })
     if not recommendations and diagnosis["attempt_count"]:
@@ -584,12 +656,13 @@ def _probe_blueprint(diagnosis: dict[str, Any]) -> dict[str, Any] | None:
         "evidence_attempt_ids": [],
     }
     weakest = diagnosis["concepts"][0] if diagnosis["concepts"] else None
-    purpose = selected["intervention"]
+    purpose = str(selected["intervention"])
     variation = {
         "prerequisite_repair": "isolate the prerequisite before the original procedure",
         "misconception_probe": "change the condition that distinguishes the observed wrong rule from the correct rule",
         "calibration_check": "require a confidence prediction and justification before feedback",
         "near_transfer_probe": "change surface details while preserving the solution invariant",
+        "independence_probe": "repeat the demonstrated capability without hints or guided steps",
         "retention_probe": "use delayed free retrieval without cues",
     }.get(purpose, "test the targeted gap with one controlled variation")
     evidence_ids = list(dict.fromkeys(
@@ -608,6 +681,25 @@ def _probe_blueprint(diagnosis: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _learning_runtime(vault: Path, project: dict[str, Any]) -> LearningRuntime:
+    """Bind the lifecycle module to StudyOS' existing evidence interfaces."""
+
+    def record_attempt(attempt_args: dict[str, Any]) -> dict[str, Any]:
+        result = json.loads(_record_attempt(attempt_args))
+        return result if isinstance(result, dict) else {}
+
+    return LearningRuntime(
+        vault=vault,
+        project=project,
+        project_dir=legacy._project_dir(vault, project["project_id"]),
+        attempt_reader=lambda project_id: _all_attempts(vault, project_id),
+        attempt_recorder=record_attempt,
+        snapshot_builder=_diagnosis,
+        recommendation_builder=_recommendations,
+        activity_adapter=activity_adapter_for(project),
+    )
+
+
 def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
     """Derive diagnoses and next actions from immutable attempt evidence."""
     try:
@@ -616,6 +708,24 @@ def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
         data = _payload(args)
         vault = legacy.resolve_vault_path(data.get("vault_path"))
         project = _project(vault, data.get("project_id"))
+        if action in {"start", "advance", "snapshot", "finish"}:
+            runtime = _learning_runtime(vault, project)
+            session_id = data.get("session_id")
+            if action == "start":
+                output = runtime.start(
+                    session_id=session_id,
+                    contract=data.get("contract"),
+                    conversation_session_id=(
+                        data.get("conversation_session_id") or _kwargs.get("session_id")
+                    ),
+                )
+            elif action == "advance":
+                output = runtime.advance(session_id=session_id, observation=data.get("observation"))
+            elif action == "snapshot":
+                output = runtime.snapshot(session_id=session_id)
+            else:
+                output = runtime.finish(session_id=session_id)
+            return legacy._ok({"project_id": project["project_id"], **output})
         if scope == "week" and not data.get("start_date") and not data.get("end_date"):
             today = date.today()
             data["start_date"] = (today - timedelta(days=today.weekday())).isoformat()
@@ -632,7 +742,10 @@ def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
         elif action == "summarize":
             weakest = diagnosis["concepts"][:3]
             strongest = sorted(diagnosis["concepts"], key=lambda item: (-item["average_score"], -item["attempt_count"]))[:3]
-            transfer = diagnosis["transfer_evidence"]
+            transfer_verified = any(
+                diagnosis["mastery_dimensions"][dimension].get("verification_status") == "independent"
+                for dimension in ("near_transfer", "far_transfer")
+            )
             output = {
                 "summary": {
                     "scope": scope,
@@ -640,11 +753,11 @@ def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
                     "average_score": diagnosis["average_score"],
                     "strongest_concepts": strongest,
                     "weakest_concepts": weakest,
-                    "unverified": [] if transfer.get("near_transfer") or transfer.get("far_transfer") else ["transfer"],
+                    "unverified": [] if transfer_verified else ["transfer"],
                     "unverified_dimensions": [
                         dimension
                         for dimension, result in diagnosis["mastery_dimensions"].items()
-                        if result["status"] == "unobserved"
+                        if result.get("verification_status") != "independent"
                     ],
                     "evidence_attempt_ids": evidence_ids,
                 }
@@ -667,6 +780,8 @@ def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
         else:
             return legacy._err("INVALID_ACTION", f"Unsupported coach action: {action}")
         return legacy._ok({"project_id": project["project_id"], **output, "evidence_attempt_ids": evidence_ids})
+    except LearningRuntimeError as exc:
+        return legacy._err(exc.code, exc.message, exc.details)
     except ValueError as exc:
         return legacy._err("VALIDATION_FAILED", str(exc))
     except FileNotFoundError as exc:
@@ -695,15 +810,15 @@ STUDY_ACTIVITY_SCHEMA = {
 
 
 STUDY_COACH_SCHEMA = {
-    "description": "Evidence-driven StudyOS coach. Diagnose attempts, summarize demonstrated change, recommend an intervention, generate a diagnostic-probe blueprint, or propose a versioned problem-pattern improvement. Never claims mastery without attempt evidence.",
+    "description": "Evidence-driven StudyOS learning runtime and coach. Start, advance, inspect, or finish an explicit learning Session; diagnose attempts; summarize demonstrated change; recommend an intervention; generate a diagnostic-probe blueprint; or propose a versioned problem-pattern improvement. Starting never creates evidence, and advancing requires evaluator provenance.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["diagnose", "summarize", "recommend", "generate_probe", "propose_pattern"]},
+            "action": {"type": "string", "enum": ["start", "advance", "snapshot", "finish", "diagnose", "summarize", "recommend", "generate_probe", "propose_pattern"]},
             "scope": {"type": "string", "enum": ["session", "concept", "week", "project"]},
             "vault_path": {"type": "string"},
             "project_id": {"type": "string"},
-            "data": {"type": "object", "description": "Attempt filters: concept, pattern, item_id, result, start_date, or end_date."},
+            "data": {"type": "object", "description": "For lifecycle actions: session_id plus contract (start) or evaluated observation (advance). For evidence analysis: concept, pattern, item_id, result, start_date, or end_date filters."},
         },
         "required": ["action"],
     },

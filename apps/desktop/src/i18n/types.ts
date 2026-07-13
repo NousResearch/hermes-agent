@@ -1935,6 +1935,7 @@ export interface Translations {
     loading: string
     retry: string
     examDate: string
+    deadline: string
     phase: string
     timezone: string
     range: string

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from plugins.study_os.context import active_learning_context
 from plugins.study_os.learning import (
     STUDY_ACTIVITY_SCHEMA,
     STUDY_COACH_SCHEMA,
@@ -34,6 +35,8 @@ def register(ctx) -> None:
             emoji="📚",
         )
 
+    ctx.register_hook("pre_llm_call", active_learning_context)
+
     skills_root = Path(__file__).resolve().parent / "skills"
     for name, description in (
         ("study-os", "Route StudyOS learning workflows."),
@@ -45,6 +48,7 @@ def register(ctx) -> None:
         ("study-assessment", "Analyze StudyOS exams and mistakes."),
         ("study-kaoyan", "Guide 考研 learning with StudyOS."),
         ("study-engineering", "Guide engineering and skill learning with StudyOS."),
+        ("study-research", "Guide research and replication learning with StudyOS."),
         ("study-grill", "Bridge grilling sessions into StudyOS decisions."),
     ):
         ctx.register_skill(name, skills_root / name / "SKILL.md", description)

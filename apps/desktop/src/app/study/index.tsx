@@ -49,7 +49,15 @@ function weekLabel(value: string): string {
 }
 
 function subjectLabel(project: StudyProject | undefined, subjectId: string): string {
-  return project?.subjects.find(subject => subject.id === subjectId)?.label ?? subjectId
+  const groups = project?.schema_version === 'study_project.v2' ? project.tracks : project?.subjects
+  return groups?.find(subject => subject.id === subjectId)?.label ?? subjectId
+}
+
+function projectScopeLabel(project: StudyProject): string {
+  if (project.schema_version === 'study_project.v2') {
+    return `${project.domain} · ${project.deadline ?? project.phase}`
+  }
+  return `${project.exam_type ?? project.domain} · ${project.exam_date ?? project.phase}`
 }
 
 function eventLabel(project: StudyProject | undefined, event: StudyScheduleEvent): string {
@@ -92,9 +100,7 @@ function ProjectButton({
       type="button"
     >
       <div className="truncate text-sm font-semibold">{project.title}</div>
-      <div className="mt-1 text-xs">
-        {project.exam_type} · {project.exam_date}
-      </div>
+      <div className="mt-1 text-xs">{projectScopeLabel(project)}</div>
     </button>
   )
 }
@@ -285,7 +291,10 @@ export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
                 </div>
               </div>
               <div className="mt-5 grid gap-3 text-sm sm:grid-cols-3">
-                <Meta label={t.study.examDate} value={selectedProject.exam_date} />
+                <Meta
+                  label={selectedProject.schema_version === 'study_project.v2' ? t.study.deadline : t.study.examDate}
+                  value={selectedProject.deadline ?? selectedProject.exam_date ?? '—'}
+                />
                 <Meta label={t.study.phase} value={selectedProject.phase} />
                 <Meta label={t.study.timezone} value={selectedProject.timezone} />
               </div>

@@ -198,6 +198,85 @@ def _valid_study_project() -> dict:
     }
 
 
+def _valid_learning_project_v2() -> dict:
+    return {
+        "schema_version": "study_project.v2",
+        "project_id": "research-agents",
+        "title": "Agent Systems Research",
+        "domain": "research",
+        "timezone": "Asia/Shanghai",
+        "phase": "replication",
+        "domain_pack": "research.v1",
+        "workspace_type": "hybrid",
+        "artifact_policy": "lightweight",
+        "deadline": "2026-12-01",
+        "tracks": [{"id": "methods", "label": "Methods"}],
+        "objectives": [
+            {
+                "objective_id": "reproduce-routing-result",
+                "capability": "Reproduce and explain one routing result from source material.",
+                "success_criteria": [
+                    "The reproduction command and environment are recorded.",
+                    "The learner explains one limitation without assistance.",
+                ],
+                "evidence_targets": ["execution", "explanation", "near_transfer"],
+                "source_anchors": [
+                    {"kind": "paper", "ref": "doi:10.0000/example", "locator": "section 4"}
+                ],
+            }
+        ],
+        "prompt_policy": {
+            "base_max_chars": 2000,
+            "intent_max_chars": 2500,
+            "domain_max_chars": 2000,
+            "project_summary_max_chars": 1200,
+            "total_max_chars": 6000,
+            "updates_apply": "next_session",
+        },
+        "created_at": "2026-07-13T09:00:00+08:00",
+        "updated_at": "2026-07-13T09:00:00+08:00",
+    }
+
+
+def _valid_engineering_project_v2() -> dict:
+    return {
+        "schema_version": "study_project.v2",
+        "project_id": "engine-runtime",
+        "title": "Runtime Engineering",
+        "domain": "engineering",
+        "timezone": "Asia/Shanghai",
+        "phase": "implementation",
+        "domain_pack": "engineering.v1",
+        "workspace_type": "engineering-repo",
+        "artifact_policy": "source-and-command",
+        "tracks": [{"id": "runtime", "label": "Runtime"}],
+        "objectives": [
+            {
+                "objective_id": "trace-request-lifecycle",
+                "capability": "Trace and verify one request lifecycle through the runtime.",
+                "success_criteria": [
+                    "The call path names concrete files and symbols.",
+                    "A command or test verifies the claimed behavior.",
+                ],
+                "evidence_targets": ["execution", "explanation", "near_transfer"],
+                "source_anchors": [
+                    {"kind": "file", "ref": "run_agent.py", "locator": "AIAgent.run_conversation"}
+                ],
+            }
+        ],
+        "prompt_policy": {
+            "base_max_chars": 2000,
+            "intent_max_chars": 2500,
+            "domain_max_chars": 2000,
+            "project_summary_max_chars": 1200,
+            "total_max_chars": 6000,
+            "updates_apply": "next_session",
+        },
+        "created_at": "2026-07-13T09:00:00+08:00",
+        "updated_at": "2026-07-13T09:00:00+08:00",
+    }
+
+
 def _valid_study_schedule() -> dict:
     return {
         "schema_version": "study_schedule.v1",
@@ -243,6 +322,59 @@ def test_study_project_schema_accepts_kaoyan_manifest():
     assert ok is True
     assert data_or_errors is project
     assert data_or_errors["unknown_future_field"] == {"kept": True}
+
+
+def test_study_project_v2_is_domain_neutral_and_requires_observable_objectives():
+    from plugins.study_os.schemas import validate_study_project
+
+    project = _valid_learning_project_v2()
+    ok, validated = validate_study_project(project)
+
+    assert ok is True
+    assert validated is project
+    assert "exam_type" not in validated
+    assert "exam_date" not in validated
+
+    project["objectives"][0]["success_criteria"] = []
+    ok, errors = validate_study_project(project)
+
+    assert ok is False
+    assert "objectives[0].success_criteria must be a non-empty string array" in errors
+
+
+def test_learning_contract_names_mode_assistance_and_evidence_target():
+    from plugins.study_os.schemas import validate_learning_contract
+
+    contract = {
+        "schema_version": "learning_contract.v1",
+        "contract_id": "contract-routing-001",
+        "project_id": "research-agents",
+        "mode": "research",
+        "objective": "Reproduce and explain the routing result.",
+        "objective_ids": ["reproduce-routing-result"],
+        "time_budget_minutes": 45,
+        "assistance_level": "guided",
+        "evidence_targets": ["execution", "explanation"],
+        "created_at": "2026-07-13T09:10:00+08:00",
+    }
+
+    ok, validated = validate_learning_contract(contract, project=_valid_learning_project_v2())
+
+    assert ok is True
+    assert validated is contract
+
+    contract["assistance_level"] = "do-it-for-me"
+    ok, errors = validate_learning_contract(contract, project=_valid_learning_project_v2())
+
+    assert ok is False
+    assert any("assistance_level" in error for error in errors)
+
+    contract["assistance_level"] = "guided"
+    contract["evidence_targets"] = ["far_transfer"]
+    ok, errors = validate_learning_contract(contract, project=_valid_learning_project_v2())
+
+    assert ok is False
+    assert any("referenced objectives" in error for error in errors)
 
 
 @pytest.mark.parametrize("project_id", ["../bad", "Kaoyan", "xy"])
@@ -357,6 +489,33 @@ def test_study_project_init_keeps_kaoyan_explicit(vault: Path):
     assert init["data"]["project"]["workspace_type"] == "exam-vault"
     assert template["ok"] is True
     assert template["data"]["schedule"]["events"][0]["subject_id"] == "math"
+
+
+def test_study_project_init_can_create_domain_neutral_v2(vault: Path):
+    from plugins.study_os.tools import handle_study_project
+
+    expected = _valid_learning_project_v2()
+    init = _loads(
+        handle_study_project(
+            {
+                "vault_path": str(vault),
+                "action": "init",
+                **{
+                    key: value
+                    for key, value in expected.items()
+                    if key not in {"prompt_policy", "created_at", "updated_at"}
+                },
+            }
+        )
+    )
+
+    assert init["ok"] is True
+    project = init["data"]["project"]
+    assert project["schema_version"] == "study_project.v2"
+    assert project["objectives"][0]["objective_id"] == "reproduce-routing-result"
+    assert project["tracks"] == [{"id": "methods", "label": "Methods"}]
+    assert "exam_date" not in project
+    assert "exam_type" not in project
 
 
 def test_study_project_engineering_prompt_context(vault: Path):
@@ -719,7 +878,11 @@ def test_study_activity_loads_all_workflow_contexts_within_budget(vault: Path):
         assert {fragment["kind"] for fragment in context["data"]["fragments"]} == {"base", "intent"}
         assert context["data"]["total_char_count"] <= 6000
 
-    for project_id, domain_pack in (("kaoyan-2027", "kaoyan.v1"), ("ai-infra", "engineering.v1")):
+    for project_id, domain_pack in (
+        ("kaoyan-2027", "kaoyan.v1"),
+        ("ai-infra", "engineering.v1"),
+        ("research-agents", "research.v1"),
+    ):
         project = _loads(
             handle_study_activity(
                 {
@@ -771,6 +934,7 @@ def test_study_os_registers_modular_skills(monkeypatch):
             "study-assessment",
             "study-kaoyan",
             "study-engineering",
+            "study-research",
             "study-grill",
         ):
             assert manager.find_plugin_skill(f"study_os:{name}") is not None
@@ -802,6 +966,7 @@ def test_study_os_skill_descriptions_and_budgets(monkeypatch):
             "study-assessment": ("Analyze StudyOS exams and mistakes.", 9000),
             "study-kaoyan": ("Guide 考研 learning with StudyOS.", 9000),
             "study-engineering": ("Guide engineering and skill learning with StudyOS.", 9000),
+            "study-research": ("Guide research and replication learning with StudyOS.", 9000),
             "study-grill": ("Bridge grilling sessions into StudyOS decisions.", 9000),
         }
         all_text = ""
@@ -816,7 +981,7 @@ def test_study_os_skill_descriptions_and_budgets(monkeypatch):
             assert len(body) <= max_chars, name
             assert "study_activity" in body
             assert "mutate system prompts" in body
-        for term in ("艾宾浩斯", "整理", "错题", "weekly", "curriculum", "考研", "engineering", "LearningDecisionRecord", "LearningRecord", "VisualLesson"):
+        for term in ("艾宾浩斯", "整理", "错题", "weekly", "curriculum", "考研", "engineering", "research", "LearningDecisionRecord", "LearningRecord", "VisualLesson"):
             assert term in all_text
     finally:
         for name in ("study_activity", "study_coach"):
@@ -907,6 +1072,51 @@ def test_study_activity_records_and_queries_immutable_attempts(vault: Path):
     assert duplicate["error"]["code"] == "ATTEMPT_EXISTS"
 
 
+def test_attempt_evidence_preserves_evaluator_provenance(vault: Path):
+    from plugins.study_os.learning import handle_study_activity
+
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {"project_id": "calculus-2027"},
+            }
+        )
+    )
+    assert initialized["ok"] is True
+
+    recorded = _loads(
+        handle_study_activity(
+            {
+                "resource": "attempt",
+                "action": "record",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": {
+                    "attempt_id": "att-self-grade-001",
+                    "item_id": "derivative-001",
+                    "occurred_at": "2026-07-13T10:00:00+08:00",
+                    "response": "Use the definition of the derivative.",
+                    "result": "correct",
+                    "score": 1.0,
+                    "transfer_level": "execution",
+                    "concepts": ["导数"],
+                    "evaluator": {"kind": "self", "confidence": 0.45},
+                    "assistance": {"level": "independent", "hints_used": 0},
+                    "objective_ids": ["derive-from-definition"],
+                },
+            }
+        )
+    )
+
+    assert recorded["ok"] is True
+    assert recorded["data"]["attempt"]["evaluator"] == {"kind": "self", "confidence": 0.45}
+    assert recorded["data"]["attempt"]["assistance"]["level"] == "independent"
+    assert recorded["data"]["attempt"]["objective_ids"] == ["derive-from-definition"]
+
+
 def test_study_coach_uses_evidence_for_summary_recommendation_and_pattern_proposal(vault: Path):
     from plugins.study_os.learning import handle_study_activity, handle_study_coach
 
@@ -950,7 +1160,7 @@ def test_study_coach_uses_evidence_for_summary_recommendation_and_pattern_propos
 
     summary = _loads(
         handle_study_coach(
-            {"action": "summarize", "scope": "week", "vault_path": str(vault), "project_id": "calculus-2027"}
+            {"action": "summarize", "scope": "project", "vault_path": str(vault), "project_id": "calculus-2027"}
         )
     )
     recommendation = _loads(
@@ -996,6 +1206,566 @@ def test_study_coach_uses_evidence_for_summary_recommendation_and_pattern_propos
     )
     assert saved["ok"] is True
     assert saved["data"]["path"].endswith(f"pattern-proposals/{proposal['proposal_id']}.json")
+
+
+def test_learning_runtime_runs_one_evidence_backed_session(vault: Path):
+    from plugins.study_os.learning import handle_study_activity, handle_study_coach
+
+    project = _valid_learning_project_v2()
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {
+                    key: value
+                    for key, value in project.items()
+                    if key not in {"prompt_policy", "created_at", "updated_at"}
+                },
+            }
+        )
+    )
+    assert initialized["ok"] is True
+
+    started = _loads(
+        handle_study_coach(
+            {
+                "action": "start",
+                "vault_path": str(vault),
+                "project_id": "research-agents",
+                "data": {
+                    "session_id": "learn-routing-001",
+                    "contract": {
+                        "contract_id": "contract-routing-001",
+                        "mode": "research",
+                        "objective": "Reproduce and explain the routing result.",
+                        "objective_ids": ["reproduce-routing-result"],
+                        "time_budget_minutes": 45,
+                        "assistance_level": "guided",
+                        "evidence_targets": ["execution", "explanation"],
+                    },
+                },
+            },
+            session_id="hermes-conversation-001",
+        )
+    )
+
+    assert started["ok"] is True
+    assert started["data"]["session"]["status"] == "active"
+    assert started["data"]["session"]["conversation_session_id"] == "hermes-conversation-001"
+    assert started["data"]["session"]["evidence_ids"] == []
+    assert started["data"]["next_activity"]["evidence_target"] == "execution"
+    assert started["data"]["next_activity"]["kind"] == "research_replication"
+    assert started["data"]["next_activity"]["activity_adapter"] == "research.v1"
+    assert started["data"]["competency_snapshot"]["evidence_count"] == 0
+    assert (vault / ".StudyOS" / "projects" / "research-agents" / "sessions" / "learn-routing-001.json").exists()
+
+    advanced = _loads(
+        handle_study_coach(
+            {
+                "action": "advance",
+                "vault_path": str(vault),
+                "project_id": "research-agents",
+                "data": {
+                    "session_id": "learn-routing-001",
+                    "observation": {
+                        "attempt_id": "att-routing-001",
+                        "response": "I reproduced the command but could not explain why the router changed.",
+                        "result": "partial",
+                        "score": 0.5,
+                        "duration_seconds": 480,
+                        "self_confidence": 3,
+                        "concepts": ["routing"],
+                        "artifact_refs": ["command:python reproduce_routing.py", "result:routing-run-001.json"],
+                        "diagnoses": [
+                            {
+                                "kind": "explanation_gap",
+                                "concept": "routing",
+                                "evidence": "The mechanism was not explained.",
+                            }
+                        ],
+                        "evaluator": {"kind": "agent", "id": "primary", "confidence": 0.8},
+                    },
+                },
+            }
+        )
+    )
+
+    assert advanced["ok"] is True
+    assert advanced["data"]["evidence"]["attempt_id"] == "att-routing-001"
+    assert advanced["data"]["session"]["evidence_ids"] == ["att-routing-001"]
+    assert advanced["data"]["competency_snapshot"]["dimensions"]["execution"]["attempt_count"] == 1
+    assert advanced["data"]["competency_snapshot"]["dimensions"]["execution"]["verification_status"] == "developing"
+    assert advanced["data"]["competency_snapshot"]["evaluator_provenance"] == {"agent": 1}
+    assert advanced["data"]["evidence"]["artifact_refs"][0].startswith("command:")
+    assert advanced["data"]["next_activity"]["kind"] == "research_mechanism_explanation"
+    assert advanced["data"]["next_activity"]["reason"]
+
+    snapshot = _loads(
+        handle_study_coach(
+            {
+                "action": "snapshot",
+                "vault_path": str(vault),
+                "project_id": "research-agents",
+                "data": {"session_id": "learn-routing-001"},
+            }
+        )
+    )
+    finished = _loads(
+        handle_study_coach(
+            {
+                "action": "finish",
+                "vault_path": str(vault),
+                "project_id": "research-agents",
+                "data": {"session_id": "learn-routing-001"},
+            }
+        )
+    )
+
+    assert snapshot["data"]["competency_snapshot"]["evidence_count"] == 1
+    assert finished["ok"] is True
+    assert finished["data"]["session"]["status"] == "completed"
+    assert finished["data"]["outcome"]["evidence_count"] == 1
+    assert "explanation" in finished["data"]["outcome"]["unverified_dimensions"]
+
+
+def test_learning_runtime_rejects_unprovenanced_or_post_finish_evidence(vault: Path):
+    from plugins.study_os.learning import handle_study_activity, handle_study_coach
+
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {"project_id": "calculus-2027"},
+            }
+        )
+    )
+    assert initialized["ok"] is True
+    started = _loads(
+        handle_study_coach(
+            {
+                "action": "start",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": {
+                    "session_id": "learn-calculus-001",
+                    "contract": {
+                        "mode": "learn",
+                        "objective": "Explain the derivative from its definition.",
+                        "objective_ids": [],
+                        "time_budget_minutes": 20,
+                        "assistance_level": "hints_only",
+                        "evidence_targets": ["explanation"],
+                    },
+                },
+            }
+        )
+    )
+    assert started["ok"] is True
+
+    missing_evaluator = _loads(
+        handle_study_coach(
+            {
+                "action": "advance",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": {
+                    "session_id": "learn-calculus-001",
+                    "observation": {
+                        "response": "A derivative is a limit.",
+                        "result": "partial",
+                        "score": 0.5,
+                    },
+                },
+            }
+        )
+    )
+    assert missing_evaluator["ok"] is False
+    assert missing_evaluator["error"]["code"] == "EVALUATOR_REQUIRED"
+
+    finished = _loads(
+        handle_study_coach(
+            {
+                "action": "finish",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": {"session_id": "learn-calculus-001"},
+            }
+        )
+    )
+    assert finished["ok"] is True
+
+    after_finish = _loads(
+        handle_study_coach(
+            {
+                "action": "advance",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": {
+                    "session_id": "learn-calculus-001",
+                    "observation": {
+                        "response": "A derivative is a limit.",
+                        "result": "correct",
+                        "score": 1.0,
+                        "evaluator": {"kind": "agent", "confidence": 0.8},
+                    },
+                },
+            }
+        )
+    )
+    assert after_finish["ok"] is False
+    assert after_finish["error"]["code"] == "SESSION_NOT_ACTIVE"
+
+
+def test_engineering_adapter_requires_reproducible_artifacts_for_execution(vault: Path):
+    from plugins.study_os.learning import handle_study_activity, handle_study_coach
+
+    project = _valid_engineering_project_v2()
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {
+                    key: value
+                    for key, value in project.items()
+                    if key not in {"prompt_policy", "created_at", "updated_at"}
+                },
+            }
+        )
+    )
+    started = _loads(
+        handle_study_coach(
+            {
+                "action": "start",
+                "vault_path": str(vault),
+                "project_id": "engine-runtime",
+                "data": {
+                    "session_id": "learn-runtime-001",
+                    "contract": {
+                        "mode": "execute",
+                        "objective": "Trace and verify one request lifecycle through the runtime.",
+                        "objective_ids": ["trace-request-lifecycle"],
+                        "time_budget_minutes": 40,
+                        "assistance_level": "guided",
+                        "evidence_targets": ["execution"],
+                    },
+                },
+            }
+        )
+    )
+
+    assert initialized["ok"] is True
+    assert started["ok"] is True
+    activity = started["data"]["next_activity"]
+    assert activity["activity_adapter"] == "engineering.v1"
+    assert activity["kind"] == "engineering_execution"
+    assert activity["source_anchors"][0]["ref"] == "run_agent.py"
+    assert "artifact_refs" in activity["evidence_requirements"]
+
+    missing_artifact = _loads(
+        handle_study_coach(
+            {
+                "action": "advance",
+                "vault_path": str(vault),
+                "project_id": "engine-runtime",
+                "data": {
+                    "session_id": "learn-runtime-001",
+                    "observation": {
+                        "response": "The request passes through run_conversation into the provider loop.",
+                        "result": "partial",
+                        "score": 0.6,
+                        "evaluator": {"kind": "agent", "confidence": 0.75},
+                    },
+                },
+            }
+        )
+    )
+    assert missing_artifact["ok"] is False
+    assert missing_artifact["error"]["code"] == "ARTIFACT_REFERENCE_REQUIRED"
+
+    advanced = _loads(
+        handle_study_coach(
+            {
+                "action": "advance",
+                "vault_path": str(vault),
+                "project_id": "engine-runtime",
+                "data": {
+                    "session_id": "learn-runtime-001",
+                    "observation": {
+                        "attempt_id": "att-runtime-trace-001",
+                        "response": "The request passes through run_conversation into the provider loop.",
+                        "result": "correct",
+                        "score": 0.9,
+                        "concepts": ["request lifecycle"],
+                        "artifact_refs": ["command:pytest tests/agent/test_turn_context.py", "file:run_agent.py"],
+                        "evaluator": {"kind": "program", "id": "pytest", "confidence": 0.95},
+                    },
+                },
+            }
+        )
+    )
+
+    assert advanced["ok"] is True
+    assert advanced["data"]["competency_snapshot"]["dimensions"]["execution"]["verification_status"] == "supported"
+    assert advanced["data"]["evidence"]["artifact_refs"] == [
+        "command:pytest tests/agent/test_turn_context.py",
+        "file:run_agent.py",
+    ]
+    assert advanced["data"]["evidence"]["source_anchors"] == activity["source_anchors"]
+    assert advanced["data"]["next_activity"]["evidence_target"] == "execution"
+    assert advanced["data"]["next_activity"]["assistance_level"] == "independent"
+    assert "not independently verified" in advanced["data"]["next_activity"]["reason"]
+
+
+def test_research_adapter_requires_a_source_anchor_for_claim_evidence(vault: Path):
+    from plugins.study_os.learning import handle_study_activity, handle_study_coach
+
+    project = _valid_learning_project_v2()
+    project["project_id"] = "research-unanchored"
+    project["objectives"][0]["objective_id"] = "explain-routing-claim"
+    project["objectives"][0].pop("source_anchors")
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {
+                    key: value
+                    for key, value in project.items()
+                    if key not in {"prompt_policy", "created_at", "updated_at"}
+                },
+            }
+        )
+    )
+    started = _loads(
+        handle_study_coach(
+            {
+                "action": "start",
+                "vault_path": str(vault),
+                "project_id": "research-unanchored",
+                "data": {
+                    "session_id": "learn-claim-001",
+                    "contract": {
+                        "mode": "research",
+                        "objective": "Explain the routing claim and its limitation.",
+                        "objective_ids": ["explain-routing-claim"],
+                        "time_budget_minutes": 30,
+                        "assistance_level": "independent",
+                        "evidence_targets": ["explanation"],
+                    },
+                },
+            }
+        )
+    )
+
+    assert initialized["ok"] is True
+    assert started["data"]["next_activity"]["kind"] == "research_mechanism_explanation"
+    rejected = _loads(
+        handle_study_coach(
+            {
+                "action": "advance",
+                "vault_path": str(vault),
+                "project_id": "research-unanchored",
+                "data": {
+                    "session_id": "learn-claim-001",
+                    "observation": {
+                        "response": "The router changes because load changes.",
+                        "result": "partial",
+                        "score": 0.5,
+                        "evaluator": {"kind": "agent", "confidence": 0.6},
+                    },
+                },
+            }
+        )
+    )
+    assert rejected["ok"] is False
+    assert rejected["error"]["code"] == "SOURCE_ANCHOR_REQUIRED"
+
+    accepted = _loads(
+        handle_study_coach(
+            {
+                "action": "advance",
+                "vault_path": str(vault),
+                "project_id": "research-unanchored",
+                "data": {
+                    "session_id": "learn-claim-001",
+                    "observation": {
+                        "response": "The paper attributes the change to load, but section 4 does not isolate latency.",
+                        "result": "correct",
+                        "source_anchors": [
+                            {"kind": "paper", "ref": "doi:10.0000/example", "locator": "section 4"}
+                        ],
+                        "evaluator": {"kind": "human", "id": "supervisor", "confidence": 0.9},
+                    },
+                },
+            }
+        )
+    )
+    assert accepted["ok"] is True
+    assert accepted["data"]["evidence"]["score"] == 1.0
+    assert accepted["data"]["evidence"]["source_anchors"][0]["kind"] == "paper"
+    assert accepted["data"]["competency_snapshot"]["dimensions"]["explanation"]["verification_status"] == "independent"
+
+    finished = _loads(
+        handle_study_coach(
+            {
+                "action": "finish",
+                "vault_path": str(vault),
+                "project_id": "research-unanchored",
+                "data": {"session_id": "learn-claim-001"},
+            }
+        )
+    )
+    assert finished["data"]["outcome"]["verified_dimensions"] == ["explanation"]
+    assert finished["data"]["outcome"]["unverified_dimensions"] == []
+
+
+def test_active_learning_context_is_turn_local_bounded_and_removed_on_finish(vault: Path):
+    from plugins.study_os.context import MAX_ACTIVE_CONTEXT_CHARS, active_learning_context
+    from plugins.study_os.learning import handle_study_activity, handle_study_coach
+
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {"project_id": "calculus-2027"},
+            }
+        )
+    )
+    assert initialized["ok"] is True
+    assert active_learning_context(session_id="hermes-learning-context-001") is None
+
+    started = _loads(
+        handle_study_coach(
+            {
+                "action": "start",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": {
+                    "session_id": "learn-context-001",
+                    "conversation_session_id": "hermes-learning-context-001",
+                    "contract": {
+                        "mode": "learn",
+                        "objective": "Explain the derivative from its definition.",
+                        "objective_ids": [],
+                        "time_budget_minutes": 20,
+                        "assistance_level": "hints_only",
+                        "evidence_targets": ["explanation"],
+                    },
+                },
+            }
+        )
+    )
+    active = active_learning_context(session_id="hermes-learning-context-001")
+
+    assert started["ok"] is True
+    assert active is not None
+    assert set(active) == {"context"}
+    assert "Explain the derivative from its definition." in active["context"]
+    assert '"assistance_level":"hints_only"' in active["context"]
+    assert "not proof of mastery" in active["context"]
+    assert len(active["context"]) <= MAX_ACTIVE_CONTEXT_CHARS
+
+    finished = _loads(
+        handle_study_coach(
+            {
+                "action": "finish",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": {"session_id": "learn-context-001"},
+            }
+        )
+    )
+    assert finished["ok"] is True
+    assert active_learning_context(session_id="hermes-learning-context-001") is None
+
+
+def test_registered_learning_runtime_binds_and_unbinds_real_pre_llm_hook(vault: Path, monkeypatch):
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from plugins import study_os
+    from tools.registry import registry
+
+    manager = PluginManager()
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+    manifest = PluginManifest(name="study_os", version="0.1.0", description="study", source="bundled")
+    ctx = PluginContext(manifest, manager)
+
+    try:
+        study_os.register(ctx)
+        initialized = _loads(
+            registry.dispatch(
+                "study_activity",
+                {
+                    "resource": "project",
+                    "action": "init",
+                    "vault_path": str(vault),
+                    "data": {"project_id": "calculus-2027"},
+                },
+                session_id="hermes-e2e-learning-001",
+            )
+        )
+        started = _loads(
+            registry.dispatch(
+                "study_coach",
+                {
+                    "action": "start",
+                    "vault_path": str(vault),
+                    "project_id": "calculus-2027",
+                    "data": {
+                        "session_id": "learn-e2e-001",
+                        "contract": {
+                            "mode": "learn",
+                            "objective": "Explain the derivative from its definition.",
+                            "objective_ids": [],
+                            "time_budget_minutes": 20,
+                            "assistance_level": "guided",
+                            "evidence_targets": ["explanation"],
+                        },
+                    },
+                },
+                session_id="hermes-e2e-learning-001",
+            )
+        )
+        hook_results = manager.invoke_hook(
+            "pre_llm_call",
+            session_id="hermes-e2e-learning-001",
+            user_message="continue",
+            conversation_history=[],
+            is_first_turn=False,
+            model="test",
+        )
+
+        assert initialized["ok"] is True
+        assert started["ok"] is True
+        assert len(hook_results) == 1
+        assert "Explain the derivative from its definition." in hook_results[0]["context"]
+
+        finished = _loads(
+            registry.dispatch(
+                "study_coach",
+                {
+                    "action": "finish",
+                    "vault_path": str(vault),
+                    "project_id": "calculus-2027",
+                    "data": {"session_id": "learn-e2e-001"},
+                },
+                session_id="hermes-e2e-learning-001",
+            )
+        )
+        assert finished["ok"] is True
+        assert manager.invoke_hook("pre_llm_call", session_id="hermes-e2e-learning-001") == []
+    finally:
+        for name in ("study_activity", "study_coach"):
+            registry.deregister(name)
 
 
 def test_review_runner_reads_hidden_answer_and_submits_one_compound_result(vault: Path):
@@ -1261,6 +2031,7 @@ def test_plugin_registers_tools_and_skill(monkeypatch):
         assert registry.get_toolset_for_tool("study_activity") == "study"
         assert registry.get_toolset_for_tool("study_coach") == "study"
         assert manager.find_plugin_skill("study_os:study-os") is not None
+        assert manager.has_hook("pre_llm_call")
     finally:
         for name in ("study_activity", "study_coach"):
             registry.deregister(name)

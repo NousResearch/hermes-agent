@@ -251,6 +251,54 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_url"),
+    [
+        (
+            "gemini-2.5-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        ),
+        (
+            "google/gemini-2.0-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        ),
+        (
+            "gemini/gemini-3-pro-preview",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent",
+        ),
+        (
+            "models/gemini-2.5-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        ),
+        (
+            "tunedModels/custom-gemini-model",
+            "https://generativelanguage.googleapis.com/v1beta/tunedModels/custom-gemini-model:generateContent",
+        ),
+    ],
+)
+def test_native_client_builds_generate_content_url_for_gemini_model_ids(monkeypatch, model, expected_url):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded["url"] = url
+            return DummyResponse(payload={
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2},
+            })
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    client.chat.completions.create(model=model, messages=[{"role": "user", "content": "Hello"}])
+
+    assert recorded["url"] == expected_url
+
+
 @pytest.mark.parametrize("model, expected", [
     ("google/gemini-2.0-flash", "gemini-2.0-flash"),
     ("gemini/gemini-3-pro-preview", "gemini-3-pro-preview"),
@@ -288,6 +336,118 @@ def test_native_client_strips_self_prefix_from_model_url(monkeypatch):
     )
 
     assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_url"),
+    [
+        (
+            "gemini-2.5-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+        ),
+        (
+            "google/gemini-2.0-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse",
+        ),
+        (
+            "models/gemini-2.5-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+        ),
+        (
+            "tunedModels/custom-gemini-model",
+            "https://generativelanguage.googleapis.com/v1beta/tunedModels/custom-gemini-model:streamGenerateContent?alt=sse",
+        ),
+    ],
+)
+def test_native_stream_client_builds_stream_url_for_gemini_model_ids(monkeypatch, model, expected_url):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyStreamResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def iter_text(self):
+            yield 'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}'
+            yield "\n\n"
+
+        def read(self):
+            return b""
+
+    class DummyHTTP:
+        def stream(self, method, url, json=None, headers=None, timeout=None):
+            recorded["method"] = method
+            recorded["url"] = url
+            return DummyStreamResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    chunks = list(client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": "Hello"}],
+        stream=True,
+    ))
+
+    assert recorded["method"] == "POST"
+    assert recorded["url"] == expected_url
+    assert chunks[0].choices[0].delta.content == "hello"
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_url"),
+    [
+        (
+            "gemini-2.5-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        ),
+        (
+            "google/gemini-2.0-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        ),
+        (
+            "models/gemini-2.5-flash",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        ),
+        (
+            "tunedModels/custom-gemini-model",
+            "https://generativelanguage.googleapis.com/v1beta/tunedModels/custom-gemini-model:generateContent",
+        ),
+    ],
+)
+def test_probe_gemini_tier_builds_generate_content_url_for_gemini_model_ids(monkeypatch, model, expected_url):
+    from agent.gemini_native_adapter import probe_gemini_tier
+
+    recorded = {}
+
+    class DummyHTTP:
+        def __init__(self, timeout=None):
+            recorded["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def post(self, url, params=None, json=None, headers=None):
+            recorded["url"] = url
+            recorded["params"] = params
+            return DummyResponse(status_code=200)
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", DummyHTTP)
+
+    assert probe_gemini_tier("AIza-test", model=model) == "paid"
+    assert recorded["url"] == expected_url
+    assert recorded["params"] == {"key": "AIza-test"}
 
 
 def test_native_http_error_keeps_status_and_retry_after():

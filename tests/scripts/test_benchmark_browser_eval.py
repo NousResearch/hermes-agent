@@ -104,3 +104,43 @@ def test_teardown_survives_supervisor_stop_failure(monkeypatch):
     # stop_all() blew up, but Chrome teardown still ran — no leaked proc/profile.
     fake_proc.terminate.assert_called_once()
     assert rmtree_calls == [profile_dir]
+
+
+def test_start_chrome_timeout_cleans_up_before_raising(monkeypatch):
+    """If Chrome never exposes CDP, ``_start_chrome()`` must own its cleanup —
+    terminate + wait/kill the proc and rmtree the temp profile — before raising.
+
+    This path fails *before* ``main()`` binds ``proc``/``profile`` at the call
+    site, so ``main()``'s finally can never reach them. On the old code the
+    timeout path only called ``proc.terminate()``, leaking the process (never
+    reaped) and the ``/tmp`` profile dir (never removed).
+    """
+    bench = _load_bench()
+
+    fake_proc = MagicMock()
+    profile_dir = "/tmp/hermes-bench-timeout-profile"
+    monkeypatch.setattr(bench, "_find_chrome", lambda: "/usr/bin/fake-chrome")
+    monkeypatch.setattr(bench.tempfile, "mkdtemp", lambda **kw: profile_dir)
+    monkeypatch.setattr(bench.subprocess, "Popen", lambda *a, **kw: fake_proc)
+
+    # CDP never comes up: every probe raises, so the poll loop runs to deadline.
+    monkeypatch.setattr(
+        bench.urllib.request, "urlopen", MagicMock(side_effect=OSError("refused"))
+    )
+
+    # Drive the poll loop past its deadline without real waiting: one probe
+    # iteration, then monotonic jumps past the 15s deadline.
+    ticks = iter([0.0, 1.0, 100.0])
+    monkeypatch.setattr(bench.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(bench.time, "sleep", lambda *_: None)
+
+    rmtree_calls: list[str] = []
+    monkeypatch.setattr(bench.shutil, "rmtree", lambda p, **kw: rmtree_calls.append(p))
+
+    with pytest.raises(RuntimeError, match="Chrome didn't expose CDP"):
+        bench._start_chrome(9333)
+
+    # The timeout path reaped the process and removed the profile itself.
+    fake_proc.terminate.assert_called_once()
+    fake_proc.wait.assert_called_once()
+    assert rmtree_calls == [profile_dir]

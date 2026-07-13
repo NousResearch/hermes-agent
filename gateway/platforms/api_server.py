@@ -6343,11 +6343,21 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._site.stop()
             self._site = None
 
+        # Reconnect cleanup may receive an adapter whose construction failed
+        # before the run/cleanup registries were initialized.  Treat absent
+        # registries as empty so shutdown can still close the resources that
+        # do exist (notably ResponseStore) without weakening the exact-cleanup
+        # path for fully initialized adapters.
+        active_run_agents = getattr(self, "_active_run_agents", {})
+        api_active_agents = getattr(self, "_api_active_agents", {})
+        active_run_tasks = getattr(self, "_active_run_tasks", {})
+        api_cleanup_tasks = getattr(self, "_api_cleanup_tasks", set())
+        api_cleanup_handles = getattr(self, "_api_cleanup_handles", {})
         agents_to_interrupt = {
             id(agent): agent
             for agent in (
-                list(self._active_run_agents.values())
-                + list(self._api_active_agents.values())
+                list(active_run_agents.values())
+                + list(api_active_agents.values())
             )
         }
         for agent in agents_to_interrupt.values():
@@ -6361,7 +6371,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # merely because a short timeout elapsed.  systemd's hard-kill path is
         # separately reconciled by the privileged writer's stop/start hooks.
         while True:
-            for handle in list(self._api_cleanup_handles.values()):
+            for handle in list(api_cleanup_handles.values()):
                 self._ensure_api_cleanup_retry(
                     handle,
                     cleanup_ref=None,
@@ -6370,12 +6380,12 @@ class APIServerAdapter(BasePlatformAdapter):
             cleanup_tasks = {
                 task
                 for task in (
-                    list(self._active_run_tasks.values())
-                    + list(self._api_cleanup_tasks)
+                    list(active_run_tasks.values())
+                    + list(api_cleanup_tasks)
                 )
                 if task is not None and not task.done()
             }
-            if not cleanup_tasks and not self._api_cleanup_handles:
+            if not cleanup_tasks and not api_cleanup_handles:
                 break
             try:
                 _done, pending = await asyncio.wait(
@@ -6387,13 +6397,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         task.exception()
                     except (asyncio.CancelledError, Exception):
                         pass
-                if pending or self._api_cleanup_handles:
+                if pending or api_cleanup_handles:
                     logger.warning(
                         "[%s] Waiting for exact API cleanup: %d task(s), "
                         "%d handle(s)",
                         self.name,
                         len(pending),
-                        len(self._api_cleanup_handles),
+                        len(api_cleanup_handles),
                     )
             except asyncio.CancelledError:
                 logger.error(
@@ -6408,14 +6418,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
-        if self._response_store is not None and not self._api_cleanup_handles:
+        if self._response_store is not None and not api_cleanup_handles:
             try:
                 self._response_store.close()
             except Exception:
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
-        elif self._api_cleanup_handles:
+        elif api_cleanup_handles:
             logger.error(
                 "[%s] ResponseStore retained because exact cleanup is unresolved",
                 self.name,

@@ -206,3 +206,74 @@ class TestMimeStructure:
         assert msg.get_content_type() == "multipart/mixed"
         alt = msg.get_payload()[0]
         assert alt.get_content_type() == "multipart/alternative"
+
+
+class TestPreExistingHTML:
+    """Tests for HTML that's already in the body (from cron/model output)."""
+
+    def _make_adapter(self, html_format=True):
+        from plugins.platforms.email.adapter import EmailAdapter
+        with patch.object(EmailAdapter, '__init__', lambda self, *a, **kw: None):
+            adapter = EmailAdapter.__new__(EmailAdapter)
+            adapter._html_format = html_format
+            return adapter
+
+    def _decode_payload(self, part):
+        decoded = part.get_payload(decode=True)
+        if decoded:
+            return decoded.decode("utf-8", errors="replace")
+        return part.get_payload()
+
+    def test_html_document_with_preamble(self):
+        """HTML document with preamble text → preamble stripped, sent as HTML."""
+        adapter = self._make_adapter()
+        body = "Here is your daily briefing:\n<!DOCTYPE html><html><body><h1>Report</h1></body></html>"
+        msg = MIMEMultipart()
+        adapter._attach_body(msg, body)
+
+        alt = msg.get_payload()[0]
+        assert alt.get_content_type() == "multipart/alternative"
+        payloads = alt.get_payload()
+        assert len(payloads) == 2
+        assert payloads[0].get_content_type() == "text/plain"
+        assert payloads[1].get_content_type() == "text/html"
+        html_content = self._decode_payload(payloads[1])
+        assert html_content.startswith("<!DOCTYPE html>")
+        assert "daily briefing" not in html_content
+
+    def test_html_fragment_no_html_close(self):
+        """HTML fragment (no </html>) → trailing commentary stripped."""
+        adapter = self._make_adapter()
+        body = "<div class='report'><h1>Status</h1><p>OK</p></div>\n\nThe report above shows the current status."
+        msg = MIMEMultipart()
+        adapter._attach_body(msg, body)
+
+        alt = msg.get_payload()[0]
+        payloads = alt.get_payload()
+        html_content = self._decode_payload(payloads[1])
+        assert html_content.endswith("</div>")
+        assert "report above" not in html_content
+
+    def test_duplicate_html_close_uses_first(self):
+        """Duplicate </html> — first occurrence is used."""
+        adapter = self._make_adapter()
+        body = "<html><body><h1>Hello</h1></body></html>\ngarbage\n</html>"
+        msg = MIMEMultipart()
+        adapter._attach_body(msg, body)
+
+        alt = msg.get_payload()[0]
+        payloads = alt.get_payload()
+        html_content = self._decode_payload(payloads[1])
+        assert html_content.count("</html>") == 1
+
+    def test_plain_text_not_detected_as_html(self):
+        """Plain text body → sent as plain text, not HTML."""
+        adapter = self._make_adapter(html_format=False)
+        body = "Hello Felix,\n\nYour daily briefing is ready."
+        msg = MIMEMultipart()
+        adapter._attach_body(msg, body)
+
+        alt = msg.get_payload()[0]
+        payloads = alt.get_payload()
+        assert len(payloads) == 1
+        assert payloads[0].get_content_type() == "text/plain"

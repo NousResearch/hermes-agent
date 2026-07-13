@@ -97,6 +97,20 @@ _HERMES_EMAIL_ELEMENT_STYLES = [
     ("hr", 'style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;"'),
 ]
 
+# HTML detection regex — matches common HTML document openings or HTML
+# fragment tags that signal the body is HTML (not plain text).
+# Used to detect pre-existing HTML in model/cron output.
+_HTML_RE = re.compile(
+    r"(?:<!DOCTYPE\s+html|<html[\s>]|<(?:div|table|h[1-6]|section|article|main|header|footer|style)\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Block-level closing tags used to detect end of HTML fragments
+_BLOCK_CLOSE_RE = re.compile(
+    r"</(?:div|table|section|article|main|header|footer|body|ul|ol|p|h[1-6])>",
+    re.IGNORECASE,
+)
+
 
 def _style_html_email(html: str) -> str:
     """Inject inline CSS styles into HTML elements for email client compat."""
@@ -1057,19 +1071,53 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _attach_parts(self, container: MIMEMultipart, body: str) -> None:
         """Attach plain + optional HTML parts to a multipart container."""
-        container.attach(MIMEText(body, "plain", "utf-8"))
-        if self._html_format:
-            try:
-                import markdown
-                html_body = markdown.markdown(
-                    body, extensions=["tables", "fenced_code", "nl2br"]
-                )
-                html_body = _style_html_email(_HTML_PREFIX + html_body + _HERMES_EMAIL_FOOTER)
-                container.attach(MIMEText(html_body, "html", "utf-8"))
-            except ImportError:
-                logger.debug("[Email] markdown not installed, sending plain text")
-            except Exception as e:
-                logger.warning("[Email] HTML conversion failed, falling back to plain: %s", e)
+        # Check if body already contains HTML (from cron/model output).
+        # Models sometimes produce full HTML documents or fragments with
+        # preamble text before the first HTML tag.
+        html_match = _HTML_RE.search(body)
+        if html_match:
+            # Body already contains HTML — strip preamble and trailing
+            # commentary, then send as multipart/alternative.
+            html_body = body[html_match.start():]
+
+            # Strip content after </html> (first occurrence, not last)
+            html_end = html_body.lower().find("</html>")
+            if html_end >= 0:
+                html_body = html_body[: html_end + len("</html>")]
+            else:
+                # HTML fragment — strip trailing model commentary
+                for m in reversed(list(_BLOCK_CLOSE_RE.finditer(html_body))):
+                    after = html_body[m.end():]
+                    if not after.strip():
+                        break
+                    if re.search(r"<[a-zA-Z/!]", after.strip()):
+                        continue  # still HTML
+                    html_body = html_body[: m.end()]
+                    break
+
+            # Generate plain-text fallback
+            import html as _html_mod
+            plain = _html_mod.unescape(re.sub(r"<[^>]+>", "", html_body)).strip()
+            if not plain:
+                plain = "(HTML email — please view in a client that supports HTML.)"
+
+            container.attach(MIMEText(plain, "plain", "utf-8"))
+            container.attach(MIMEText(html_body, "html", "utf-8"))
+        else:
+            # Body is markdown/plain — convert to HTML if html_format enabled
+            container.attach(MIMEText(body, "plain", "utf-8"))
+            if self._html_format:
+                try:
+                    import markdown
+                    html_body = markdown.markdown(
+                        body, extensions=["tables", "fenced_code", "nl2br"]
+                    )
+                    html_body = _style_html_email(_HTML_PREFIX + html_body + _HERMES_EMAIL_FOOTER)
+                    container.attach(MIMEText(html_body, "html", "utf-8"))
+                except ImportError:
+                    logger.debug("[Email] markdown not installed, sending plain text")
+                except Exception as e:
+                    logger.warning("[Email] HTML conversion failed, falling back to plain: %s", e)
 
     async def send_image(
         self,

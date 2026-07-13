@@ -1885,10 +1885,52 @@ def _strip_quotes(command: str) -> str:
 
     This prevents false positives when keywords like 'nohup' or 'setsid' appear
     in commit messages, Python -c code, echo arguments, or PR body text.
-    Also strips backtick-quoted content and heredoc-style inline text.
+    Also strips backtick-quoted content and heredoc body text.
     """
+    # Remove heredoc bodies FIRST (before quote-stripping — a heredoc delimiter
+    # may be quoted, e.g. <<'EOF', and the body commonly contains characters like
+    # '&' that are literal payload, not shell operators). Matches <<EOF, <<-EOF,
+    # <<'EOF', and <<"EOF"; body runs up to the closing delimiter line.
+    def _strip_heredocs(text: str) -> str:
+        heredoc_re = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+        out = text
+        # Iterate because a command may contain multiple heredocs.
+        while True:
+            m = heredoc_re.search(out)
+            if not m:
+                break
+            delim = m.group(2)
+            # The heredoc body starts on the NEXT line — anything between the
+            # `<<DELIM` token and the end of that line (e.g. ` > file.txt`,
+            # additional args, or even a trailing `&`) is still real command
+            # text and must be preserved. Find the newline that ends the
+            # opener line.
+            nl = out.find("\n", m.end())
+            if nl == -1:
+                # No body at all (opener with no following line) — nothing to
+                # strip; blank the delimiter so we don't loop, keep the rest.
+                out = out[: m.start()] + "<<" + out[m.end() :]
+                break
+            body_start = nl  # keep the newline; body is what follows it
+            # Closing delimiter: on its own line, optional leading tabs for <<-.
+            close_re = re.compile(r"\n[ \t]*" + re.escape(delim) + r"[ \t]*(?=\n|$)")
+            cm = close_re.search(out, body_start)
+            # Blank the `<<DELIM` opener token itself so the next loop iteration
+            # doesn't re-match this same heredoc (which would then find no
+            # closing line and wrongly drop the real command tail after it).
+            opener_blanked = out[: m.start()] + "<<" + out[m.end() : body_start]
+            if cm:
+                # Drop the body + closing-delimiter token, keep everything after.
+                out = opener_blanked + out[cm.end() :]
+            else:
+                # Unterminated heredoc — the rest of the string is body; drop it.
+                out = opener_blanked
+                break
+        return out
+
+    result = _strip_heredocs(command)
     # Remove single-quoted strings (no escaping inside single quotes in shell)
-    result = re.sub(r"'[^']*'", "''", command)
+    result = re.sub(r"'[^']*'", "''", result)
     # Remove double-quoted strings (handle escaped quotes)
     result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
     # Remove backtick-quoted strings

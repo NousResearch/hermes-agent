@@ -403,10 +403,9 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_users = allowlist("LINE_ALLOWED_USERS", "allowed_users")
         self.allowed_groups = allowlist("LINE_ALLOWED_GROUPS", "allowed_groups")
         self.allowed_rooms = allowlist("LINE_ALLOWED_ROOMS", "allowed_rooms")
-        self.require_group_mention = _truthy_env(
-            "LINE_REQUIRE_MENTION_IN_GROUPS",
-            bool(extra.get("require_mention_in_groups", False)),
-        )
+        # ``require_mention`` is the shared config.yaml platform setting.
+        # LINE applies it only to group and room messages; DMs remain direct.
+        self.require_group_mention = bool(extra.get("require_mention", False))
         # Slow-LLM postback button threshold + user-overridable copy
         threshold = env_or("LINE_SLOW_RESPONSE_THRESHOLD", "slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
         self.slow_response_threshold = _coerce(float, threshold, DEFAULT_SLOW_RESPONSE_THRESHOLD)

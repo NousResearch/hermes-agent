@@ -114,7 +114,7 @@ class TestMentionGate:
             extra={
                 "channel_access_token": "tok",
                 "channel_secret": "sec",
-                "require_mention_in_groups": require_group_mention,
+                "require_mention": require_group_mention,
             },
         )
         ad = LineAdapter(cfg)
@@ -170,6 +170,18 @@ class TestMentionGate:
         asyncio.run(ad._handle_message_event(event))
         ad.handle_message.assert_not_called()
         assert "R1" not in ad._reply_tokens
+
+    def test_group_message_without_mention_is_handled_when_disabled(self):
+        ad = self._adapter(require_group_mention=False)
+        event = {
+            "type": "message",
+            "replyToken": "rt",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+            "message": {"id": "m1", "type": "text", "text": "hello"},
+        }
+        asyncio.run(ad._handle_message_event(event))
+        ad.handle_message.assert_awaited_once()
+        assert "C1" in ad._reply_tokens
 
     def test_group_message_with_bot_mention_is_handled(self):
         ad = self._adapter(require_group_mention=True)
@@ -575,12 +587,10 @@ class TestAdapterInit:
         monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
         monkeypatch.setenv("LINE_ALLOWED_USERS", "U1, U2,U3")
         monkeypatch.setenv("LINE_ALLOWED_GROUPS", "C1")
-        monkeypatch.setenv("LINE_REQUIRE_MENTION_IN_GROUPS", "true")
         from gateway.config import PlatformConfig
         ad = LineAdapter(PlatformConfig(enabled=True))
         assert ad.allowed_users == {"U1", "U2", "U3"}
         assert ad.allowed_groups == {"C1"}
-        assert ad.require_group_mention is True
 
 
 # ---------------------------------------------------------------------------

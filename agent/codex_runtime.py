@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
@@ -352,9 +351,11 @@ def run_codex_app_server_turn(
         getattr(agent, "tools", []) or [],
         getattr(agent, "valid_tool_names", set()) or set(),
     )
+    clarify_callback = getattr(agent, "clarify_callback", None)
     bridge_signature = (
         active_system_prompt,
         json.dumps(dynamic_tools, sort_keys=True, separators=(",", ":")),
+        clarify_callback is not None,
     )
     existing_session = getattr(agent, "_codex_session", None)
     if (
@@ -422,6 +423,7 @@ def run_codex_app_server_turn(
             cwd=cwd,
             extra_skill_roots=[str(get_hermes_home() / "skills")],
             approval_callback=approval_callback,
+            clarify_callback=clarify_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,

@@ -8,12 +8,13 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
-
+import asyncio
 
 
 class TestModuleSurface:
     def test_module_imports_clean(self):
         from agent.transports import hermes_tools_mcp_server as m
+
         assert callable(m.main)
         assert callable(m._build_server)
         assert isinstance(m.EXPOSED_TOOLS, tuple)
@@ -25,9 +26,15 @@ class TestModuleSurface:
         Specifically: no terminal/shell, no read_file/write_file, no
         patch — those are codex's built-in tools."""
         from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
         forbidden = {
-            "terminal", "shell", "read_file", "write_file", "patch",
-            "search_files", "process",
+            "terminal",
+            "shell",
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+            "process",
         }
         leaked = forbidden & set(EXPOSED_TOOLS)
         assert not leaked, (
@@ -39,6 +46,7 @@ class TestModuleSurface:
         """The Hermes-specific tools should be present so users on the
         codex runtime keep access to them."""
         from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
         for required in (
             "web_search",
             "web_extract",
@@ -54,11 +62,61 @@ class TestModuleSurface:
         running AIAgent context to dispatch, so a stateless MCP callback
         can't drive them. They must NOT be in EXPOSED_TOOLS."""
         from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
         for agent_loop_tool in ("delegate_task", "memory", "session_search", "todo"):
             assert agent_loop_tool not in EXPOSED_TOOLS, (
                 f"{agent_loop_tool!r} requires the agent loop context "
                 "and can't be reached through a stateless MCP callback"
             )
+
+    def test_build_server_preserves_schema_and_dispatches_top_level_arguments(
+        self, monkeypatch
+    ):
+        """Codex sends the top-level arguments advertised by the Hermes
+        schema; FastMCP must not collapse them into a required ``kwargs``
+        object that the underlying Hermes tool cannot consume."""
+        import model_tools
+        from agent.transports import hermes_tools_mcp_server as m
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name"},
+                "file_path": {"type": "string"},
+            },
+            "required": ["name"],
+        }
+        calls = []
+        monkeypatch.setattr(
+            model_tools,
+            "get_tool_definitions",
+            lambda quiet_mode=True: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "description": "Read a skill",
+                        "parameters": schema,
+                    },
+                }
+            ],
+        )
+
+        def dispatch(name, arguments):
+            calls.append((name, arguments))
+            return "SKILL_OK"
+
+        monkeypatch.setattr(model_tools, "handle_function_call", dispatch)
+
+        server = m._build_server()
+        tool = server._tool_manager.get_tool("skill_view")
+        assert tool is not None
+        assert tool.parameters == schema
+        assert "kwargs" not in tool.parameters.get("properties", {})
+
+        result = asyncio.run(tool.run({"name": "hermes-agent"}))
+        assert result == "SKILL_OK"
+        assert calls == [("skill_view", {"name": "hermes-agent"})]
 
     def test_kanban_worker_tools_exposed(self):
         """Kanban workers run as `hermes chat -q` subprocesses; if they
@@ -67,6 +125,7 @@ class TestModuleSurface:
         the MCP callback to report back to the kernel. Without these
         tools available, the worker would hang at completion time."""
         from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
         # Worker handoff tools — every dispatched worker uses at least
         # one of {complete, block, comment} to close out its task.
         for worker_tool in (
@@ -85,6 +144,7 @@ class TestModuleSurface:
         board, and unblock/link tasks. Exposed so an orchestrator on
         codex_app_server can do its job."""
         from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
         for orch_tool in (
             "kanban_create",
             "kanban_show",

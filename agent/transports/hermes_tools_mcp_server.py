@@ -44,7 +44,9 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 
 from __future__ import annotations
 
+import inspect
 import json
+import keyword
 import logging
 import os
 import sys
@@ -146,43 +148,82 @@ def _build_server() -> Any:
     for name in EXPOSED_TOOLS:
         spec = all_defs.get(name)
         if spec is None:
-            logger.debug(
-                "skipping %s — not registered in this Hermes process", name
-            )
+            logger.debug("skipping %s — not registered in this Hermes process", name)
             continue
 
         description = spec.get("description") or f"Hermes {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
-        # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
-        def _make_handler(tool_name: str):
+        # FastMCP derives both validation and the advertised input schema from
+        # a Python callable's signature. Give the generic dispatcher a dynamic
+        # keyword-only signature matching the authoritative Hermes schema,
+        # then replace FastMCP's lossy ``Any`` schema with the original JSON
+        # schema so descriptions, enums, and nested objects survive intact.
+        def _make_handler(
+            tool_name: str,
+            tool_description: str,
+            schema: dict[str, Any],
+        ):
             def _dispatch(**kwargs: Any) -> str:
                 try:
-                    return handle_function_call(tool_name, kwargs or {})
+                    # Optional signature parameters default to None. Omit them
+                    # from Hermes dispatch just as a normal model tool call
+                    # would, while preserving falsey values such as 0/False.
+                    arguments = {
+                        key: value for key, value in kwargs.items() if value is not None
+                    }
+                    return handle_function_call(tool_name, arguments)
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
+
+            properties = schema.get("properties") or {}
+            required = set(schema.get("required") or [])
+            signature_params: list[inspect.Parameter] = []
+            for param_name in properties:
+                if (
+                    not isinstance(param_name, str)
+                    or not param_name.isidentifier()
+                    or keyword.iskeyword(param_name)
+                ):
+                    raise ValueError(
+                        f"tool {tool_name!r} has an MCP-incompatible parameter "
+                        f"name: {param_name!r}"
+                    )
+                signature_params.append(
+                    inspect.Parameter(
+                        param_name,
+                        kind=inspect.Parameter.KEYWORD_ONLY,
+                        default=(
+                            inspect.Parameter.empty if param_name in required else None
+                        ),
+                        annotation=Any,
+                    )
+                )
+
             _dispatch.__name__ = tool_name
-            _dispatch.__doc__ = description
+            _dispatch.__doc__ = tool_description
+            _dispatch.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+                signature_params,
+                return_annotation=str,
+            )
             return _dispatch
 
         try:
+            handler = _make_handler(name, description, params_schema)
             mcp.add_tool(
-                _make_handler(name),
+                handler,
                 name=name,
                 description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
             )
-        except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style.
-            handler = _make_handler(name)
-            handler = mcp.tool(name=name, description=description)(handler)
+            manager = getattr(mcp, "_tool_manager", None)
+            registered = manager.get_tool(name) if manager is not None else None
+            if registered is None:
+                raise RuntimeError(f"FastMCP did not register tool {name!r}")
+            registered.parameters = params_schema
+        except (TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("skipping %s — MCP registration failed: %s", name, exc)
+            continue
 
         exposed_count += 1
 

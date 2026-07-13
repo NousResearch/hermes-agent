@@ -160,6 +160,30 @@ class TestRunConversationCodexPath:
         assert "current request" in captured["turn_input"]
         assert "HONCHO RECALL" in captured["turn_input"]
 
+    def test_hermes_clarify_callback_is_wired_to_codex_session(self, monkeypatch):
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-input-1",
+                thread_id="thread-input-1",
+            )
+
+        clarify_callback = lambda question, choices: "chosen"  # noqa: E731
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        agent = _make_codex_agent(clarify_callback=clarify_callback)
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("ask if needed")
+
+        assert captured["clarify_callback"] is clarify_callback
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

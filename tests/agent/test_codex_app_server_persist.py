@@ -60,6 +60,7 @@ def _seed_mock_codex_session(agent):
     agent._codex_bridge_signature = (
         "",
         json.dumps(dynamic_tools, sort_keys=True, separators=(",", ":")),
+        getattr(agent, "clarify_callback", None) is not None,
     )
 
 
@@ -67,6 +68,7 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     agent = MagicMock()
     agent.tools = []
     agent.valid_tool_names = set()
+    agent.clarify_callback = None
     _seed_mock_codex_session(agent)
     agent.tool_progress_callback = None
     agent._iters_since_skill = 0

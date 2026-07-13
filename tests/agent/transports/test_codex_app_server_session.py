@@ -207,6 +207,284 @@ class TestLifecycle:
         with pytest.raises(session_mod.CodexAppServerError, match="thread id"):
             s.ensure_started()
 
+    def test_native_request_user_input_is_relayed_through_hermes_ui(self):
+        client = FakeClient()
+        prompts = []
+
+        def clarify_callback(question, choices):
+            prompts.append((question, choices))
+            return "Staging"
+
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "header": "Target",
+                "question": "Which target should I use?",
+                "options": [
+                    {"label": "Production", "description": "Live system"},
+                    {"label": "Staging", "description": "Safe preview"},
+                ],
+                "isOther": True,
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, clarify_callback=clarify_callback)
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert prompts == [(
+            "Target\n\nWhich target should I use?",
+            ["Production: Live system", "Staging: Safe preview"],
+        )]
+        assert client.responses == [("input-1", {
+            "answers": {"target": {"answers": ["Staging"]}},
+        })]
+
+    @pytest.mark.parametrize("reply_method, callback_raises", [
+        ("respond", False),
+        ("respond_error", True),
+    ])
+    def test_request_user_input_reply_transport_failure_retires_and_cleans_up(
+        self, reply_method, callback_raises
+    ):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": None,
+                "isSecret": False,
+            }],
+        )
+
+        def clarify_callback(question, choices):
+            if callback_raises:
+                raise RuntimeError("UI disconnected")
+            return "Staging"
+
+        def fail_reply(*args, **kwargs):
+            client._closed = True
+            raise RuntimeError("codex app-server stdin closed unexpectedly")
+
+        setattr(client, reply_method, fail_reply)
+        s = make_session(client, clarify_callback=clarify_callback)
+
+        result = s.run_turn("ask me", turn_timeout=1.0)
+
+        assert result.should_retire is True
+        assert result.interrupted is True
+        assert "failed to reply to codex server request" in result.error
+        assert s._active_turn_id is None
+        assert s._request_user_input_responses == {}
+        assert s._dynamic_tool_responses == {}
+
+    def test_native_request_user_input_enables_codex_feature(self):
+        client = FakeClient()
+        factory_kwargs = []
+
+        def client_factory(**kwargs):
+            factory_kwargs.append(kwargs)
+            return client
+
+        s = CodexAppServerSession(
+            cwd="/tmp",
+            client_factory=client_factory,
+            clarify_callback=lambda question, choices: "ok",
+        )
+        s.ensure_started()
+
+        assert factory_kwargs == [{
+            "codex_bin": "codex",
+            "codex_home": None,
+            "extra_args": ["--enable", "default_mode_request_user_input"],
+        }]
+
+
+    def test_duplicate_request_user_input_is_replayed_without_reprompt(self):
+        client = FakeClient()
+        seen = []
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [{
+                "id": "note",
+                "header": "",
+                "question": "What should I remember?",
+                "options": None,
+                "isOther": False,
+                "isSecret": False,
+            }],
+        }
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **params
+        )
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-2", **params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def clarify_callback(question, choices):
+            seen.append((question, choices))
+            return "Keep the bridge native-first"
+
+        s = make_session(client, clarify_callback=clarify_callback)
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        expected = {
+            "answers": {
+                "note": {"answers": ["Keep the bridge native-first"]},
+            },
+        }
+        assert seen == [("What should I remember?", None)]
+        assert client.responses == [("input-1", expected), ("input-2", expected)]
+
+    def test_duplicate_request_user_input_replays_callback_failure_without_reprompt(self):
+        client = FakeClient()
+        seen = []
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [
+                {
+                    "id": "first",
+                    "question": "First question?",
+                    "options": None,
+                    "isSecret": False,
+                },
+                {
+                    "id": "second",
+                    "question": "Second question?",
+                    "options": None,
+                    "isSecret": False,
+                },
+            ],
+        }
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **params
+        )
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-2", **params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def clarify_callback(question, choices):
+            seen.append((question, choices))
+            if question == "Second question?":
+                raise RuntimeError("UI disconnected")
+            return "first answer"
+
+        s = make_session(client, clarify_callback=clarify_callback)
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == [
+            ("First question?", None),
+            ("Second question?", None),
+        ]
+        assert client.error_responses == [
+            ("input-1", -32603, "Hermes user-input UI failed"),
+            ("input-2", -32603, "Hermes user-input UI failed"),
+        ]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"itemId": ""},
+            {"itemId": None},
+            {"threadId": "foreign-thread"},
+            {"threadId": None},
+            {"turnId": "foreign-turn"},
+            {"turnId": None},
+        ],
+    )
+    def test_request_user_input_rejects_unbound_identity(self, overrides):
+        client = FakeClient()
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [{
+                "id": "q1",
+                "question": "Proceed?",
+                "options": None,
+                "isSecret": False,
+            }],
+        }
+        params.update(overrides)
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses[0][0:2] == ("input-1", -32602)
+
+    def test_request_user_input_rejects_secret_without_prompting(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "token",
+                "question": "Paste the token",
+                "options": None,
+                "isSecret": True,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Secret input is not supported by the Hermes UI"
+        )]
+
     def test_dynamic_tool_server_request_is_dispatched_to_hermes(self):
         client = FakeClient()
         seen = []

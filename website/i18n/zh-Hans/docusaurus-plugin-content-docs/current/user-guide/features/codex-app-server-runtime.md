@@ -14,9 +14,9 @@ Hermes 可以选择将 `openai/*` 和 `openai-codex/*` 的轮次交由 [Codex CL
 - 通过 Codex CLI 使用的相同认证流程，使用你的 **ChatGPT 订阅**运行 OpenAI agent 轮次（无需 API 密钥）。
 - 使用 **Codex 自带的工具集和沙箱**——`shell` 用于终端/读/写/搜索，`apply_patch` 用于结构化编辑，`update_plan` 用于规划，全部在 seatbelt/landlock 沙箱内运行。
 - **原生 Codex 插件**——Linear、GitHub、Gmail、Calendar、Canva 等——通过 `codex plugin` 安装后，会自动迁移并在你的 Hermes 会话中激活。
-- **Hermes 的丰富工具一并可用**——web_search、web_extract、浏览器自动化、视觉、图像生成、技能和 TTS 通过 MCP 回调提供。Codex 会回调 Hermes 获取其自身没有内置的工具。
+- **Hermes 的互补工具一并可用**——网页内容提取、浏览器自动化、URL/data 视觉、TTS、可配置的图像编辑/参考图工作流，以及外部/插件技能访问均通过 MCP 回调提供。Codex 原生网页搜索保持权威；Codex 原生图像与技能能力会与这些不等价的 Hermes 扩展同时保留。
 - **Hermes 上下文和恢复的会话会继续生效**——当前 Hermes 配置文件组装的开发者指令、先前的用户/助手历史以及当前的记忆/插件召回都会桥接到 Codex 线程，同时不会把临时召回重复写入持久历史。
-- **Hermes 有状态工具仍然可用**——活跃的 `memory`、`session_search`、`todo` 和 `delegate_task` 通过 Codex 动态工具协议暴露，并由实时 AIAgent 执行，而不是交给无状态子进程。
+- **Hermes 有状态工具仍然可用**——活跃的 `memory`、`session_search`、`todo`、`delegate_task` 和 `skill_manage` 通过 Codex 动态工具协议暴露，并由实时 AIAgent 执行，而不是交给无状态子进程。
 - **记忆与技能提示持续生效**——Codex 的事件被投影为 Hermes 的消息格式，使自我改进循环看到正常的对话记录。
 
 ## 模型实际拥有哪些工具
@@ -25,13 +25,15 @@ Hermes 可以选择将 `openai/*` 和 `openai-codex/*` 的轮次交由 [Codex CL
 
 ### 1. Codex 内置工具集（始终开启）
 
-这些工具随 `codex app-server` 本身一起提供——无需 Hermes 介入，无需 MCP，无需插件。运行时启动后，以下五个工具立即可用：
+这些工具随 `codex app-server` 本身一起提供——无需 Hermes 回调。核心工具包括：
 
 - **`shell`** — 在沙箱内运行任意 shell 命令。模型通过此工具读取文件（`cat`、`head`、`tail`）、写入文件（`echo > foo`、heredoc）、搜索文件（`find`、`rg`、`grep`）、浏览目录（`ls`、`cd`）、运行构建、管理进程，以及其他任何你在 bash 中能做的事。
 - **`apply_patch`** — 以 Codex 的 patch 格式应用结构化的多文件差异。模型将此工具用于非简单的代码编辑（添加函数、跨文件重构）；单次写入仍可使用 shell heredoc。
 - **`update_plan`** — Codex 的内部待办/计划跟踪器。等同于 Hermes 的 `todo` 工具，但完全在 Codex 运行时内部管理。
 - **`view_image`** — 将本地图像文件加载到对话中，使模型能够查看它。
-- **`web_search`** — 配置后 Codex 拥有自己的内置网络搜索。Hermes 也通过下方的回调暴露 `web_search`（基于 Firecrawl）；模型会选择其偏好的那个。
+- **`web_search`** — Codex 自身的网页搜索。此运行时会禁用重复的 Hermes 回调工具。
+- **原生图像生成** — Codex 的图像生成能力仍可用于基础生成；Hermes 回调则保留已配置后端、图生图编辑和参考图能力。
+- **`request_user_input`** — 当当前 Hermes 界面支持澄清时，通过该界面提出一个或多个结构化问题。
 
 因此，**任何你通过终端完成的操作——读/写/搜索/查找/运行——Codex 都能原生处理**。沙箱配置文件（启用运行时时默认为 `:workspace`）控制可写范围。
 
@@ -55,16 +57,16 @@ Hermes 可以选择将 `openai/*` 和 `openai-codex/*` 的轮次交由 [Codex CL
 
 ### 3. Hermes 工具回调（MCP server，注册在 `~/.codex/config.toml` 中）
 
-Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自身未内置的工具。通过回调可用的工具：
+Hermes 将自身注册为 MCP server，以便 Codex 回调其原生不具备的工具。回调提供的工具包括：
 
-- **`web_search`** / **`web_extract`** — 基于 Firecrawl；对于结构化内容，通常比直接抓取更干净。
+- **`web_extract`** — 提取结构化网页内容，不重复 Codex 的原生网页搜索。
 - **`browser_navigate` / `browser_click` / `browser_type` / `browser_press` / `browser_snapshot` / `browser_scroll` / `browser_back` / `browser_get_images` / `browser_console` / `browser_vision`** — 通过 Camofox 或 Browserbase 实现完整的浏览器自动化。
 - **`vision_analyze`** — 调用独立的视觉模型检查图像（与 Codex 的 `view_image` 不同，后者是将图像加载到对话中）。
-- **`image_generate`** — 通过 Hermes 的 image_gen 插件链生成图像。
-- **`skill_view` / `skills_list`** — 读取 Hermes 的技能库。
 - **`text_to_speech`** — 通过 Hermes 配置的提供商进行 TTS。
+- **`image_generate`** — 使用 Hermes 配置的图像后端，并在后端支持时提供图生图编辑和参考图输入。
+- **`skills_list` / `skill_view`** — 发现并加载 Codex 原生技能根目录无法表示的已配置外部技能目录与插件限定技能。
 
-当模型需要其中某个工具时，Codex 通过 stdio MCP 生成 `hermes_tools_mcp_server` 子进程，调用通过 `model_tools.handle_function_call()` 分发（与 Hermes 默认运行时的代码路径相同），结果像其他 MCP 响应一样返回给 Codex。
+当模型需要其中某个工具时，Codex 通过 stdio MCP 生成 `hermes_tools_mcp_server` 子进程，调用通过 `model_tools.handle_function_call()` 分发（与 Hermes 默认运行时的代码路径相同），结果像其他 MCP 响应一样返回给 Codex。Hermes 仅将 `web_search` 写入 `disabled_tools`，因为 Codex 原生工具完整覆盖了该角色。图像与技能回调会保留，因为其 Hermes 特有模式并未被 Codex 原生工具面完整表示。
 
 ### 4. 实时 Hermes 有状态工具（Codex 动态工具）
 
@@ -74,8 +76,13 @@ Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自
 - **`memory`** — 读取或更新 Hermes 的持久记忆存储
 - **`session_search`** — 搜索已恢复及先前的 Hermes 会话
 - **`todo`** — 使用 Hermes 的持久待办存储；Codex 内置的 `update_plan` 仍作为独立的线程内计划工具可用
+- **`skill_manage`** — 创建和改进持久 Hermes 技能；Codex 处理原生根目录发现，MCP 回调覆盖 Hermes 外部/插件技能来源
 
 可用性遵循 agent 当前的工具配置：已禁用或不可用的工具不会发布给 Codex。调用会保留 Hermes 现有的中间件、guardrail、存储、任务身份和委派行为。
+
+### 原生澄清
+
+当当前 Hermes 界面提供澄清回调时，Hermes 会启用 Codex 原生的 `request_user_input` 能力，并将结构化问题转发到该界面。回答只有在线程、轮次和事件项身份与当前请求一致时才会返回 Codex。Hermes 不会再暴露第二个 `clarify` 工具；非交互界面会在不启用此能力的情况下继续运行。
 
 ## 工作流功能（`/goal`、kanban、cron）
 
@@ -92,7 +99,7 @@ Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自
 Codex 运行时 worker 内可用的功能：
 - Codex 完整工具集（shell、apply_patch、update_plan、view_image、web_search）——worker 原生完成实际任务
 - 已迁移的 Codex 插件——Linear、GitHub 等
-- 用于 browser_*、vision、image_gen、技能、TTS 的 Hermes 工具回调
+- 用于浏览器自动化、网页内容提取、视觉和 TTS 的互补 Hermes 回调
 
 通过 MCP 回调同样可用的功能：
 - **`kanban_complete` / `kanban_block` / `kanban_comment` / `kanban_heartbeat`** — worker 交接工具。这些工具从环境变量中读取 `HERMES_KANBAN_TASK`（由分发器设置），正确进行访问控制，并写入由 `HERMES_KANBAN_DB` 固定的每个看板 SQLite 数据库。若回调中没有这些工具，此运行时上的 worker 可以完成任务但无法汇报，会一直挂起直到分发器超时。
@@ -111,15 +118,19 @@ Kanban 工具通过分发器设置的 `HERMES_KANBAN_TASK` 环境变量进行访
 |---|---|---|
 | `delegate_task` 子 agent | 是 | 是（实时动态工具桥，启用时） |
 | `memory`、`session_search`、`todo` | 是 | 是（实时动态工具桥，启用时） |
-| `web_search`、`web_extract` | 是 | 是（通过 MCP 回调） |
+| `web_search` | 是 | 是（Codex 原生） |
+| `web_extract` | 是 | 是（通过 MCP 回调） |
 | 浏览器自动化（Camofox/Browserbase） | 是 | 是（通过 MCP 回调） |
-| `vision_analyze`、`image_generate` | 是 | 是（通过 MCP 回调） |
-| `skill_view`、`skills_list` | 是 | 是（通过 MCP 回调） |
+| `vision_analyze` | 是 | 是（通过 MCP 回调处理 URL/data 或专用回退） |
+| 图像生成/编辑 | 是 | 是（Codex 原生，加上用于已配置编辑/参考图工作流的 Hermes MCP） |
+| 技能发现/加载 | 是 | 是（Codex 原生根目录，加上用于外部/插件技能的 Hermes MCP） |
+| `skill_manage` | 是 | 是（实时动态工具桥，启用时） |
 | `text_to_speech` | 是 | 是（通过 MCP 回调） |
 | Codex `shell`（终端/读/写/搜索/查找/运行） | — | 是（Codex 内置） |
 | Codex `apply_patch`（结构化多文件编辑） | — | 是（Codex 内置） |
 | Codex `update_plan`（运行时内待办） | — | 是（Codex 内置） |
 | Codex `view_image`（将图像加载到对话） | — | 是（Codex 内置） |
+| 结构化用户澄清 | 是 | 是（Codex 原生请求经 Hermes UI 转发） |
 | Codex 沙箱（seatbelt/landlock，配置文件） | — | 是（Codex 内置） |
 | ChatGPT 订阅认证 | — | 是（通过 `openai-codex` 提供商） |
 | 原生 Codex 插件（Linear、GitHub 等） | — | 是（自动迁移） |
@@ -166,6 +177,7 @@ Kanban 工具通过分发器设置的 `HERMES_KANBAN_TASK` 环境变量进行访
 - 将用户 MCP server 从 `~/.hermes/config.yaml` 迁移到 `~/.codex/config.toml`。
 - **发现并迁移已安装的原生 Codex 插件**（Linear、GitHub、Gmail、Calendar、Canva 等），通过查询 Codex 的 `plugin/list` RPC 实现。
 - **将 Hermes 自身的工具注册为 MCP server**，以便 Codex 子进程能够回调获取 Codex 未内置的工具。
+- **禁用重复的 Hermes `web_search` 回调工具**，使 Codex 原生网页搜索保持权威，同时保留 Hermes 独有的图像生成和技能发现回调工具。
 - **写入 `default_permissions = ":workspace"`**，使沙箱允许在工作区内写入，无需对每次操作进行提示。
 - 告知你迁移了哪些内容。在**下一个**会话生效——当前缓存的 agent 保持之前的运行时，以保持 prompt 缓存有效。
 

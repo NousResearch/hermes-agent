@@ -207,6 +207,9 @@ class CodexAppServerSession:
         extra_skill_roots: Optional[list[str]] = None,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
+        clarify_callback: Optional[
+            Callable[[str, Optional[list[str]]], str]
+        ] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
@@ -235,6 +238,7 @@ class CodexAppServerSession:
             )
         )
         self._approval_callback = approval_callback
+        self._clarify_callback = clarify_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
@@ -248,6 +252,9 @@ class CodexAppServerSession:
         self._active_turn_id: Optional[str] = None
         self._dynamic_tool_responses: dict[
             tuple[str, str, str], dict[str, Any]
+        ] = {}
+        self._request_user_input_responses: dict[
+            tuple[str, str, str], tuple[str, Any]
         ] = {}
         self._interrupt_event = threading.Event()
         # Pending file-change items, keyed by item id. Populated on
@@ -289,11 +296,22 @@ class CodexAppServerSession:
             self._register_extra_skill_roots()
             return self._thread_id
         if self._client is None:
+            extra_args = (
+                ["--enable", "default_mode_request_user_input"]
+                if self._clarify_callback is not None
+                else None
+            )
             self._client = self._client_factory(
-                codex_bin=self._codex_bin, codex_home=self._codex_home
+                codex_bin=self._codex_bin,
+                codex_home=self._codex_home,
+                extra_args=extra_args,
             )
         capabilities = {}
-        if self._dynamic_tools or self._initial_history_items:
+        if (
+            self._dynamic_tools
+            or self._initial_history_items
+            or self._clarify_callback is not None
+        ):
             capabilities["experimentalApi"] = True
         self._client.initialize(
             client_name="hermes",
@@ -373,6 +391,7 @@ class CodexAppServerSession:
         self._thread_id = None
         self._active_turn_id = None
         self._dynamic_tool_responses.clear()
+        self._request_user_input_responses.clear()
 
     def __enter__(self) -> "CodexAppServerSession":
         return self
@@ -549,6 +568,7 @@ class CodexAppServerSession:
         self._interrupt_event.clear()
         self._active_turn_id = None
         self._dynamic_tool_responses.clear()
+        self._request_user_input_responses.clear()
         projector = CodexEventProjector()
 
         user_input_text = _coerce_turn_input_text(user_input)
@@ -689,7 +709,19 @@ class CodexAppServerSession:
                                 result.error
                                 or "codex reported turn_aborted"
                             )
-                self._handle_server_request(sreq)
+                try:
+                    self._handle_server_request(sreq)
+                except RuntimeError as exc:
+                    # The subprocess can exit after the liveness check above but
+                    # before the JSON-RPC reply reaches stdin. Retire the broken
+                    # client and fall through to the normal per-turn cleanup so
+                    # active identity and replay caches never leak into a retry.
+                    result.error = self._format_error_with_stderr(
+                        "failed to reply to codex server request", exc
+                    )
+                    result.interrupted = True
+                    result.should_retire = True
+                    break
                 # Activity counts as live signal — reset the post-tool
                 # quiet timer so an approval round-trip doesn't trip it.
                 last_tool_completion_at = None
@@ -817,6 +849,7 @@ class CodexAppServerSession:
 
         self._active_turn_id = None
         self._dynamic_tool_responses.clear()
+        self._request_user_input_responses.clear()
         return result
 
     def compact_thread(
@@ -1034,6 +1067,153 @@ class CodexAppServerSession:
         except TimeoutError:
             logger.warning("turn/interrupt timed out")
 
+    def _handle_request_user_input(self, rid: Any, params: Any) -> None:
+        """Relay Codex's native request_user_input flow through Hermes' UI.
+
+        Correlation is intentionally strict because App Server multiplexes
+        notifications and requests. Duplicate requests are answered from the
+        per-turn cache so a retried JSON-RPC request never prompts twice.
+        """
+        if self._client is None:
+            return
+        if self._clarify_callback is None:
+            self._client.respond_error(
+                rid,
+                code=-32601,
+                message="Hermes user-input UI is unavailable",
+            )
+            return
+        if not isinstance(params, dict):
+            self._client.respond_error(
+                rid, code=-32602, message="Invalid request_user_input parameters"
+            )
+            return
+
+        thread_id = params.get("threadId")
+        turn_id = params.get("turnId")
+        item_id = params.get("itemId")
+        if (
+            not isinstance(item_id, str)
+            or not item_id.strip()
+            or thread_id != self._thread_id
+            or turn_id != self._active_turn_id
+            or not self._active_turn_id
+        ):
+            self._client.respond_error(
+                rid,
+                code=-32602,
+                message="Unbound request_user_input identity",
+            )
+            return
+
+        request_key = (thread_id, turn_id, item_id)
+        cached = self._request_user_input_responses.get(request_key)
+        if cached is not None:
+            response_kind, payload = cached
+            if response_kind == "error":
+                code, message = payload
+                self._client.respond_error(rid, code=code, message=message)
+            else:
+                self._client.respond(rid, payload)
+            return
+
+        questions = params.get("questions")
+        if not isinstance(questions, list) or not questions:
+            self._client.respond_error(
+                rid, code=-32602, message="request_user_input requires questions"
+            )
+            return
+
+        prepared: list[tuple[str, str, Optional[list[str]]]] = []
+        seen_question_ids: set[str] = set()
+        for question_obj in questions:
+            if not isinstance(question_obj, dict):
+                self._client.respond_error(
+                    rid, code=-32602, message="Invalid request_user_input question"
+                )
+                return
+            question_id = question_obj.get("id")
+            question = question_obj.get("question")
+            if (
+                not isinstance(question_id, str)
+                or not question_id.strip()
+                or question_id in seen_question_ids
+                or not isinstance(question, str)
+                or not question.strip()
+            ):
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Invalid request_user_input question identity",
+                )
+                return
+            if question_obj.get("isSecret") is True:
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Secret input is not supported by the Hermes UI",
+                )
+                return
+            seen_question_ids.add(question_id)
+
+            header = question_obj.get("header")
+            prompt = question.strip()
+            if isinstance(header, str) and header.strip() and header.strip() != prompt:
+                prompt = f"{header.strip()}\n\n{prompt}"
+
+            options = question_obj.get("options")
+            choices: Optional[list[str]] = None
+            if options is not None:
+                if not isinstance(options, list) or len(options) > 4:
+                    self._client.respond_error(
+                        rid,
+                        code=-32602,
+                        message="request_user_input supports at most four options",
+                    )
+                    return
+                rendered_choices: list[str] = []
+                for option in options:
+                    if not isinstance(option, dict):
+                        self._client.respond_error(
+                            rid,
+                            code=-32602,
+                            message="Invalid request_user_input option",
+                        )
+                        return
+                    label = option.get("label")
+                    if not isinstance(label, str) or not label.strip():
+                        self._client.respond_error(
+                            rid,
+                            code=-32602,
+                            message="Invalid request_user_input option label",
+                        )
+                        return
+                    description = option.get("description")
+                    rendered = label.strip()
+                    if isinstance(description, str) and description.strip():
+                        rendered = f"{rendered}: {description.strip()}"
+                    rendered_choices.append(rendered)
+                choices = rendered_choices or None
+            prepared.append((question_id, prompt, choices))
+
+        answers: dict[str, dict[str, list[str]]] = {}
+        try:
+            for question_id, prompt, choices in prepared:
+                answer = self._clarify_callback(prompt, choices)
+                answers[question_id] = {
+                    "answers": [] if answer is None else [str(answer)]
+                }
+        except Exception:
+            logger.exception("clarify_callback raised on request_user_input")
+            error = (-32603, "Hermes user-input UI failed")
+            self._request_user_input_responses[request_key] = ("error", error)
+            self._client.respond_error(rid, code=error[0], message=error[1])
+            return
+
+        response = {"answers": answers}
+        self._request_user_input_responses[request_key] = ("result", response)
+        self._client.respond(rid, response)
+
     def _handle_server_request(self, req: dict) -> None:
         """Translate a codex server request (approval) into Hermes' approval
         flow, then send the response.
@@ -1052,7 +1232,9 @@ class CodexAppServerSession:
         rid = req.get("id")
         params = req.get("params") or {}
 
-        if method == "item/tool/call":
+        if method == "item/tool/requestUserInput":
+            self._handle_request_user_input(rid, params)
+        elif method == "item/tool/call":
             failure = {
                 "success": False,
                 "contentItems": [{

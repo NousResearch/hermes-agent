@@ -349,13 +349,21 @@ function validateBundle() {
     die(`No .node native binaries found in: ${nativeBinaryDirs.join(', ')}`)
   }
   // Darwin requires a runtime-execed spawn-helper alongside pty.node; missing
-  // it manifests as "ENOENT: spawn-helper" on first pty.spawn() call.
+  // it manifests as "ENOENT: spawn-helper" on first pty.spawn() call. A helper
+  // that exists but lacks +x fails later with posix_spawnp / Permission denied.
   if (PLATFORM === 'darwin') {
     const spawnHelper = nativeBinaryDirs
       .map(dir => path.join(dir, 'spawn-helper'))
       .find(exists)
     if (!spawnHelper) {
       die(`Missing node-pty spawn-helper (required on darwin) in: ${nativeBinaryDirs.join(', ')}`)
+    }
+    try {
+      fs.accessSync(spawnHelper, fs.constants.X_OK)
+    } catch {
+      die(
+        `node-pty spawn-helper is not executable (chmod +x required on darwin): ${spawnHelper}`
+      )
     }
   }
 

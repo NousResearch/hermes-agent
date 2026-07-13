@@ -330,10 +330,10 @@ def decompose_task(
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.3,
+            temperature=0.0,
             max_tokens=4000,
             timeout=timeout or 180,
-            extra_body=get_auxiliary_extra_body() or None,
+            extra_body=get_auxiliary_extra_body("kanban_decomposer") or None,
         )
     except Exception as exc:
         logger.info(

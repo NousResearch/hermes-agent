@@ -9705,6 +9705,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        if command and canonical and is_gateway_known_command(canonical):
+            _telegram_redirect_applied = False
+            _telegram_redirect_target = None
+            try:
+                from gateway.telegram_topology import operator_target_for_command
+
+                target = operator_target_for_command(source)
+                if target:
+                    event.metadata = dict(getattr(event, "metadata", None) or {})
+                    event.metadata["telegram_final_response_target"] = target
+                    _telegram_redirect_applied = True
+                    _telegram_redirect_target = target
+            except Exception:
+                logger.debug("Telegram C2 command redirect lookup failed", exc_info=True)
+            if getattr(getattr(source, "platform", None), "value", None) == "telegram":
+                logger.info(
+                    "telegram_command_route command=%s source_chat=%s source_thread=%s final_chat=%s final_thread=%s redirect_applied=%s",
+                    canonical,
+                    getattr(source, "chat_id", None),
+                    getattr(source, "thread_id", None),
+                    (_telegram_redirect_target or {}).get("chat_id") or getattr(source, "chat_id", None),
+                    (_telegram_redirect_target or {}).get("thread_id") or getattr(source, "thread_id", None),
+                    _telegram_redirect_applied,
+                )
+
         if canonical == "new":
             if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
                 return self._telegram_topic_root_new_message()

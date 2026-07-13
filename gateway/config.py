@@ -673,7 +673,7 @@ class GatewayConfig:
     quick_commands: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
-    sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
+    sessions_dir: Path = field(default_factory=lambda: get_hermes_home().resolve() / "sessions")
 
     # Whether to keep writing the legacy sessions.json mirror of the gateway
     # routing index. The primary copy lives in state.db (gateway_routing
@@ -859,7 +859,7 @@ class GatewayConfig:
         if "default_reset_policy" in data:
             default_policy = SessionResetPolicy.from_dict(data["default_reset_policy"])
         
-        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir = get_hermes_home().resolve() / "sessions"
         if "sessions_dir" in data:
             sessions_dir = Path(data["sessions_dir"])
         
@@ -1133,6 +1133,14 @@ def load_gateway_config() -> GatewayConfig:
             _merge_platform_map(yaml_cfg.get("platforms"))
             if platforms_data:
                 gw_data["platforms"] = platforms_data
+
+            _configured_platform_names: set[str] = set()
+            for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                if isinstance(_src, dict):
+                    _configured_platform_names.update(str(k).strip().lower() for k in _src)
+            for _plat in Platform:
+                if isinstance(yaml_cfg.get(_plat.value), dict):
+                    _configured_platform_names.add(_plat.value)
             # Iterate built-in platforms plus any registered plugin platforms
             # so plugin authors get the same shared-key bridging (#24836).
             try:
@@ -1145,7 +1153,11 @@ def load_gateway_config() -> GatewayConfig:
 
             _shared_loop_targets: list = list(Platform)
             if _pr is not None:
-                for _entry in _pr.plugin_entries():
+                # Resolve only explicitly configured plugin platform names.  The
+                # old plugin_entries() call materialized every deferred platform
+                # adapter, including unconfigured Teams, during Telegram-only
+                # config loads.
+                for _entry in _pr.entries_for(_configured_platform_names):
                     try:
                         _plat = Platform(_entry.name)
                     except (ValueError, KeyError):
@@ -1272,7 +1284,7 @@ def load_gateway_config() -> GatewayConfig:
             # blocks (below; no-op when a hook already set their env var) →
             # ``_apply_env_overrides()`` after ``GatewayConfig.from_dict``.
             if _pr is not None:
-                for entry in _pr.all_entries():
+                for entry in _pr.entries_for(_configured_platform_names):
                     if entry.apply_yaml_config_fn is None:
                         continue
                     platform_cfg = yaml_cfg.get(entry.name)
@@ -2139,7 +2151,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
+        _configured_platform_names = {platform.value for platform in config.platforms}
+        for entry in platform_registry.entries_for(_configured_platform_names):
             try:
                 platform = Platform(entry.name)
             except Exception as e:

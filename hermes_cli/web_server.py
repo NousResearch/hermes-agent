@@ -2607,7 +2607,7 @@ async def get_status(profile: Optional[str] = None):
 
         # Prefer the detailed health endpoint response (has full state) when the
         # local runtime status file is absent or stale (cross-container).
-        local_runtime = read_runtime_status()
+        local_runtime = read_runtime_status(get_hermes_home() / "gateway_state.json")
         runtime = local_runtime
         if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
             runtime = remote_health_body
@@ -7853,7 +7853,7 @@ async def get_messaging_platforms(profile: Optional[str] = None):
     # all resolve against the requested profile's HERMES_HOME.
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
-        runtime = read_runtime_status()
+        runtime = read_runtime_status(get_hermes_home() / "gateway_state.json")
         return {
             "env_path": str(get_env_path()),
             "gateway_start_command": _gateway_display_command(profile, "start"),
@@ -7920,7 +7920,7 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
         payload = _messaging_platform_payload(
-            entry, env_on_disk, read_runtime_status(), scoped=scoped_dir is not None
+            entry, env_on_disk, read_runtime_status(get_hermes_home() / "gateway_state.json"), scoped=scoped_dir is not None
         )
     if not payload["enabled"]:
         message = f"{entry['name']} is disabled. Enable it, then restart the gateway."

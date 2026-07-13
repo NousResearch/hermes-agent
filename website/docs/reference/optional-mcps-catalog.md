@@ -16,7 +16,7 @@ Presence in `optional-mcps/` is the trust signal: an entry is in the catalog onl
 hermes mcp                  # interactive picker (TUI) — toggle entries on/off
 hermes mcp catalog          # plain-text list of Nous-approved entries (scriptable)
 hermes mcp install <name>   # install a catalog entry by name (prompts for env/OAuth)
-hermes mcp uninstall <name> # remove the server's config block (.env credentials are preserved)
+hermes mcp remove <name>    # remove the server's config block (.env credentials are preserved)
 ```
 
 `hermes mcp install` writes a `mcp_servers.<name>` block into `~/.hermes/config.yaml` using the manifest's `transport:` keys, runs any `install:` bootstrap (e.g. `git clone` + `pip install`), and prompts for any `auth:` env vars defined by the manifest. Secrets go to `~/.hermes/.env`; non-secret env vars also land in `.env` to keep one credential store.

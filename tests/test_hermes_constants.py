@@ -22,6 +22,7 @@ from hermes_constants import (
     is_container,
     node_tool_runnable,
     parse_reasoning_effort,
+    reasoning_effort_label,
     secure_parent_dir,
     with_hermes_node_path,
 )
@@ -488,6 +489,33 @@ class TestParseReasoningEffort:
         """
         documented = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+
+class TestReasoningEffortLabel:
+    """Compact reasoning labels for classic CLI status bars."""
+
+    @pytest.mark.parametrize(
+        "config, expected",
+        [
+            (None, ""),
+            ({}, ""),
+            ({"enabled": True}, ""),
+            ({"enabled": True, "effort": "medium"}, ""),
+            ({"enabled": True, "effort": "normal"}, ""),
+            ({"enabled": True, "effort": "default"}, ""),
+            ({"enabled": False}, "none"),
+            ({"enabled": True, "effort": "minimal"}, "minimal"),
+            ({"enabled": True, "effort": "HIGH"}, "high"),
+            ({"enabled": True, "effort": " xhigh "}, "xhigh"),
+            ({"enabled": True, "effort": "max"}, "max"),
+            ({"enabled": True, "effort": "ultra"}, "ultra"),
+            ({"enabled": True, "effort": "turbo"}, ""),
+            ({"enabled": True, "effort": object()}, ""),
+            ("high", ""),
+        ],
+    )
+    def test_compact_display_label(self, config, expected):
+        assert reasoning_effort_label(config) == expected
 
 
 class TestSecureParentDir:

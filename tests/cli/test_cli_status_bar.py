@@ -82,6 +82,111 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_status_bar_text_shows_non_default_reasoning_effort(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.5 xhigh" in text
+
+    def test_status_bar_text_shows_reasoning_effort_for_non_gpt_models(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="anthropic/claude-sonnet-4-20250514"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "high"}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "claude-sonnet-4-20250514 high" in text
+
+    def test_status_bar_text_hides_default_but_shows_disabled_reasoning_effort(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        cli_obj.reasoning_config = {"enabled": True, "effort": "medium"}
+        assert "gpt-5.5 medium" not in cli_obj._build_status_bar_text(width=120)
+
+        cli_obj.reasoning_config = {"enabled": False}
+        assert "gpt-5.5 none" in cli_obj._build_status_bar_text(width=120)
+
+    def test_status_bar_text_hides_invalid_reasoning_effort(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "turbo"}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "turbo" not in text
+        assert "gpt-5.5 │" in text
+
+    def test_status_bar_text_prefers_agent_reasoning_config(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "low"}
+        cli_obj.agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.5 xhigh" in text
+        assert "gpt-5.5 low" not in text
+
+    def test_status_bar_fragments_include_reasoning_effort_next_to_model(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        cli_obj._status_bar_visible = True
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=120)
+
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+
+        text = "".join(fragment_text for _, fragment_text in frags)
+        assert "gpt-5.5 xhigh" in text
+
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1
         sentinel until the next API call reports real usage. The status bar

@@ -823,6 +823,32 @@ def parse_reasoning_effort(effort) -> dict | None:
     return None
 
 
+def reasoning_effort_label(reasoning_config: object) -> str:
+    """Return the compact display label for a reasoning config.
+
+    Classic CLI status bars intentionally hide default reasoning noise
+    (unset, ``medium``, ``normal``, ``default``), while still surfacing
+    explicit non-default states and explicit disabled reasoning as ``none``.
+    Malformed configs and unknown effort values render blank instead of
+    advertising invalid settings in the status bar.
+
+    The Ink TUI already filters default efforts client-side in
+    ``ui-tui``; this helper is the shared Python-side equivalent for the
+    classic CLI (and any other Python caller that needs the same compact
+    label without reimplementing the rules).
+    """
+    if not isinstance(reasoning_config, dict):
+        return ""
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    effort = str(reasoning_config.get("effort", "") or "").strip().lower()
+    if effort in {"", "medium", "normal", "default"}:
+        return ""
+    if effort in VALID_REASONING_EFFORTS:
+        return effort
+    return ""
+
+
 def is_termux() -> bool:
     """Return True when running inside a Termux (Android) environment.
 

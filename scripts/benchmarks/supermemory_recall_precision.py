@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Offline precision benchmark for the current Supermemory prefetch path.
+"""Offline selection-policy benchmark for the current Supermemory prefetch path.
 
 The fixture contains sanitized fake responses. This runner never constructs the
-Supermemory SDK client and cannot read, write, or delete live memories.
+Supermemory SDK client and cannot read, write, or delete live memories. It tests
+Hermes' policy over supplied responses, not Supermemory retrieval quality.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from plugins.memory import supermemory as supermemory_module  # noqa: E402
 from plugins.memory.supermemory import SupermemoryMemoryProvider  # noqa: E402
 
 DEFAULT_FIXTURE = ROOT / "tests/fixtures/supermemory_recall_benchmark.json"
@@ -39,25 +41,42 @@ class FixtureClient:
     """Read-only fake client returning one checked-in response per query."""
 
     def __init__(self, cases: list[dict[str, Any]], documents: dict[str, dict[str, Any]]):
-        self._cases = {case["query"]: case for case in cases}
-        self._documents = documents
+        self._cases = {
+            case["query"]: {
+                "static": list(case.get("static", [])),
+                "dynamic": list(case.get("dynamic", [])),
+                "search": [list(result) for result in case.get("search", [])],
+            }
+            for case in cases
+        }
+        self._documents = {
+            doc_id: {
+                "content": document["content"],
+                "metadata": dict(document.get("metadata", {})),
+            }
+            for doc_id, document in documents.items()
+        }
 
     def get_profile(self, query: str | None = None, *, container_tag: str | None = None) -> dict[str, Any]:
         del container_tag
         case = self._cases[query or ""]
         content = lambda doc_id: self._documents[doc_id]["content"]
+
+        def search_result(result: list[Any]) -> dict[str, Any]:
+            doc_id = result[0]
+            payload = {
+                "id": doc_id,
+                "memory": content(doc_id),
+                "metadata": dict(self._documents[doc_id].get("metadata", {})),
+            }
+            if len(result) > 1:
+                payload["similarity"] = result[1]
+            return payload
+
         return {
             "static": [content(doc_id) for doc_id in case.get("static", [])],
             "dynamic": [content(doc_id) for doc_id in case.get("dynamic", [])],
-            "search_results": [
-                {
-                    "id": doc_id,
-                    "memory": content(doc_id),
-                    "similarity": similarity,
-                    "metadata": dict(self._documents[doc_id].get("metadata", {})),
-                }
-                for doc_id, similarity in case.get("search", [])
-            ],
+            "search_results": [search_result(result) for result in case.get("search", [])],
         }
 
 
@@ -67,13 +86,31 @@ def load_fixture(path: Path = DEFAULT_FIXTURE) -> dict[str, Any]:
     return fixture
 
 
-def _selected_ids(context: str, documents: dict[str, dict[str, Any]]) -> list[str]:
-    positions = []
-    for doc_id, document in documents.items():
-        position = context.find(document["content"])
-        if position >= 0:
-            positions.append((position, doc_id))
-    return [doc_id for _, doc_id in sorted(positions)]
+def _prefetch_with_selection_trace(
+    provider: SupermemoryMemoryProvider,
+    query: str,
+    documents: dict[str, dict[str, Any]],
+) -> tuple[str, list[str]]:
+    """Run the real prefetch path while recording formatter inputs by ID."""
+    selected_ids: list[str] = []
+    ids_by_content = {document["content"]: doc_id for doc_id, document in documents.items()}
+    original_formatter = supermemory_module._format_prefetch_context
+
+    def tracing_formatter(static_facts, dynamic_facts, search_results, max_results):
+        statics, dynamics, search = supermemory_module._deduplicate_recall(
+            static_facts, dynamic_facts, search_results
+        )
+        selected_ids.extend(ids_by_content[item] for item in statics[:max_results])
+        selected_ids.extend(ids_by_content[item] for item in dynamics[:max_results])
+        selected_ids.extend(item["id"] for item in search[:max_results] if item.get("memory"))
+        return original_formatter(static_facts, dynamic_facts, search_results, max_results)
+
+    supermemory_module._format_prefetch_context = tracing_formatter
+    try:
+        context = provider.prefetch(query)
+    finally:
+        supermemory_module._format_prefetch_context = original_formatter
+    return context, selected_ids
 
 
 def evaluate(fixture: dict[str, Any]) -> dict[str, Any]:
@@ -97,27 +134,35 @@ def evaluate(fixture: dict[str, Any]) -> dict[str, Any]:
     required_total = 0
     null_with_injection = 0
     null_total = 0
+    null_false_positives = 0
     transient_selected = Counter()
+    relevance_false_positives = 0
+    durable_irrelevant_selections = 0
     total_selected = 0
     per_case = []
     category_counts: dict[str, Counter] = defaultdict(Counter)
 
     for case in cases:
         provider.on_turn_start(case.get("turn", 2), case["query"])
-        context = provider.prefetch(case["query"])
-        selected = _selected_ids(context, documents)
+        _, selected = _prefetch_with_selection_trace(provider, case["query"], documents)
         selected_k = selected[:k]
         expected = set(case["expected_ids"])
+        false_positive_ids = [doc_id for doc_id in selected if doc_id not in expected]
 
         relevant_selected_at_k += sum(doc_id in expected for doc_id in selected_k)
         selected_at_k += len(selected_k)
         required_selected += len(expected.intersection(selected))
         required_total += len(expected)
         total_selected += len(selected)
+        relevance_false_positives += len(false_positive_ids)
+        durable_irrelevant_selections += sum(
+            documents[doc_id]["label"] == "durable" for doc_id in false_positive_ids
+        )
 
         if not expected:
             null_total += 1
             null_with_injection += bool(selected)
+            null_false_positives += len(selected)
 
         for doc_id in selected:
             document = documents[doc_id]
@@ -135,7 +180,7 @@ def evaluate(fixture: dict[str, Any]) -> dict[str, Any]:
             "category": case["category"],
             "expected_ids": case["expected_ids"],
             "selected_ids": selected,
-            "false_positive_ids": [doc_id for doc_id in selected if doc_id not in expected],
+            "false_positive_ids": false_positive_ids,
         })
 
     def ratio(numerator: int, denominator: int) -> float:
@@ -164,8 +209,12 @@ def evaluate(fixture: dict[str, Any]) -> dict[str, Any]:
         "document_count": len(documents),
         "settings_under_test": settings,
         "metrics": {
-            f"precision_at_{k}": ratio(relevant_selected_at_k, selected_at_k),
-            "false_positive_rate_on_null_queries": ratio(null_with_injection, null_total),
+            f"precision_at_returned_up_to_{k}": ratio(relevant_selected_at_k, selected_at_k),
+            f"recall_at_{k}": ratio(relevant_selected_at_k, required_total),
+            "injection_rate_on_null_queries": ratio(null_with_injection, null_total),
+            "mean_false_positives_per_null_query": ratio(null_false_positives, null_total),
+            "relevance_false_positive_rate": ratio(relevance_false_positives, total_selected),
+            "durable_irrelevant_selections": durable_irrelevant_selections,
             "required_durable_recall": ratio(required_selected, required_total),
             "transient_contamination_rate": ratio(sum(transient_selected.values()), total_selected),
             "transient_contamination_by_class": contamination_by_class,

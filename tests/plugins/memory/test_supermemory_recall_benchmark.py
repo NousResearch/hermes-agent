@@ -31,14 +31,39 @@ def test_recall_benchmark_fixture_has_compact_expected_label_schema():
         assert set(case["expected_ids"]).issubset(documents)
         assert all(documents[doc_id]["label"] == "durable" for doc_id in case["expected_ids"])
         response_ids = set(case.get("static", [])) | set(case.get("dynamic", []))
-        response_ids.update(doc_id for doc_id, _ in case.get("search", []))
+        response_ids.update(doc_id for doc_id, *_ in case.get("search", []))
         assert response_ids.issubset(documents)
+
+
+def test_recall_benchmark_covers_selection_policy_edge_cases():
+    fixture = load_fixture(FIXTURE)
+    documents = {document["id"]: document for document in fixture["documents"]}
+    cases = fixture["cases"]
+    k = fixture["settings"]["k"]
+
+    assert any(len(case.get("search", [])) > k for case in cases)
+    assert any(len(result) == 1 for case in cases for result in case.get("search", []))
+    assert any(
+        documents[doc_id]["label"] == "durable" and doc_id not in case["expected_ids"]
+        for case in cases
+        for doc_id, *_ in case.get("search", [])
+    )
+    assert any(
+        "paraphrase" in documents[doc_id]["class"]
+        for case in cases
+        for doc_id, *_ in case.get("search", [])
+    )
+    adversarial_queries = [case["query"].lower() for case in cases if case["category"] == "adversarial_transient"]
+    assert any(all(marker not in query for marker in ("durable", "lasting", "persistent", "stable")) for query in adversarial_queries)
 
 
 def test_fixture_client_keeps_evaluator_truth_out_of_provider_responses():
     fixture = load_fixture(FIXTURE)
     documents = {document["id"]: document for document in fixture["documents"]}
     client = FixtureClient(fixture["cases"], documents)
+
+    assert all("expected_ids" not in case for case in client._cases.values())
+    assert all({"label", "class"}.isdisjoint(document) for document in client._documents.values())
 
     for case in fixture["cases"]:
         response = client.get_profile(case["query"])
@@ -75,8 +100,13 @@ def test_current_prefetch_baseline_exposes_precision_problem():
         "low_similarity_result_injected": True,
         "profile_injected_when_disabled": True,
     }
-    assert metrics["precision_at_5"] < 1.0
-    assert metrics["false_positive_rate_on_null_queries"] > 0.0
+    assert "precision_at_5" not in metrics
+    assert metrics["precision_at_returned_up_to_5"] < 1.0
+    assert metrics["recall_at_5"] == 1.0
+    assert metrics["injection_rate_on_null_queries"] > 0.0
+    assert metrics["mean_false_positives_per_null_query"] > 0.0
+    assert metrics["relevance_false_positive_rate"] > metrics["transient_contamination_rate"]
+    assert metrics["durable_irrelevant_selections"] > 0
     assert metrics["transient_contamination_rate"] > 0.0
     assert metrics["required_durable_recall"] == 1.0
 
@@ -84,3 +114,14 @@ def test_current_prefetch_baseline_exposes_precision_problem():
     assert {"kanban_task", "pull_request_status", "test_run", "project_status", "full_session"}.issubset(
         contaminated_classes
     )
+
+
+def test_selected_ids_are_traced_without_content_substring_matching():
+    fixture = deepcopy(load_fixture(FIXTURE))
+    documents = {document["id"]: document for document in fixture["documents"]}
+    documents["identity_language"]["content"] = "Avery"
+
+    report = evaluate(fixture)
+    identity_case = next(case for case in report["cases"] if case["id"] == "identity-02")
+
+    assert identity_case["selected_ids"] == ["identity_style", "status_worker"]

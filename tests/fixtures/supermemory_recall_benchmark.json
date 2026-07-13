@@ -12,10 +12,12 @@
     {"id": "identity_style", "label": "durable", "class": "preference", "content": "Avery prefers concise answers that lead with the result."},
     {"id": "identity_timezone", "label": "durable", "class": "identity", "content": "Avery's timezone is Central European Time."},
     {"id": "identity_accessibility", "label": "durable", "class": "preference", "content": "Avery prefers charts with patterns as well as colors."},
+    {"id": "identity_style_paraphrase", "label": "durable", "class": "preference_paraphrase", "content": "Avery likes responses that begin with the conclusion."},
     {"id": "convention_tests", "label": "durable", "class": "cross_project_convention", "content": "Across repositories, run the checked-in test wrapper instead of invoking pytest directly."},
     {"id": "convention_secrets", "label": "durable", "class": "cross_project_convention", "content": "Behavioral settings belong in YAML; environment files are reserved for secrets."},
     {"id": "convention_evidence", "label": "durable", "class": "cross_project_convention", "content": "Verification handoffs must include the exact command and real output."},
     {"id": "convention_git", "label": "durable", "class": "cross_project_convention", "content": "Do not commit or push repository changes unless the task explicitly requests it."},
+    {"id": "convention_branches", "label": "durable", "class": "cross_project_convention", "content": "Feature branches use short names that describe their scoped change."},
     {"id": "atlas_storage", "label": "durable", "class": "project_fact", "content": "Project Atlas stores release fixtures in the atlas-staging bucket."},
     {"id": "atlas_scale", "label": "durable", "class": "project_fact", "content": "Project Atlas distinguishes reviewed datasets from raw source records."},
     {"id": "cedar_relation", "label": "durable", "class": "project_fact", "content": "Project Cedar keeps broad graph relations and records subtype nuance in evidence metadata."},
@@ -60,6 +62,6 @@
     {"id": "adversarial-02", "category": "adversarial_transient", "query": "What lasting convention applies to pull requests?", "expected_ids": ["convention_git"], "turn": 2, "search": [["pr_merged", 0.93], ["pr_review", 0.9], ["convention_git", 0.84]]},
     {"id": "adversarial-03", "category": "adversarial_transient", "query": "What durable rule applies when tests pass?", "expected_ids": ["convention_tests"], "turn": 2, "search": [["test_pass", 0.95], ["test_fail", 0.89], ["convention_tests", 0.82]]},
     {"id": "adversarial-04", "category": "adversarial_transient", "query": "Recall the stable Atlas architecture, not current status.", "expected_ids": ["atlas_scale"], "turn": 2, "search": [["status_phase", 0.92], ["session_transcript", 0.87], ["atlas_scale", 0.83]]},
-    {"id": "adversarial-05", "category": "adversarial_transient", "query": "Which durable accessibility preference should survive a smoke test?", "expected_ids": ["identity_accessibility"], "turn": 2, "search": [["smoke_marker", 0.96], ["identity_accessibility", 0.88], ["status_worker", 0.52]]}
+    {"id": "adversarial-05", "category": "adversarial_transient", "query": "How should charts distinguish categories for me?", "expected_ids": ["identity_accessibility"], "turn": 2, "search": [["smoke_marker", 0.96], ["identity_accessibility", 0.88], ["status_worker", 0.52], ["convention_branches", 0.45], ["identity_style_paraphrase", 0.4], ["session_transcript", 0.3], ["test_pass"]]}
   ]
 }

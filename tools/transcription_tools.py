@@ -1369,6 +1369,11 @@ def _transcribe_openai(
             return {"success": False, "transcript": "", "error": str(exc)}
         base_url = base_url or fallback_base
 
+    # Language: config.yaml (stt.openai.language) > auto-detect.
+    # Explicit language hint improves accuracy for non-English languages.
+    stt_config = _load_stt_config()
+    language = stt_config.get("openai", {}).get("language")
+
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
 
@@ -1384,11 +1389,16 @@ def _transcribe_openai(
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
-                )
+                create_kwargs = {
+                    "model": model_name,
+                    "file": audio_file,
+                    "response_format": "text" if model_name == "whisper-1" else "json",
+                }
+                if language:
+                    create_kwargs["language"] = language
+                    logger.debug("Using language hint '%s' for OpenAI STT", language)
+
+                transcription = client.audio.transcriptions.create(**create_kwargs)
 
             transcript_text = _extract_transcript_text(transcription)
             logger.info(

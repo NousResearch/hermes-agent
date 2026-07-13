@@ -1611,6 +1611,7 @@ stt:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 

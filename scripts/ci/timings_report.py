@@ -670,6 +670,7 @@ def _job_table(timings: dict, baseline: dict | None) -> str:
                 f'<td class="num neutral">—</td>'
                 f'<td class="num neutral">—</td>'
                 f'<td class="num neutral">—</td>'
+                f'<td class="num neutral">—</td>'
                 f'<td class="{concl_cls}" style="text-align:center">{concl_icon}</td>'
                 f'</tr>'
             )

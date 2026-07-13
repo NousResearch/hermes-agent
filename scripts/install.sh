@@ -470,8 +470,8 @@ get_command_link_display_dir() {
 # so global package binaries land in $HERMES_HOME/node/bin — which is NOT on
 # PATH (only the command link dir is) and is wiped on every Node upgrade.
 # Redirecting the prefix to the link dir's parent makes global bins resolve to
-# the command link dir (node/npm/npx live there too, already on PATH) and
-# survive upgrades. Scoped to the managed Node via its prefix-local global
+# the command link dir, which is already on PATH, and survive upgrades. Scoped
+# to the managed Node via its prefix-local global
 # npmrc, so the user's other Node installs and their ~/.npmrc are untouched.
 # Hermes's own global installs pass an explicit --prefix and are unaffected.
 # Idempotent and a no-op when there is no Hermes-managed npm, so calling it on
@@ -482,6 +482,24 @@ configure_managed_node_npm_prefix() {
     link_dir="$(get_command_link_dir)"
     mkdir -p "$HERMES_HOME/node/etc"
     printf 'prefix=%s\n' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+}
+
+# Expose a Hermes-managed Node tool without taking ownership of a user-managed
+# command. Existing regular files and non-Hermes symlinks are always preserved.
+link_managed_node_tool() {
+    local link_dir="$1"
+    local tool="$2"
+    local target="$HERMES_HOME/node/bin/$tool"
+    local destination="$link_dir/$tool"
+
+    if [ -L "$destination" ] && [ "$(readlink "$destination" 2>/dev/null)" = "$target" ]; then
+        return 0
+    fi
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+        log_warn "Leaving existing $destination unchanged; Hermes-managed $tool is at $target"
+        return 0
+    fi
+    ln -s "$target" "$destination"
 }
 
 get_hermes_command_path() {
@@ -795,6 +813,31 @@ node_satisfies_build() {
     return 1
 }
 
+# GUI-launched installers inherit launchd's minimal PATH on macOS. Probe common
+# user-managed Node locations before downloading another copy. This avoids
+# replacing a perfectly usable Homebrew/Volta/fnm/proto/nvm installation just
+# because its shim directory was absent from the GUI environment.
+activate_node_from_known_locations() {
+    local candidate version
+    for candidate in \
+        "$HOME/.volta/bin/node" \
+        "$HOME/.local/share/fnm/aliases/default/bin/node" \
+        "$HOME/.proto/shims/node" \
+        /opt/homebrew/bin/node \
+        /usr/local/bin/node \
+        "$HOME"/.nvm/versions/node/*/bin/node; do
+        [ -x "$candidate" ] || continue
+        version=$("$candidate" --version 2>/dev/null) || continue
+        if node_satisfies_build "$version"; then
+            export PATH="$(dirname "$candidate"):$PATH"
+            log_success "Node.js $version found at $candidate"
+            HAS_NODE=true
+            return 0
+        fi
+    done
+    return 1
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
@@ -806,6 +849,10 @@ check_node() {
     if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
         log_success "Node.js $(node --version) found"
         HAS_NODE=true
+        return 0
+    fi
+
+    if activate_node_from_known_locations; then
         return 0
     fi
 
@@ -917,7 +964,7 @@ install_node() {
         return 0
     fi
 
-    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
+    # Place into ~/.hermes/node/ and expose binaries in the same bin dir
     # the hermes command uses (get_command_link_dir): /usr/local/bin for root
     # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
     rm -rf "$HERMES_HOME/node"
@@ -928,9 +975,9 @@ install_node() {
     local node_link_dir
     node_link_dir="$(get_command_link_dir)"
     mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+    link_managed_node_tool "$node_link_dir" node
+    link_managed_node_tool "$node_link_dir" npm
+    link_managed_node_tool "$node_link_dir" npx
 
     configure_managed_node_npm_prefix
 

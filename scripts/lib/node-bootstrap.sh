@@ -70,6 +70,22 @@ _nb_configure_npm_prefix() {
     printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
 }
 
+_nb_link_managed_tool() {
+    local _link_dir="$1"
+    local _tool="$2"
+    local _target="$HERMES_HOME/node/bin/$_tool"
+    local _destination="$_link_dir/$_tool"
+
+    if [ -L "$_destination" ] && [ "$(readlink "$_destination" 2>/dev/null)" = "$_target" ]; then
+        return 0
+    fi
+    if [ -e "$_destination" ] || [ -L "$_destination" ]; then
+        _nb_warn "Leaving existing $_destination unchanged; Hermes-managed $_tool is at $_target"
+        return 0
+    fi
+    ln -s "$_target" "$_destination"
+}
+
 _nb_node_major() {
     local v
     v=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
@@ -79,6 +95,28 @@ _nb_node_major() {
 _nb_have_modern_node() {
     command -v node >/dev/null 2>&1 || return 1
     [ "$(_nb_node_major)" -ge "$HERMES_NODE_MIN_VERSION" ]
+}
+
+# GUI applications often start with a minimal PATH. Respect common existing
+# Node installations before invoking a version manager or installing a bundle.
+_nb_try_known_node() {
+    local _candidate _major
+    for _candidate in \
+        "$HOME/.volta/bin/node" \
+        "$HOME/.local/share/fnm/aliases/default/bin/node" \
+        "$HOME/.proto/shims/node" \
+        /opt/homebrew/bin/node \
+        /usr/local/bin/node \
+        "$HOME"/.nvm/versions/node/*/bin/node; do
+        [ -x "$_candidate" ] || continue
+        _major=$("$_candidate" --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+        if [[ "$_major" =~ ^[0-9]+$ ]] && [ "$_major" -ge "$HERMES_NODE_MIN_VERSION" ]; then
+            export PATH="$(dirname "$_candidate"):$PATH"
+            _nb_ok "Node $("$_candidate" --version) found at $_candidate"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -216,9 +254,9 @@ _nb_install_bundled_node() {
     local _link_dir
     _link_dir="$(_nb_get_link_dir)"
     mkdir -p "$_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
+    _nb_link_managed_tool "$_link_dir" node
+    _nb_link_managed_tool "$_link_dir" npm
+    _nb_link_managed_tool "$_link_dir" npx
 
     _nb_configure_npm_prefix
 
@@ -285,6 +323,11 @@ ensure_node() {
 
     if _nb_have_modern_node; then
         _nb_ok "Node $(node --version) found"
+        HERMES_NODE_AVAILABLE=true
+        return 0
+    fi
+
+    if _nb_try_known_node; then
         HERMES_NODE_AVAILABLE=true
         return 0
     fi

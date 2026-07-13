@@ -15760,7 +15760,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         "honcho.runtime_peer_prefix",
         "honcho.user_peer_aliases",
     )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None, int | None], dict[str, Any]] = {}
 
     @classmethod
     def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
@@ -15774,10 +15774,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             path = resolve_config_path()
             try:
-                mtime_ns = path.stat().st_mtime_ns
+                stat = path.stat()
+                mtime_ns = stat.st_mtime_ns
+                size = stat.st_size
             except OSError:
                 mtime_ns = None
-            memo_key = (str(path), mtime_ns)
+                size = None
+            memo_key = (str(path), mtime_ns, size)
             cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
             if cached is not None:
                 return dict(cached)
@@ -16422,6 +16425,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if agent is None:
             return
+        try:
+            if hasattr(agent, "release_clients") and hasattr(agent, "shutdown_memory_provider"):
+                # Soft cache eviction must not hard-close terminal/browser/bg
+                # process state, but memory providers are tied to this Python
+                # AIAgent instance. Providers such as MemOS own keepalive
+                # threads and stdio bridge subprocesses; leaving them alive
+                # leaks one bridge per evicted cached agent. Pass the current
+                # transcript when available, matching _cleanup_agent_resources.
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
+        except Exception:
+            pass
         try:
             if hasattr(agent, "release_clients"):
                 agent.release_clients()

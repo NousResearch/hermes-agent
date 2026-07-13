@@ -762,6 +762,32 @@ class TestAgentCacheBoundedGrowth:
         assert commit_calls == []       # no premature extraction
         assert old_agent in release_calls  # still released
 
+    def test_soft_eviction_releases_clients_and_memory_provider_only(self):
+        """Soft cache eviction closes memory transports without full tool teardown.
+
+        Cached agents can be rebuilt later with the same session/task id, so
+        soft eviction must preserve terminal/browser/background-process state
+        by avoiding the hard _cleanup_agent_resources path.  But memory
+        providers such as MemOS own keepalive threads and stdio bridge child
+        processes; leaving them alive leaks one bridge per cache eviction.
+        """
+        runner = self._bounded_runner()
+        cleanup_calls: list = []
+        runner._cleanup_agent_resources = lambda agent: cleanup_calls.append(agent)
+
+        agent = self._fake_agent()
+        transcript = [{"role": "user", "content": "hello"}]
+        agent._session_messages = transcript
+        agent.release_clients = MagicMock()
+        agent.shutdown_memory_provider = MagicMock()
+
+        runner._release_evicted_agent_soft(agent)
+
+        agent.release_clients.assert_called_once_with()
+        agent.shutdown_memory_provider.assert_called_once_with(transcript)
+        assert cleanup_calls == []
+        assert agent._session_messages == []
+
     def test_idle_ttl_sweep_evicts_stale_agents(self, monkeypatch):
         """_sweep_idle_cached_agents removes agents idle past the TTL."""
         from gateway import run as gw_run

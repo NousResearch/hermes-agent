@@ -323,21 +323,8 @@ class TestTextToSpeechToolWithSupertonic:
 
 class TestCheckTtsRequirementsSupertonic:
     def test_supertonic_install_satisfies_requirements(self, monkeypatch):
-        # Drop every other provider so we can isolate the supertonic signal.
-        monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: (_ for _ in ()).throw(ImportError()))
-        monkeypatch.setattr(tts_tool, "_import_elevenlabs", lambda: (_ for _ in ()).throw(ImportError()))
-        monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: (_ for _ in ()).throw(ImportError()))
-        monkeypatch.setattr(tts_tool, "_import_mistral_client", lambda: (_ for _ in ()).throw(ImportError()))
-        monkeypatch.setattr(tts_tool, "_check_neutts_available", lambda: False)
-        monkeypatch.setattr(tts_tool, "_check_kittentts_available", lambda: False)
-        monkeypatch.setattr(tts_tool, "_check_piper_available", lambda: False)
-        monkeypatch.setattr(tts_tool, "_has_any_command_tts_provider", lambda: False)
-        monkeypatch.setattr(tts_tool, "_has_openai_audio_backend", lambda: False)
-        for env in ("MINIMAX_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY",
-                    "GOOGLE_API_KEY", "MISTRAL_API_KEY", "ELEVENLABS_API_KEY"):
-            monkeypatch.delenv(env, raising=False)
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "supertonic"})
 
-        # Now toggle the supertonic check on and off.
         monkeypatch.setattr(tts_tool, "_check_supertonic_available", lambda: False)
         assert check_tts_requirements() is False
 

@@ -329,6 +329,7 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+_MANAGED_MCP_VENDORS = frozenset({"skyvern"})
 # While parked (reconnect budget exhausted, tools deregistered) the run task
 # wakes on this cadence and attempts one revival probe. Without it a parked
 # server is unrevivable: its tools are out of the registry, so no tool call
@@ -3750,9 +3751,40 @@ def _resolve_managed_mcp_config(name: str, cfg: dict) -> Optional[dict]:
     if cfg.get("url") or cfg.get("command"):
         return cfg
 
-    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+    if not _parse_boolish(cfg.get("enabled", True), default=True):
+        return cfg
 
-    gateway = resolve_managed_tool_gateway(managed_vendor.strip())
+    managed_vendor = managed_vendor.strip().lower()
+    if managed_vendor not in _MANAGED_MCP_VENDORS:
+        logger.warning(
+            "Skipping managed MCP server '%s': unsupported managed gateway '%s'",
+            name,
+            managed_vendor,
+        )
+        return None
+
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+
+        account_info = get_nous_portal_account_info()
+        entitled = bool(
+            account_info and account_info.tool_gateway_entitled_for(managed_vendor)
+        )
+    except Exception:
+        entitled = False
+    if not entitled:
+        logger.warning(
+            "Skipping managed MCP server '%s': Tool Gateway entitlement is unavailable",
+            name,
+        )
+        return None
+
+    from tools.managed_tool_gateway import (
+        build_vendor_gateway_url,
+        resolve_managed_tool_gateway,
+    )
+
+    gateway = resolve_managed_tool_gateway(managed_vendor)
     if gateway is None:
         logger.warning(
             "Skipping managed MCP server '%s': Tool Gateway auth is unavailable",
@@ -3761,18 +3793,30 @@ def _resolve_managed_mcp_config(name: str, cfg: dict) -> Optional[dict]:
         return None
 
     runtime_cfg = dict(cfg)
-    gateway_path = str(runtime_cfg.get("managed_gateway_path") or "mcp/").lstrip("/")
+    runtime_cfg.pop("managed_gateway_path", None)
     runtime_cfg["url"] = urljoin(
         f"{gateway.gateway_origin.rstrip('/')}/",
-        gateway_path,
+        "mcp/",
     )
+    trusted_origin = urlparse(build_vendor_gateway_url(managed_vendor))
+    resolved_url = urlparse(runtime_cfg["url"])
+    if (
+        resolved_url.scheme not in {"http", "https"}
+        or (resolved_url.scheme, resolved_url.netloc)
+        != (trusted_origin.scheme, trusted_origin.netloc)
+    ):
+        logger.warning(
+            "Skipping managed MCP server '%s': resolved gateway origin is untrusted",
+            name,
+        )
+        return None
     headers = dict(cfg.get("headers") or {})
     headers["Authorization"] = f"Bearer {gateway.nous_user_token}"
     runtime_cfg["headers"] = headers
     return runtime_cfg
 
 
-def _load_mcp_config() -> Dict[str, dict]:
+def _load_mcp_config(*, resolve_managed: bool = True) -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
     Returns a dict of ``{server_name: server_config}`` or empty dict.
@@ -3801,11 +3845,22 @@ def _load_mcp_config() -> Dict[str, dict]:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
-            interpolated = _interpolate_env_vars(cfg)
-            if isinstance(interpolated, dict):
-                resolved = _resolve_managed_mcp_config(name, interpolated)
-                if resolved is not None:
-                    safe_servers[name] = resolved
+            try:
+                interpolated = _interpolate_env_vars(cfg)
+                if isinstance(interpolated, dict):
+                    resolved = (
+                        _resolve_managed_mcp_config(name, interpolated)
+                        if resolve_managed
+                        else interpolated
+                    )
+                    if resolved is not None:
+                        safe_servers[name] = resolved
+            except Exception as exc:
+                logger.warning(
+                    "Skipping invalid MCP server '%s': %s",
+                    name,
+                    _sanitize_error(_exc_str(exc)),
+                )
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
@@ -5038,7 +5093,12 @@ def discover_mcp_tools() -> List[str]:
         List of all registered MCP tool names.
     """
     if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
+        if _load_mcp_config(resolve_managed=False):
+            logger.warning(
+                "MCP servers are configured but the MCP SDK is not installed. "
+                'Install it with `pip install "hermes-agent[mcp]"` or '
+                "`uv sync --extra mcp`."
+            )
         return []
 
     servers = _load_mcp_config()
@@ -5103,7 +5163,7 @@ def get_mcp_status() -> List[dict]:
     result: List[dict] = []
 
     # Get configured servers from config
-    configured = _load_mcp_config()
+    configured = _load_mcp_config(resolve_managed=False)
     if not configured:
         return result
 
@@ -5113,7 +5173,14 @@ def get_mcp_status() -> List[dict]:
         connect_errors = dict(_server_connect_errors)
 
     for name, cfg in configured.items():
-        transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
+        is_managed = cfg.get("managed_gateway") and not (
+            cfg.get("url") or cfg.get("command")
+        )
+        transport = (
+            cfg.get("transport", "http")
+            if "url" in cfg or is_managed
+            else "stdio"
+        )
         enabled = _parse_boolish(cfg.get("enabled", True), default=True)
         server = active_servers.get(name)
         if server and server.session is not None:

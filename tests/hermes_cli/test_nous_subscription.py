@@ -312,6 +312,31 @@ def test_get_gateway_eligible_tools_paid_account_offers_skyvern(monkeypatch):
     assert "skyvern" not in already_managed
 
 
+def test_mixed_skyvern_config_is_classified_as_direct(monkeypatch):
+    monkeypatch.setattr(
+        ns,
+        "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+    monkeypatch.setattr(ns, "_get_gateway_direct_credentials", lambda: {})
+
+    unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(
+        {
+            "model": {"provider": "nous"},
+            "mcp_servers": {
+                "skyvern": {
+                    "managed_gateway": "skyvern",
+                    "url": "https://api.skyvern.com/mcp/",
+                }
+            },
+        }
+    )
+
+    assert "skyvern" not in unconfigured
+    assert "skyvern" in has_direct
+    assert "skyvern" not in already_managed
+
+
 def test_get_gateway_eligible_tools_pool_without_skyvern_coverage_excludes_it(
     monkeypatch,
 ):
@@ -582,6 +607,25 @@ def test_prompt_enable_tool_gateway_paid_user_offers_video(monkeypatch):
 
     blob = " ".join(captured["items"]).lower()
     assert "video" in blob
+
+
+def test_prompt_enable_tool_gateway_leaves_skyvern_unchecked(monkeypatch):
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True)
+    )
+    monkeypatch.setattr(ns, "_get_gateway_direct_credentials", lambda: {})
+    captured = _capture_checklist(monkeypatch, selected_idx=[])
+
+    ns.prompt_enable_tool_gateway({"model": {"provider": "nous"}})
+
+    skyvern_index = next(
+        index for index, label in enumerate(captured["items"])
+        if "skyvern" in label.lower()
+    )
+    assert skyvern_index not in captured["pre_selected"]
+    assert set(captured["pre_selected"]) == set(range(len(captured["items"]))) - {
+        skyvern_index
+    }
 
 
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):

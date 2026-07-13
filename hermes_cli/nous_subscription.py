@@ -65,7 +65,11 @@ def _skyvern_mcp_config(config: Dict[str, object]) -> Dict[str, object]:
 
 def _is_managed_skyvern_mcp_config(config: Dict[str, object]) -> bool:
     skyvern_cfg = _skyvern_mcp_config(config)
-    return str(skyvern_cfg.get("managed_gateway") or "").strip().lower() == "skyvern"
+    return bool(
+        not (skyvern_cfg.get("url") or skyvern_cfg.get("command"))
+        and str(skyvern_cfg.get("managed_gateway") or "").strip().lower()
+        == "skyvern"
+    )
 
 
 def _has_direct_skyvern_mcp_config(config: Dict[str, object]) -> bool:
@@ -1147,7 +1151,9 @@ def prompt_enable_tool_gateway(
         f"{_GATEWAY_TOOL_LABELS[k]} — keep using your {_GATEWAY_DIRECT_LABELS[k]}"
         for k in has_direct
     ]
-    pre_selected = list(range(len(unconfigured)))
+    pre_selected = [
+        index for index, key in enumerate(unconfigured) if key != "skyvern"
+    ]
 
     if pool_only:
         title = "Your free Nous tool pool — pick the tools to enable:"

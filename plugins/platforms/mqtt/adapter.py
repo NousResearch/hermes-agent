@@ -1,13 +1,18 @@
-"""
-MQTT platform adapter.
+"""MQTT platform adapter (Hermes plugin).
 
 Connects to an MQTT broker, subscribes to a configurable topic allowlist, and
 forwards each inbound message as a MessageEvent. Outbound messages publish to
 the topic provided as chat_id. Built for Phoebe's existing MQTT mesh
-(Atlas broker at 192.168.1.212:1883, auth required, optional TLS on 8883).
+(Atlas broker, auth required, optional TLS on 8883).
+
+This adapter ships as a Hermes platform plugin under
+``plugins/platforms/mqtt/``. The Hermes plugin loader scans the
+directory at startup, calls :func:`register`, and the platform becomes
+available to ``gateway/run.py`` and ``tools/send_message_tool`` through
+the registry — no edits to core files required.
 
 Requires:
-- paho-mqtt (already in messaging extras)
+- paho-mqtt (install via ``pip install paho-mqtt``)
 - MQTT_USER / MQTT_PASSWORD env vars (or set in PlatformConfig.extra)
 - MQTT_BROKER env var (default: 192.168.1.212)
 - MQTT_CA_CERT env var (optional — flips port to 8883 + TLS when set)
@@ -16,7 +21,6 @@ Requires:
 import asyncio
 import logging
 import os
-import pathlib
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
@@ -35,6 +39,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +50,32 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WATCH_TOPICS: List[str] = []
 
 
-def check_mqtt_requirements() -> bool:
+def check_requirements() -> bool:
     """Check if MQTT dependencies are available and configured."""
     if not PAHO_AVAILABLE:
         return False
-    # Need at minimum a broker + credentials. Broker can default; user/pass must be set.
+    # Need at minimum credentials. Broker can default; user/pass must be set.
     if not os.getenv("MQTT_USER"):
         return False
     if not os.getenv("MQTT_PASSWORD"):
         return False
     return True
+
+
+def validate_config(config) -> bool:
+    """Validate that the configured MQTT platform has credentials."""
+    extra = getattr(config, "extra", {}) or {}
+    username = extra.get("username") or os.getenv("MQTT_USER", "")
+    password = extra.get("password") or os.getenv("MQTT_PASSWORD", "")
+    return bool(username and password)
+
+
+def is_connected(config) -> bool:
+    """Check whether MQTT is configured (env or config.yaml)."""
+    extra = getattr(config, "extra", {}) or {}
+    username = os.getenv("MQTT_USER") or extra.get("username", "")
+    password = os.getenv("MQTT_PASSWORD") or extra.get("password", "")
+    return bool(username and password)
 
 
 class MQTTAdapter(BasePlatformAdapter):
@@ -73,7 +94,8 @@ class MQTTAdapter(BasePlatformAdapter):
     _BACKOFF_MAX = 60
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.MQTT)
+        platform = Platform("mqtt")
+        super().__init__(config=config, platform=platform)
 
         extra = config.extra or {}
 
@@ -92,10 +114,10 @@ class MQTTAdapter(BasePlatformAdapter):
             self._broker_port: int = int(extra.get("broker_port", 8883))
             self._tls_enabled = True
         else:
-            self._broker_port = int(extra.get("broker_port", 1883))
+            self._broker_port: int = int(extra.get("broker_port", 1883))
             self._tls_enabled = False
 
-        # Subscribe list — default to audited P0/P1 topics, override via extra["watch_topics"]
+        # Subscribe list — default to no topics, override via extra["watch_topics"]
         watch = extra.get("watch_topics")
         self._watch_topics: List[str] = (
             list(watch) if isinstance(watch, (list, tuple)) and watch else list(_DEFAULT_WATCH_TOPICS)
@@ -122,11 +144,11 @@ class MQTTAdapter(BasePlatformAdapter):
         # agent-invoking behavior (with send()-suppression preventing the loop).
         self._observational: bool = bool(extra.get("observational", True))
         log_default = (
-            pathlib.Path.home()
-            / ".hermes"
+            get_hermes_home()
             / f"mqtt-stream-{datetime.now().strftime('%Y-%m')}.md"
         )
-        self._observe_log_path: Optional[pathlib.Path] = pathlib.Path(
+        self._observe_log_path: Optional[Any] = None
+        self._observe_log_path = type(log_default)(
             extra.get("observe_log_path", str(log_default))
         )
 
@@ -144,8 +166,17 @@ class MQTTAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Connect to broker, subscribe to topics, start background loop."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Connect to broker, subscribe to topics, start background loop.
+
+        Args:
+            is_reconnect: True when called by the reconnect watcher after a
+                prior successful connection. paho-mqtt handles its own
+                auto-reconnect via ``reconnect_delay_set``, so this flag is
+                informational — the adapter does not re-subscribe on paho's
+                internal reconnect (paho preserves the session when
+                ``clean_session=False``).
+        """
         if not PAHO_AVAILABLE:
             logger.warning("[%s] paho-mqtt not installed. Run: pip install paho-mqtt", self.name)
             return False
@@ -243,7 +274,13 @@ class MQTTAdapter(BasePlatformAdapter):
         logger.info("[%s] Broker disconnected (will auto-reconnect)", self.name)
 
     def _on_message(self, client, userdata, msg):
-        """Forward inbound MQTT message — observational by default."""
+        """Forward inbound MQTT message — observational by default.
+
+        Retained messages (``msg.retain`` is True) are MQTT's "last known
+        good value" mechanism: the broker delivers them on initial subscription
+        rather than on a new publish. They are tagged in the log/event so the
+        agent can distinguish a stale state snapshot from a live event.
+        """
         try:
             topic = msg.topic or ""
             if not topic:
@@ -253,6 +290,10 @@ class MQTTAdapter(BasePlatformAdapter):
             if self._self_topic_prefix and topic.startswith(self._self_topic_prefix):
                 # Don't echo our own publishes back to ourselves
                 return
+
+            # Inspect msg.retain — retained messages are stale state snapshots
+            # delivered on subscription, not live events.
+            is_retained = bool(getattr(msg, "retain", False))
 
             # Cooldown to prevent floods on chatty topics
             if self._cooldown_seconds > 0:
@@ -270,7 +311,7 @@ class MQTTAdapter(BasePlatformAdapter):
 
             if self._observational:
                 # Observational mode: append to log file, don't invoke agent loop
-                self._log_event(topic, payload_text)
+                self._log_event(topic, payload_text, retained=is_retained)
                 return
 
             # Legacy: build MessageEvent + dispatch into async agent loop
@@ -294,13 +335,15 @@ class MQTTAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] _on_message error: %s", self.name, e)
 
-    def _log_event(self, topic: str, payload: str) -> None:
+    def _log_event(self, topic: str, payload: str, *, retained: bool = False) -> None:
         """Append an MQTT event to the observational log file.
 
         Format: one bullet per event with ISO timestamp + topic + payload.
-        Long payloads are truncated to 500 chars to keep the log readable.
-        The file is created on first write; parent directory must exist
-        (PhoebeVault is scaffolded ahead of adapter use).
+        Retained messages are tagged with ``[retained]`` so the agent can
+        distinguish stale state from live events. Long payloads are
+        truncated to 500 chars to keep the log readable. The file is created
+        on first write; parent directory must exist (scaffolded ahead of
+        adapter use).
         """
         if not self._observe_log_path:
             return
@@ -310,8 +353,9 @@ class MQTTAdapter(BasePlatformAdapter):
             payload_short = payload[:500] + ("..." if len(payload) > 500 else "")
             # Strip newlines so each event is one bullet
             payload_one_line = payload_short.replace("\n", " ").replace("\r", " ")
+            tag = " [retained]" if retained else ""
             with self._observe_log_path.open("a", encoding="utf-8") as f:
-                f.write(f"- `{ts}` **{topic}** {payload_one_line}\n")
+                f.write(f"- `{ts}`{tag} **{topic}** {payload_one_line}\n")
         except Exception as e:
             logger.warning("[%s] log write failed: %s", self.name, e)
 
@@ -380,3 +424,24 @@ class MQTTAdapter(BasePlatformAdapter):
             "chat_id": chat_id,
             "broker": f"{self._broker_host}:{self._broker_port}",
         }
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system at startup."""
+    ctx.register_platform(
+        name="mqtt",
+        label="mqtt",
+        adapter_factory=lambda cfg: MQTTAdapter(cfg),
+        check_fn=check_requirements,
+        validate_config=validate_config,
+        is_connected=is_connected,
+        required_env=["MQTT_USER", "MQTT_PASSWORD"],
+        install_hint="pip install paho-mqtt",
+        emoji="📡",
+        max_message_length=MQTTAdapter.MAX_MESSAGE_LENGTH,
+        platform_hint=(
+            "You are receiving MQTT event-bus messages. These are "
+            "observations, not chat turns — respond only if explicitly "
+            "asked. MQTT payloads may be JSON, plain text, or binary."
+        ),
+    )

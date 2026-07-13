@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearClarifyRequest, setClarifyRequest } from './clarify'
-import { $petActionCenter } from './pet-action-center'
+import {
+  $petActionCenter,
+  clearPetActionCenterActionStatus,
+  selectPetActionCenterItem,
+  setPetActionCenterActionStatus
+} from './pet-action-center'
 import { $profiles } from './profile'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from './prompts'
 import { $sessions } from './session'
@@ -12,6 +17,7 @@ describe('pet action center projection', () => {
     clearClarifyRequest()
     $profiles.set([])
     $sessions.set([])
+    clearPetActionCenterActionStatus()
     vi.useFakeTimers()
   })
 
@@ -20,6 +26,7 @@ describe('pet action center projection', () => {
     clearClarifyRequest()
     $profiles.set([])
     $sessions.set([])
+    clearPetActionCenterActionStatus()
     vi.useRealTimers()
   })
 
@@ -84,7 +91,7 @@ describe('pet action center projection', () => {
     expect(new Set($petActionCenter.get().items.map(item => item.id)).size).toBe(2)
   })
 
-  it('keeps sudo and secret payloads opaque while retaining secure-input attention metadata', () => {
+  it('signals secure-input attention without projecting sudo or secret items', () => {
     vi.setSystemTime(10)
     setSudoRequest({
       profile: 'default',
@@ -100,24 +107,16 @@ describe('pet action center projection', () => {
       sessionId: 'secret-runtime'
     })
 
-    expect($petActionCenter.get().items).toEqual([
+    expect($petActionCenter.get()).toEqual(
       expect.objectContaining({
-        actionable: false,
-        allowedActions: ['open-in-app'],
-        blocking: true,
-        detail: null,
-        kind: 'sudo',
-        summary: null
-      }),
-      expect.objectContaining({
-        actionable: false,
-        allowedActions: ['open-in-app'],
-        blocking: true,
-        detail: null,
-        kind: 'secret',
-        summary: null
+        actionableCount: 0,
+        attentionCount: 2,
+        blockingCount: 2,
+        items: [],
+        secureInputCount: 2,
+        selectedItemId: null
       })
-    ])
+    )
 
     const serialized = JSON.stringify($petActionCenter.get())
 
@@ -213,7 +212,14 @@ describe('pet action center projection', () => {
       sessionId: 'clarify-runtime'
     })
 
-    expect($petActionCenter.get().items.map(item => item.kind)).toEqual(['clarify', 'approval', 'sudo'])
+    expect($petActionCenter.get()).toEqual(
+      expect.objectContaining({
+        attentionCount: 3,
+        blockingCount: 3,
+        secureInputCount: 1
+      })
+    )
+    expect($petActionCenter.get().items.map(item => item.kind)).toEqual(['clarify', 'approval'])
   })
 
   it('preserves item ids across unrelated session-label updates', () => {
@@ -229,5 +235,45 @@ describe('pet action center projection', () => {
     $sessions.set([{ id: 'unrelated', profile: 'default', title: 'Unrelated thread' }] as never)
 
     expect($petActionCenter.get().items[0]?.id).toBe(before)
+  })
+
+  it('validates selection and falls back to the first remaining item', () => {
+    setApprovalRequest({
+      command: 'one',
+      description: 'First',
+      profile: 'default',
+      sessionId: 'runtime-1'
+    })
+    setApprovalRequest({
+      command: 'two',
+      description: 'Second',
+      profile: 'work',
+      sessionId: 'runtime-2'
+    })
+
+    const [first, second] = $petActionCenter.get().items
+
+    expect(first?.id).toBeTruthy()
+    expect(second?.id).toBeTruthy()
+    expect($petActionCenter.get().selectedItemId).toBe(first?.id)
+    expect(selectPetActionCenterItem('missing')).toBe(false)
+    expect($petActionCenter.get().selectedItemId).toBe(first?.id)
+    expect(selectPetActionCenterItem(second!.id)).toBe(true)
+    expect($petActionCenter.get().selectedItemId).toBe(second?.id)
+
+    clearAllPrompts({ profile: 'work', sessionId: 'runtime-2' })
+
+    expect($petActionCenter.get().selectedItemId).toBe(first?.id)
+  })
+
+  it('carries serializable i18n-neutral action feedback', () => {
+    setPetActionCenterActionStatus({ status: 'error', itemId: 'item-1', errorCode: 'rpc-failed' })
+
+    expect($petActionCenter.get().action).toEqual({
+      errorCode: 'rpc-failed',
+      itemId: 'item-1',
+      status: 'error'
+    })
+    expect(JSON.parse(JSON.stringify($petActionCenter.get())).action).toEqual($petActionCenter.get().action)
   })
 })

@@ -193,10 +193,15 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
+  const profile = normalizeProfileKey(session.profile)
 
   setSessions(prev => [
     session,
     ...prev.filter(existing => {
+      if (normalizeProfileKey(existing.profile) !== profile) {
+        return true
+      }
+
       if (sessionMatchesStoredId(existing, storedSessionId)) {
         return false
       }
@@ -206,11 +211,38 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+export async function resolveStoredSession(
+  storedSessionId: string,
+  expectedProfile?: string
+): Promise<SessionInfo | undefined> {
+  const expectedKey = expectedProfile ? normalizeProfileKey(expectedProfile) : null
+
+  const cached = $sessions
+    .get()
+    .find(
+      session =>
+        sessionMatchesStoredId(session, storedSessionId) &&
+        (expectedKey === null || normalizeProfileKey(session.profile) === expectedKey)
+    )
 
   if (cached) {
     return cached
+  }
+
+  if (expectedKey !== null) {
+    try {
+      const session = await getSession(storedSessionId, expectedKey)
+
+      if (normalizeProfileKey(session.profile) !== expectedKey) {
+        return undefined
+      }
+
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      return undefined
+    }
   }
 
   // Direct by-id on the live backend — one row lookup, no list scan. Covers

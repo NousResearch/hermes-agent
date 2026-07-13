@@ -1,4 +1,4 @@
-import { computed } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import type { ProfileInfo, SessionInfo } from '@/types/hermes'
 
@@ -9,9 +9,7 @@ import {
   $approvalRequests,
   $secretRequests,
   $sudoRequests,
-  type ApprovalRequest,
-  type SecretRequest,
-  type SudoRequest
+  type ApprovalRequest
 } from './prompts'
 import { $cronSessions, $messagingSessions, $sessions } from './session'
 
@@ -54,21 +52,50 @@ export interface PetActionCenterClarifyItem extends PetActionCenterItemBase {
   question: string
 }
 
-export interface PetActionCenterSecureInputItem extends PetActionCenterItemBase {
-  kind: 'secret' | 'sudo'
-  secureInputRequired: true
-}
-
-export type PetActionCenterItem =
-  | PetActionCenterApprovalItem
-  | PetActionCenterClarifyItem
-  | PetActionCenterSecureInputItem
+export type PetActionCenterItem = PetActionCenterApprovalItem | PetActionCenterClarifyItem
 
 export interface PetActionCenterState {
+  action: PetActionCenterActionStatus | null
   actionableCount: number
   attentionCount: number
   blockingCount: number
   items: PetActionCenterItem[]
+  secureInputCount: number
+  selectedItemId: string | null
+}
+
+export type PetActionCenterErrorCode =
+  | 'capability-denied'
+  | 'disconnected'
+  | 'invalid-item'
+  | 'item-not-found'
+  | 'open-failed'
+  | 'rpc-failed'
+  | 'session-unverified'
+
+export type PetActionCenterActionStatus =
+  | { status: 'submitting'; itemId: string }
+  | { status: 'success'; itemId: string }
+  | { status: 'stale'; itemId: string }
+  | { status: 'error'; itemId: string; errorCode: PetActionCenterErrorCode }
+
+interface PetActionCenterItemsState {
+  actionableCount: number
+  attentionCount: number
+  blockingCount: number
+  items: PetActionCenterItem[]
+  secureInputCount: number
+}
+
+const $selectedPetActionCenterItemId = atom<string | null>(null)
+const $petActionCenterActionStatus = atom<PetActionCenterActionStatus | null>(null)
+
+export function setPetActionCenterActionStatus(status: PetActionCenterActionStatus): void {
+  $petActionCenterActionStatus.set(status)
+}
+
+export function clearPetActionCenterActionStatus(): void {
+  $petActionCenterActionStatus.set(null)
 }
 
 interface ProjectionContext {
@@ -81,7 +108,7 @@ function profileLabel(profile: string, profiles: ProfileInfo[]): string {
 }
 
 function sessionContext(
-  request: StoredPromptRequest<ClarifyRequest | ApprovalRequest | SecretRequest | SudoRequest>,
+  request: StoredPromptRequest<ClarifyRequest | ApprovalRequest>,
   sessions: SessionInfo[]
 ): { sessionTitle: string | null; storedSessionId: string | null } {
   const profile = normalizeProfileKey(request.profile)
@@ -109,21 +136,15 @@ function sessionContext(
 }
 
 function itemId(
-  kind:
-    | PetActionCenterApprovalItem['kind']
-    | PetActionCenterClarifyItem['kind']
-    | PetActionCenterSecureInputItem['kind'],
-  request: StoredPromptRequest<ClarifyRequest | ApprovalRequest | SecretRequest | SudoRequest>
+  kind: PetActionCenterApprovalItem['kind'] | PetActionCenterClarifyItem['kind'],
+  request: StoredPromptRequest<ClarifyRequest | ApprovalRequest>
 ): string {
   return JSON.stringify([kind, normalizeProfileKey(request.profile), request.sessionId ?? '', request.requestIdentity])
 }
 
 function commonItem(
-  kind:
-    | PetActionCenterApprovalItem['kind']
-    | PetActionCenterClarifyItem['kind']
-    | PetActionCenterSecureInputItem['kind'],
-  request: StoredPromptRequest<ClarifyRequest | ApprovalRequest | SecretRequest | SudoRequest>,
+  kind: PetActionCenterApprovalItem['kind'] | PetActionCenterClarifyItem['kind'],
+  request: StoredPromptRequest<ClarifyRequest | ApprovalRequest>,
   context: ProjectionContext
 ): Pick<
   PetActionCenterItemBase,
@@ -219,22 +240,6 @@ function clarifyItem(
   }
 }
 
-function secureInputItem(
-  kind: PetActionCenterSecureInputItem['kind'],
-  request: StoredPromptRequest<SecretRequest | SudoRequest>,
-  context: ProjectionContext
-): PetActionCenterSecureInputItem {
-  return {
-    ...commonItem(kind, request, context),
-    actionable: false,
-    allowedActions: ['open-in-app'],
-    detail: null,
-    kind,
-    secureInputRequired: true,
-    summary: null
-  }
-}
-
 function compareItems(left: PetActionCenterItem, right: PetActionCenterItem): number {
   if (left.actionable !== right.actionable) {
     return left.actionable ? -1 : 1
@@ -247,7 +252,7 @@ function compareItems(left: PetActionCenterItem, right: PetActionCenterItem): nu
   return left.receivedAt - right.receivedAt || left.id.localeCompare(right.id)
 }
 
-export const $petActionCenter = computed(
+const $petActionCenterItems = computed(
   [
     $approvalRequests,
     $clarifyRequests,
@@ -267,21 +272,49 @@ export const $petActionCenter = computed(
     sessions,
     cronSessions,
     messagingSessions
-  ): PetActionCenterState => {
+  ): PetActionCenterItemsState => {
     const context = { profiles, sessions: [...sessions, ...cronSessions, ...messagingSessions] }
+    const secureInputCount = Object.keys(sudos).length + Object.keys(secrets).length
 
     const items: PetActionCenterItem[] = [
       ...Object.values(approvals).map(request => approvalItem(request, context)),
-      ...Object.values(clarifications).map(request => clarifyItem(request, context)),
-      ...Object.values(sudos).map(request => secureInputItem('sudo', request, context)),
-      ...Object.values(secrets).map(request => secureInputItem('secret', request, context))
+      ...Object.values(clarifications).map(request => clarifyItem(request, context))
     ].sort(compareItems)
 
     return {
       actionableCount: items.filter(item => item.actionable).length,
-      attentionCount: items.length,
-      blockingCount: items.filter(item => item.blocking).length,
-      items
+      attentionCount: items.length + secureInputCount,
+      blockingCount: items.filter(item => item.blocking).length + secureInputCount,
+      items,
+      secureInputCount
     }
   }
+)
+
+// Keep selection canonical rather than retaining a vanished id that could
+// unexpectedly become selected again if a later request reused it. The item
+// projection is already deterministically sorted, so index zero is the single
+// fallback policy for initial selection and removals.
+$petActionCenterItems.subscribe(state => {
+  const selected = $selectedPetActionCenterItemId.get()
+  const next = selected && state.items.some(item => item.id === selected) ? selected : (state.items[0]?.id ?? null)
+
+  if (selected !== next) {
+    $selectedPetActionCenterItemId.set(next)
+  }
+})
+
+export function selectPetActionCenterItem(itemId: string): boolean {
+  if (!$petActionCenterItems.get().items.some(item => item.id === itemId)) {
+    return false
+  }
+
+  $selectedPetActionCenterItemId.set(itemId)
+
+  return true
+}
+
+export const $petActionCenter = computed(
+  [$petActionCenterItems, $selectedPetActionCenterItemId, $petActionCenterActionStatus],
+  (state, selectedItemId, action): PetActionCenterState => ({ ...state, action, selectedItemId })
 )

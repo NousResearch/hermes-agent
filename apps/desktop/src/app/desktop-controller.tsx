@@ -21,6 +21,7 @@ import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId } from '../store/cron'
+import { gatewayForProfile } from '../store/gateway'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -39,8 +40,10 @@ import {
 import { respondToApprovalAction } from '../store/native-notifications'
 import { $paneOpen } from '../store/panes'
 import { setPetActivity } from '../store/pet'
+import { createPetActionCenterActions } from '../store/pet-action-center-actions'
 import { setPetScale } from '../store/pet-gallery'
 import {
+  setPetOverlayActionCenterHandler,
   setPetOverlayOpenAppHandler,
   setPetOverlayScaleHandler,
   setPetOverlaySubmitHandler
@@ -805,15 +808,18 @@ export function DesktopController() {
     openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
-    resumeStoredSession: resumeSession,
+    resumeStoredSession: async storedSessionId => {
+      await resumeSession(storedSessionId)
+    },
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
     sttEnabled,
     updateSessionState
   })
 
-  // The popped-out pet drives two actions back into the app: send a prompt, and
-  // open the most recent thread. Both are registered ONCE through refs that track
+  // The popped-out pet drives typed actions back into the app: prompt/open
+  // shortcuts plus exact action-center intents. They are registered ONCE
+  // through refs that track
   // the latest callbacks — re-registering on every `submitText`/`resumeSession`
   // identity change left a brief window where the handler was nulled (cleanup
   // before re-register), which could drop a submit fired from the overlay (e.g.
@@ -832,6 +838,14 @@ export function DesktopController() {
     }
 
     setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+
+    const actionCenter = createPetActionCenterActions({
+      ensureProfile: ensureGatewayProfile,
+      gatewayForProfile,
+      resumeSession: (profile, storedSessionId) => resumeSessionRef.current(storedSessionId, false, profile)
+    })
+
+    setPetOverlayActionCenterHandler(control => void actionCenter.handle(control))
     // Alt+wheel resize from the popped-out pet — persist it through this
     // window's gateway (the overlay has none) so it survives restart.
     setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
@@ -848,6 +862,7 @@ export function DesktopController() {
 
     return () => {
       setPetOverlaySubmitHandler(null)
+      setPetOverlayActionCenterHandler(null)
       setPetOverlayOpenAppHandler(null)
       setPetOverlayScaleHandler(null)
     }

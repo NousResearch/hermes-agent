@@ -320,7 +320,7 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false) => {
+    async (storedSessionId: string, replaceRoute = false, expectedProfile?: string): Promise<boolean> => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
@@ -358,7 +358,20 @@ export function useSessionActions({
       // under the current route (the "open chat A, chat B loads" bug). On a
       // mismatch the mapping is cross-wired: purge both sides and report a miss
       // so the caller falls through to a full resume that rebinds a correct id.
+      const storedFromCache = () =>
+        $sessions
+          .get()
+          .find(
+            session =>
+              sessionMatchesStoredId(session, storedSessionId) &&
+              (!expectedProfile || normalizeProfileKey(session.profile) === normalizeProfileKey(expectedProfile))
+          )
+
       const takeWarmCache = (): { runtimeId: string; state: ClientSessionState } | null => {
+        if (expectedProfile) {
+          return null
+        }
+
         const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
 
@@ -386,11 +399,16 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const storedForProfile = await resolveStoredSession(storedSessionId)
-      const sessionProfile = storedForProfile?.profile
+      const storedForProfile = await resolveStoredSession(storedSessionId, expectedProfile)
+
+      if (expectedProfile && !storedForProfile) {
+        return false
+      }
+
+      const sessionProfile = expectedProfile ?? storedForProfile?.profile
 
       if (resumeRequestRef.current !== requestId) {
-        return
+        return false
       }
 
       await ensureGatewayProfile(sessionProfile)
@@ -404,8 +422,7 @@ export function useSessionActions({
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
 
-        const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+        const stored = storedFromCache() ?? storedForProfile
 
         const cachedViewState =
           !cachedState.model && stored?.model != null
@@ -438,14 +455,14 @@ export function useSessionActions({
             const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
             if (!isCurrentResume()) {
-              return
+              return false
             }
 
             if (usage) {
               setCurrentUsage(current => ({ ...current, ...usage }))
             }
 
-            return
+            return true
           } catch {
             // The cached runtime id was minted by a prior backend instance. A
             // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
@@ -453,7 +470,7 @@ export function useSessionActions({
             // now 404s ("session not found"). Drop it and fall through to a full
             // resume that rebinds a live runtime id.
             if (!isCurrentResume()) {
-              return
+              return false
             }
 
             runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
@@ -473,8 +490,7 @@ export function useSessionActions({
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
 
-      const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+      const stored = storedFromCache() ?? storedForProfile
 
       applyStoredSessionPreviewRuntimeInfo(stored)
 
@@ -536,7 +552,7 @@ export function useSessionActions({
         const resumed = await resumePromise
 
         if (!isCurrentResume()) {
-          return
+          return false
         }
 
         const currentMessages = $messages.get()
@@ -572,7 +588,7 @@ export function useSessionActions({
           setResumeFailedSessionId(storedSessionId)
           resumedRunning = false
 
-          return
+          return false
         }
 
         setActiveSessionId(resumed.session_id)
@@ -594,9 +610,11 @@ export function useSessionActions({
           }),
           storedSessionId
         )
+
+        return true
       } catch (err) {
         if (!isCurrentResume()) {
-          return
+          return false
         }
 
         // The gateway resume RPC failed. Try the REST transcript as a fallback
@@ -613,7 +631,7 @@ export function useSessionActions({
           const fallback = await getSessionMessages(storedSessionId, sessionProfile)
 
           if (!isCurrentResume()) {
-            return
+            return false
           }
 
           setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
@@ -626,7 +644,7 @@ export function useSessionActions({
         }
 
         if (!isCurrentResume()) {
-          return
+          return false
         }
 
         // The session is genuinely gone (deleted, or a stale id from a wiped /
@@ -638,7 +656,7 @@ export function useSessionActions({
         if ($messages.get().length === 0 && isSessionGoneError(fallbackError)) {
           startFreshSessionDraft(true)
 
-          return
+          return false
         }
 
         if ($messages.get().length === 0) {
@@ -654,6 +672,8 @@ export function useSessionActions({
         }
 
         notifyError(err, copy.resumeFailed)
+
+        return false
       } finally {
         if (isCurrentResume()) {
           busyRef.current = resumedRunning

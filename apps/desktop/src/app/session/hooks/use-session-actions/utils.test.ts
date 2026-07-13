@@ -1,15 +1,26 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+// @vitest-environment jsdom
+
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $profiles } from '@/store/profile'
+import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
+
+const { getSession } = vi.hoisted(() => ({ getSession: vi.fn() }))
+
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getSession
+}))
 
 import {
   applyRuntimeInfo,
   chatMessageArraysEquivalent,
   isSessionGoneError,
   reconcileResumeMessages,
+  resolveStoredSession,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages
@@ -48,6 +59,36 @@ describe('sessionMatchesStoredId', () => {
     expect(sessionMatchesStoredId(session({ id: 'a' }), 'a')).toBe(true)
     expect(sessionMatchesStoredId(session({ id: 'live', _lineage_root_id: 'root' }), 'root')).toBe(true)
     expect(sessionMatchesStoredId(session({ id: 'a' }), 'b')).toBe(false)
+  })
+})
+
+describe('resolveStoredSession expected profile', () => {
+  beforeEach(() => {
+    getSession.mockReset()
+    $profiles.set([])
+    $sessions.set([])
+  })
+
+  it('chooses the cached row from the expected profile when stored ids collide', async () => {
+    $sessions.set([
+      session({ id: 'shared', profile: 'default', title: 'Default' }),
+      session({ id: 'shared', profile: 'work', title: 'Work' })
+    ])
+
+    await expect(resolveStoredSession('shared', 'work')).resolves.toEqual(
+      expect.objectContaining({ profile: 'work', title: 'Work' })
+    )
+    expect(getSession).not.toHaveBeenCalled()
+  })
+
+  it('queries only the expected profile when the row is not cached', async () => {
+    $sessions.set([session({ id: 'shared', profile: 'default', title: 'Default' })])
+    getSession.mockResolvedValue(session({ id: 'shared', profile: 'work', title: 'Work' }))
+
+    await expect(resolveStoredSession('shared', 'work')).resolves.toEqual(expect.objectContaining({ profile: 'work' }))
+    expect(getSession).toHaveBeenCalledOnce()
+    expect(getSession).toHaveBeenCalledWith('shared', 'work')
+    expect($sessions.get().map(row => row.profile).sort()).toEqual(['default', 'work'])
   })
 })
 

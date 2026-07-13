@@ -12,8 +12,8 @@ import { $awaitingResponse, $busy } from '@/store/session'
  * always-on-top OS window (created in electron/main.ts) that can leave the
  * app's bounds and stays visible while Hermes is minimized. That window carries
  * NO gateway connection — this renderer remains the single source of truth and
- * pushes the live pet state to it over IPC. Control flows back (pop the pet back
- * in, submit a composer message) via `onControl`.
+ * pushes the live pet state to it over IPC. Narrow typed controls flow back
+ * (window gestures, composer submit, action-center intents) via `onControl`.
  *
  * The overlay renders the same `PetSprite` / `PetBubble` as the in-window pet by
  * mirroring the four reactive inputs of `$petState` (`$petInfo`, `$petActivity`,
@@ -52,6 +52,19 @@ export interface PetOverlayStatePayload {
   reaction: PetReaction | null
 }
 
+export type PetActionCenterApprovalChoice = 'approve-always' | 'approve-once' | 'approve-session' | 'deny'
+
+export type PetActionCenterControl =
+  | { type: 'action-center-select'; itemId: string }
+  | {
+      type: 'action-center-approval'
+      itemId: string
+      choice: PetActionCenterApprovalChoice
+      reason?: string
+    }
+  | { type: 'action-center-clarify'; itemId: string; answer: string }
+  | { type: 'action-center-open-session'; itemId: string }
+
 export type PetOverlayControl =
   | { type: 'pop-in' }
   | { type: 'ready' }
@@ -60,6 +73,117 @@ export type PetOverlayControl =
   | { type: 'open-app' }
   | { type: 'toggle-app' }
   | { type: 'scale'; scale: number }
+  | PetActionCenterControl
+
+const APPROVAL_CHOICES = new Set<PetActionCenterApprovalChoice>([
+  'approve-always',
+  'approve-once',
+  'approve-session',
+  'deny'
+])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function controlItemId(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isApprovalChoice(value: unknown): value is PetActionCenterApprovalChoice {
+  return typeof value === 'string' && APPROVAL_CHOICES.has(value as PetActionCenterApprovalChoice)
+}
+
+/**
+ * Treat IPC as an untrusted runtime boundary. Rebuild accepted controls from
+ * their narrow fields so injected profile/session/route values never reach the
+ * main-renderer action handler, even when a malformed overlay sends extras.
+ */
+export function parsePetOverlayControl(value: unknown): PetOverlayControl | null {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return null
+  }
+
+  if (
+    value.type === 'pop-in' ||
+    value.type === 'ready' ||
+    value.type === 'open-app' ||
+    value.type === 'toggle-app'
+  ) {
+    return { type: value.type }
+  }
+
+  switch (value.type) {
+    case 'submit':
+      return typeof value.text === 'string' ? { type: value.type, text: value.text } : null
+    case 'bounds': {
+      if (!isRecord(value.bounds)) {
+        return null
+      }
+
+      const { height, width, x, y } = value.bounds
+
+      return isFiniteNumber(height) && isFiniteNumber(width) && isFiniteNumber(x) && isFiniteNumber(y)
+        ? { type: value.type, bounds: { height, width, x, y } }
+        : null
+    }
+
+    case 'scale':
+      return typeof value.scale === 'number' && Number.isFinite(value.scale)
+        ? { type: value.type, scale: value.scale }
+        : null
+
+    case 'action-center-select':
+    case 'action-center-open-session': {
+      const itemId = controlItemId(value.itemId)
+
+      return itemId ? { type: value.type, itemId } : null
+    }
+
+    case 'action-center-clarify': {
+      const itemId = controlItemId(value.itemId)
+
+      return itemId && typeof value.answer === 'string' ? { type: value.type, itemId, answer: value.answer } : null
+    }
+
+    case 'action-center-approval': {
+      const itemId = controlItemId(value.itemId)
+      const choice = value.choice
+
+      if (!itemId || !isApprovalChoice(choice)) {
+        return null
+      }
+
+      if (choice !== 'deny' && value.reason !== undefined) {
+        return null
+      }
+
+      if (value.reason !== undefined && typeof value.reason !== 'string') {
+        return null
+      }
+
+      return value.reason === undefined
+        ? { type: value.type, itemId, choice }
+        : { type: value.type, itemId, choice, reason: value.reason }
+    }
+
+    default:
+      return null
+  }
+}
+
+function isPetActionCenterControl(control: PetOverlayControl): control is PetActionCenterControl {
+  return (
+    control.type === 'action-center-select' ||
+    control.type === 'action-center-approval' ||
+    control.type === 'action-center-clarify' ||
+    control.type === 'action-center-open-session'
+  )
+}
 
 // Persisted across restarts: was the pet popped out, and where on the desktop
 // did the user leave it. Keyed v1; bump if the bounds shape ever changes.
@@ -141,6 +265,7 @@ let controlUnsub: (() => void) | null = null
 let submitHandler: ((text: string) => void) | null = null
 let openAppHandler: (() => void) | null = null
 let scaleHandler: ((scale: number) => void) | null = null
+let actionCenterHandler: ((control: PetActionCenterControl) => void) | null = null
 
 function currentPayload(): PetOverlayStatePayload {
   return {
@@ -268,6 +393,11 @@ export function setPetOverlayScaleHandler(fn: ((scale: number) => void) | null):
   scaleHandler = fn
 }
 
+/** Register the main-renderer owner for typed action-center intents. */
+export function setPetOverlayActionCenterHandler(fn: ((control: PetActionCenterControl) => void) | null): void {
+  actionCenterHandler = fn
+}
+
 /**
  * Wire the overlay→renderer control channel once. Returns a disposer. Idempotent
  * — a second call while already wired is a no-op.
@@ -279,27 +409,35 @@ export function initPetOverlayBridge(): () => void {
     return () => {}
   }
 
-  controlUnsub = api.onControl(payload => {
-    if (payload?.type === 'pop-in') {
+  controlUnsub = api.onControl(rawPayload => {
+    const payload = parsePetOverlayControl(rawPayload)
+
+    if (!payload) {
+      return
+    }
+
+    if (payload.type === 'pop-in') {
       popInPet()
-    } else if (payload?.type === 'ready') {
+    } else if (payload.type === 'ready') {
       // The overlay just mounted — hand it the current frame.
       pushNow()
-    } else if (payload?.type === 'submit' && typeof payload.text === 'string') {
+    } else if (payload.type === 'submit' && typeof payload.text === 'string') {
       submitHandler?.(payload.text)
-    } else if (payload?.type === 'bounds' && payload.bounds) {
+    } else if (payload.type === 'bounds' && payload.bounds) {
       // The user dragged the overlay to a new desktop spot — remember it.
       saveBounds(payload.bounds)
-    } else if (payload?.type === 'scale' && typeof payload.scale === 'number') {
+    } else if (payload.type === 'scale' && typeof payload.scale === 'number') {
       // The user resized the popped-out pet (Alt+wheel) — persist it through
       // the main renderer's gateway; the new scale rides $petInfo back to the
       // overlay on the next push, keeping both surfaces in sync.
       scaleHandler?.(payload.scale)
-    } else if (payload?.type === 'open-app') {
+    } else if (payload.type === 'open-app') {
       // Mail icon: surface the app on the most recent thread (main.ts already
       // focused the window before forwarding this) and mark it read.
       clearPetUnread()
       openAppHandler?.()
+    } else if (isPetActionCenterControl(payload)) {
+      actionCenterHandler?.(payload)
     }
   })
 

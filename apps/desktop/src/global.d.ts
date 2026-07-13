@@ -35,7 +35,8 @@ declare global {
       openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
-      // the overlay sends control messages back (pop-in, composer submit).
+      // the overlay sends narrow control messages back (window gestures,
+      // composer submit, action-center intents).
       petOverlay: {
         open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
         close: () => Promise<{ ok: boolean }>
@@ -45,7 +46,9 @@ declare global {
         pushState: (payload: PetOverlayStatePayload) => void
         control: (payload: PetOverlayControl) => void
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
-        onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+        // IPC receive values are untrusted until the renderer runtime parser
+        // narrows them back to PetOverlayControl.
+        onControl: (callback: (payload: unknown) => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>

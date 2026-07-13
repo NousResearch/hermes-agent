@@ -11,9 +11,12 @@ the agent is doing (idle, running a tool, thinking, finishing, failing) across
 the **CLI**, **TUI**, and **desktop app**. Pets come from the public
 [petdex](https://github.com/crafter-station/petdex) gallery.
 
-Pets are purely cosmetic. They have **no effect on prompt caching, tokens, or
-the agent's behavior** — the sprite is a display concern only. The feature is
-**off by default** and stays dormant until you install and select a pet.
+Pet animation is cosmetic. It has **no effect on prompt caching, tokens, or the
+agent's behavior** — the sprite is a display concern only. In the desktop app,
+the popped-out pet can also show an optional action center. That surface sends a
+control only after you explicitly click or type; it never approves, replies, or
+interrupts work on its own. The feature is **off by default** and stays dormant
+until you install and select a pet.
 
 ## How it works
 
@@ -150,13 +153,95 @@ Gestures once it's popped out:
 | **Double-click** | Toggle the app window: minimize it if it's up front, restore it if it's hidden. |
 | **Shift-click** | Pop the pet back into the window. |
 | **Mail icon** | Appears only when a turn finished while you were away; click to raise the app on the most recent thread (and mark it read). |
+| **Action center button** | Open pending approvals, questions, and live-session controls without raising the app. It appears only when there is something it can show. |
 
 Only the popped-out pet shows a **speech bubble** (`working…`, `thinking…`,
 `your turn`, …) — in-window the app itself is the surface, so the pet stays
 quiet there.
 
 The overlay is a pure puppet of the in-app pet — it carries no separate gateway
-connection and never appears in the dock or app switcher.
+connection and never appears in the dock or app switcher. The main app owns all
+gateway connections, validates every action-center intent again, and routes it
+to the exact profile and session that produced the item.
+
+### Action center
+
+The action center is a compact, keyboard-accessible control surface for work
+that is already visible to the desktop app. Incoming work can make its button
+appear, but **never opens the panel or steals focus**. Click the button to enter
+the panel.
+
+Each item shows its profile and session label plus a high-level live status:
+
+| Status | Meaning |
+| --- | --- |
+| **Idle** | The selected session is ready for a new prompt. |
+| **Working** | A turn is running. |
+| **Reviewing** | The agent is reasoning or reviewing; private reasoning text is not shown. |
+| **Waiting** | The turn is blocked on an approval or a question for you. |
+| **Done** | The turn completed and its notification can be dismissed. |
+| **Failed** | The turn ended with an error; open the app for full context. |
+
+The strip may also show elapsed time, a safe high-level tool name, queued-message
+count, and whether that profile's connection is connecting, offline, or in
+error. It does not show tool arguments, tool output, transcripts, reasoning
+content, credentials, tokens, or logs.
+
+#### Approvals and questions
+
+- **Run once** approves only the pending operation.
+- **Allow this session** applies only to that session.
+- **Always allow** is shown only when the backend says permanent approval is
+  supported. It requires a second confirmation.
+- **Reject** can include an optional reason. The reason is returned to the
+  blocked turn; it is not a private note.
+- Clarify questions support backend-provided choices, free text, and **Skip**
+  when skipping is allowed.
+- Password, sudo, and secret-entry prompts are intentionally excluded. The
+  action center tells you to finish those secure inputs inside Hermes.
+
+An approval or answer is always bound to the profile and runtime session that
+created it. If that request has already resolved, the action center reports it
+as stale instead of applying the response somewhere else.
+
+#### Reply, steer, queue, and stop
+
+Available buttons depend on the selected item's current capabilities:
+
+- **Send** starts a new prompt in an idle session. If the runtime session went
+  stale, Hermes may safely resume the same verified stored session in the same
+  profile and retry once.
+- **Steer** tries to alter a running turn while the backend still has a safe
+  steering window.
+- **Queue** stores the message for that exact profile/session. The shared
+  composer sends queued messages in FIFO order when that session is active and
+  ready. Queue remains available while that profile is temporarily offline.
+- A rejected **Steer** never silently becomes a queued message. Your draft is
+  kept and the UI offers an explicit **Queue** button.
+- **Stop** interrupts only the exact currently running runtime session. Hermes
+  does not resume a stale session merely to stop it.
+- **Open in app** raises Hermes on the verified stored session when one exists.
+- **Dismiss** acknowledges only the selected completion; unresolved approvals
+  and questions remain in the action center.
+
+Two profiles may use identical session IDs without sharing prompts, queues,
+status, or controls. Identity is carried internally as a profile/session pair;
+the overlay sends only an opaque item ID back to the main app.
+
+#### Keyboard and focus
+
+- **Tab / Shift+Tab** move through the open panel and stay inside its focus
+  trap.
+- **Enter** submits an idle prompt or the explicitly labelled default live
+  action. **Shift+Enter** inserts a newline.
+- **Escape** closes the current inline confirmation first, then the action
+  center. Focus returns to the button that opened it.
+- New background events do not open the panel, move focus, or navigate the app.
+
+The native overlay grows to fit the open panel and returns to its compact size
+when it closes, keeping the pet's feet anchored. Bounds are clamped to the
+nearest display work area after a monitor is disconnected or its resolution
+changes.
 
 ## Configuration
 
@@ -203,6 +288,15 @@ Common gotchas:
 - Inside a pipe/redirect (no TTY), terminal rendering is disabled by design.
 - The petdex npm CLI installs to `~/.codex/pets`; Hermes uses its own
   profile-scoped `<HERMES_HOME>/pets/` instead — install through `hermes pets`.
+- If the action center says a request is stale, it was already resolved or its
+  live runtime ended. Open the exact session rather than retrying the old
+  control.
+- **Offline** disables actions that require the live gateway (Send, Steer,
+  Stop). Local **Queue** and completion dismissal remain available.
+- Secure password, sudo, and secret prompts never render their contents in the
+  pet; open Hermes to complete them.
+- Near a screen edge, Hermes expands the panel upward around the pet and clamps
+  it to the nearest monitor's usable work area.
 
 ## See also
 

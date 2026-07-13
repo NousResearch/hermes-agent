@@ -4044,6 +4044,9 @@ def refresh_launchd_plist_if_needed() -> bool:
             int(_reload_budget),
             _launchd_reload_log_path(),
         )
+        # Return False so callers (launchd_install) can surface the failure
+        # rather than unconditionally printing a success message (#12882).
+        return False
     print(
         "↻ Updated gateway launchd service definition to match the current Hermes install"
     )
@@ -4056,8 +4059,20 @@ def launchd_install(force: bool = False):
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            refresh_launchd_plist_if_needed()
-            print("✓ Service definition updated")
+            refreshed = refresh_launchd_plist_if_needed()
+            if refreshed:
+                print("✓ Service definition updated")
+            else:
+                # refresh_launchd_plist_if_needed() returns False when the
+                # plist write was refused or the retry helper could not
+                # register the service with launchd after all attempts.
+                # Surface this as a visible warning so the operator knows the
+                # reload did not take effect; do NOT print success.
+                print(
+                    "⚠ Service definition could not be reloaded with launchd. "
+                    "Run 'hermes gateway install --force' or check "
+                    "~/.hermes/logs/launchd-reload.log for details."
+                )
             return
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")

@@ -110,6 +110,14 @@ def make_env(sprites_sdk, monkeypatch):
     )
     # Keep the base class from blocking forever on interrupt polling
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+    # Pin the active profile to "default" so Sprite names are deterministic
+    # regardless of the test runner's HERMES_HOME. Profile-scoping itself is
+    # covered explicitly in TestSpriteNaming.
+    monkeypatch.setattr(
+        "agent.file_safety._resolve_active_profile_name",
+        lambda: "default",
+        raising=False,
+    )
 
     def _factory(get_side_effect=None, sprite=None, **kwargs):
         sprite = sprite or _make_sprite()
@@ -172,6 +180,81 @@ class TestConstruction:
         args, kwargs = env._mock_client.create_sprite.call_args
         assert args == ("hermes-sizing",)
         assert kwargs == {}
+
+
+class TestSpriteNaming:
+    """`_resolve_sprite_name`: deterministic, profile-scoped Sprite identity.
+
+    A Sprite is resumed *by name*, so the name is the durable identity of a
+    session's live sandbox. The name must (a) stay stable so resume works and
+    (b) differ across independent Hermes profiles so they never resume into
+    one another's live Sprite.
+    """
+
+    @staticmethod
+    def _set_profile(monkeypatch, name):
+        monkeypatch.setattr(
+            "agent.file_safety._resolve_active_profile_name",
+            lambda: name,
+            raising=False,
+        )
+
+    def test_default_profile_keeps_legacy_name(self, monkeypatch):
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "default")
+        # Backward compatible with Sprites created before profile scoping.
+        assert _resolve_sprite_name("default") == "hermes-default"
+        assert _resolve_sprite_name("mytask") == "hermes-mytask"
+
+    def test_named_profile_is_scoped(self, monkeypatch):
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "work")
+        assert _resolve_sprite_name("default") == "hermes-work-default"
+        assert _resolve_sprite_name("mytask") == "hermes-work-mytask"
+
+    def test_independent_profiles_do_not_collide(self, monkeypatch):
+        """Same task_id under two different profiles → distinct Sprites."""
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "alpha")
+        a = _resolve_sprite_name("default")
+        self._set_profile(monkeypatch, "beta")
+        b = _resolve_sprite_name("default")
+        assert a == "hermes-alpha-default"
+        assert b == "hermes-beta-default"
+        assert a != b
+
+    def test_same_identity_resumes(self, monkeypatch):
+        """Same (profile, task_id) is stable across calls → resume works."""
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "work")
+        assert _resolve_sprite_name("t") == _resolve_sprite_name("t") == "hermes-work-t"
+
+    def test_names_are_sanitized(self, monkeypatch):
+        """Messy profile/task components collapse to a Sprite-safe slug."""
+        import re
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "Team/Prod.01")
+        name = _resolve_sprite_name("sub agent_42")
+        assert name == "hermes-team-prod-01-sub-agent-42"
+        # Only lowercase alnum + single interior hyphens (Fly/DNS-safe).
+        assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
+
+    def test_empty_task_id_falls_back(self, monkeypatch):
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "default")
+        assert _resolve_sprite_name("") == "hermes-default"
+
+    def test_profile_resolution_failure_is_non_fatal(self, monkeypatch):
+        """A broken profile resolver must not break Sprite naming."""
+        from tools.environments import sprites as sprites_mod
+
+        def _boom():
+            raise RuntimeError("no home")
+
+        monkeypatch.setattr(
+            "agent.file_safety._resolve_active_profile_name", _boom, raising=False
+        )
+        assert sprites_mod._resolve_sprite_name("x") == "hermes-x"
 
     def test_no_base_url_kwarg(self, make_env, sprites_sdk):
         """SpritesClient is constructed without a base_url override (endpoint is fixed)."""

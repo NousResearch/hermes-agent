@@ -3,13 +3,14 @@
 Uses the sprites-py SDK (https://github.com/superfly/sprites-py) to run
 commands in Sprites — stateful cloud sandboxes on Fly.io, with
 checkpoint & restore. Persistent by default: each Sprite outlives the session
-and is reused via a deterministic ``hermes-{task_id}`` name. Cleanup leaves
-the Sprite running when ``persistent_filesystem`` is True; the Sprite is
-deleted otherwise.
+and is reused via a deterministic, profile-scoped ``hermes-{profile}-{task_id}``
+name (``hermes-{task_id}`` on the default profile). Cleanup leaves the Sprite
+running when ``persistent_filesystem`` is True; the Sprite is deleted otherwise.
 """
 
 import logging
 import os
+import re
 import shlex
 import threading
 from pathlib import Path
@@ -24,6 +25,40 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _slugify_name_component(value: str) -> str:
+    """Reduce an arbitrary string to a Sprite/Fly-safe name component.
+
+    Sprite names are DNS-ish: lowercase ``[a-z0-9-]`` with no leading/trailing
+    or doubled hyphens. Anything else (``/``, ``.``, uppercase, unicode from a
+    profile directory or subagent id) is collapsed to a single hyphen.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+
+
+def _resolve_sprite_name(task_id: str) -> str:
+    """Deterministic, profile-scoped Sprite name.
+
+    A Sprite is persistent and resumed *by name*, so its name is the durable
+    identity of a session's live sandbox (processes, sockets, PID space — not
+    just a filesystem snapshot). We scope the name by the active Hermes profile
+    so two independent profiles never resume into one another's live Sprite,
+    while the same ``(profile, task_id)`` always resumes the same Sprite.
+
+    The default profile keeps the historical ``hermes-{task_id}`` name so
+    already-created Sprites keep resolving after this change.
+    """
+    try:
+        from agent.file_safety import _resolve_active_profile_name
+        profile = _resolve_active_profile_name()
+    except Exception:
+        profile = "default"
+    task_slug = _slugify_name_component(task_id) or "default"
+    profile_slug = _slugify_name_component(profile) if profile else ""
+    if profile_slug and profile_slug != "default":
+        return f"hermes-{profile_slug}-{task_slug}"
+    return f"hermes-{task_slug}"
 
 
 class SpritesEnvironment(BaseEnvironment):
@@ -80,7 +115,8 @@ class SpritesEnvironment(BaseEnvironment):
         # storage / region) — sandboxes get default sizing. We omit SpriteConfig
         # entirely so the wire format stays minimal until the platform exposes
         # these knobs.
-        sprite_name = f"hermes-{task_id}"
+        sprite_name = _resolve_sprite_name(task_id)
+        self._sprite_name = sprite_name
         try:
             self._sprite = self._client.get_sprite(sprite_name)
             logger.info(

@@ -101,9 +101,14 @@ class TestSpritesIdentity:
         if "MISSING" in r["output"]:
             pytest.skip("sprite-env CLI not present inside the Sprite")
         # Terminal-tool's `_resolve_container_task_id` collapses every
-        # incoming task_id to "default", so the Sprite name is always
-        # hermes-default regardless of what we passed to _run().
-        assert "hermes-default" in r["output"]
+        # incoming task_id to "default", and the Sprite name is then scoped by
+        # the active Hermes profile via `_resolve_sprite_name` (see the unit
+        # tests in tests/tools/test_sprites_environment.py::TestSpriteNaming).
+        # Assert against the resolved name for whatever profile this run is in,
+        # rather than hard-coding "hermes-default".
+        from tools.environments.sprites import _resolve_sprite_name
+        expected_name = _resolve_sprite_name("default")
+        assert expected_name in r["output"]
         # Sanity: the boot_id from inside the Sprite must differ from this
         # process's view (i.e. command did NOT run on the host).
         host_boot = open("/proc/sys/kernel/random/boot_id").read().strip()

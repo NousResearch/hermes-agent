@@ -33,7 +33,7 @@ Run the user's macOS Shortcuts from the `terminal` tool via the first-party `sho
 
 ```bash
 shortcuts list                          # all shortcut names, one per line
-shortcuts list --folders                # folder organization
+shortcuts list --folders                # folder names only
 shortcuts run "Shortcut Name"           # run by exact name (quote it)
 ```
 
@@ -61,7 +61,7 @@ Names are matched exactly, including spaces and emoji — always quote. Use `sho
 
 ### Hermes as an automation target
 
-Shortcuts **personal automations** (Focus change, arriving at a location, time of day, charger connected, NFC tag) can trigger Hermes with zero new code: add a "Send Message" action to the automation that messages the line the user's Hermes gateway listens on (iMessage or Telegram). Example: an automation on "Work Focus turned on" sends "I just started work focus — silence non-urgent alerts and give me today's agenda" to the Hermes number. The gateway treats it as a normal inbound message and the agent reacts. Set the automation to "Run Immediately" so it fires without confirmation.
+Shortcuts **personal automations** (Focus change, arriving at a location, time of day, charger connected, NFC tag — built in the Shortcuts app on the user's iPhone/iPad; macOS has no personal-automations surface) can trigger Hermes with zero new code: add a "Send Message" action to the automation that messages the line the user's Hermes gateway listens on (iMessage or Telegram). Example: an automation on "Work Focus turned on" sends "I just started work focus — silence non-urgent alerts and give me today's agenda" to the Hermes number. The gateway treats it as a normal inbound message and the agent reacts. Set the automation to "Run Immediately" so it fires without confirmation.
 
 ### Bridging missing capabilities
 

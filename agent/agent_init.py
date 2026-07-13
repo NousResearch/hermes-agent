@@ -1385,22 +1385,31 @@ def init_agent(
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
-            # Honcho auto-migration: if memory.provider is absent (not just
-            # blank) but the Honcho plugin shows enabled+credentialed, activate
-            # Honcho. An explicitly blank provider ("") means the user opted
-            # out — do not auto-migrate over their choice.
+            # Honcho auto-migration: if the user did not explicitly set
+            # memory.provider in their raw config.yaml but the Honcho plugin
+            # shows enabled+credentialed, activate Honcho.  We check the RAW
+            # config (before DEFAULT_CONFIG merge) because load_config()
+            # deep-merges DEFAULT_CONFIG which always supplies
+            # memory.provider: "" — so the merged mem_config cannot
+            # distinguish "user omitted the key" from "user set it blank".
+            # An explicitly blank provider means the user opted out — do not
+            # auto-migrate over their choice.
             # Detection is read-only; persistence is deferred until
             # is_available() succeeds below so a broken setup can't
             # leave a stale "memory.provider: honcho" entry. (#12743)
-            _provider_explicitly_blank = (
-                mem_config is not None
-                and "provider" in mem_config
-                and not str(mem_config.get("provider", "")).strip()
-            )
+            _user_provider_is_explicit = False
+            try:
+                from hermes_cli.config import read_raw_config as _read_raw
+                _raw_mem = (_read_raw() or {}).get("memory") or {}
+                if isinstance(_raw_mem, dict) and "provider" in _raw_mem:
+                    _user_provider_is_explicit = True
+            except Exception:
+                pass
+
             _auto_migrated_to_honcho = False
             if (
                 not (_mem_provider_name and _mem_provider_name.strip())
-                and not _provider_explicitly_blank
+                and not _user_provider_is_explicit
             ):
                 from agent.honcho_auto_migrate import detect_honcho_auto_migrate
                 _detected = detect_honcho_auto_migrate()

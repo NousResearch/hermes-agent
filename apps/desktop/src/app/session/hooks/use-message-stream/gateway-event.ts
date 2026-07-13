@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -16,7 +16,7 @@ import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
-import { dispatchNativeNotification } from '@/store/native-notifications'
+import { dispatchNativeNotification, dispatchQuotaExhaustedNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
@@ -92,6 +92,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     updateSessionState,
     upsertToolCall
   } = deps
+
+  // Track previous quota percentage per session to detect exhaustion transitions
+  const prevQuotaPctRef = useRef<Map<string, number>>(new Map())
 
   return useCallback(
     (event: RpcEvent) => {
@@ -353,7 +356,24 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (payload?.usage) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          const usage = payload.usage
+          setCurrentUsage(current => {
+            const newUsage = { ...current, ...usage }
+
+            // Detect quota exhaustion transition: prev < 95% and new >= 100%
+            if (sessionId && usage.quota_pct !== undefined) {
+              const prevPct = prevQuotaPctRef.current.get(sessionId)
+              const newPct = usage.quota_pct
+              if (prevPct !== undefined && prevPct < 95 && newPct >= 100) {
+                const provider = payload.provider || 'unknown'
+                const quotaReset = usage.quota_reset
+                dispatchQuotaExhaustedNotification(sessionId, provider, quotaReset)
+              }
+              prevQuotaPctRef.current.set(sessionId, newPct)
+            }
+
+            return newUsage
+          })
         }
       } else if (event.type === 'session.title') {
         // Live auto-title push (titler runs async, after the turn's refresh).

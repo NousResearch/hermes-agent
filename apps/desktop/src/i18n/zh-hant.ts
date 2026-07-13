@@ -164,7 +164,9 @@ export const zhHant = defineLocale({
       turnDoneBody: '回覆已就緒。',
       turnErrorTitle: '本輪失敗',
       backgroundDoneTitle: '背景工作已完成',
-      backgroundFailedTitle: '背景工作失敗'
+      backgroundFailedTitle: '背景工作失敗',
+      quotaExhaustedTitle: '配額已用完: {provider}',
+      quotaExhaustedBody: '提供商配額已耗盡。請檢查您的提供商控制面板。{quotaReset?}'
     }
   },
 
@@ -244,6 +246,10 @@ export const zhHant = defineLocale({
         backgroundDone: {
           label: '背景工作完成',
           description: '背景終端機指令已完成。'
+        },
+        quotaExhausted: {
+          label: '配額已用完: {provider}',
+          description: '提供商配額已耗盡。請檢查您的提供商控制面板。{quotaReset?}'
         }
       },
       test: '傳送測試通知',
@@ -2002,6 +2008,7 @@ export const zhHant = defineLocale({
       openContextUsage: '開啟上下文使用量明細',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
+      sessionCost: '工作階段成本',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
       yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。Shift+點擊可全域切換。',
       modelNone: '無',

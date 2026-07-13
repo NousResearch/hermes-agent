@@ -11,6 +11,7 @@ import { useI18n } from '@/i18n'
 import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
+import { formatCost, quotaColorClass, quotaLabel } from '@/lib/cost-formatter'
 import { cn } from '@/lib/utils'
 import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
 import { copyFilePath, revealFile } from '@/store/file-actions'
@@ -426,6 +427,21 @@ export function useStatusbarItems({
         id: 'session-timer',
         label: copy.session,
         title: copy.runtimeSessionElapsed,
+        variant: 'text'
+      },
+      {
+        hidden: !currentUsage?.cost_usd,
+        id: 'session-cost',
+        label: formatCost(currentUsage?.cost_usd ?? 0),
+        title: copy.sessionCost ?? 'Session cost',
+        variant: 'text'
+      },
+      {
+        className: quotaColorClass(currentUsage?.quota_pct),
+        hidden: currentUsage?.quota_pct == null,
+        id: 'quota-gauge',
+        label: quotaLabel(currentUsage?.quota_pct),
+        title: currentUsage?.quota_rl_text ? `quota reset: ${currentUsage.quota_rl_text}` : 'Provider quota',
         variant: 'text'
       },
       {

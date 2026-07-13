@@ -164,7 +164,9 @@ export const zh: Translations = {
       turnDoneBody: '回复已就绪。',
       turnErrorTitle: '本轮失败',
       backgroundDoneTitle: '后台任务已完成',
-      backgroundFailedTitle: '后台任务失败'
+      backgroundFailedTitle: '后台任务失败',
+      quotaExhaustedTitle: '配额已用完: {provider}',
+      quotaExhaustedBody: '提供商配额已耗尽。请检查您的提供商控制面板。{quotaReset?}'
     }
   },
 
@@ -335,6 +337,10 @@ export const zh: Translations = {
         backgroundDone: {
           label: '后台任务完成',
           description: '后台终端命令已完成。'
+        },
+        quotaExhausted: {
+          label: '配额已用完: {provider}',
+          description: '提供商配额已耗尽。请检查您的提供商控制面板。{quotaReset?}'
         }
       },
       test: '发送测试通知',
@@ -2289,6 +2295,7 @@ export const zh: Translations = {
       openContextUsage: '打开上下文用量明细',
       session: '会话',
       runtimeSessionElapsed: '运行时会话已用时间',
+      sessionCost: '会话成本',
       yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',
       yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。Shift+点击可全局切换。',
       modelNone: '无',

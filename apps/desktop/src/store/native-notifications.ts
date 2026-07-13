@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
+import { translateNow } from '@/i18n'
 
 import { $gateway } from './gateway'
 import { clearApprovalRequest } from './prompts'
@@ -8,18 +9,19 @@ import { $activeSessionId } from './session'
 
 // Native OS notifications (Electron `Notification`), separate from the in-app
 // toast feed in `notifications.ts`. Each kind toggles independently.
-export type NativeNotificationKind = 'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError'
+export type NativeNotificationKind = 'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError' | 'quotaExhausted'
 
 export const NATIVE_NOTIFICATION_KINDS: readonly NativeNotificationKind[] = [
   'approval',
   'input',
   'turnDone',
   'turnError',
-  'backgroundDone'
+  'backgroundDone',
+  'quotaExhausted'
 ]
 
 // Blocking prompts — surface even while focused if they're for another session.
-const ATTENTION_KINDS = new Set<NativeNotificationKind>(['approval', 'input'])
+const ATTENTION_KINDS = new Set<NativeNotificationKind>(['approval', 'input', 'quotaExhausted'])
 
 export interface NativeNotificationPrefs {
   enabled: boolean
@@ -30,7 +32,7 @@ const STORAGE_KEY = 'hermes:native-notifications'
 
 const DEFAULT_PREFS: NativeNotificationPrefs = {
   enabled: true,
-  kinds: { approval: true, backgroundDone: true, input: true, turnDone: true, turnError: true }
+  kinds: { approval: true, backgroundDone: true, input: true, turnDone: true, turnError: true, quotaExhausted: true }
 }
 
 function readPrefs(): NativeNotificationPrefs {
@@ -214,4 +216,14 @@ export async function sendTestNativeNotification(title: string, body: string): P
   } catch {
     return false
   }
+}
+
+export function dispatchQuotaExhaustedNotification(sessionId: string, provider: string, quotaReset?: string): void {
+  dispatchNativeNotification({
+    kind: 'quotaExhausted',
+    title: translateNow('notifications.kinds.quotaExhausted.label', provider),
+    body: quotaReset ? translateNow('notifications.kinds.quotaExhausted.description', quotaReset) : translateNow('notifications.kinds.quotaExhausted.description'),
+    sessionId,
+    global: false
+  })
 }

@@ -211,6 +211,8 @@ export interface Translations {
       turnErrorTitle: string
       backgroundDoneTitle: string
       backgroundFailedTitle: string
+      quotaExhaustedTitle: string
+      quotaExhaustedBody: string
     }
   }
 
@@ -285,7 +287,7 @@ export interface Translations {
       enableAllDesc: string
       focusedHint: string
       kinds: Record<
-        'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError',
+        'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError' | 'quotaExhausted',
         { label: string; description: string }
       >
       test: string
@@ -1756,6 +1758,7 @@ export interface Translations {
       openContextUsage: string
       session: string
       runtimeSessionElapsed: string
+      sessionCost: string
       yoloOn: string
       yoloOff: string
       modelNone: string

@@ -168,7 +168,9 @@ export const ja = defineLocale({
       turnDoneBody: '応答の準備ができました。',
       turnErrorTitle: 'ターンが失敗しました',
       backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
-      backgroundFailedTitle: 'バックグラウンドタスクが失敗しました'
+      backgroundFailedTitle: 'バックグラウンドタスクが失敗しました',
+      quotaExhaustedTitle: 'クォータを使い切りました: {provider}',
+      quotaExhaustedBody: 'プロバイダのクォータが使い切られました。プロバイダのダッシュボードを確認してください。{quotaReset?}'
     }
   },
 
@@ -249,6 +251,10 @@ export const ja = defineLocale({
         backgroundDone: {
           label: 'バックグラウンドタスク完了',
           description: 'バックグラウンドのターミナルコマンドが完了しました。'
+        },
+        quotaExhausted: {
+          label: 'クォータを使い切りました: {provider}',
+          description: 'プロバイダのクォータが使い切られました。プロバイダのダッシュボードを確認してください。{quotaReset?}'
         }
       },
       test: 'テスト通知を送信',
@@ -2066,6 +2072,7 @@ export const ja = defineLocale({
       openContextUsage: 'コンテキスト使用状況の内訳を開く',
       session: 'セッション',
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
+      sessionCost: 'セッション コスト',
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
       yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',

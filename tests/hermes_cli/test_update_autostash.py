@@ -397,8 +397,11 @@ def _setup_update_mocks(monkeypatch, tmp_path):
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
-    """When .[all] fails, update should keep base deps and retry extras individually."""
+    """When sync and .[all] fail, update keeps base deps and retries extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)
+    # A lockfile is present, so the hash-verified sync tier is attempted first;
+    # it fails here, exercising the full editable-install fallback ladder.
+    (tmp_path / "uv.lock").write_text("# lock\n")
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
     monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda group="all": ["matrix", "mcp"])
@@ -415,6 +418,8 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
         if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd[:2] == ["/usr/bin/uv", "sync"]:
+            raise CalledProcessError(returncode=1, cmd=cmd)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", "."]:
@@ -432,6 +437,11 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     hermes_main.cmd_update(SimpleNamespace())
 
+    # The hash-verified lockfile sync must have been attempted first.
+    sync_cmds = [c for c in recorded if c[:2] == ["/usr/bin/uv", "sync"]]
+    assert len(sync_cmds) == 1
+    assert "--locked" in sync_cmds[0] and "--inexact" in sync_cmds[0]
+
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert install_cmds == [
         ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
@@ -447,8 +457,10 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
 
 def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
-    """When .[all] succeeds, no fallback should be attempted."""
+    """Without a lockfile, .[all] is primary; when it succeeds, no fallback runs."""
     _setup_update_mocks(monkeypatch, tmp_path)
+    # No uv.lock in PROJECT_ROOT → the sync tier is skipped entirely and the
+    # editable .[all] install stays the primary path.
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
 
@@ -473,11 +485,51 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert len(install_cmds) == 1
     assert ".[all]" in install_cmds[0]
+    assert not any(c[:2] == ["/usr/bin/uv", "sync"] for c in recorded)
 
 
-def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
+def test_cmd_update_prefers_lockfile_sync_when_lock_present(monkeypatch, tmp_path):
+    """With uv.lock present, update syncs from the lockfile and skips pip installs."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    (tmp_path / "uv.lock").write_text("# lock\n")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append((cmd, kwargs.get("env")))
+        if cmd == ["git", "fetch", "origin", "main"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    sync_calls = [(c, e) for c, e in recorded if c[:2] == ["/usr/bin/uv", "sync"]]
+    assert len(sync_calls) == 1
+    cmd, env = sync_calls[0]
+    assert cmd == ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "all"]
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "venv")
+    assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
+
+    # Lockfile sync succeeded → the editable pip cascade must not run.
+    install_cmds = [c for c, _ in recorded if "pip" in c and "install" in c]
+    assert install_cmds == []
+
+
+def test_install_with_optional_fallback_honors_custom_group(monkeypatch, tmp_path):
     """Termux update path should target .[termux-all] when requested."""
     calls = []
+    # No uv.lock in PROJECT_ROOT → the editable cascade is the primary path.
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(
         hermes_main,
         "_load_installable_optional_extras",

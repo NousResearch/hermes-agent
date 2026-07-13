@@ -1242,3 +1242,182 @@ class TestNodeRuntimeNpmResolution:
             not call.args or not call.args[0] or call.args[0][0] != windows_npm
             for call in mock_run.call_args_list
         )
+
+
+class TestLockfileSyncTier:
+    """The dependency installer prefers a hash-verified ``uv sync`` tier.
+
+    uv-capable callers (prefix ``[<uv>, "pip"]``) must first attempt
+    ``uv sync --locked --inexact --extra <group>`` against the managed
+    project env, mirroring the installers' primary tier, and fall back to
+    the editable ``uv pip install -e`` cascade on any failure. ``--inexact``
+    is load-bearing: it keeps lazy-installed backends and user-added
+    packages from being pruned.
+    """
+
+    def _prepare(self, tmp_path, monkeypatch, *, with_lock=True):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        if with_lock:
+            (tmp_path / "uv.lock").write_text("# lock\n")
+        monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: False)
+        monkeypatch.setattr(
+            hm, "_verify_core_dependencies_installed", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            hm, "_verify_console_scripts_installed", lambda *a, **k: None
+        )
+        return hm
+
+    def test_uv_caller_syncs_from_lockfile_first(self, tmp_path, monkeypatch):
+        hm = self._prepare(tmp_path, monkeypatch)
+        calls = []
+        monkeypatch.setattr(
+            hm,
+            "_run_install_with_heartbeat",
+            lambda cmd, **kw: calls.append((cmd, kw.get("env"))),
+        )
+
+        hm._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"], group="all"
+        )
+
+        assert len(calls) == 1
+        cmd, env = calls[0]
+        assert cmd == ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "all"]
+        assert env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "venv")
+        assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
+
+    def test_sync_failure_falls_back_to_editable_cascade(self, tmp_path, monkeypatch):
+        hm = self._prepare(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_heartbeat(cmd, **kw):
+            calls.append(cmd)
+            if cmd[1] == "sync":
+                raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
+
+        monkeypatch.setattr(hm, "_run_install_with_heartbeat", fake_heartbeat)
+
+        hm._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"], group="all"
+        )
+
+        assert calls[0][:2] == ["/usr/bin/uv", "sync"]
+        assert calls[1] == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]
+
+    def test_sync_and_fallback_drop_inherited_uv_python(
+        self, tmp_path, monkeypatch
+    ):
+        hm = self._prepare(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_heartbeat(cmd, **kw):
+            calls.append((cmd, kw.get("env")))
+            if cmd[1] == "sync":
+                raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
+
+        monkeypatch.setattr(hm, "_run_install_with_heartbeat", fake_heartbeat)
+
+        hm._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"],
+            env={"UV_PYTHON": "/host/python"},
+            group="all",
+        )
+
+        assert [cmd[1] for cmd, _ in calls] == ["sync", "pip"]
+        for _, env in calls:
+            assert "UV_PYTHON" not in env
+            assert env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "venv")
+            assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
+
+    def test_plain_pip_caller_skips_sync_tier(self, tmp_path, monkeypatch):
+        hm = self._prepare(tmp_path, monkeypatch)
+        calls = []
+        monkeypatch.setattr(
+            hm, "_run_install_with_heartbeat", lambda cmd, **kw: calls.append(cmd)
+        )
+
+        hm._install_python_dependencies_with_optional_fallback(
+            ["/venv/python", "-m", "pip"], group="all"
+        )
+
+        assert calls == [["/venv/python", "-m", "pip", "install", "-e", ".[all]"]]
+
+    def test_missing_lockfile_skips_sync_tier(self, tmp_path, monkeypatch):
+        hm = self._prepare(tmp_path, monkeypatch, with_lock=False)
+        calls = []
+        monkeypatch.setattr(
+            hm, "_run_install_with_heartbeat", lambda cmd, **kw: calls.append(cmd)
+        )
+
+        hm._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"], group="all"
+        )
+
+        assert calls == [["/usr/bin/uv", "pip", "install", "-e", ".[all]"]]
+
+    def test_termux_caller_skips_sync_tier(self, tmp_path, monkeypatch):
+        hm = self._prepare(tmp_path, monkeypatch)
+        monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+        calls = []
+        monkeypatch.setattr(
+            hm,
+            "_run_install_with_heartbeat",
+            lambda cmd, **kw: calls.append((cmd, kw.get("env"))),
+        )
+
+        hm._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"],
+            env={
+                "PREFIX": "/data/data/com.termux/files/usr",
+                "UV_PYTHON": "/host/python",
+            },
+            group="termux-all",
+        )
+
+        assert len(calls) == 1
+        cmd, env = calls[0]
+        assert cmd == [
+            "/usr/bin/uv",
+            "pip",
+            "install",
+            "-e",
+            ".[termux-all]",
+        ]
+        assert "UV_PYTHON" not in env
+        assert env["PREFIX"] == "/data/data/com.termux/files/usr"
+
+    def test_sync_env_pins_uv_python_to_existing_interpreter(
+        self, tmp_path, monkeypatch
+    ):
+        hm = self._prepare(tmp_path, monkeypatch)
+        env_python = tmp_path / "venv" / "bin" / "python"
+        env_python.parent.mkdir(parents=True)
+        env_python.write_text("#!fake\n")
+        calls = []
+        monkeypatch.setattr(
+            hm,
+            "_run_install_with_heartbeat",
+            lambda cmd, **kw: calls.append(kw.get("env")),
+        )
+
+        hm._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"], group="all"
+        )
+
+        assert calls[0]["UV_PYTHON"] == str(env_python)
+
+    def test_project_uv_env_stays_on_managed_venv(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setenv("UV_PYTHON", "/host/python")
+        (tmp_path / ".venv").mkdir()
+
+        env = hm._project_uv_install_env()
+
+        assert env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "venv")
+        assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
+        assert "UV_PYTHON" not in env

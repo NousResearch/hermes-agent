@@ -1510,13 +1510,25 @@ def run_doctor(args):
         _cmd_link = _cmd_link_dir / "hermes"
 
         if _venv_bin is None:
+            # uv sync creates the env when it's missing entirely, so it's the
+            # right repair here; pin UV_PROJECT_ENVIRONMENT to the managed
+            # `venv` layout the installers create. Termux installs use
+            # stdlib venv + pip, so keep the pip repair there.
+            if _is_termux_env:
+                _entry_repair = (
+                    f"cd {PROJECT_ROOT} && source venv/bin/activate && "
+                    "pip install -e '.[termux-all]'"
+                )
+            else:
+                _entry_repair = (
+                    f"cd {PROJECT_ROOT} && UV_PROJECT_ENVIRONMENT=venv "
+                    "uv sync --locked --inexact --extra all"
+                )
             check_warn(
                 "Venv entry point not found",
-                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+                f"(hermes not in venv/bin/ or .venv/bin/ — reinstall with: {_entry_repair})"
             )
-            manual_issues.append(
-                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
-            )
+            manual_issues.append(f"Reinstall entry point: {_entry_repair}")
         else:
             check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
 

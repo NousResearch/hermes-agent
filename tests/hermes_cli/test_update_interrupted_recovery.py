@@ -97,6 +97,35 @@ def test_recovery_runs_install_and_clears_marker(tmp_path, monkeypatch):
     assert not m._update_marker_path().exists(), "marker cleared on success"
 
 
+def test_recovery_termux_preserves_pip_tier_and_termux_group(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+
+    class R:
+        returncode = 0
+
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: "/usr/bin/uv")
+    calls = []
+    monkeypatch.setattr(
+        m,
+        "_install_python_dependencies_with_optional_fallback",
+        lambda *a, **k: calls.append((a, k)),
+    )
+
+    m._recover_from_interrupted_install()
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == ["/usr/bin/uv", "pip"]
+    assert kwargs["group"] == "termux-all"
+    assert kwargs["env"]["PREFIX"] == "/data/data/com.termux/files/usr"
+
+
 def test_recovery_keeps_marker_on_failure(tmp_path, monkeypatch):
     # If the install itself blows up, the marker must survive so the next
     # launch retries — and recovery must not raise.

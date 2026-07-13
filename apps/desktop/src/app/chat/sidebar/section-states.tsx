@@ -4,6 +4,24 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+interface SidebarSectionVisibility {
+  hasCronJobs: boolean
+  hasMessaging: boolean
+  hasProjects: boolean
+  hasSessions: boolean
+  loadingSessions: boolean
+}
+
+export function shouldShowSessionSections({
+  hasCronJobs,
+  hasMessaging,
+  hasProjects,
+  hasSessions,
+  loadingSessions
+}: SidebarSectionVisibility): boolean {
+  return loadingSessions || hasSessions || hasProjects || hasMessaging || hasCronJobs
+}
+
 export function SidebarSessionSkeletons() {
   return (
     <div aria-hidden="true" className="grid gap-px">

@@ -1,11 +1,10 @@
-"""Tests for #63529: the gateway shutdown drain was structurally blind to
-in-flight api_server (desk/API) agent runs.
+"""Regression coverage for #63529 API-server shutdown draining.
 
-API-server runs are tracked only inside ``APIServerAdapter``
-(``_inflight_agent_runs`` + ``_active_run_agents``) and never enter
-``GatewayRunner._running_agents``. Without folding them into the drain,
-stop/restart reported ``active_at_start=0`` and let systemd SIGKILL mid-tool.
-Mirrors tests/gateway/test_cron_active_work_drain.py for cron (#60432).
+API-server work is adapter-owned rather than tracked by
+``GatewayRunner._running_agents``. The shutdown drain must account for the
+same live state as the API concurrency limiter, including a ``/v1/runs`` task
+that exists before its agent has been constructed, and it must refuse new API
+turns once the gateway starts draining.
 """
 
 import asyncio
@@ -13,81 +12,106 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.api_server import APIServerAdapter
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
-def _make_api_adapter(*, inflight: int = 0, active_ids=None):
-    from gateway.config import Platform
+class _RunTask:
+    def __init__(self, done: bool = False):
+        self._done = done
 
-    active = {rid: MagicMock() for rid in (active_ids or [])}
+    def done(self) -> bool:
+        return self._done
+
+
+def _make_api_adapter(*, inflight: int = 0, queued_ids=()):
+    tasks = {run_id: _RunTask() for run_id in queued_ids}
     adapter = SimpleNamespace(
         platform=Platform.API_SERVER,
         _inflight_agent_runs=inflight,
-        _active_run_agents=active,
+        _active_run_tasks=tasks,
     )
 
     def active_agent_work_count() -> int:
-        return int(adapter._inflight_agent_runs) + len(adapter._active_run_agents)
+        return int(adapter._inflight_agent_runs) + sum(
+            not task.done() for task in adapter._active_run_tasks.values()
+        )
 
     adapter.active_agent_work_count = active_agent_work_count
     return adapter
 
 
+def _make_admission_app(adapter: APIServerAdapter) -> web.Application:
+    app = web.Application()
+    app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
+    app.router.add_post(
+        "/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream
+    )
+    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/v1/responses", adapter._handle_responses)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    return app
+
+
 class TestActiveApiRunCount:
-    def test_zero_when_no_api_adapters(self):
+    def test_zero_when_no_api_adapter(self):
         runner, _adapter = make_restart_runner()
         runner.adapters = {}
-        runner._profile_adapters = {}
         assert runner._active_api_run_count() == 0
 
-    def test_sums_inflight_and_active_run_agents(self):
+    def test_delegates_to_primary_api_adapter(self):
         runner, _adapter = make_restart_runner()
-        adapter = _make_api_adapter(inflight=2, active_ids=["r1"])
-        runner.adapters = {"api": adapter}
-        runner._profile_adapters = {}
-        assert runner._active_api_run_count() == 3
-
-    def test_includes_profile_adapters(self):
-        runner, _adapter = make_restart_runner()
-        runner.adapters = {"api": _make_api_adapter(inflight=1)}
-        runner._profile_adapters = {"p1": _make_api_adapter(active_ids=["a", "b"])}
+        runner.adapters = {
+            Platform.API_SERVER: _make_api_adapter(inflight=2, queued_ids=["r1"])
+        }
         assert runner._active_api_run_count() == 3
 
     def test_ignores_non_api_platforms(self):
-        from gateway.config import Platform
-
         runner, _adapter = make_restart_runner()
         other = SimpleNamespace(
             platform=Platform.DISCORD,
-            _inflight_agent_runs=99,
-            _active_run_agents={"x": MagicMock()},
             active_agent_work_count=lambda: 99,
         )
-        runner.adapters = {"discord": other}
-        runner._profile_adapters = {}
+        runner.adapters = {Platform.DISCORD: other}
         assert runner._active_api_run_count() == 0
 
-    def test_never_raises_on_broken_adapters(self):
+    def test_never_raises_on_broken_adapter(self):
         runner, _adapter = make_restart_runner()
 
         class Bad:
-            platform = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+            platform = Platform.API_SERVER
 
-        runner.adapters = {"bad": Bad()}
-        runner._profile_adapters = None
+            @staticmethod
+            def active_agent_work_count() -> int:
+                raise RuntimeError("boom")
+
+        runner.adapters = {Platform.API_SERVER: Bad()}
         assert runner._active_api_run_count() == 0
 
 
 class TestAPIServerAdapterWorkCount:
-    def test_active_agent_work_count_on_real_class_method(self):
-        from gateway.platforms.api_server import APIServerAdapter
-
-        # Instantiate unbound helpers via object.__new__ to avoid full connect.
-        adapter = object.__new__(APIServerAdapter)
+    def test_counts_live_run_task_before_agent_creation(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
         adapter._inflight_agent_runs = 2
-        adapter._active_run_agents = {"r1": object(), "r2": object()}
-        assert adapter.active_agent_work_count() == 4
+        adapter._active_run_tasks = {
+            "queued": _RunTask(),
+            "finished": _RunTask(done=True),
+        }
+        adapter._active_run_agents = {}
+
+        assert adapter.active_agent_work_count() == 3
+
+    def test_does_not_double_count_started_run_agent(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter._inflight_agent_runs = 0
+        adapter._active_run_tasks = {"run-1": _RunTask()}
+        adapter._active_run_agents = {"run-1": object()}
+
+        assert adapter.active_agent_work_count() == 1
 
 
 class TestDrainWaitsForApiWork:
@@ -95,56 +119,79 @@ class TestDrainWaitsForApiWork:
     async def test_drain_returns_immediately_when_nothing_active(self):
         runner, _adapter = make_restart_runner()
         runner.adapters = {}
-        runner._profile_adapters = {}
 
         _snapshot, timed_out = await runner._drain_active_agents(5.0)
 
         assert timed_out is False
 
     @pytest.mark.asyncio
-    async def test_drain_waits_for_in_flight_api_run(self):
+    async def test_drain_waits_for_real_queued_run_before_agent_creation(self):
+        """A live /v1/runs task must block drain before it has an agent."""
         runner, _adapter = make_restart_runner()
-        api = _make_api_adapter(inflight=1)
-        runner.adapters = {"api": api}
-        runner._profile_adapters = {}
+        api = APIServerAdapter(PlatformConfig(enabled=True))
+        runner.adapters = {Platform.API_SERVER: api}
+        app = _make_admission_app(api)
+        original_create_task = asyncio.create_task
+        task_started = asyncio.Event()
+        allow_task = asyncio.Event()
 
-        async def finish_run():
-            await asyncio.sleep(0.12)
-            api._inflight_agent_runs = 0
+        def delayed_create_task(coro):
+            async def delayed():
+                task_started.set()
+                await allow_task.wait()
+                return await coro
 
-        task = asyncio.create_task(finish_run())
-        _snapshot, timed_out = await runner._drain_active_agents(2.0)
-        await task
+            return original_create_task(delayed())
 
-        assert timed_out is False, (
-            "drain must wait for api_server work, not report active_at_start=0"
-        )
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "done"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with patch(
+            "gateway.platforms.api_server.asyncio.create_task",
+            side_effect=delayed_create_task,
+        ), patch.object(api, "_create_agent", return_value=mock_agent):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post("/v1/runs", json={"input": "hello"})
+                assert response.status == 202
+                await task_started.wait()
+
+                assert api._active_run_agents == {}
+                assert runner._active_api_run_count() == 1
+                drain_task = original_create_task(runner._drain_active_agents(2.0))
+                await asyncio.sleep(0.1)
+                assert not drain_task.done()
+
+                allow_task.set()
+                _snapshot, timed_out = await drain_task
+
+        assert timed_out is False
 
     @pytest.mark.asyncio
     async def test_drain_times_out_if_api_run_outlives_the_window(self):
         runner, _adapter = make_restart_runner()
-        runner.adapters = {"api": _make_api_adapter(inflight=1)}
-        runner._profile_adapters = {}
+        runner.adapters = {Platform.API_SERVER: _make_api_adapter(queued_ids=["run-1"])}
 
         _snapshot, timed_out = await runner._drain_active_agents(0.1)
 
         assert timed_out is True
 
     @pytest.mark.asyncio
-    async def test_drain_still_waits_for_chat_and_cron(self):
+    async def test_drain_still_waits_for_chat_cron_and_api_work(self):
         import cron.scheduler as sched
 
         runner, _adapter = make_restart_runner()
         runner._running_agents = {"session-1": MagicMock()}
         sched._running_job_ids.add("job-1")
-        runner.adapters = {"api": _make_api_adapter(inflight=1)}
-        runner._profile_adapters = {}
+        runner.adapters = {Platform.API_SERVER: _make_api_adapter(queued_ids=["run-1"])}
 
         async def finish_all():
             await asyncio.sleep(0.12)
             runner._running_agents.clear()
             sched._running_job_ids.discard("job-1")
-            runner.adapters["api"]._inflight_agent_runs = 0
+            runner.adapters[Platform.API_SERVER]._active_run_tasks.clear()
 
         task = asyncio.create_task(finish_all())
         try:
@@ -154,3 +201,28 @@ class TestDrainWaitsForApiWork:
             sched._running_job_ids.discard("job-1")
 
         assert timed_out is False
+
+
+class TestDrainAdmission:
+    @pytest.mark.asyncio
+    async def test_drain_refuses_every_agent_start_endpoint(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        runner = SimpleNamespace(_draining=True, _external_drain_active=False)
+        app = _make_admission_app(adapter)
+        paths = (
+            "/api/sessions/missing/chat",
+            "/api/sessions/missing/chat/stream",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v1/runs",
+        )
+
+        with patch("gateway.run._gateway_runner_ref", lambda: runner):
+            async with TestClient(TestServer(app)) as client:
+                for path in paths:
+                    response = await client.post(path, json={})
+                    payload = await response.json()
+
+                    assert response.status == 503
+                    assert response.headers["Retry-After"] == "1"
+                    assert payload["error"]["code"] == "gateway_draining"

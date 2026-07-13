@@ -94,6 +94,45 @@ def test_bytes_to_phases_prefers_dim_matched_legacy_float64_on_prefix_collision(
     )
 
 
+def test_dim1_phases_to_bytes_writes_legacy_float64() -> None:
+    """At dim=1 the float32 prefixed blob (8 B) collides with raw float64
+    (8 B), so phases_to_bytes must fall back to raw float64."""
+    dim = 1
+    phases = hrr.encode_atom("dim-one-ambiguity", dim=dim)
+
+    blob = hrr.phases_to_bytes(phases, dim=dim)
+
+    assert len(blob) == dim * np.dtype(np.float64).itemsize  # 8 bytes, no prefix
+    assert not blob.startswith(hrr._FLOAT32_BLOB_PREFIX)
+
+
+def test_dim1_round_trip_with_dim() -> None:
+    """Round-trip at dim=1 must work via the legacy float64 path."""
+    dim = 1
+    phases = hrr.encode_atom("dim-one-round-trip", dim=dim)
+
+    restored = hrr.bytes_to_phases(hrr.phases_to_bytes(phases, dim=dim), dim=dim)
+
+    assert restored.shape == (dim,)
+    np.testing.assert_allclose(restored, phases, rtol=0, atol=0)
+
+
+def test_dim1_legacy_blob_starting_with_prefix_decodes_as_float64() -> None:
+    """A legacy float64 blob at dim=1 that happens to start with HRR1 must
+    decode as float64, not be misread as a prefixed float32 blob."""
+    dim = 1
+    phases = hrr.encode_atom("prefix-collision-dim-one", dim=dim)
+    legacy_blob = phases.astype(np.float64).tobytes()
+    # Force the blob to start with HRR1 prefix bytes
+    collision_blob = hrr._FLOAT32_BLOB_PREFIX + legacy_blob[len(hrr._FLOAT32_BLOB_PREFIX):]
+    assert len(collision_blob) == dim * np.dtype(np.float64).itemsize
+
+    restored = hrr.bytes_to_phases(collision_blob, dim=dim)
+
+    assert restored.shape == (dim,)
+    np.testing.assert_allclose(restored, np.frombuffer(collision_blob, dtype=np.float64).copy(), rtol=0, atol=0)
+
+
 def test_memory_store_reads_legacy_float64_vectors(tmp_path) -> None:
     dim = 64
     db_path = tmp_path / "legacy_memory_store.db"

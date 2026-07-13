@@ -69,7 +69,8 @@ class TestSchema:
         actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
         assert actions >= {
             "capture", "click", "double_click", "right_click", "middle_click",
-            "drag", "scroll", "type", "key", "wait", "list_apps", "focus_app",
+            "drag", "scroll", "type", "key", "wait", "list_apps", "list_windows",
+            "launch_app", "focus_app",
         }
 
     def test_capture_mode_enum_has_som_vision_ax(self):
@@ -164,6 +165,49 @@ class TestDispatch:
         parsed = json.loads(out)
         assert "apps" in parsed
         assert parsed["count"] == 0
+
+    def test_list_windows_returns_exact_target_ids(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "list_windows", "pid": 42})
+        parsed = json.loads(out)
+        assert parsed == {"windows": [], "count": 0}
+        assert ("list_windows", {"pid": 42, "on_screen_only": False}) in noop_backend.calls
+
+    def test_launch_app_routes_background_instance_request(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "launch_app",
+            "app": "Notepad",
+            "creates_new_application_instance": True,
+        })
+        parsed = json.loads(out)
+        assert parsed["ok"] is True
+        call = next(payload for name, payload in noop_backend.calls if name == "launch_app")
+        assert call["name"] == "Notepad"
+        assert call["creates_new_application_instance"] is True
+
+    def test_capture_routes_exact_pid_and_window_id(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "capture", "mode": "ax", "pid": 42, "window_id": 99,
+        })
+        call = next(payload for name, payload in noop_backend.calls if name == "capture")
+        assert call["pid"] == 42
+        assert call["window_id"] == 99
+
+    def test_capture_rejects_half_an_exact_window_target(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        parsed = json.loads(handle_computer_use({
+            "action": "capture", "mode": "ax", "pid": 42,
+        }))
+        assert "pid and window_id together" in parsed["error"]
+
+    def test_ocr_requires_an_image_capture_mode(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        parsed = json.loads(handle_computer_use({
+            "action": "capture", "mode": "ax", "ocr": True,
+        }))
+        assert "requires mode='som' or mode='vision'" in parsed["error"]
 
     def test_wait_clamps_long_waits(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
@@ -2854,7 +2898,7 @@ class TestCuaToolCoverageExpansion:
     def test_launch_app_requires_bundle_id_or_name(self):
         backend = self._backend()
         import pytest
-        with pytest.raises(ValueError, match="bundle_id or name"):
+        with pytest.raises(ValueError, match="bundle_id, name, or path"):
             backend.launch_app()
 
     def test_launch_app_minimal_call(self):
@@ -2868,20 +2912,52 @@ class TestCuaToolCoverageExpansion:
         assert "name" not in args
         assert "creates_new_application_instance" not in args
         assert result["pid"] == 99
+        assert result["new_process_confirmed"] is True
 
     def test_launch_app_carries_all_optional_args(self):
         backend = self._backend(structured={"pid": 1})
-        backend.launch_app(
-            name="Calculator",
-            urls=["/Users/me/note.txt"],
-            additional_arguments=["--debug"],
-            creates_new_application_instance=True,
-        )
+        with patch("tools.computer_use.cua_backend.sys.platform", "win32"):
+            backend.launch_app(
+                name="Calculator",
+                path="C:/Windows/notepad.exe",
+                urls=["/Users/me/note.txt"],
+                additional_arguments=["--debug"],
+                start_minimized=True,
+                creates_new_application_instance=True,
+            )
         name, args = backend._session.call_tool.call_args.args
         assert args["name"] == "Calculator"
+        assert args["path"] == "C:/Windows/notepad.exe"
         assert args["urls"] == ["/Users/me/note.txt"]
         assert args["additional_arguments"] == ["--debug"]
+        assert args["start_minimized"] is True
         assert args["creates_new_application_instance"] is True
+
+    def test_launch_app_maps_linux_path_and_rejects_fake_isolation(self):
+        backend = self._backend(structured={"pid": 1})
+        with patch("tools.computer_use.cua_backend.sys.platform", "linux"):
+            with pytest.raises(ValueError, match="unsupported on Linux"):
+                backend.launch_app(
+                    path="/usr/bin/firefox",
+                    creates_new_application_instance=True,
+                )
+            backend.launch_app(path="/usr/bin/firefox")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["launch_path"] == "/usr/bin/firefox"
+        assert "path" not in args
+
+    def test_launch_app_reports_reused_process_instead_of_claiming_isolation(self):
+        backend = self._backend(structured={"pid": 99, "windows": []})
+        backend.list_apps = lambda: [{"pid": 99, "name": "Existing"}]
+
+        result = backend.launch_app(
+            name="Existing",
+            creates_new_application_instance=True,
+        )
+
+        assert result["requested_new_instance"] is True
+        assert result["new_process_confirmed"] is False
+        assert "reused an existing process" in result["isolation_warning"]
 
     def test_kill_app(self):
         backend = self._backend()

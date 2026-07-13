@@ -22,9 +22,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "Preferred workflow: call with "
         "action='capture' (mode='som' gives numbered element overlays), "
         "then click by `element` index for reliability. Pixel coordinates "
-        "are supported for models trained on them. Works on any window — "
-        "hidden, minimized, or behind another app. Requires cua-driver to "
-        "be installed."
+        "are supported for models trained on them. Visible background windows "
+        "can be targeted exactly by pid and window_id; minimized windows still "
+        "support some UIA actions but cannot provide a reliable screenshot. "
+        "Requires cua-driver to be installed."
     ),
     "parameters": {
         "type": "object",
@@ -44,6 +45,8 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "set_value",
                     "wait",
                     "list_apps",
+                    "list_windows",
+                    "launch_app",
                     "focus_app",
                 ],
                 "description": (
@@ -81,6 +84,21 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "one window or display at a time."
                 ),
             },
+            "pid": {
+                "type": "integer",
+                "description": (
+                    "Exact process id for action='capture' or a filter for "
+                    "action='list_windows'. For capture, supply together with "
+                    "window_id after list_windows or launch_app."
+                ),
+            },
+            "window_id": {
+                "type": "integer",
+                "description": (
+                    "Exact window id for action='capture'. Supply together with "
+                    "pid to keep parallel app instances isolated."
+                ),
+            },
             "max_elements": {
                 "type": "integer",
                 "description": (
@@ -102,6 +120,22 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "default": 100,
                 "minimum": 1,
                 "maximum": 1000,
+            },
+            "ocr": {
+                "type": "boolean",
+                "description": (
+                    "For action='capture' in som/vision mode, run bounded local "
+                    "Windows OCR and return text plus word bounding boxes. Use "
+                    "for exact labels, digits, totals, dates, and identifiers; "
+                    "cross-check critical values against the screenshot/UI tree."
+                ),
+            },
+            "ocr_language": {
+                "type": "string",
+                "description": (
+                    "Optional BCP-47 language tag for local OCR, such as en-US, "
+                    "de-DE, or ro-RO. Omit to use the Windows profile languages."
+                ),
             },
             # ── click / drag / scroll targeting ────────────────────
             "element": {
@@ -191,6 +225,38 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "seconds": {
                 "type": "number",
                 "description": "Seconds to wait. Max 30.",
+            },
+            # ── launch_app ────────────────────────────────────────
+            "path": {
+                "type": "string",
+                "description": (
+                    "For action='launch_app': an absolute executable path on "
+                    "Windows, or the launch_path returned by list_apps on Linux. "
+                    "On macOS use app/name."
+                ),
+            },
+            "additional_arguments": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Arguments passed to action='launch_app' on Windows or macOS."
+                ),
+            },
+            "start_minimized": {
+                "type": "boolean",
+                "description": (
+                    "Windows only: launch minimized without activation. UIA may still work, "
+                    "but restore without foreground activation before screenshots."
+                ),
+            },
+            "creates_new_application_instance": {
+                "type": "boolean",
+                "description": (
+                    "Windows/macOS: request a separate app process/window. This is a hint "
+                    "on Windows and some apps reuse an existing process; verify the "
+                    "returned new_process_confirmed field before treating it as "
+                    "isolated. Exact pid/window_id targeting still applies."
+                ),
             },
             # ── focus_app ──────────────────────────────────────────
             "raise_window": {

@@ -280,6 +280,25 @@ class TestPluginDispatchImageToImage:
         assert provider.received["image_url"] == "https://in/src.png"
         assert provider.received["reference_image_urls"] == ["https://in/ref.png"]
 
+    def test_rejected_reference_never_reaches_provider(self, cfg_home, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as reg
+
+        provider = _EditCapableProvider()
+        reg.register_provider(provider)
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "editcap")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(reg, "get_provider", lambda n: provider if n == "editcap" else None)
+
+        raw = image_tool._handle_image_generate({
+            "prompt": "edit it",
+            "image_url": "ftp://example.test/private.png",
+        })
+
+        assert "success" in raw and "false" in raw
+        assert provider.received == {}
+
     def test_dispatch_text_only_when_no_image(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool
         from hermes_cli import plugins as plugins_module

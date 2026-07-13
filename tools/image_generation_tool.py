@@ -20,6 +20,7 @@ Pricing shown in UI strings is as-of the initial commit; we accept drift and
 update when it's noticed.
 """
 
+import base64
 import json
 import logging
 import os
@@ -1510,6 +1511,24 @@ def _maybe_route_managed_krea(
     return json.dumps(result)
 
 
+def _resolve_generation_sources(
+    image_url: Optional[str], reference_image_urls: Optional[list], *, task_id: Optional[str]
+) -> tuple[Optional[str], Optional[list[str]]]:
+    """Resolve all edit inputs once before any image-generation provider sees them."""
+    from model_tools import _run_async
+    from tools.image_source import ResolveContext, resolve_image_source
+
+    def resolve(source: str) -> str:
+        image = _run_async(resolve_image_source(source, ResolveContext(task_id=task_id)))
+        return f"data:{image.mime};base64,{base64.b64encode(image.data).decode('ascii')}"
+
+    primary = resolve(image_url) if isinstance(image_url, str) and image_url.strip() else None
+    from agent.image_gen_provider import normalize_reference_images
+
+    refs = normalize_reference_images(reference_image_urls)
+    return primary, [resolve(ref) for ref in refs] if refs else None
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -1518,6 +1537,18 @@ def _handle_image_generate(args, **kw):
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
     task_id = kw.get("task_id")
+
+    try:
+        image_url, reference_image_urls = _resolve_generation_sources(
+            image_url, reference_image_urls, task_id=task_id
+        )
+    except Exception as exc:  # Resolver errors are user input errors, never provider errors.
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Invalid image reference: {exc}",
+            "error_type": "invalid_image_reference",
+        })
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this

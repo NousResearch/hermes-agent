@@ -445,6 +445,44 @@ def get_pool_strategy(provider: str) -> str:
     return STRATEGY_FILL_FIRST
 
 
+def credential_pool_matches_provider(
+    pool_or_provider: Any,
+    provider: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+) -> bool:
+    """Return whether a pool belongs to the requested runtime provider.
+
+    Named custom endpoints intentionally use two identities: the live agent is
+    ``custom`` while its pool is keyed ``custom:<name>``. Accept that pair only
+    when the runtime base URL resolves to the exact same custom pool key.
+    Empty string identities fail closed. Legacy pool adapters without a
+    ``provider`` attribute remain compatible; production pools are scoped.
+    """
+    raw_pool_provider = getattr(pool_or_provider, "provider", None)
+    if raw_pool_provider is None:
+        if isinstance(pool_or_provider, str):
+            raw_pool_provider = pool_or_provider
+        else:
+            # Backward compatibility for lightweight/unscoped pool adapters.
+            # Production CredentialPool instances always carry ``provider``;
+            # old plugins and tests may expose only select()/has_credentials().
+            return True
+    pool_provider = str(raw_pool_provider or "").strip().lower()
+    provider_norm = str(provider or "").strip().lower()
+    if not pool_provider or not provider_norm:
+        return False
+    if pool_provider == provider_norm:
+        return True
+    if provider_norm != "custom" or not pool_provider.startswith(CUSTOM_POOL_PREFIX):
+        return False
+    try:
+        matched_pool = get_custom_provider_pool_key(base_url or "")
+    except Exception:
+        return False
+    return str(matched_pool or "").strip().lower() == pool_provider
+
+
 DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1
 
 
@@ -1378,6 +1416,11 @@ class CredentialPool:
         entries_to_prune: List[str] = []
         available: List[PooledCredential] = []
         for entry in self._entries:
+            # Borrowed credentials persist as metadata-only references and are
+            # hydrated from their live source on load.  A stale duplicate row
+            # can remain unhydrated; never lease or select it as an empty key.
+            if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
+                continue
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
@@ -1694,11 +1737,15 @@ class CredentialPool:
 
 
 def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
-    existing_idx = None
+    matching_indices = []
     for idx, entry in enumerate(entries):
         if entry.source == source:
-            existing_idx = idx
-            break
+            matching_indices.append(idx)
+
+    existing_idx = matching_indices[0] if matching_indices else None
+    duplicate_indices = set(matching_indices[1:])
+    if duplicate_indices:
+        entries[:] = [entry for idx, entry in enumerate(entries) if idx not in duplicate_indices]
 
     if existing_idx is None:
         payload.setdefault("id", uuid.uuid4().hex[:6])
@@ -1730,8 +1777,8 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         # Runtime-only borrowed secret updates should refresh the in-memory
         # entry without forcing auth.json churn when the disk-safe payload is
         # unchanged (for example env keys with the same fingerprint).
-        return existing.to_dict() != updated.to_dict()
-    return False
+        return bool(duplicate_indices) or existing.to_dict() != updated.to_dict()
+    return bool(duplicate_indices)
 
 
 def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -> bool:

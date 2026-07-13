@@ -184,13 +184,16 @@ $GAPI gmail search "has:attachment filename:pdf newer_than:7d"
 $GAPI gmail get MESSAGE_ID
 
 # Send
+# The primary Gmail send-as signature is appended when available.
 $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
 $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
+$GAPI gmail send --to user@example.com --subject "No signature" --body "Message text" --no-signature
 
 # Reply (automatically threads and sets In-Reply-To)
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
+$GAPI gmail reply MESSAGE_ID --body "Thanks" --no-signature
 
 # Labels
 $GAPI gmail labels

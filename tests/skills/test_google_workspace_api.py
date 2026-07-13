@@ -353,6 +353,7 @@ def test_api_gmail_send_uses_conventional_mime_header_casing(api_module):
         subject="hello",
         body="body",
         html=False,
+        no_signature=True,
         cc="copy@example.com",
         from_header="sender@example.com",
         thread_id="thread-1",
@@ -415,6 +416,8 @@ def test_api_gmail_reply_reads_headers_case_insensitively_and_uses_conventional_
         message_id="msg-1",
         body="reply body",
         from_header="recipient@example.com",
+        html=False,
+        no_signature=True,
         func=api_module.gmail_reply,
     )
 
@@ -523,6 +526,20 @@ def test_api_get_sendas_primary_gracefully_degrades_on_empty_list(api_module):
     assert alias == {}
 
 
+def test_api_get_sendas_primary_gracefully_degrades_on_gws_error(api_module):
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=1,
+        stdout="",
+        stderr="missing gmail.settings.basic scope",
+    )
+
+    with patch.object(subprocess, "run", return_value=completed):
+        alias = api_module._get_sendas_primary()
+
+    assert alias == {}
+
+
 def test_api_gmail_send_appends_signature_and_forces_html(api_module):
     sendas_payload = {
         "sendAs": [
@@ -562,19 +579,14 @@ def test_api_gmail_send_appends_signature_and_forces_html(api_module):
 
 
 def test_api_gmail_send_no_signature_leaves_body_unchanged(api_module):
-    sendas_payload = {
-        "sendAs": [
-            {"sendAsEmail": "lev@valstratis.com", "isPrimary": True, "signature": "<table>sig</table>"}
-        ]
-    }
     send_payload = {"id": "msg-123", "threadId": "thr-456"}
-    captured = []
+    captured = {}
 
-    def capture_run(cmd, **kwargs):
-        captured.append(cmd)
-        if "sendAs" in cmd:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(sendas_payload), stderr="")
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(send_payload), stderr="")
+    def fake_run_gws(parts, *, params=None, body=None):
+        captured["parts"] = parts
+        captured["params"] = params
+        captured["body"] = body
+        return send_payload
 
     args = api_module.argparse.Namespace(
         to="user@example.com",
@@ -588,12 +600,12 @@ def test_api_gmail_send_no_signature_leaves_body_unchanged(api_module):
         func=api_module.gmail_send,
     )
 
-    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+    api_module._run_gws = fake_run_gws
+    with patch.object(api_module, "_get_sendas_primary") as get_sendas:
         api_module.gmail_send(args)
 
-    send_cmd = captured[-1]
-    body = json.loads(send_cmd[send_cmd.index("--json") + 1])
-    raw = body["raw"]
+    get_sendas.assert_not_called()
+    raw = captured["body"]["raw"]
     decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
     assert "\n\nHello" in decoded
     assert "sig" not in decoded

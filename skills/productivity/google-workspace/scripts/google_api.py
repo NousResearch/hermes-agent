@@ -129,14 +129,17 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
 
 
 def _get_sendas_primary() -> dict:
-    if _gws_binary():
-        payload = _run_gws(
-            ["gmail", "users", "settings", "sendAs", "list"],
-            params={"userId": "me"},
-        )
-    else:
-        service = build_service("gmail", "v1")
-        payload = service.users().settings().sendAs().list(userId="me").execute()
+    try:
+        if _gws_binary():
+            payload = _run_gws(
+                ["gmail", "users", "settings", "sendAs", "list"],
+                params={"userId": "me"},
+            )
+        else:
+            service = build_service("gmail", "v1")
+            payload = service.users().settings().sendAs().list(userId="me").execute()
+    except (Exception, SystemExit):
+        return {}
 
     aliases = payload.get("sendAs", [])
     for alias in aliases:
@@ -149,9 +152,12 @@ def _get_sendas_primary() -> dict:
 
 
 def _apply_signature(body: str, *, html: bool, no_signature: bool) -> tuple[str, bool]:
+    if no_signature:
+        return body, html
+
     alias = _get_sendas_primary()
     signature = alias.get("signature")
-    if no_signature or not signature:
+    if not signature:
         return body, html
     return f"{body}<br><br>{signature}", True
 

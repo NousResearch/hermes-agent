@@ -1438,6 +1438,29 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def find_message_by_client_msg_id(
+        self,
+        chat_id: str,
+        client_msg_id: str,
+        *,
+        thread_ts: Optional[str] = None,
+    ) -> Optional[str]:
+        """Recover Slack's receipt after a send-response crash window."""
+        try:
+            client = self._get_client(chat_id)
+            response = await (
+                client.conversations_replies(channel=chat_id, ts=thread_ts, limit=100)
+                if thread_ts
+                else client.conversations_history(channel=chat_id, limit=100)
+            )
+            for message in response.get("messages", []):
+                if str(message.get("client_msg_id") or "") == client_msg_id:
+                    receipt = message.get("ts")
+                    return str(receipt) if receipt else None
+        except Exception as exc:
+            logger.warning("[Slack] Failed to recover client_msg_id receipt: %s", exc)
+        return None
+
     async def send_private_notice(
         self,
         chat_id: str,

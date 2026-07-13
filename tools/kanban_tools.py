@@ -898,6 +898,9 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    task_kind = args.get("task_kind") or (
+        "coding" if str(assignee).casefold() == "developer" else "general"
+    )
     delivery_required, delivery_bool_error = _parse_bool_arg(args, "delivery_required")
     if delivery_bool_error:
         return tool_error(delivery_bool_error)
@@ -962,6 +965,7 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
                 delivery_required=delivery_required,
+                task_kind=str(task_kind),
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1543,6 +1547,11 @@ KANBAN_CREATE_SCHEMA = {
                     "(when applicable), E2E, and one Slack receipt before Done. "
                     "Use for coding deliveries."
                 ),
+            },
+            "task_kind": {
+                "type": "string",
+                "enum": ["coding", "general"],
+                "description": "Semantic task class; coding fails closed on delivery gates.",
             },
             "skills": {
                 "type": "array",

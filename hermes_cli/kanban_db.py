@@ -918,6 +918,7 @@ class Task:
     handoff_version: int = 1
     pending_completion_event_id: Optional[int] = None
     delivery_required: bool = False
+    task_kind: str = "general"
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1016,6 +1017,7 @@ class Task:
                 bool(row["delivery_required"])
                 if "delivery_required" in keys else False
             ),
+            task_kind=row["task_kind"] if "task_kind" in keys else "legacy",
         )
 
 
@@ -1202,7 +1204,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     block_recurrences    INTEGER NOT NULL DEFAULT 0,
     handoff_version      INTEGER NOT NULL DEFAULT 1,
     pending_completion_event_id INTEGER,
-    delivery_required    INTEGER NOT NULL DEFAULT 0
+    delivery_required    INTEGER NOT NULL DEFAULT 0,
+    task_kind            TEXT NOT NULL DEFAULT 'general'
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1294,6 +1297,33 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     last_message_id TEXT,
     last_message_event_id INTEGER,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_delivery_attestations (
+    task_id TEXT NOT NULL,
+    handoff_version INTEGER NOT NULL,
+    repo TEXT NOT NULL,
+    gate TEXT NOT NULL,
+    head TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, handoff_version, repo, gate)
+);
+
+CREATE TABLE IF NOT EXISTS completion_deliveries (
+    event_id INTEGER PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    handoff_version INTEGER NOT NULL,
+    platform TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    notifier_profile TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    receipt_id TEXT,
+    created_at INTEGER NOT NULL,
+    acknowledged_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
@@ -2030,14 +2060,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "pending_completion_event_id INTEGER",
         )
     if "delivery_required" not in cols:
-        added = _add_column_if_missing(
+        _add_column_if_missing(
             conn, "tasks", "delivery_required",
             "delivery_required INTEGER NOT NULL DEFAULT 0",
         )
-        if added:
-            conn.execute(
-                "UPDATE tasks SET delivery_required = 1 WHERE workspace_kind = 'worktree'"
-            )
+    if "task_kind" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "task_kind", "task_kind TEXT NOT NULL DEFAULT 'legacy'",
+        )
+        conn.execute("UPDATE tasks SET task_kind = 'coding' WHERE delivery_required = 1")
 
     run_cols = {
         row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
@@ -2487,6 +2518,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     delivery_required: bool = False,
+    task_kind: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2512,6 +2544,10 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    if task_kind is None:
+        task_kind = "coding" if delivery_required else "general"
+    if task_kind not in {"coding", "general", "legacy"}:
+        raise ValueError("task_kind must be coding, general, or legacy")
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2716,8 +2752,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id,
-                        delivery_required
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        delivery_required, task_kind
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2740,7 +2776,8 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
-                        1 if delivery_required else 0,
+                        1 if task_kind == "coding" else 0,
+                        task_kind,
                     ),
                 )
                 for pid in parents:
@@ -2761,6 +2798,7 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
                         "delivery_required": bool(delivery_required) or None,
+                        "task_kind": task_kind,
                     },
                 )
             return task_id
@@ -4073,76 +4111,83 @@ class CompletionGateError(ValueError):
         super().__init__(f"coding completion blocked; missing gates: {', '.join(self.missing)}")
 
 
+_DELIVERY_GATES = {"review", "merge", "production", "migration", "e2e"}
+_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
+
+
+def record_delivery_attestation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    repo: str,
+    gate: str,
+    head: str,
+    subject: str,
+    actor: str,
+    evidence: str,
+) -> None:
+    """Persist immutable proof emitted by a trusted delivery integration."""
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task: {task_id}")
+    values = (repo, gate, head, subject, actor, evidence)
+    if gate not in _DELIVERY_GATES or any(not str(value).strip() for value in values):
+        raise ValueError("complete delivery attestation fields are required")
+    if gate in {"review", "merge"} and not _GIT_SHA_RE.fullmatch(head):
+        raise ValueError("review/merge head must be a full git SHA")
+    if gate == "review" and (subject != head or actor.casefold() == str(task.assignee or "").casefold()):
+        raise ValueError("review must pass the attested head under an independent actor")
+    if gate == "merge" and not _GIT_SHA_RE.fullmatch(subject):
+        raise ValueError("merge subject must be a full git SHA")
+    row = (task_id, task.handoff_version, repo, gate, head, subject, actor, evidence, int(time.time()))
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT head, subject, actor, evidence FROM task_delivery_attestations "
+            "WHERE task_id = ? AND handoff_version = ? AND repo = ? AND gate = ?",
+            row[:4],
+        ).fetchone()
+        if existing:
+            if tuple(existing) != row[4:8]:
+                raise ValueError("delivery attestation is immutable for this generation")
+            return
+        conn.execute(
+            "INSERT INTO task_delivery_attestations "
+            "(task_id, handoff_version, repo, gate, head, subject, actor, evidence, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row,
+        )
+
+
 def _missing_delivery_gates(
     conn: sqlite3.Connection,
     task: Task,
     metadata: Optional[dict],
 ) -> list[str]:
-    raw = metadata.get("delivery") if isinstance(metadata, dict) else None
-    delivery: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    del metadata  # Worker handoff text is never authoritative delivery proof.
+    rows = conn.execute(
+        "SELECT repo, gate, head, subject FROM task_delivery_attestations "
+        "WHERE task_id = ? AND handoff_version = ?",
+        (task.id, task.handoff_version),
+    ).fetchall()
+    by_repo: dict[str, dict[str, sqlite3.Row]] = {}
+    for row in rows:
+        by_repo.setdefault(row["repo"], {})[row["gate"]] = row
+    if not by_repo:
+        return ["review", "merge", "production", "migration", "e2e"]
     missing: list[str] = []
-    final_head = str(delivery.get("final_head") or "")
-    valid_head = bool(re.fullmatch(r"[0-9a-fA-F]{40}", final_head))
-
-    def evidence(value: Any) -> bool:
-        return isinstance(value, str) and bool(re.fullmatch(r"https?://\S+", value.strip()))
-
-    review_raw = delivery.get("review")
-    review: dict[str, Any] = dict(review_raw) if isinstance(review_raw, dict) else {}
-    reviewer = str(review.get("reviewer") or "").strip()
-    if not (
-        valid_head
-        and str(review.get("verdict") or "").upper() == "PASS"
-        and review.get("head") == final_head
-        and reviewer
-        and reviewer.casefold() != str(task.assignee or "").casefold()
-        and evidence(review.get("evidence"))
-    ):
-        missing.append("review")
-
-    merge_raw = delivery.get("merge")
-    merge: dict[str, Any] = dict(merge_raw) if isinstance(merge_raw, dict) else {}
-    merge_commit = str(merge.get("commit") or "")
-    valid_merge = bool(
-        valid_head
-        and merge.get("head") == final_head
-        and re.fullmatch(r"[0-9a-fA-F]{40}", merge_commit)
-        and evidence(merge.get("evidence"))
-    )
-    if not valid_merge:
-        missing.append("merge")
-
-    production_raw = delivery.get("production")
-    production: dict[str, Any] = dict(production_raw) if isinstance(production_raw, dict) else {}
-    if not (
-        valid_merge
-        and production.get("deployed") is True
-        and production.get("commit") == merge_commit
-        and evidence(production.get("evidence"))
-    ):
-        missing.append("production")
-
-    migration_raw = delivery.get("migration")
-    migration: dict[str, Any] = dict(migration_raw) if isinstance(migration_raw, dict) else {}
-    if migration.get("required") is not False and not (
-        migration.get("required") is True
-        and migration.get("applied") is True
-        and migration.get("commit") == merge_commit
-        and evidence(migration.get("evidence"))
-    ):
-        missing.append("migration")
-
-    e2e_raw = delivery.get("e2e")
-    e2e: dict[str, Any] = dict(e2e_raw) if isinstance(e2e_raw, dict) else {}
-    if not (
-        valid_merge
-        and e2e.get("passed") is True
-        and e2e.get("commit") == merge_commit
-        and evidence(e2e.get("evidence"))
-    ):
-        missing.append("e2e")
-
-    return missing
+    for attestations in by_repo.values():
+        review = attestations.get("review")
+        merge = attestations.get("merge")
+        if review is None:
+            missing.append("review")
+        if merge is None or review is None or merge["head"] != review["subject"]:
+            missing.append("merge")
+            merge = None
+        for gate in ("production", "migration", "e2e"):
+            attestation = attestations.get(gate)
+            if merge is None or attestation is None or attestation["head"] != merge["subject"]:
+                missing.append(gate)
+    return list(dict.fromkeys(missing))
 
 
 def cancel_task(
@@ -4154,16 +4199,26 @@ def cancel_task(
 ) -> bool:
     """Terminate a task as cancelled without emitting a success event."""
     now = int(time.time())
-    worker = conn.execute(
-        "SELECT worker_pid, claim_lock FROM tasks WHERE id = ?", (task_id,),
-    ).fetchone()
-    termination = _terminate_reclaimed_worker(
-        worker["worker_pid"] if worker else None,
-        worker["claim_lock"] if worker else None,
-    )
-    if _worker_survived_termination(termination):
-        return False
     with write_txn(conn):
+        worker = conn.execute(
+            "SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if worker is None or worker["status"] not in {
+            "triage", "todo", "scheduled", "running", "ready", "blocked", "review",
+        }:
+            return False
+        if expected_run_id is not None and worker["current_run_id"] != int(expected_run_id):
+            return False
+
+        termination = _terminate_reclaimed_worker(
+            worker["worker_pid"], worker["claim_lock"],
+        )
+        if worker["worker_pid"] and (
+            not termination.get("host_local") or _worker_survived_termination(termination)
+        ):
+            return False
+
         params: list[Any] = [now, task_id]
         sql = (
             "UPDATE tasks SET status = 'cancelled', completed_at = ?, "
@@ -4177,6 +4232,12 @@ def cancel_task(
         cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             return False
+        conn.execute(
+            "UPDATE completion_deliveries SET state = 'cancelled' "
+            "WHERE task_id = ? AND state = 'pending'",
+            (task_id,),
+        )
+        conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
         run_id = _end_run(
             conn, task_id, outcome="cancelled", status="cancelled", summary=reason,
         )
@@ -4207,6 +4268,17 @@ def reopen_task(
         ).fetchone()
         if previous is None:
             return False
+        historical_run = conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id = ? AND handoff_version = ? LIMIT 1",
+            (task_id, int(previous["handoff_version"] or 1)),
+        ).fetchone()
+        if historical_run is None and previous["result"]:
+            _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome=("completed" if previous["status"] == "done" else "cancelled"),
+                summary=previous["result"],
+            )
         version = int(previous["handoff_version"] or 1) + 1
         cur = conn.execute(
             "UPDATE tasks SET status = 'running', completed_at = NULL, "
@@ -4309,6 +4381,11 @@ def _prepare_coding_completion(
             "UPDATE tasks SET pending_completion_event_id = ? WHERE id = ?",
             (event_id, task_id),
         )
+        conn.execute(
+            "INSERT INTO completion_deliveries "
+            "(event_id, task_id, handoff_version, created_at) VALUES (?, ?, ?, ?)",
+            (event_id, task_id, task.handoff_version, int(time.time())),
+        )
     return True
 
 
@@ -4337,11 +4414,12 @@ def ack_completion_notification(
         if event is None:
             return False
         route = conn.execute(
-            "SELECT notifier_profile FROM kanban_notify_subs WHERE task_id = ? "
-            "AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (task_id, platform, chat_id, thread_id or ""),
+            "SELECT 1 FROM completion_deliveries WHERE event_id = ? AND task_id = ? "
+            "AND state = 'pending' AND platform = ? AND chat_id = ? "
+            "AND thread_id = ? AND notifier_profile = ?",
+            (int(event_id), task_id, platform, chat_id, thread_id or "", notifier_profile or ""),
         ).fetchone()
-        if route is None or str(route["notifier_profile"] or "") != str(notifier_profile or ""):
+        if route is None:
             return False
         cur = conn.execute(
             "UPDATE tasks SET status = 'done', completed_at = ?, "
@@ -4352,6 +4430,11 @@ def ack_completion_notification(
         )
         if cur.rowcount != 1:
             return False
+        conn.execute(
+            "UPDATE completion_deliveries SET state = 'acknowledged', receipt_id = ?, "
+            "acknowledged_at = ? WHERE event_id = ? AND state = 'pending'",
+            (message_id, now, int(event_id)),
+        )
         run_id = int(event["run_id"]) if event["run_id"] is not None else None
         if run_id is not None:
             conn.execute(
@@ -4453,7 +4536,7 @@ def complete_task(
         verified_cards = []
 
     task = get_task(conn, task_id)
-    if task and task.delivery_required:
+    if task and task.task_kind == "coding":
         return _prepare_coding_completion(
             conn,
             task_id,
@@ -8876,14 +8959,40 @@ def add_notify_sub(
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
     now = int(time.time())
+    thread = thread_id or ""
+    profile = notifier_profile or ""
     with write_txn(conn):
+        pending = conn.execute(
+            "SELECT pending_completion_event_id FROM tasks WHERE id = ? "
+            "AND status = 'review' AND pending_completion_event_id IS NOT NULL",
+            (task_id,),
+        ).fetchone()
+        if pending:
+            event_id = int(pending["pending_completion_event_id"])
+            route = conn.execute(
+                "SELECT platform, chat_id, thread_id, notifier_profile "
+                "FROM completion_deliveries WHERE event_id = ? AND state = 'pending'",
+                (event_id,),
+            ).fetchone()
+            requested = (platform, chat_id, thread, profile)
+            if route and route["platform"] is not None:
+                if tuple(route) != requested:
+                    raise ValueError("pending completion delivery is already bound to another route")
+            else:
+                updated = conn.execute(
+                    "UPDATE completion_deliveries SET platform = ?, chat_id = ?, thread_id = ?, "
+                    "notifier_profile = ? WHERE event_id = ? AND state = 'pending' AND platform IS NULL",
+                    (*requested, event_id),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("pending completion delivery is already bound to another route")
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (task_id, platform, chat_id, thread, user_id, notifier_profile, now),
         )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by

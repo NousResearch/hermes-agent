@@ -441,6 +441,31 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
+                            if (
+                                kind == "completed"
+                                and platform_str == "slack"
+                                and int(sub.get("pending_event_id") or 0) == ev.id
+                                and hasattr(adapter, "find_message_by_client_msg_id")
+                            ):
+                                recovered = await adapter.find_message_by_client_msg_id(
+                                    sub["chat_id"],
+                                    metadata["client_msg_id"],
+                                    thread_ts=sub.get("thread_id") or None,
+                                )
+                                if recovered:
+                                    completion_finalized = await asyncio.to_thread(
+                                        self._kanban_ack_completion,
+                                        sub,
+                                        ev.id,
+                                        recovered,
+                                        board_slug,
+                                    )
+                                    if not completion_finalized:
+                                        raise RuntimeError(
+                                            "recovered completion receipt was not acknowledged"
+                                        )
+                                    receipt_id, receipt_event_id = recovered, ev.id
+                                    continue
                             send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )

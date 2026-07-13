@@ -437,6 +437,7 @@ async def test_stop_during_sentinel_force_cleans_session():
         assert session_key not in runner._running_agents, (
             "/stop must remove sentinel so the session is unlocked"
         )
+        runner.session_store.suspend_session.assert_not_called()
 
         # Should NOT be queued as pending
         adapter = runner.adapters[Platform.TELEGRAM]
@@ -487,6 +488,7 @@ async def test_stop_hard_kills_running_agent():
     # Must return a confirmation
     assert result is not None
     assert "stopped" in result.lower()
+    runner.session_store.suspend_session.assert_not_called()
 
 
 # ------------------------------------------------------------------
@@ -518,6 +520,28 @@ async def test_stop_clears_pending_messages():
     # Pending messages must be cleared
     assert session_key not in runner._pending_messages
     adapter.get_pending_message.assert_called_once_with(session_key)
+    runner.session_store.suspend_session.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# Test 6d: /stop with no active run preserves the session
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_stop_with_no_active_agent_does_not_suspend_session():
+    """The no-op /stop path must not hide the current conversation."""
+    runner = _make_runner()
+    stop_event = _make_event(text="/stop")
+    session_key = build_session_key(stop_event.source)
+    runner.session_store.get_or_create_session.return_value = MagicMock(
+        session_key=session_key,
+    )
+
+    result = await runner._handle_message(stop_event)
+
+    result_text = str(getattr(result, "text", result)).lower().replace(" ", "_")
+    assert "no_active" in result_text
+    runner.session_store.get_or_create_session.assert_called()
+    runner.session_store.suspend_session.assert_not_called()
 
 
 # ------------------------------------------------------------------

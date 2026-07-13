@@ -1,0 +1,11 @@
+name: bale
+label: Bale Platform Adapter
+version: 1.0.0
+author: Nous Research
+description: |
+  Telegram-compatible platform adapter for Bale.
+  Bale exposes the Telegram Bot API at https://tapi.bale.ai.
+icon: "📱"
+links:
+  docs: https://bale.ai
+  repository: https://github.com/NousResearch/hermes-agent

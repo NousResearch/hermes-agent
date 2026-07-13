@@ -688,6 +688,17 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
+    try:
+        from hermes_cli.mission_control.dispatch_gate import build_standard_subagent_output_contract
+
+        output_contract = build_standard_subagent_output_contract()
+    except Exception:
+        output_contract = (
+            "## Subagent handoff contract\n"
+            "Return final sections: Status, Result, Evidence, Limits / uncertainties, Risks, Recommended next action. "
+            "If you cannot provide evidence, mark the result uncertain or blocked."
+        )
+    parts.append(f"\n{output_contract}")
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"

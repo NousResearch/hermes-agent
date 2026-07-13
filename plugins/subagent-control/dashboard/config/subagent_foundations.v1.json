@@ -1,0 +1,138 @@
+{
+  "version": "1.0",
+  "name": "Subagent Foundations v1",
+  "purpose": "Low-noise capability matrix, review rubrics, and handoff contract for CO2Farm specialist subagents.",
+  "profiles": {
+    "agronomic": {
+      "does": "Valuta fattibilità agricola, specie, attecchimento, stagionalità, gestione sito, rischi operativi e dati di campo necessari.",
+      "when_to_use": ["scelte colturali o gestione sito", "rischi agronomici", "verifica coerenza tra pratica agricola e metodologia carbon/MRV"],
+      "when_not_to_use": ["pareri legali o claim esterni", "pricing carbon credit", "sintesi finale multi-area senza input MRV/carbon"],
+      "expected_output": "Nota agronomica con raccomandazione, vincoli sito-specifici, dati mancanti, rischi e prossime evidenze di campo.",
+      "failure_modes": ["generalizzare senza dati sito", "ignorare stagionalità/attecchimento", "confondere sostenibilità agricola con crediti carbonio verificabili"],
+      "quality_checklist": ["perimetro del sito dichiarato", "assunzioni agronomiche esplicite", "rischi operativi e mitigazioni", "evidenze di campo richieste", "limiti del parere indicati"]
+    },
+    "carbon": {
+      "does": "Analizza integrità carbon-credit: addizionalità, baseline, leakage, permanenza, incertezza, registry e coerenza metodologia/CRCF.",
+      "when_to_use": ["stima o claim su crediti", "scelta metodologia", "verifica assunzioni carbon", "rischio doppio conteggio"],
+      "when_not_to_use": ["business plan senza driver carbon", "testo commerciale finale senza legal/claims", "audit trail documentale puro"],
+      "expected_output": "Valutazione carbon con assunzioni, incertezze, decisioni metodologiche, rischi di integrità e validazioni successive.",
+      "failure_modes": ["presentare crediti futuri come certi", "saltare addizionalità/leakage/permanenza", "non distinguere baseline da scenario progetto"],
+      "quality_checklist": ["metodologia/versione citata", "addizionalità/leakage/permanenza coperti", "incertezza dichiarata", "claim ammessi vs non ammessi separati", "next validation esplicita"]
+    },
+    "claims": {
+      "does": "Formula e sfida comunicazioni prudenti distinguendo claim ammessi, vietati, prematuri e condizionati da evidenza/verifica.",
+      "when_to_use": ["testi commerciali o sito", "claim CO2/crediti/benefici", "risk review green claims", "messaggi verso clienti"],
+      "when_not_to_use": ["calcolo tecnico primario", "parere legale definitivo", "business plan numerico"],
+      "expected_output": "Claim draft con fase d'uso, evidenza richiesta, alternative vietate e wording più sicuro.",
+      "failure_modes": ["greenwashing involontario", "promettere issuance o assorbimenti certi", "omettere condizioni e fonti"],
+      "quality_checklist": ["claim classificati per rischio", "evidenza richiesta indicata", "wording prudente", "external-use gate a Daniele", "alternative vietate annotate"]
+    },
+    "default": {
+      "does": "Orchestra lavoro generale, sintetizza task non specialistiche, prepara handoff e decide quando coinvolgere specialisti.",
+      "when_to_use": ["triage iniziale", "sintesi multi-profilo", "lavori trasversali o dashboard", "quando il profilo specialistico non è evidente"],
+      "when_not_to_use": ["review tecnica profonda se esiste profilo specialistico", "approvazioni esterne al posto di Daniele", "dispatch automatico non richiesto"],
+      "expected_output": "Sintesi unica con raccomandazione, specialisti da coinvolgere, guardrail, stato evidenze e prossima azione.",
+      "failure_modes": ["fare tutto senza escalation specialistica", "creare rumore operativo", "nascondere decisioni aziendali in task tecniche"],
+      "quality_checklist": ["specialista consigliato quando rilevante", "max 3 punti decisionali", "no auto-dispatch", "handoff completo", "output unico leggibile"]
+    },
+    "drafting": {
+      "does": "Produce documenti Word-ready, email, memo e deliverable formali coerenti con audience e stile richiesti.",
+      "when_to_use": ["deliverable .docx", "email/lettere formali", "pulizia narrativa finale", "trasformare evidenze in documento"],
+      "when_not_to_use": ["validazione tecnica primaria", "claim esterni non approvati", "calcoli economici/carbon"],
+      "expected_output": "Documento o testo finale con struttura chiara, note allegati/fonti, punti da far revisionare a Daniele.",
+      "failure_modes": ["lucidare contenuti non verificati", "perdere caveat tecnici", "usare tono non adatto"],
+      "quality_checklist": ["audience dichiarata", "stile formale se richiesto", "fonti/caveat preservati", "revision points evidenti", "nessuna promessa non approvata"]
+    },
+    "evidence": {
+      "does": "Costruisce catena fonti-evidenze: path, allegati, affidabilità, contraddizioni, lacune e audit trail.",
+      "when_to_use": ["submission pack", "fact checking", "evidence gap analysis", "preparazione audit/VVB"],
+      "when_not_to_use": ["scelte commerciali", "wording finale senza claims/legal", "decisioni di rischio aziendale"],
+      "expected_output": "Evidence index con claim/fatto, fonte, posizione, forza probatoria, contraddizioni e missing evidence.",
+      "failure_modes": ["citare fonti non accessibili", "non distinguere fonte primaria/secondaria", "non segnalare evidenza mancante"],
+      "quality_checklist": ["ogni fatto rilevante ha fonte o gap", "path/documento indicato", "forza fonte classificata", "contraddizioni annotate", "next evidence chiara"]
+    },
+    "finance": {
+      "does": "Costruisce e sfida business plan: capex/opex, revenue, sensitività, downside, cash-flow, pricing, margini e bancabilità.",
+      "when_to_use": ["business plan", "pricing o revenue share", "sensitività costi/MRV", "scenari commerciali"],
+      "when_not_to_use": ["claim carbon non validati", "pareri legali", "documentazione MRV tecnica senza impatto economico"],
+      "expected_output": "Nota economica con assunzioni tabellari, scenario base/downside/upside, sensitivity, rischi e decisioni commerciali richieste.",
+      "failure_modes": ["numeri senza fonte", "ignorare costi MRV/VVB/registry", "nascondere timing cash-flow/issuance", "non mostrare downside"],
+      "quality_checklist": ["business plan assumptions esplicite", "capex/opex/revenue separati", "downside case", "sensitivity su credit price e MRV cost", "open decisioni commerciali"]
+    },
+    "legal": {
+      "does": "Valuta rischi contrattuali, responsabilità, claim esterni, greenwashing, doppio conteggio, ownership e approvazioni.",
+      "when_to_use": ["contratti", "claim esterni", "risk review", "ownership/mandati/ruoli", "testi verso clienti"],
+      "when_not_to_use": ["calcolo tecnico primario", "stima economica senza clausole", "sintesi marketing non esterna"],
+      "expected_output": "Risk memo con issue, severità, testo/struttura più sicura, decisione richiesta e blocchi external-use.",
+      "failure_modes": ["trasformare prudenza in parere legale definitivo", "non distinguere bozze da norme vigenti", "omettere approvazione Daniele"],
+      "quality_checklist": ["rischio e severità", "base/evidenza citata", "wording/struttura alternativa", "external-use approval", "punti non legali separati"]
+    },
+    "market": {
+      "does": "Analizza domanda buyer, competitor, pricing caveats, narrativa di mercato e opportunità commerciali.",
+      "when_to_use": ["posizionamento", "buyer/competitor scan", "messaggi commerciali", "market evidence per business plan"],
+      "when_not_to_use": ["validazione legale/claim", "assunzioni carbon tecniche", "prezzi come certezza senza finance"],
+      "expected_output": "Market signal brief con fonti, opportunità/rischi, caveat, risposta consigliata e confidenza.",
+      "failure_modes": ["scambiare marketing di competitor per proof", "prezzi non comparabili", "rumore senza decisione"],
+      "quality_checklist": ["fonti e data", "comparabilità dichiarata", "opportunità/rischio", "implicazione per CO2Farm", "decisione o no-action"]
+    },
+    "mrv": {
+      "does": "Disegna requisiti MRV: baseline, dati, misure, frequenza, incertezza, audit trail, verificabilità e VVB readiness.",
+      "when_to_use": ["piano monitoraggio", "data requirements", "auditability", "incertezza", "coerenza metodologia-progetto"],
+      "when_not_to_use": ["claim commerciali finali", "business model", "pareri legali"],
+      "expected_output": "MRV gap/plan con dati richiesti/disponibili, rischio verificabilità, incertezza, owner e prossima misura.",
+      "failure_modes": ["misure non auditabili", "baseline indefinita", "non dichiarare incertezza", "non collegare dati a metodologia"],
+      "quality_checklist": ["boundary/baseline", "dati disponibili e mancanti", "frequenza/owner", "audit trail", "uncertainty e next measurement"]
+    },
+    "ops": {
+      "does": "Trasforma decisioni in workpack operativi: owner, dipendenze, checklist, blocchi, sequenza e verifica.",
+      "when_to_use": ["creare task operative", "sbloccare dipendenze", "preparare handoff", "coordinare deliverable multi-step"],
+      "when_not_to_use": ["analisi specialistica profonda", "approvare output esterni", "dispatch automatico non confermato"],
+      "expected_output": "Piano operativo breve con step, owner/assignee, prerequisiti, blocker, verifica e next action.",
+      "failure_modes": ["task troppo generiche", "dipendenze nascoste", "mancata verifica", "rumore di micro-task"],
+      "quality_checklist": ["owner/assignee", "criterio done", "dipendenze", "blocker espliciti", "verifica e no_auto_dispatch"]
+    },
+    "regulatory": {
+      "does": "Monitora e interpreta fonti istituzionali, CRCF, standard, registry e green claims distinguendo vigente/draft/guidance.",
+      "when_to_use": ["norme o standard", "CRCF/registry updates", "status regolatorio", "impatto su roadmap"],
+      "when_not_to_use": ["parere legale definitivo", "claim commerciale finale", "stima economica"],
+      "expected_output": "Regulatory brief con fonte primaria, status, impatto, urgenza, raccomandazione e confidenza.",
+      "failure_modes": ["confondere draft con obbligo vigente", "fonti vecchie/non ufficiali", "non indicare impatto pratico"],
+      "quality_checklist": ["fonte primaria e data", "status vigente/draft/guidance", "impatto CO2Farm", "urgenza", "watch item successivo"]
+    },
+    "reliability": {
+      "does": "Presidia stabilità tecnica di Hermes, dashboard, Kanban, cron, gateway, backup, osservabilità e recovery senza esporre segreti.",
+      "when_to_use": ["bug dashboard/Kanban", "watchdog/proxy", "test/regressioni", "operational reliability"],
+      "when_not_to_use": ["analisi CO2Farm specialistica", "decisioni commerciali", "azioni distruttive senza conferma"],
+      "expected_output": "Reliability note con issue, impatto, fix, test reali, rollback/recovery e segreti esclusi.",
+      "failure_modes": ["interrompere sessioni attive", "stampare token/log sensibili", "non verificare live", "confondere osservabilità con controllo mutativo"],
+      "quality_checklist": ["scope tecnico chiaro", "test focused e regressione", "no secrets", "rollback/restart sicuro", "verifica live se applicabile"]
+    }
+  },
+  "review_rubrics": {
+    "agronomic": {"focus": ["site fit", "seasonality", "field evidence", "operational risk"], "minimum_pass": "site assumptions and field-evidence gaps are explicit", "external_use_gate": "daniele_review_required"},
+    "carbon": {"focus": ["additionality", "baseline", "leakage", "permanence", "uncertainty", "claim limits"], "minimum_pass": "carbon assumptions and uncertainty are visible and no future credits are treated as certain", "external_use_gate": "daniele_review_required"},
+    "claims": {"focus": ["wording prudence", "evidence required", "forbidden alternatives", "phase of use"], "minimum_pass": "external claims are classified as allowed/conditional/forbidden with evidence gate", "external_use_gate": "daniele_review_required"},
+    "default": {"focus": ["triage quality", "single synthesis", "specialist escalation", "low-noise decision routing"], "minimum_pass": "max-three decision points and next specialist/action are clear", "external_use_gate": "daniele_review_required"},
+    "drafting": {"focus": ["audience", "structure", "tone", "source/caveat preservation"], "minimum_pass": "document is Word-ready and preserves technical/legal caveats", "external_use_gate": "daniele_review_required"},
+    "evidence": {"focus": ["source traceability", "source strength", "contradictions", "missing evidence"], "minimum_pass": "decision-changing facts have source or explicit gap", "external_use_gate": "daniele_review_required"},
+    "finance": {"focus": ["assumptions", "capex/opex/revenue", "cash-flow", "downside", "sensitivity"], "minimum_pass": "business-plan assumptions, downside, and MRV/VVB/registry cost sensitivity are visible", "external_use_gate": "daniele_review_required"},
+    "legal": {"focus": ["risk severity", "safer wording", "authority/status", "approval gate"], "minimum_pass": "legal/claims risk is classified and safer alternative is supplied", "external_use_gate": "daniele_review_required"},
+    "market": {"focus": ["source/date", "comparability", "buyer relevance", "decision value"], "minimum_pass": "market signal has source, caveat, and practical CO2Farm implication", "external_use_gate": "daniele_review_required"},
+    "mrv": {"focus": ["boundary", "baseline", "data availability", "auditability", "uncertainty"], "minimum_pass": "MRV output links required data to methodology and audit trail", "external_use_gate": "daniele_review_required"},
+    "ops": {"focus": ["owner", "done criteria", "dependencies", "blockers", "verification"], "minimum_pass": "workpack can be executed without hidden dispatch or hidden dependency", "external_use_gate": "internal_only"},
+    "regulatory": {"focus": ["primary source", "status", "recency", "impact", "watch item"], "minimum_pass": "status is labeled as vigente/draft/guidance and practical impact is clear", "external_use_gate": "daniele_review_required"},
+    "reliability": {"focus": ["scope", "test evidence", "no secrets", "safe restart/recovery", "live verification"], "minimum_pass": "fix or finding is backed by real command/test output and does not expose secrets", "external_use_gate": "internal_only"}
+  },
+  "handoff_contract": {
+    "required_sections": ["summary", "recommendation_or_output", "evidence", "assumptions", "risks_and_failure_modes", "open_questions_for_daniele", "quality_checklist", "next_action"],
+    "required_metadata": ["profile", "task_id", "tenant", "confidence", "context_status", "can_proceed", "sources_or_paths", "tests_or_checks_run"],
+    "question_policy": "Ask Daniele only for decision-changing business choices, missing access/authorization, external-use approval, or unresolved risk appetite. Keep to max 1-3 questions.",
+    "evidence_policy": "Every decision-changing claim must carry a source/path or an explicit evidence gap; no silent assumptions.",
+    "guardrails": {"single_final_output": true, "no_auto_dispatch": true, "no_external_send": true, "daniele_external_review_required": true, "low_noise": true}
+  },
+  "low_noise_display": {
+    "summary_cards_max": 3,
+    "first_view": ["who_to_call", "why", "expected_output", "review_gate"],
+    "details_on_drilldown": ["failure_modes", "full_quality_checklist", "rubric", "handoff_contract"]
+  }
+}

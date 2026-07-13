@@ -155,6 +155,14 @@ class TestChildSystemPrompt(unittest.TestCase):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_prompt_includes_standard_subagent_handoff_contract(self):
+        prompt = _build_child_system_prompt("Analyze sources")
+        self.assertIn("Subagent handoff contract", prompt)
+        self.assertIn("Status`: completed | partial | blocked | uncertain", prompt)
+        self.assertIn("Evidence`", prompt)
+        self.assertIn("Recommended next action", prompt)
+        self.assertIn("not `completed`", prompt)
+
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

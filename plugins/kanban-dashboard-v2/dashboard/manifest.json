@@ -1,0 +1,12 @@
+{
+  "name": "kanban-dashboard-v2",
+  "label": "Mission Control v2",
+  "description": "Parallel Mission Control v2 cockpit: Inbox, Workbench, Documents, Teams, and System while legacy Mission Control remains available.",
+  "icon": "Database",
+  "version": "0.1.2",
+  "entry": "dist/index.js",
+  "tab": {
+    "path": "/kanban-mission-v2",
+    "position": "after:kanban-mission"
+  }
+}

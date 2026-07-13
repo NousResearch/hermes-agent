@@ -307,6 +307,145 @@ function appendProfileParam(url: string, profile?: string): string {
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getTeamProposals: () => fetchJSON<TeamProposalsResponse>("/api/team-proposals"),
+  getKanbanBoard: (board: string, includeArchived = false) =>
+    fetchJSON<KanbanBoardResponse>(
+      `/api/plugins/kanban/board?board=${encodeURIComponent(board)}&include_archived=${String(includeArchived)}`,
+    ),
+  getKanbanTask: (id: string, board = "co2farm-chief") =>
+    fetchJSON<KanbanTaskDetailResponse>(`/api/plugins/kanban/tasks/${encodeURIComponent(id)}?board=${encodeURIComponent(board)}`),
+  commentKanbanTask: (id: string, body: string, board: string, author = "command-center") =>
+    fetchJSON<{ ok: boolean }>(`/api/plugins/kanban/tasks/${encodeURIComponent(id)}/comments?board=${encodeURIComponent(board)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body, author }),
+    }),
+  updateKanbanTask: (id: string, payload: { status?: string; block_reason?: string; title?: string; body?: string }, board: string) =>
+    fetchJSON<{ task: KanbanTask | null }>(`/api/plugins/kanban/tasks/${encodeURIComponent(id)}?board=${encodeURIComponent(board)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  getRadarHermes: () => fetchJSON<RadarHermesSnapshot>("/api/team-proposals/radar-hermes"),
+  upsertTeamProposal: (proposal: TeamProposalUpsertRequest) =>
+    fetchJSON<TeamProposalUpsertResponse>("/api/team-proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(proposal),
+    }),
+  updateTeamProposal: (id: string, proposal: TeamProposalUpdateRequest) =>
+    fetchJSON<TeamProposalUpsertResponse>(`/api/team-proposals/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(proposal),
+    }),
+  submitSubagentProposal: (proposal: TeamProposalUpsertRequest) =>
+    fetchJSON<TeamProposalUpsertResponse>("/api/team-proposals/subagent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(proposal),
+    }),
+  reviewTeamProposalAsChief: (id: string, action: "shortlist" | "defer" | "reject", note?: string) =>
+    fetchJSON<TeamProposalReviewResponse>(
+      `/api/team-proposals/${encodeURIComponent(id)}/chief-review`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, note }),
+      },
+    ),
+  collectKanbanBlockerProposals: () =>
+    fetchJSON<TeamProposalCollectorResponse>("/api/team-proposals/collectors/kanban-blockers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }),
+  generateAutonomousTeamProposals: (limit = 5, kind: "operative" | "evolution" = "evolution") =>
+    fetchJSON<TeamProposalAutonomousGenerateResponse>("/api/team-proposals/autonomous/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit, kind }),
+    }),
+  getTeamProposalTaskPreview: (id: string) =>
+    fetchJSON<TeamProposalTaskPreviewResponse>(
+      `/api/team-proposals/${encodeURIComponent(id)}/task-preview`,
+    ),
+  getTeamProposalPlanPreview: (id: string) =>
+    fetchJSON<TeamProposalPlanPreviewResponse>(
+      `/api/team-proposals/${encodeURIComponent(id)}/plan-preview`,
+    ),
+  approveTeamProposalMinStep: (
+    id: string,
+    approval: TeamProposalApproveMinStepRequest,
+  ) =>
+    fetchJSON<TeamProposalApproveMinStepResponse>(
+      `/api/team-proposals/${encodeURIComponent(id)}/approve-min-step`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(approval),
+      },
+    ),
+  convertTeamProposalToPlan: (id: string, confirmed_preview_hash: string, board?: string) =>
+    fetchJSON<TeamProposalPlanConvertResponse>(
+      `/api/team-proposals/${encodeURIComponent(id)}/convert-to-plan`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ board, confirmed_preview_hash }),
+      },
+    ),
+  convertTeamProposalToTask: (id: string, confirmed_preview_hash: string, board?: string) =>
+    fetchJSON<TeamProposalConvertResponse>(
+      `/api/team-proposals/${encodeURIComponent(id)}/convert-to-task`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ board, confirmed_preview_hash }),
+      },
+    ),
+  setTeamProposalStatus: (id: string, status: TeamProposalStatus) =>
+    fetchJSON<TeamProposalStatusResponse>(
+      `/api/team-proposals/${encodeURIComponent(id)}/status`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      },
+    ),
+  getRemoteBrowserStatus: () => fetchJSON<RemoteBrowserStatus>("/api/remote-browser/status"),
+  openRemoteBrowser: (url: string) =>
+    fetchJSON<RemoteBrowserActionResponse>("/api/remote-browser/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    }),
+  getRemoteBrowserScreenshot: () =>
+    fetchJSON<RemoteBrowserScreenshotResponse>("/api/remote-browser/screenshot"),
+  clickRemoteBrowser: (x: number, y: number) =>
+    fetchJSON<RemoteBrowserActionResponse>("/api/remote-browser/click", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x: Math.round(x), y: Math.round(y) }),
+    }),
+  typeRemoteBrowser: (text: string) =>
+    fetchJSON<RemoteBrowserActionResponse>("/api/remote-browser/type", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }),
+  pressRemoteBrowserKey: (key: string) =>
+    fetchJSON<RemoteBrowserActionResponse>("/api/remote-browser/key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    }),
+  scrollRemoteBrowser: (dy: number) =>
+    fetchJSON<RemoteBrowserActionResponse>("/api/remote-browser/scroll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dy: Math.round(dy) }),
+    }),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1298,6 +1437,873 @@ export interface ActionResponse {
   update_command?: string;
 }
 
+export type TeamProposalStatus =
+  | "proposta"
+  | "raccomandata"
+  | "approvata"
+  | "standby"
+  | "parcheggiata"
+  | "scartata"
+  | "trasformata_in_task"
+  | "signal_detected"
+  | "interpreting"
+  | "challenging"
+  | "synthesized"
+  | "needs_reliability_check"
+  | "ready_for_gate"
+  | "approved_min_step"
+  | "blocked_by_daniele"
+  | "parked"
+  | "rejected"
+  | "converted_to_kanban"
+  | "archived";
+
+
+export interface KanbanTask {
+  id: string;
+  title: string;
+  body?: string | null;
+  status: string;
+  assignee?: string | null;
+  priority?: number | null;
+  tenant?: string | null;
+  created_at?: number | null;
+  started_at?: number | null;
+  completed_at?: number | null;
+  latest_summary?: string | null;
+  comment_count?: number;
+  link_counts?: { parents: number; children: number };
+  progress?: { done: number; total: number } | null;
+}
+
+export interface KanbanBoardResponse {
+  columns: Array<{ name: string; tasks: KanbanTask[] }>;
+  tenants: string[];
+  assignees: string[];
+  latest_event_id: number;
+  now: number;
+}
+
+export interface KanbanTaskDetailResponse {
+  task: {
+    id: string;
+    title: string;
+    body?: string | null;
+    assignee?: string | null;
+    status: string;
+    priority?: number | null;
+    tenant?: string | null;
+    workspace_path?: string | null;
+    latest_summary?: string | null;
+    result?: string | null;
+    created_at?: number | null;
+    started_at?: number | null;
+    completed_at?: number | null;
+  };
+  comments: Array<{ id: number; task_id: string; author: string; body: string; created_at: number }>;
+  events: Array<{ id: number; task_id: string; kind: string; payload?: unknown; created_at: number; run_id?: number | null }>;
+  runs: Array<{ id: number; task_id: string; profile: string; status: string; outcome?: string | null; summary?: string | null; error?: string | null; started_at?: number | null; ended_at?: number | null }>;
+  attachments?: Array<{ id: number; filename: string; stored_path?: string; created_at: number }>;
+}
+
+export type RadarHermesLevel = "high" | "medium" | "low";
+export type RadarHermesApprovalState =
+  | "candidate"
+  | "needs_review"
+  | "approved_for_spec"
+  | "approved_for_kanban"
+  | "parked"
+  | "rejected"
+  | "done";
+
+export interface RadarHermesProposal {
+  id: string;
+  source: {
+    kind: string;
+    source_id: string;
+    path: string;
+    source_key?: string | null;
+    excerpt: string;
+  };
+  title: string;
+  rationale: string;
+  evidence: Array<{ type: string; ref: string; summary: string; confidence: RadarHermesLevel }>;
+  priority: {
+    label: "P0" | "P1" | "P2" | "P3";
+    score: number;
+    impact: RadarHermesLevel;
+    effort: RadarHermesLevel;
+    risk: RadarHermesLevel;
+    confidence: RadarHermesLevel;
+  };
+  flags: {
+    controversial: boolean;
+    parkable: boolean;
+    source_gap: boolean;
+    already_done: boolean;
+    requires_review: boolean;
+    no_auto_dispatch: boolean;
+  };
+  suggested_assignee: string;
+  approval_state: RadarHermesApprovalState;
+  approval: {
+    allowed_actions: string[];
+    preview_available: boolean;
+    kanban_creation_available: boolean;
+    requires_explicit_confirmation: boolean;
+  };
+  ranking: {
+    block: "top" | "controversial" | "parkable";
+    rank: number;
+    score: number;
+    score_breakdown: Record<string, number>;
+  };
+  timestamps: {
+    created_at?: string | null;
+    updated_at?: string | null;
+    last_signal_at?: string | null;
+    source_observed_at: string;
+  };
+  governance: {
+    read_only_surface: boolean;
+    no_cron_created: boolean;
+    no_external_send: boolean;
+    no_subagent_spawned: boolean;
+    kanban_mutation_requires_approval: boolean;
+  };
+}
+
+export interface RadarHermesSnapshot {
+  version: "radar_hermes.v1";
+  generated_at: string;
+  source_summary: {
+    sources_read: string[];
+    proposals_seen: number;
+    proposals_returned: number;
+    side_effects: {
+      kanban_mutated: boolean;
+      cron_created: boolean;
+      external_send: boolean;
+      subagent_spawned: boolean;
+    };
+  };
+  blocks: {
+    top: RadarHermesProposal[];
+    controversial: RadarHermesProposal | null;
+    parkable: RadarHermesProposal | null;
+  };
+  controversy_state: {
+    status: "has_controversy" | "insufficient_controversy";
+    title: string;
+    message: string;
+  };
+  approval_policy: {
+    read_only_first: boolean;
+    requires_explicit_approval_for_kanban: boolean;
+    preview_does_not_dispatch: boolean;
+    create_children_does_not_force_dispatch: boolean;
+  };
+  empty_state?: { title: string; message: string } | null;
+}
+
+export type AgentGrowthFieldState = "present" | "missing" | "unknown" | "redacted";
+export type AgentGrowthConfidence = "high" | "medium" | "low";
+export type AgentGrowthReadinessBand = "emerging" | "operational" | "trusted_for_preview" | "insufficient_data";
+
+export interface AgentGrowthProvenanceRef {
+  kind: string;
+  source_id?: string;
+  path?: string;
+  proposal_id?: string;
+  task_id?: string;
+  run_id?: number;
+  field_path?: string;
+  observed_at?: string;
+}
+
+export interface AgentGrowthField<T = unknown> {
+  state: AgentGrowthFieldState;
+  value?: T;
+  display: string;
+  missing_reason?: string;
+  confidence: AgentGrowthConfidence;
+  provenance: AgentGrowthProvenanceRef[];
+}
+
+export interface AgentGrowthProfile {
+  schema_version: "agent_growth.v1";
+  generated_at: string;
+  agent: {
+    agent_id: string;
+    display_name: string;
+    logical_role?: string | null;
+    aliases: string[];
+    source_ids: string[];
+    mapping_confidence: AgentGrowthConfidence;
+    mapping_notes: string[];
+    provenance: AgentGrowthProvenanceRef[];
+  };
+  role_foundation: AgentGrowthField;
+  last_observed_signal: AgentGrowthField;
+  own_proposal: AgentGrowthField;
+  challenges_received: AgentGrowthField<Array<{ critic: string; challenge: string; status: string; veto_risk?: string }>>;
+  learning_notes: AgentGrowthField<Array<{ note: string; trigger: string; tone: string; linked_quality_check?: string }>>;
+  next_role_development: AgentGrowthField<{ recommendation: string; micro_capability: string; suggested_exercise: string; approval_gate: string; forbidden_actions: string[] }>;
+  scoring: {
+    state: "computed" | "not_computed";
+    growth_score?: number | null;
+    readiness_band: AgentGrowthReadinessBand;
+    confidence: AgentGrowthConfidence;
+    components: Array<{ key: string; points: number; max_points: number; state: string; reason_code: string; display: string; provenance: AgentGrowthProvenanceRef[] }>;
+    explainers: string[];
+    non_punitive_notes: string[];
+    provenance: AgentGrowthProvenanceRef[];
+  };
+  privacy: {
+    pii_detected: boolean;
+    redactions_applied: string[];
+    max_raw_chars_per_evidence: number;
+    raw_logs_included: false;
+    secrets_included: false;
+  };
+  invariants: {
+    read_only: true;
+    approval_gated: true;
+    no_cron_created: true;
+    no_external_send: true;
+    no_auto_spawn: true;
+    no_auto_dispatch: true;
+    no_leaderboard: true;
+  };
+  growth_score: number | null;
+  readiness: "high" | "medium" | "low";
+  strengths: string[];
+  learning_note_summaries?: string[];
+  challenge_notes: string[];
+  needs_context: string[];
+  latest_proposal?: string | null;
+  next_growth_step: string;
+}
+
+export interface TeamSpecialist {
+  id: string;
+  name: string;
+  logical_role?: string | null;
+  legacy_id?: string | null;
+  aliases?: string[];
+  profile_verified?: boolean;
+  mapping_status?: string;
+  mapping_reason?: string;
+  status: "active" | "watching" | "dormant";
+  mission: string;
+  observes: string;
+  currentSignal: string;
+  nextProposal: string;
+  confidence: "high" | "medium" | "low";
+  metrics?: {
+    proposal_count: number;
+    approved_count: number;
+    rejected_count: number;
+    transformed_count: number;
+    trust_score: number;
+  };
+  growth_profile?: AgentGrowthProfile;
+}
+
+export interface TeamProposalViewpoint {
+  actor: string;
+  rationale: string;
+  method?: "rules_based_v1" | "rules_based_v2" | string;
+  role?: "supporter" | "critic" | string;
+  profile?: string;
+  agent?: string;
+  case_for?: string;
+  case_against?: string;
+  failure_mode?: string;
+  mitigation?: string;
+}
+
+export interface TeamProposalGate {
+  requires_daniele: boolean;
+  decision_needed: string;
+  safe_actions_without_approval: string[];
+  forbidden_without_approval: string[];
+  approved_by?: string | null;
+  approved_at?: string | null;
+  state?: string;
+  no_auto_dispatch?: boolean;
+}
+
+export interface TeamProposalSuggestedProfile {
+  profile: string;
+  exists_verified: boolean;
+  reason: string;
+  role: string;
+  confidence: "low" | "medium" | "high" | string;
+}
+
+export interface TeamProposalSignal {
+  summary: string;
+  source_type?: string;
+  source_ref?: string;
+  observed_at?: string;
+}
+
+export interface TeamProposalInterpretation {
+  hypothesis: string;
+  expected_benefit?: string;
+  effort?: string;
+  risk?: string;
+}
+
+export interface TeamProposalChiefSynthesis {
+  recommendation?: "do_now" | "prepare" | "park" | "reject" | string;
+  synthesis: string;
+  decision_needed?: string;
+  acceptance?: string;
+  unresolved_questions?: string[];
+}
+
+export interface TeamProposalEvidenceContract {
+  refs: string[];
+  excerpts?: string[];
+  confidence?: string;
+}
+
+export interface TeamProposalConversion {
+  plan_task_id?: string | null;
+  child_task_ids?: string[];
+  created_by?: string | null;
+  board?: string | null;
+  initial_status?: "blocked" | "ready" | string | null;
+  converted_at?: string | null;
+}
+
+export interface TeamProposal {
+  id: string;
+  title: string;
+  kind: "operative" | "evolution";
+  origin: string;
+  category?: string | null;
+  priority: "P0" | "P1" | "P2" | "P3";
+  benefit: "high" | "medium" | "low";
+  effort: "low" | "medium" | "high";
+  risk: "low" | "medium" | "high";
+  confidence: "high" | "medium" | "low";
+  status: TeamProposalStatus;
+  whyNow: string;
+  evidence?: string | null;
+  acceptance: string;
+  recommendation: "do_now" | "prepare" | "park" | "reject";
+  status_updated_at?: string;
+  task_id?: string;
+  plan_task_id?: string;
+  plan_child_task_ids?: string[];
+  transformed_at?: string;
+  kanban_plan_status?: "active" | "closed" | string;
+  kanban_task_statuses?: Record<string, string>;
+  kanban_active_task_ids?: string[];
+  kanban_synced_at?: string;
+  kanban_closed_at?: string;
+  auto_refill?: boolean;
+  auto_refill_reason?: string;
+  source_key?: string | null;
+  source_agent?: string | null;
+  source_agent_legacy?: string | null;
+  source_agent_status?: "verified_profile" | "legacy_missing" | "normalized_from_legacy_persona" | string;
+  suggested_next_action?: string | null;
+  dedupe_key?: string;
+  signals_count?: number;
+  chief_review_score?: number;
+  chief_review_status?: "pending" | "shortlisted" | "deferred" | "rejected";
+  chief_review_reason?: string;
+  chief_reviewed_at?: string;
+  canonical_status?: TeamProposalStatus;
+  approval_required_before_actions?: boolean;
+  gate_status?: TeamProposalGateStatus;
+  source_agent_details?: TeamProposalSourceAgentDetails;
+  audit_log?: TeamProposalAuditEventV3[];
+  formulated_at?: string;
+  created_at?: string;
+  updated_at?: string;
+  last_signal_at?: string;
+  autonomy_level?: string;
+  autonomy_gate?: string;
+  record_type?: "autonomous_proposal_candidate" | string;
+  schema_version?: "autonomous_proposal.v1" | "autonomous_proposal.v2" | "autonomous_proposal.v3" | string;
+  signal?: string | TeamProposalSignal;
+  source_signal?: string;
+  interpretation?: string | TeamProposalInterpretation;
+  supporter?: TeamProposalViewpoint;
+  critic?: TeamProposalViewpoint;
+  supporter_view?: TeamProposalViewpoint;
+  critic_view?: TeamProposalViewpoint;
+  chief_synthesis?: string | TeamProposalChiefSynthesis;
+  gate_state?: "review_required" | "needs_revision" | "parked" | string;
+  gate?: TeamProposalGate;
+  suggested_profiles?: TeamProposalSuggestedProfile[];
+  evidence_refs?: string[];
+  evidence_contract?: TeamProposalEvidenceContract;
+  conversion?: TeamProposalConversion;
+  engine?: {
+    name: string;
+    version: string;
+    method: "rules_based_v1" | "rules_based_v2" | string;
+    generated_at?: string;
+    limits?: string[];
+  };
+  external_send?: boolean;
+  auto_spawned?: boolean;
+  cron_created?: boolean;
+  no_auto_dispatch?: boolean;
+  challenge?: {
+    supporter: string;
+    critic: string;
+    support: string;
+    challenge: string;
+    chief_synthesis: string;
+    veto_risk?: string;
+  };
+}
+
+export type TeamProposalApprovedActionType = "task" | "plan" | "spec";
+
+export interface TeamProposalGateStatus {
+  approval_required_before_actions: true;
+  ready_for_daniele: boolean;
+  status: "pending" | "approved" | "blocked" | "parked" | "rejected" | "converted" | string;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  approved_action?: {
+    type: TeamProposalApprovedActionType;
+    board?: string | null;
+    max_tasks?: number;
+    assignees?: Array<string | null | undefined>;
+    initial_status?: "blocked";
+  } | null;
+  approved_preview_hash?: string | null;
+  allowed_next_actions: string[];
+  forbidden_without_approval: string[];
+}
+
+export interface TeamProposalSourceAgentDetails {
+  profile?: string | null;
+  profile_verified: boolean;
+  logical_role?: string | null;
+  legacy_persona?: string | null;
+  mapping_status: "verified_profile" | "mapped_from_logical_role" | "missing_blocked" | string;
+  mapping_reason?: string | null;
+}
+
+export interface TeamProposalAuditEventV3 {
+  at: string;
+  actor_type?: "system" | "profile" | "ui" | "api" | string;
+  actor_id?: string;
+  event: string;
+  detail?: string | null;
+  before_status?: string | null;
+  after_status?: string | null;
+  side_effects?: {
+    kanban_created?: boolean;
+    tasks_created_count?: number;
+    initial_status?: string | null;
+    dispatch_started?: boolean;
+    cron_created?: boolean;
+    external_send?: boolean;
+  };
+  request_id?: string | null;
+  idempotency_key?: string | null;
+}
+
+export interface TeamProposalUpsertRequest {
+  title: string;
+  kind: "operative" | "evolution";
+  origin?: string;
+  category?: string;
+  whyNow?: string;
+  evidence?: string;
+  benefit?: "high" | "medium" | "low";
+  effort?: "high" | "medium" | "low";
+  risk?: "high" | "medium" | "low";
+  priority?: "P0" | "P1" | "P2" | "P3";
+  confidence?: "high" | "medium" | "low";
+  recommendation?: "do_now" | "prepare" | "park" | "reject";
+  acceptance?: string;
+  source_key?: string;
+  source_agent?: string;
+  suggested_next_action?: string;
+  signal?: string | Record<string, unknown>;
+  source_signal?: string | Record<string, unknown>;
+  interpretation?: string | Record<string, unknown>;
+  supporter?: TeamProposalViewpoint;
+  critic?: TeamProposalViewpoint;
+  supporter_view?: TeamProposalViewpoint;
+  critic_view?: TeamProposalViewpoint;
+  chief_synthesis?: string;
+  gate?: Partial<TeamProposalGate>;
+  gate_state?: string;
+  suggested_profiles?: TeamProposalSuggestedProfile[];
+  evidence_refs?: string[];
+  canonical_status?: TeamProposalStatus;
+  gate_status?: TeamProposalGateStatus;
+  source_agent_details?: TeamProposalSourceAgentDetails;
+  approval_required_before_actions?: boolean;
+}
+
+export type TeamProposalUpdateRequest = Partial<Pick<TeamProposalUpsertRequest,
+  | "title"
+  | "whyNow"
+  | "evidence"
+  | "benefit"
+  | "effort"
+  | "risk"
+  | "priority"
+  | "confidence"
+  | "recommendation"
+  | "acceptance"
+  | "suggested_next_action"
+  | "signal"
+  | "source_signal"
+  | "interpretation"
+  | "supporter"
+  | "critic"
+  | "supporter_view"
+  | "critic_view"
+  | "chief_synthesis"
+  | "gate"
+  | "gate_state"
+  | "suggested_profiles"
+  | "evidence_refs"
+  | "canonical_status"
+  | "gate_status"
+  | "source_agent_details"
+  | "approval_required_before_actions"
+>>;
+
+export interface TeamProposalTaskPreview {
+  title: string;
+  body: string;
+  priority: number;
+  assignee: string | null;
+  tenant: string;
+  workspace_kind: string;
+  idempotency_key: string;
+  initial_status: "ready" | "blocked";
+}
+
+export interface TeamProposalPlanPreview {
+  title: string;
+  body: string;
+  priority: number;
+  tenant: string;
+  workspace_kind: string;
+  idempotency_key: string;
+  initial_status: "ready" | "blocked";
+  assignee: string | null;
+  assignment_strategy?: string;
+  available_profiles?: string[];
+  tasks: Array<{
+    title: string;
+    body: string;
+    priority: number;
+    tenant: string;
+    workspace_kind: string;
+    idempotency_key: string;
+    initial_status: "ready" | "blocked";
+    assignee: string | null;
+    assignment_reason?: string;
+    candidate_profiles?: string[];
+  }>;
+}
+
+export interface TeamProposalsSource {
+  kind: "dashboard_registry" | string;
+  label: string;
+  profile: string;
+  tenant: string;
+  freshness: "fresh" | "stale" | "missing" | "error" | string;
+}
+
+export interface TeamProposalsSafety {
+  mode: "proposal_review" | string;
+  no_auto_dispatch: boolean;
+  preview_read_only: boolean;
+  conversion_requires_confirmation: boolean;
+  conversion_initial_status: "ready" | "blocked" | string;
+}
+
+export interface TeamConstitutionContract {
+  team: string;
+  lead: string;
+  mission: string;
+  north_star: string;
+  must_not: string[];
+  cycle_start_reads: string[];
+  prompt_sources: string[];
+  handoff: string;
+  mode: string;
+}
+
+export interface TeamProposalsResponse {
+  version: number;
+  updated_at?: string;
+  source?: TeamProposalsSource;
+  safety?: TeamProposalsSafety;
+  team_constitutions?: {
+    operative?: TeamConstitutionContract;
+    evolution?: TeamConstitutionContract;
+  };
+  specialists: TeamSpecialist[];
+  proposals: TeamProposal[];
+  chief_review?: {
+    queue: TeamProposal[];
+    summary: string;
+  };
+  strategic_review?: TeamProposalStrategicReview;
+  team_pulse?: TeamPulseSummary;
+  team_pulses?: {
+    operative: TeamPulseSummary;
+    evolution: TeamPulseSummary;
+  };
+}
+
+export interface TeamPulseSummary {
+  summary: string;
+  kind?: "operative" | "evolution" | null;
+  last_run_at?: string | null;
+  last_cycle?: TeamPulseCycle | null;
+  visibility_state?: "fresh" | "not_recorded" | string;
+  active_count: number;
+  autonomous_count: number;
+  challenged_count: number;
+  controversial_count: number;
+  top_autonomous: TeamProposal[];
+  mature_proposals?: TeamProposal[];
+  standby_proposals?: TeamProposal[];
+  controversial: TeamProposal[];
+  controversy_lane?: TeamPulseControversyLane;
+  guardrails: {
+    external_send: boolean;
+    auto_spawned: boolean;
+    cron_created: boolean;
+    approval_required: boolean;
+  };
+}
+
+export interface TeamPulseCycle {
+  kind: "operative" | "evolution" | string;
+  cycle_type: string;
+  ran_at: string;
+  source: string;
+  active_count: number;
+  mature_count: number;
+  parked_count: number;
+  created_count: number;
+  updated_count: number;
+  summary: string;
+  guardrails: {
+    no_auto_dispatch: boolean;
+    external_send: boolean;
+    auto_spawned: boolean;
+    cron_created: boolean;
+    kanban_mutated: boolean;
+    approval_required: boolean;
+  };
+}
+
+export type TeamPulseControversyStatus =
+  | "has_controversy"
+  | "no_meaningful_controversy"
+  | "insufficient_review_data";
+
+export type TeamPulseControversyRiskLevel =
+  | "L0_none"
+  | "L1_objection"
+  | "L2_material_risk"
+  | "L3_blocking_veto"
+  | "L4_stop_escalate";
+
+export interface TeamPulseSourceRef {
+  kind: "kanban_task" | "run_metadata" | "comment" | "document" | "system_event" | "manual_entry";
+  id: string;
+  url?: string;
+  excerpt?: string;
+}
+
+export interface TeamPulseControversyLane {
+  cycle_id: string;
+  generated_at: string;
+  status: TeamPulseControversyStatus;
+  selection_policy_version: "controversy_lane_v1" | string;
+  items: TeamPulseControversialProposal[];
+  empty_state?: {
+    title: string;
+    message: string;
+    reviewed_proposal_count?: number;
+    review_completeness?: "complete" | "partial" | "unknown";
+  };
+}
+
+export interface TeamPulseControversialProposal {
+  proposal_id: string;
+  proposal_title: string;
+  proposal_summary?: string | null;
+  proposer: TeamPulseActorRef;
+  critic: TeamPulseActorRef;
+  additional_critics?: Array<TeamPulseActorRef & { rationale_summary?: string }>;
+  contested: {
+    type: "claim" | "decision" | "assumption" | "evidence" | "implementation" | "priority" | "other";
+    text: string;
+    source_quote?: string | null;
+    source_ref?: TeamPulseSourceRef;
+  };
+  critic_rationale: {
+    summary: string;
+    details?: string | null;
+    source_refs: TeamPulseSourceRef[];
+  };
+  evidence_gap: {
+    summary: string;
+    required_evidence?: string[];
+    current_evidence_refs?: TeamPulseSourceRef[];
+  };
+  risk: {
+    level: TeamPulseControversyRiskLevel;
+    label: string;
+    rationale: string;
+    domains: Array<"legal" | "claims" | "reliability" | "mrv" | "finance" | "ops" | "market" | "other">;
+    veto_owner?: string | null;
+  };
+  chief_synthesis: {
+    summary: string;
+    decision_state: "unresolved" | "accepted_with_caveats" | "rejected" | "needs_more_evidence" | "deferred";
+    unresolved_decision?: string | null;
+    rationale?: string | null;
+  };
+  recommended_action: {
+    action: "include_in_shortlist" | "include_with_caveat" | "revise_before_shortlist" | "request_evidence" | "route_to_specialist" | "defer" | "reject";
+    owner?: string | null;
+    next_step: string;
+    due_by_cycle?: string;
+  };
+  provenance: {
+    created_from: TeamPulseSourceRef[];
+    last_updated_at: string;
+    confidence: "high" | "medium" | "low";
+    notes?: string;
+  };
+}
+
+export interface TeamPulseActorRef {
+  subagent_id: string;
+  subagent_label: string;
+  source_task_id?: string | null;
+  source_run_id?: string | null;
+}
+
+export interface TeamProposalStrategicReview {
+  summary: string;
+  top_operative: TeamProposal[];
+  top_evolution: TeamProposal[];
+  parked: TeamProposal[];
+  counts: {
+    active: number;
+    operative: number;
+    evolution: number;
+    parked: number;
+    rejected: number;
+  };
+}
+
+export interface TeamProposalStatusResponse {
+  ok: boolean;
+  proposal: TeamProposal;
+}
+
+export interface TeamProposalUpsertResponse {
+  ok: boolean;
+  created: boolean;
+  proposal: TeamProposal;
+}
+
+export interface TeamProposalCollectorResponse {
+  ok: boolean;
+  collector: string;
+  board: string;
+  blocked_count: number;
+  created?: boolean;
+  proposals: TeamProposal[];
+}
+
+export interface TeamProposalAutonomousGenerateResponse {
+  ok: boolean;
+  created: TeamProposal[];
+  updated: TeamProposal[];
+  created_count: number;
+  updated_count: number;
+  team_pulse: TeamPulseSummary;
+}
+
+export interface TeamProposalReviewResponse {
+  ok: boolean;
+  proposal: TeamProposal;
+  chief_review: {
+    queue: TeamProposal[];
+  };
+}
+
+export interface TeamProposalTaskPreviewResponse {
+  proposal_id: string;
+  task: TeamProposalTaskPreview;
+  preview_hash: string;
+}
+
+export interface TeamProposalPlanPreviewResponse {
+  proposal_id: string;
+  plan: TeamProposalPlanPreview;
+  preview_hash: string;
+}
+
+export interface TeamProposalApproveMinStepRequest {
+  action_type: TeamProposalApprovedActionType;
+  confirmed_preview_hash: string;
+  board?: string;
+  approved_by?: string;
+  note?: string;
+}
+
+export interface TeamProposalApproveMinStepResponse {
+  ok: boolean;
+  proposal: TeamProposal;
+  approval: {
+    action_type: TeamProposalApprovedActionType;
+    preview_hash: string;
+    side_effect_after_conversion: string;
+  };
+}
+
+export interface TeamProposalConvertResponse {
+  ok: boolean;
+  proposal: TeamProposal;
+  task: {
+    id: string;
+    title: string;
+    status: string | null;
+  };
+}
+
+export interface TeamProposalPlanConvertResponse {
+  ok: boolean;
+  proposal: TeamProposal;
+  plan: {
+    parent_task_id: string;
+    child_task_ids: string[];
+    title: string;
+    parent_assignee?: string | null;
+    child_assignees?: Array<string | null>;
+  };
+}
+
 export interface DebugShareResponse {
   ok: boolean;
   // label -> paste URL, e.g. { Report: "https://paste.rs/abc", "agent.log": "..." }
@@ -1827,6 +2833,32 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface RemoteBrowserStatus {
+  session: string;
+  available: boolean;
+  connected: boolean;
+  url: string;
+  title: string;
+  error?: string;
+}
+
+export interface RemoteBrowserActionResponse {
+  ok: boolean;
+  data: Record<string, unknown>;
+  error: string;
+  status?: RemoteBrowserStatus;
+}
+
+export interface RemoteBrowserScreenshotResponse {
+  ok: boolean;
+  data: {
+    image_data_url: string;
+    captured_at: number;
+    status: RemoteBrowserStatus;
+  };
+  error: string;
 }
 
 export interface SessionInfo {

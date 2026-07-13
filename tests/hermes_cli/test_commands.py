@@ -113,6 +113,7 @@ class TestResolveCommand:
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("codex_runtime").name == "codex-runtime"
         assert resolve_command("tasks").name == "agents"
+        assert resolve_command("tokens").name == "token-efficiency"
 
     def test_topic_is_gateway_command(self):
         topic = resolve_command("topic")

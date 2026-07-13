@@ -1508,6 +1508,1106 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 401
 
+    # ── Remote browser hand-off ─────────────────────────────────────────
+
+    def test_remote_browser_status_endpoint(self, monkeypatch):
+        from hermes_cli import remote_browser
+
+        monkeypatch.setattr(
+            remote_browser,
+            "status",
+            lambda: {
+                "session": "hermes-dashboard-remote",
+                "available": True,
+                "connected": True,
+                "url": "https://example.com/",
+                "title": "Example Domain",
+            },
+        )
+
+        resp = self.client.get("/api/remote-browser/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["url"] == "https://example.com/"
+
+    def test_remote_browser_open_errors_surface_as_502(self, monkeypatch):
+        from hermes_cli import remote_browser
+
+        monkeypatch.setattr(
+            remote_browser,
+            "open_url",
+            lambda url: {"ok": False, "data": {}, "error": f"cannot open {url}"},
+        )
+
+        resp = self.client.post(
+            "/api/remote-browser/open",
+            json={"url": "https://example.com/"},
+        )
+
+        assert resp.status_code == 502
+        assert "cannot open" in resp.json()["detail"]
+
+    def test_remote_browser_screenshot_endpoint(self, monkeypatch):
+        from hermes_cli import remote_browser
+
+        monkeypatch.setattr(
+            remote_browser,
+            "screenshot",
+            lambda: {
+                "ok": True,
+                "data": {
+                    "image_data_url": "data:image/png;base64,AA==",
+                    "captured_at": 1.0,
+                    "status": {
+                        "session": "s",
+                        "available": True,
+                        "connected": True,
+                        "url": "u",
+                        "title": "t",
+                    },
+                },
+                "error": "",
+            },
+        )
+
+        resp = self.client.get("/api/remote-browser/screenshot")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["image_data_url"].startswith("data:image/png;base64,")
+
+    # ── Team & Proposte governance registry ─────────────────────────────
+
+    def test_team_proposals_seed_and_persist_status(self):
+        from hermes_constants import get_hermes_home
+
+        resp = self.client.get("/api/team-proposals")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["version"] == 1
+        assert any(p["id"] == "team-proposals-page" for p in data["proposals"])
+        # GET is response-only: it may return default seed data without writing
+        # the registry. The explicit status mutation below creates/persists it.
+        assert not (get_hermes_home() / "dashboard" / "team_proposals.json").exists()
+
+        update = self.client.post(
+            "/api/team-proposals/team-proposals-page/status",
+            json={"status": "approvata"},
+        )
+
+        assert update.status_code == 200
+        assert update.json()["proposal"]["status"] == "approvata"
+
+        reread = self.client.get("/api/team-proposals").json()
+        proposal = next(p for p in reread["proposals"] if p["id"] == "team-proposals-page")
+        assert proposal["status"] == "approvata"
+
+    def test_team_proposals_status_payload_exposes_safety_and_source_contract(self):
+        resp = self.client.get("/api/team-proposals")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["version"] == 1
+        assert body["source"] == {
+            "kind": "dashboard_registry",
+            "label": "Team Proposals registry",
+            "profile": "reliability",
+            "tenant": "hermes-evolution",
+            "freshness": "fresh",
+        }
+        assert body["safety"] == {
+            "mode": "proposal_review",
+            "no_auto_dispatch": True,
+            "preview_read_only": True,
+            "conversion_requires_confirmation": True,
+            "conversion_initial_status": "ready",
+        }
+        assert set(body) >= {"specialists", "proposals", "chief_review", "strategic_review", "team_pulses"}
+
+    def test_team_proposals_get_is_read_only_for_existing_registry(self):
+        from hermes_constants import get_hermes_home
+
+        registry = get_hermes_home() / "dashboard" / "team_proposals.json"
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "updated_at": "2026-01-01T00:00:00Z",
+            "specialists": [],
+            "proposals": [
+                {
+                    "id": "legacy-proposal",
+                    "title": "Legacy proposal",
+                    "kind": "evolution",
+                    "status": "proposta",
+                    "status_updated_at": "2026-01-02T03:04:05Z",
+                    "whyNow": "Segnale legacy da normalizzare solo in response.",
+                    "acceptance": "GET non deve riscrivere il file.",
+                }
+            ],
+        }
+        registry.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        before = registry.read_bytes()
+
+        resp = self.client.get("/api/team-proposals")
+
+        assert resp.status_code == 200
+        returned = next(p for p in resp.json()["proposals"] if p["id"] == "legacy-proposal")
+        assert returned["approval_required_before_actions"] is True
+        assert returned["formulated_at"] == "2026-01-02T03:04:05Z"
+        assert registry.read_bytes() == before
+
+    def test_team_proposals_get_tolerates_legacy_audit_list(self):
+        from hermes_constants import get_hermes_home
+
+        registry = get_hermes_home() / "dashboard" / "team_proposals.json"
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        registry.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "specialists": [],
+                    "proposals": [
+                        {
+                            "id": "legacy-audit-list",
+                            "title": "Legacy audit list",
+                            "kind": "evolution",
+                            "status": "proposta",
+                            "record_type": "autonomous_proposal_candidate",
+                            "autonomy_level": "autonomous",
+                            "source_agent": "legacy-missing-profile",
+                            "source_agent_status": "normalized_from_legacy_persona",
+                            "audit": ["legacy-entry"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        resp = self.client.get("/api/team-proposals")
+
+        assert resp.status_code == 200
+        proposal = next(p for p in resp.json()["proposals"] if p["id"] == "legacy-audit-list")
+        assert proposal["audit"]["legacy_audit"] == ["legacy-entry"]
+        assert proposal["audit"]["source_agent_normalization"]["status"] == "normalized_from_legacy_persona"
+
+    def test_team_proposals_rejects_unknown_status(self):
+        resp = self.client.post(
+            "/api/team-proposals/team-proposals-page/status",
+            json={"status": "auto_dispatch"},
+        )
+
+        assert resp.status_code == 400
+
+    def test_team_proposals_status_requires_existing_proposal(self):
+        resp = self.client.post(
+            "/api/team-proposals/missing/status",
+            json={"status": "approvata"},
+        )
+
+        assert resp.status_code == 404
+
+    def test_team_proposals_create_and_upsert_by_source_key(self):
+        payload = {
+            "title": "Watchdog silenzioso Drive",
+            "kind": "evolution",
+            "origin": "chief/manual",
+            "category": "Affidabilità",
+            "whyNow": "Drive token è stato un blocco operativo reale.",
+            "evidence": "TOKEN_REVOKED emerso durante upload documenti.",
+            "benefit": "high",
+            "effort": "low",
+            "risk": "low",
+            "priority": "P2",
+            "acceptance": "Watchdog resta silenzioso quando tutto è sano.",
+            "source_key": "test:drive-watchdog",
+        }
+
+        created = self.client.post("/api/team-proposals", json=payload)
+
+        assert created.status_code == 200
+        body = created.json()
+        assert body["created"] is True
+        proposal_id = body["proposal"]["id"]
+        assert body["proposal"]["priority"] == "P1"  # high/low/low auto-promotes from P2
+        assert body["proposal"]["signals_count"] == 1
+        assert body["proposal"]["formulated_at"] == body["proposal"]["created_at"]
+        formulated_at = body["proposal"]["formulated_at"]
+
+        payload["evidence"] = "Secondo segnale sullo stesso source key."
+        updated = self.client.post("/api/team-proposals", json=payload)
+
+        assert updated.status_code == 200
+        update_body = updated.json()
+        assert update_body["created"] is False
+        assert update_body["proposal"]["id"] == proposal_id
+        assert update_body["proposal"]["signals_count"] == 2
+        assert update_body["proposal"]["evidence"] == "Secondo segnale sullo stesso source key."
+        assert update_body["proposal"]["formulated_at"] == formulated_at
+
+    def test_team_proposals_create_requires_title(self):
+        resp = self.client.post("/api/team-proposals", json={"title": "   "})
+
+        assert resp.status_code == 400
+
+    def test_team_proposals_subagent_channel_requires_agent_and_scores_queue(self):
+        missing = self.client.post("/api/team-proposals/subagent", json={"title": "SOC plan"})
+        assert missing.status_code == 400
+
+        resp = self.client.post(
+            "/api/team-proposals/subagent",
+            json={
+                "title": "Preparare piano SOC post-boundary",
+                "kind": "operative",
+                "source_agent": "mrv-architect",
+                "category": "MRV",
+                "whyNow": "Boundary quasi pronto e SOC è collo di bottiglia.",
+                "evidence": "Subagent MRV segnala campionamento non definito.",
+                "benefit": "high",
+                "effort": "medium",
+                "risk": "low",
+                "priority": "P1",
+                "confidence": "high",
+                "acceptance": "Piano SOC con strati, punti, CoC e lab.",
+                "source_key": "subagent:mrv-architect:soc-plan",
+            },
+        )
+
+        assert resp.status_code == 200
+        proposal = resp.json()["proposal"]
+        assert proposal["source_agent"] == "default"
+        assert proposal["source_agent_legacy"] == "mrv-architect"
+        assert proposal["source_agent_status"] == "normalized_from_legacy_persona"
+        assert proposal["origin"] == "Subagent: mrv-architect"
+        assert proposal["suggested_profiles"]
+        assert all(item["profile"] == "default" for item in proposal["suggested_profiles"])
+        assert all(item["exists_verified"] is True for item in proposal["suggested_profiles"])
+        assert proposal["chief_review_score"] > 0
+        assert proposal["chief_review_status"] == "pending"
+
+        queue = self.client.get("/api/team-proposals/chief-review").json()["queue"]
+        assert any(p["id"] == proposal["id"] for p in queue)
+
+        registry = self.client.get("/api/team-proposals").json()
+        mrv = next(s for s in registry["specialists"] if s.get("legacy_id") == "mrv-architect" or s.get("logical_role") == "mrv-architect")
+        assert mrv["id"] == "default"
+        assert mrv["profile_verified"] is True
+        assert "mrv-architect" in mrv["aliases"]
+        assert mrv["metrics"]["proposal_count"] >= 1
+        assert mrv["metrics"]["trust_score"] >= 50
+
+    def test_team_proposals_chief_review_shortlist_and_reject(self):
+        created = self.client.post(
+            "/api/team-proposals/subagent",
+            json={
+                "title": "Ridurre rumore cron",
+                "kind": "evolution",
+                "source_agent": "systems-reliability-steward",
+                "category": "Automazioni",
+                "whyNow": "Preferenza utente low-noise.",
+                "evidence": "Segnale da Chief/subagente.",
+                "benefit": "high",
+                "effort": "low",
+                "risk": "low",
+                "priority": "P1",
+                "source_key": "subagent:systems:cron-noise",
+            },
+        ).json()["proposal"]
+
+        review = self.client.post(
+            f"/api/team-proposals/{created['id']}/chief-review",
+            json={"action": "shortlist", "note": "Da portare a Daniele."},
+        )
+        assert review.status_code == 200
+        proposal = review.json()["proposal"]
+        assert proposal["chief_review_status"] == "shortlisted"
+        assert proposal["status"] == "standby"
+        assert proposal["recommendation"] == "park"
+        assert proposal["audit_log"][-1]["event"] == "chief_review_shortlist"
+
+        pulse = self.client.get("/api/team-proposals").json()["team_pulses"]["evolution"]
+        assert any(p["id"] == proposal["id"] for p in pulse["standby_proposals"])
+        assert all(p["id"] != proposal["id"] for p in pulse["mature_proposals"])
+
+        rejected = self.client.post(
+            f"/api/team-proposals/{created['id']}/chief-review",
+            json={"action": "reject"},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["proposal"]["status"] == "scartata"
+
+    def test_team_proposals_can_edit_before_development(self):
+        created = self.client.post(
+            "/api/team-proposals/subagent",
+            json={
+                "title": "Proposta da rifinire",
+                "kind": "operative",
+                "source_agent": "ops-steward",
+                "whyNow": "Bozza iniziale.",
+                "acceptance": "Brief iniziale.",
+                "source_key": "subagent:ops:edit-before-development",
+            },
+        ).json()["proposal"]
+
+        edited = self.client.patch(
+            f"/api/team-proposals/{created['id']}",
+            json={
+                "title": "Proposta rifinita prima dello sviluppo",
+                "whyNow": "Brief corretto da Daniele.",
+                "acceptance": "Criterio di accettazione corretto.",
+            },
+        )
+
+        assert edited.status_code == 200
+        proposal = edited.json()["proposal"]
+        assert proposal["title"] == "Proposta rifinita prima dello sviluppo"
+        assert proposal["whyNow"] == "Brief corretto da Daniele."
+        assert proposal["acceptance"] == "Criterio di accettazione corretto."
+        assert proposal["audit_log"][-1]["event"] == "edited_before_development"
+
+    def test_team_proposals_kanban_blocker_collector_no_board_is_quiet(self):
+        resp = self.client.post("/api/team-proposals/collectors/kanban-blockers", json={})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["blocked_count"] == 0
+        assert body["proposals"] == []
+
+    def test_team_proposals_kanban_blocker_collector_upserts_blocked_tasks(self):
+        from hermes_cli import kanban_db
+
+        conn = kanban_db.connect()
+        try:
+            blocked_id = kanban_db.create_task(
+                conn,
+                title="Attendere decisione umana su output agronomo",
+                body="Serve scegliere come procedere.",
+                created_by="test",
+                priority=80,
+                initial_status="blocked",
+            )
+            ready_id = kanban_db.create_task(
+                conn,
+                title="Task pronto da ignorare dal collector",
+                created_by="test",
+                priority=10,
+            )
+        finally:
+            conn.close()
+
+        resp = self.client.post("/api/team-proposals/collectors/kanban-blockers", json={})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["blocked_count"] == 1
+        assert body["created"] is True
+        proposal = body["proposals"][0]
+        assert proposal["source_key"] == "collector:kanban-blockers:default"
+        assert proposal["signals_count"] == 1
+        assert blocked_id in proposal["evidence"]
+        assert ready_id not in proposal["evidence"]
+
+        again = self.client.post("/api/team-proposals/collectors/kanban-blockers", json={})
+
+        assert again.status_code == 200
+        again_proposal = again.json()["proposals"][0]
+        assert again.json()["created"] is False
+        assert again_proposal["id"] == proposal["id"]
+        assert again_proposal["signals_count"] == 2
+
+    def test_team_proposals_autonomous_generate_creates_challenged_proposals_idempotently(self):
+        first = self.client.post("/api/team-proposals/autonomous/generate", json={"limit": 4})
+
+        assert first.status_code == 200
+        body = first.json()
+        assert body["created_count"] == 4
+        assert body["team_pulse"]["autonomous_count"] >= 4
+        assert body["team_pulse"]["challenged_count"] >= 4
+        assert body["team_pulse"]["guardrails"] == {
+            "no_auto_dispatch": True,
+            "external_send": False,
+            "auto_spawned": False,
+            "cron_created": False,
+            "kanban_mutated": False,
+            "approval_required": True,
+        }
+        proposal = body["created"][0]
+        assert proposal["signal"]
+        assert proposal["source_agent"]
+        assert proposal["source_signal"]
+        assert proposal["interpretation"]
+        assert proposal["supporter_view"]["actor"]
+        assert proposal["supporter_view"]["rationale"]
+        assert proposal["supporter_view"]["method"] == "rules_based_v2"
+        assert proposal["critic_view"]["actor"]
+        assert proposal["critic_view"]["rationale"]
+        assert proposal["critic_view"]["method"] == "rules_based_v2"
+        assert proposal["chief_synthesis"]["synthesis"]
+        assert proposal["gate_state"] == "review_required"
+        assert proposal["evidence_refs"]
+        assert proposal["evidence"]
+        assert proposal["challenge"]["supporter"]
+        assert proposal["challenge"]["support"]
+        assert proposal["challenge"]["critic"]
+        assert proposal["challenge"]["challenge"]
+        assert proposal["challenge"]["chief_synthesis"]
+        assert proposal["challenge"]["method"] == "rules_based_v2"
+        assert proposal["engine"]["method"] == "rules_based_v2"
+        assert proposal["schema_version"] == "autonomous_proposal.v3"
+        assert proposal["gate"]["requires_daniele"] is True
+        assert "create ready executable tasks" in proposal["gate"]["forbidden_without_approval"]
+        assert proposal["source_agent_status"] == "verified_profile"
+        assert proposal["autonomous_contract_status"] == "complete"
+        assert proposal["autonomy_gate"] == "approval_required"
+        assert proposal["no_auto_dispatch"] is True
+        assert proposal["external_send"] is False
+        assert proposal["auto_spawned"] is False
+        assert proposal["cron_created"] is False
+        assert "task_id" not in proposal
+        assert "plan_task_id" not in proposal
+
+        again = self.client.post("/api/team-proposals/autonomous/generate", json={"limit": 4})
+
+        assert again.status_code == 200
+        assert again.json()["created_count"] == 0
+        assert again.json()["updated_count"] == 4
+
+    def test_team_pulse_does_not_reoffer_exact_proposal_after_kanban_conversion(self):
+        first = self.client.post("/api/team-proposals/autonomous/generate", json={"limit": 1, "kind": "evolution"})
+        assert first.status_code == 200
+        proposal_id = first.json()["created"][0]["id"]
+
+        preview = self.client.get(f"/api/team-proposals/{proposal_id}/plan-preview")
+        assert preview.status_code == 200
+        preview_hash = preview.json()["preview_hash"]
+        approved = self.client.post(
+            f"/api/team-proposals/{proposal_id}/approve-min-step",
+            json={"action_type": "plan", "confirmed_preview_hash": preview_hash},
+        )
+        assert approved.status_code == 200
+        converted = self.client.post(
+            f"/api/team-proposals/{proposal_id}/convert-to-plan",
+            json={"confirmed_preview_hash": preview_hash},
+        )
+        assert converted.status_code == 200
+
+        again = self.client.post("/api/team-proposals/autonomous/generate", json={"limit": 1, "kind": "evolution"})
+        assert again.status_code == 200
+        assert again.json()["created_count"] == 0
+        returned_ids = [proposal.get("id") for proposal in again.json()["team_pulse"].get("mature_proposals", [])]
+        assert proposal_id not in returned_ids
+
+        registry = self.client.get("/api/team-proposals").json()
+        visible = [
+            proposal for proposal in registry["proposals"]
+            if proposal.get("id") != proposal_id
+            and proposal.get("source_key") == converted.json()["proposal"].get("source_key")
+            and proposal.get("status") not in {"standby", "scartata", "trasformata_in_task", "converted_to_kanban", "archived", "rejected", "parked"}
+        ]
+        assert visible == []
+
+    def test_team_proposals_autonomous_generate_supports_separate_operative_pulse(self):
+        first = self.client.post(
+            "/api/team-proposals/autonomous/generate",
+            json={"limit": 3, "kind": "operative"},
+        )
+
+        assert first.status_code == 200
+        body = first.json()
+        assert body["created_count"] == 3
+        assert body["team_pulse"]["kind"] == "operative"
+        assert body["team_pulse"]["autonomous_count"] >= 3
+        assert all(p["kind"] == "operative" for p in body["created"])
+        assert all(p["challenge"]["critic"] for p in body["created"])
+        assert all(p["autonomy_gate"] == "approval_required" for p in body["created"])
+
+        evolution = self.client.post(
+            "/api/team-proposals/autonomous/generate",
+            json={"limit": 2, "kind": "evolution"},
+        )
+
+        assert evolution.status_code == 200
+        assert evolution.json()["team_pulse"]["kind"] == "evolution"
+        assert all(p["kind"] == "evolution" for p in evolution.json()["created"])
+
+    def test_team_proposals_auto_refill_keeps_no_dispatch_flags(self):
+        from hermes_cli import web_server
+
+        data = {"version": 1, "proposals": []}
+        refill = web_server._auto_refill_team_proposals(data, kind="evolution")
+
+        assert refill["created_count"] == 3
+        assert data["team_pulse_cycles"]["evolution"]["cycle_type"] == "maintenance_auto_refill"
+        assert data["team_pulse_cycles"]["evolution"]["guardrails"] == {
+            "no_auto_dispatch": True,
+            "external_send": False,
+            "auto_spawned": False,
+            "cron_created": False,
+            "kanban_mutated": False,
+            "approval_required": True,
+        }
+        autonomous = [p for p in data["proposals"] if p.get("autonomy_level")]
+        assert autonomous
+        assert all(p["no_auto_dispatch"] is True for p in autonomous)
+        assert all(p["external_send"] is False for p in autonomous)
+        assert all(p["auto_spawned"] is False for p in autonomous)
+        assert all(p["cron_created"] is False for p in autonomous)
+
+    def test_team_proposals_backfills_legacy_autonomous_contract(self):
+        from hermes_cli import web_server
+
+        data = {
+            "version": 1,
+            "proposals": [
+                {
+                    "id": "legacy-autonomous",
+                    "status": "proposta",
+                    "source_agent": "strategy-chief",
+                    "autonomy_level": "proposal_only",
+                    "gate": {"requires_daniele": False, "forbidden_without_approval": []},
+                    "challenge": {"chief_synthesis": "Proceed only after review."},
+                }
+            ],
+        }
+
+        assert web_server._backfill_autonomous_proposal_contract(data) is True
+        proposal = data["proposals"][0]
+        assert proposal["schema_version"] == "autonomous_proposal.v3"
+        assert proposal["chief_synthesis"]["synthesis"] == "Proceed only after review."
+        assert proposal["gate_state"] == "review_required"
+        assert proposal["gate"]["requires_daniele"] is True
+        assert proposal["gate"]["no_auto_dispatch"] is True
+        assert "dispatch task" in proposal["gate"]["forbidden_without_approval"]
+        assert "create ready executable tasks" in proposal["gate"]["forbidden_without_approval"]
+        assert proposal["source_agent_status"] == "verified_profile"
+        assert proposal["source_agent_details"]["profile_verified"] is True
+        assert proposal["source_agent_details"]["profile"] == proposal["source_agent"]
+        assert proposal["approval_required_before_actions"] is True
+        assert proposal["gate_status"]["forbidden_without_approval"] == ["kanban_create", "dispatch", "cron_create", "webhook_create", "external_send"]
+        assert proposal["autonomous_contract_status"] == "complete"
+        assert proposal["no_auto_dispatch"] is True
+        assert proposal["external_send"] is False
+        assert proposal["auto_spawned"] is False
+        assert proposal["cron_created"] is False
+
+    def test_team_proposals_get_includes_team_pulse_summary(self):
+        self.client.post("/api/team-proposals/autonomous/generate", json={"limit": 2, "kind": "evolution"})
+        self.client.post("/api/team-proposals/autonomous/generate", json={"limit": 2, "kind": "operative"})
+
+        resp = self.client.get("/api/team-proposals")
+
+        assert resp.status_code == 200
+        pulse = resp.json()["team_pulse"]
+        assert pulse["autonomous_count"] >= 2
+        assert pulse["challenged_count"] >= 2
+        assert pulse["top_autonomous"]
+        pulses = resp.json()["team_pulses"]
+        assert pulses["operative"]["kind"] == "operative"
+        assert pulses["evolution"]["kind"] == "evolution"
+        assert pulses["operative"]["last_cycle"]["ran_at"]
+        assert pulses["evolution"]["last_cycle"]["ran_at"]
+        assert pulses["evolution"]["last_cycle"]["guardrails"]["no_auto_dispatch"] is True
+        assert pulses["operative"]["mature_proposals"]
+        assert pulses["evolution"]["mature_proposals"]
+        assert all(p["kind"] == "operative" for p in pulses["operative"]["top_autonomous"])
+        assert all(p["kind"] == "evolution" for p in pulses["evolution"]["top_autonomous"])
+        assert all(p["no_auto_dispatch"] is True for p in pulses["evolution"]["top_autonomous"])
+
+        lane = pulses["evolution"]["controversy_lane"]
+        assert lane["cycle_id"] == "team-pulse-evolution"
+        assert lane["status"] == "has_controversy"
+        assert lane["selection_policy_version"] == "controversy_lane_v1"
+        assert lane["items"]
+        item = lane["items"][0]
+        assert item["proposal_id"]
+        assert item["proposal_title"]
+        assert item["critic"]["subagent_label"]
+        assert item["critic_rationale"]["summary"]
+        assert item["evidence_gap"]["summary"]
+        assert item["risk"]["level"] in {"L1_objection", "L2_material_risk", "L3_blocking_veto", "L4_stop_escalate"}
+        assert item["chief_synthesis"]["summary"]
+        assert item["recommended_action"]["next_step"]
+        assert item["provenance"]["created_from"]
+
+        specialist = resp.json()["specialists"][0]
+        growth = specialist["growth_profile"]
+        assert growth["schema_version"] == "agent_growth.v1"
+        assert growth["agent"]["agent_id"] == specialist["id"]
+        assert growth["agent"]["provenance"]
+        assert specialist["profile_verified"] is True
+        assert growth["agent"]["agent_id"] in {
+            "default",
+            "agronomic",
+            "carbon",
+            "claims",
+            "drafting",
+            "evidence",
+            "finance",
+            "hermespm",
+            "legal",
+            "market",
+            "mrv",
+            "ops",
+            "regulatory",
+            "reliability",
+        }
+        assert growth["invariants"] == {
+            "read_only": True,
+            "approval_gated": True,
+            "no_cron_created": True,
+            "no_external_send": True,
+            "no_auto_spawn": True,
+            "no_auto_dispatch": True,
+            "no_leaderboard": True,
+        }
+        assert growth["privacy"] == {
+            "pii_detected": False,
+            "redactions_applied": [],
+            "max_raw_chars_per_evidence": 180,
+            "raw_logs_included": False,
+            "secrets_included": False,
+        }
+        required_fields = [
+            "last_observed_signal",
+            "own_proposal",
+            "challenges_received",
+            "learning_notes",
+            "next_role_development",
+        ]
+        for field_name in required_fields:
+            field = growth[field_name]
+            assert field["state"] in {"present", "missing", "unknown", "redacted"}
+            assert field["display"]
+            assert field["confidence"] in {"high", "medium", "low"}
+            if field["state"] == "present":
+                assert field["provenance"], field_name
+            else:
+                assert field["missing_reason"] in {
+                    "not_recorded",
+                    "not_applicable",
+                    "source_missing",
+                    "ambiguous_attribution",
+                    "insufficient_signals",
+                    "redacted_for_privacy",
+                    "parse_error",
+                }
+        assert growth["scoring"]["state"] in {"computed", "not_computed"}
+        assert growth["scoring"]["readiness_band"] in {
+            "emerging",
+            "operational",
+            "trusted_for_preview",
+            "insufficient_data",
+        }
+        assert "non è una classifica" in " ".join(growth["scoring"]["non_punitive_notes"])
+
+    def test_agent_growth_profile_degrades_missing_data_with_provenance_guardrails(self):
+        from hermes_cli.web_server import _specialist_growth_profile
+
+        growth = _specialist_growth_profile(
+            {
+                "id": "empty-role",
+                "name": "Empty Role",
+                "mission": "Ruolo senza segnali osservati.",
+                "observes": "Segnali futuri.",
+                "nextProposal": "Nessuna proposta ancora.",
+                "confidence": "medium",
+                "metrics": {"trust_score": 50},
+            },
+            [],
+        )
+
+        assert growth["schema_version"] == "agent_growth.v1"
+        assert growth["last_observed_signal"]["state"] == "missing"
+        assert growth["own_proposal"]["state"] == "missing"
+        assert growth["challenges_received"]["display"] == "Nessuna challenge registrata; non equivale ad assenza di rischio o consenso."
+        assert growth["learning_notes"]["state"] == "missing"
+        assert growth["scoring"]["state"] == "not_computed"
+        assert growth["scoring"]["growth_score"] is None
+        assert growth["growth_score"] is None
+        assert growth["scoring"]["readiness_band"] == "insufficient_data"
+        assert growth["invariants"]["no_cron_created"] is True
+        assert growth["invariants"]["no_external_send"] is True
+        assert growth["invariants"]["no_auto_dispatch"] is True
+
+    def test_team_pulse_controversy_lane_reports_no_meaningful_controversy(self):
+        from hermes_cli.web_server import _team_pulse_summary
+
+        pulse = _team_pulse_summary(
+            {
+                "proposals": [
+                    {
+                        "id": "copy-only",
+                        "title": "Copy polish",
+                        "kind": "evolution",
+                        "status": "proposta",
+                        "origin": "Subagent: drafting",
+                        "source_agent": "drafting",
+                        "challenge": {
+                            "critic": "Systems Reliability Steward",
+                            "supporter": "Drafting",
+                            "challenge": "Wording preference only; no material decision impact.",
+                            "chief_synthesis": "Safe to proceed; no material objection.",
+                            "veto_risk": "none",
+                        },
+                    }
+                ]
+            },
+            kind="evolution",
+        )
+
+        lane = pulse["controversy_lane"]
+        assert lane["status"] == "no_meaningful_controversy"
+        assert lane["items"] == []
+        assert lane["empty_state"]["reviewed_proposal_count"] == 1
+        assert "not hidden consensus" in lane["empty_state"]["message"]
+
+    def test_team_pulse_controversy_lane_distinguishes_missing_review_data(self):
+        from hermes_cli.web_server import _team_pulse_summary
+
+        pulse = _team_pulse_summary(
+            {
+                "proposals": [
+                    {"id": "unreviewed", "title": "Unreviewed proposal", "kind": "operative", "status": "proposta"}
+                ]
+            },
+            kind="operative",
+        )
+
+        lane = pulse["controversy_lane"]
+        assert lane["status"] == "insufficient_review_data"
+        assert lane["items"] == []
+        assert lane["empty_state"]["review_completeness"] == "unknown"
+        assert "critic/review data is missing" in lane["empty_state"]["message"]
+
+    def test_team_proposals_exposes_two_team_constitutions_and_cycle_files(self):
+        resp = self.client.get("/api/team-proposals")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        contracts = body["team_constitutions"]
+        assert contracts["evolution"]["team"] == "Sviluppo Hermes"
+        assert contracts["evolution"]["lead"] == "hermespm"
+        assert "stato_hermes.md" in "\n".join(contracts["evolution"]["cycle_start_reads"])
+        assert "log_apprendimento_hermes.md" in "\n".join(contracts["evolution"]["cycle_start_reads"])
+        assert any("Hermes_Team_Sviluppo_Hermes_Block.md" in item for item in contracts["evolution"]["prompt_sources"])
+        assert "progetti reali" in "\n".join(contracts["evolution"]["must_not"])
+
+        assert contracts["operative"]["team"] == "Team Operativo"
+        assert contracts["operative"]["lead"] == "ops"
+        assert "stato_operativo.md" in "\n".join(contracts["operative"]["cycle_start_reads"])
+        assert "log_apprendimento_operativo.md" in "\n".join(contracts["operative"]["cycle_start_reads"])
+        assert any("Hermes_Team_Operativo_Block.md" in item for item in contracts["operative"]["prompt_sources"])
+        assert "sviluppo di Hermes" in "\n".join(contracts["operative"]["must_not"])
+
+    def test_team_proposals_task_preview_has_no_side_effect(self):
+        from hermes_constants import get_hermes_home
+
+        resp = self.client.get("/api/team-proposals/team-proposals-page/task-preview")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["preview_hash"]
+        task = body["task"]
+        assert task["title"].startswith("[P0]")
+        assert "Team & Proposte → Kanban task" in task["body"]
+        assert task["idempotency_key"] == "team-proposal:team-proposals-page"
+        assert task["initial_status"] == "ready"
+        assert not (get_hermes_home() / "kanban.db").exists()
+
+    def test_team_proposals_strategic_review_groups_top_proposals(self):
+        resp = self.client.get("/api/team-proposals/strategic-review")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "top_operative" in body
+        assert "top_evolution" in body
+        assert body["counts"]["active"] >= 1
+        assert len(body["top_evolution"]) <= 3
+        assert len(body["top_operative"]) <= 3
+
+    def test_radar_hermes_endpoint_is_read_only_and_approval_gated(self):
+        from hermes_constants import get_hermes_home
+
+        resp = self.client.get("/api/team-proposals/radar-hermes")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["version"] == "radar_hermes.v1"
+        assert body["approval_policy"] == {
+            "read_only_first": True,
+            "requires_explicit_approval_for_kanban": True,
+            "preview_does_not_dispatch": True,
+            "create_children_does_not_force_dispatch": True,
+        }
+        assert body["source_summary"]["side_effects"] == {
+            "kanban_mutated": False,
+            "cron_created": False,
+            "external_send": False,
+            "subagent_spawned": False,
+        }
+        assert len(body["blocks"]["top"]) >= 1
+        assert body["blocks"]["top"][0]["source"]["kind"] == "team_proposals"
+        assert body["blocks"]["top"][0]["approval"]["kanban_creation_available"] is False
+        assert body["blocks"]["top"][0]["approval"]["requires_explicit_confirmation"] is True
+        assert body["blocks"]["parkable"]["flags"]["parkable"] is True
+        dumped = json.dumps(body).lower()
+        assert "transcript" not in dumped
+        assert "cookie" not in dumped
+        assert "token" not in dumped
+        assert not (get_hermes_home() / "kanban.db").exists()
+
+    def test_radar_hermes_endpoint_does_not_seed_registry_when_missing(self):
+        from hermes_constants import get_hermes_home
+
+        registry = get_hermes_home() / "dashboard" / "team_proposals.json"
+        assert not registry.exists()
+
+        resp = self.client.get("/api/radar-hermes")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["version"] == "radar_hermes.v1"
+        assert body["source_summary"]["side_effects"] == {
+            "kanban_mutated": False,
+            "cron_created": False,
+            "external_send": False,
+            "subagent_spawned": False,
+        }
+        assert not registry.exists()
+
+    def test_radar_hermes_endpoint_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.get("/api/radar-hermes", headers={_SESSION_HEADER_NAME: "wrong-token"})
+
+        assert resp.status_code == 401
+
+    def test_team_proposals_plan_preview_approve_and_convert_are_ready(self):
+        preview = self.client.get("/api/team-proposals/team-proposals-page/plan-preview")
+
+        assert preview.status_code == 200
+        preview_body = preview.json()
+        plan = preview_body["plan"]
+        preview_hash = preview_body["preview_hash"]
+        assert preview_hash
+        assert plan["title"].startswith("[P0] Piano")
+        assert len(plan["tasks"]) == 4
+        assert plan["initial_status"] == "ready"
+        assert all(task["initial_status"] == "ready" for task in plan["tasks"])
+        assert all("team-proposal-plan:team-proposals-page" in task["idempotency_key"] for task in plan["tasks"])
+        assert plan["assignee"]
+        assert all(task["assignee"] for task in plan["tasks"])
+        assert all(task["assignment_reason"] for task in plan["tasks"])
+
+        blocked = self.client.post("/api/team-proposals/team-proposals-page/convert-to-plan", json={})
+        assert blocked.status_code == 409
+
+        approved = self.client.post(
+            "/api/team-proposals/team-proposals-page/approve-min-step",
+            json={"action_type": "plan", "confirmed_preview_hash": preview_hash},
+        )
+        assert approved.status_code == 200
+        assert approved.json()["proposal"]["canonical_status"] == "approved_min_step"
+        assert approved.json()["proposal"]["gate_status"]["approved_preview_hash"] == preview_hash
+        assert approved.json()["proposal"]["audit_log"][-1]["side_effects"]["kanban_created"] is False
+
+        converted = self.client.post(
+            "/api/team-proposals/team-proposals-page/convert-to-plan",
+            json={"confirmed_preview_hash": preview_hash},
+        )
+
+        assert converted.status_code == 200
+        body = converted.json()
+        parent_id = body["plan"]["parent_task_id"]
+        child_ids = body["plan"]["child_task_ids"]
+        assert len(child_ids) == 4
+        assert body["proposal"]["canonical_status"] == "converted_to_kanban"
+        assert body["proposal"]["gate_status"]["status"] == "converted"
+        assert body["proposal"]["audit_log"][-1]["side_effects"] == {
+            "kanban_created": True,
+            "tasks_created_count": 5,
+            "initial_status": "ready",
+            "dispatch_started": False,
+            "cron_created": False,
+            "external_send": False,
+        }
+
+        second = self.client.post(
+            "/api/team-proposals/team-proposals-page/convert-to-plan",
+            json={"confirmed_preview_hash": preview_hash},
+        )
+        assert second.status_code == 200
+        assert second.json()["plan"]["idempotent"] is True
+        assert second.json()["plan"]["parent_task_id"] == parent_id
+        assert second.json()["plan"]["child_task_ids"] == child_ids
+
+        from hermes_cli import kanban_db
+
+        conn = kanban_db.connect()
+        try:
+            assert kanban_db.get_task(conn, parent_id).status == "ready"
+            child_tasks = [kanban_db.get_task(conn, task_id) for task_id in child_ids]
+            assert all(task.status == "ready" for task in child_tasks)
+            assert all(task.assignee for task in child_tasks)
+        finally:
+            conn.close()
+
+    def test_team_proposals_autonomous_incomplete_challenge_cannot_be_approved_or_converted(self):
+        from hermes_constants import get_hermes_home
+        from hermes_cli import kanban_db
+
+        registry = get_hermes_home() / "dashboard" / "team_proposals.json"
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        registry.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "specialists": [],
+                    "proposals": [
+                        {
+                            "id": "autonomous-incomplete-challenge",
+                            "title": "Autonomous incomplete challenge",
+                            "kind": "evolution",
+                            "status": "proposta",
+                            "record_type": "autonomous_proposal_candidate",
+                            "autonomy_level": "autonomous",
+                            "source_agent": "default",
+                            "whyNow": "There is a signal, but no real supporter/critic/Chief review evidence.",
+                            "acceptance": "This text must not be treated as Chief synthesis evidence.",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        before = registry.read_bytes()
+
+        preview = self.client.get("/api/team-proposals/autonomous-incomplete-challenge/task-preview")
+
+        assert preview.status_code == 200
+        preview_hash = preview.json()["preview_hash"]
+        assert preview_hash
+        assert registry.read_bytes() == before
+
+        approved = self.client.post(
+            "/api/team-proposals/autonomous-incomplete-challenge/approve-min-step",
+            json={"action_type": "task", "confirmed_preview_hash": preview_hash},
+        )
+
+        assert approved.status_code == 409
+        assert approved.json()["detail"] == "Proposal lacks complete signal/supporter/critic/Chief synthesis gate"
+        persisted = json.loads(registry.read_text(encoding="utf-8"))["proposals"][0]
+        assert persisted.get("canonical_status") != "approved_min_step"
+        assert "task_id" not in persisted
+        conn = kanban_db.connect()
+        try:
+            assert kanban_db.list_tasks(conn) == []
+        finally:
+            conn.close()
+
+    def test_team_proposals_convert_to_task_requires_approval_and_hash(self):
+        preview = self.client.get("/api/team-proposals/team-proposals-page/task-preview")
+        assert preview.status_code == 200
+        preview_hash = preview.json()["preview_hash"]
+
+        direct = self.client.post(
+            "/api/team-proposals/team-proposals-page/convert-to-task",
+            json={},
+        )
+        assert direct.status_code == 409
+
+        approved = self.client.post(
+            "/api/team-proposals/team-proposals-page/approve-min-step",
+            json={"action_type": "task", "confirmed_preview_hash": preview_hash},
+        )
+        assert approved.status_code == 200
+
+        resp = self.client.post(
+            "/api/team-proposals/team-proposals-page/convert-to-task",
+            json={"confirmed_preview_hash": preview_hash},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        task_id = body["task"]["id"]
+        assert body["task"]["status"] == "ready"
+        assert body["proposal"]["status"] == "trasformata_in_task"
+        assert body["proposal"]["canonical_status"] == "converted_to_kanban"
+        assert body["proposal"]["task_id"] == task_id
+
+        second = self.client.post(
+            "/api/team-proposals/team-proposals-page/convert-to-task",
+            json={"confirmed_preview_hash": preview_hash},
+        )
+        assert second.status_code == 200
+        assert second.json()["task"]["idempotent"] is True
+        assert second.json()["task"]["id"] == task_id
+
+    def test_team_proposals_task_conversion_rejects_stale_hash_after_approved_edit(self):
+        preview = self.client.get("/api/team-proposals/team-proposals-page/task-preview")
+        assert preview.status_code == 200
+        approved_hash = preview.json()["preview_hash"]
+
+        approved = self.client.post(
+            "/api/team-proposals/team-proposals-page/approve-min-step",
+            json={"action_type": "task", "confirmed_preview_hash": approved_hash},
+        )
+        assert approved.status_code == 200
+
+        edited = self.client.patch(
+            "/api/team-proposals/team-proposals-page",
+            json={"title": "CHANGED AFTER APPROVAL - should invalidate hash"},
+        )
+        assert edited.status_code == 200
+
+        stale = self.client.post(
+            "/api/team-proposals/team-proposals-page/convert-to-task",
+            json={"confirmed_preview_hash": approved_hash},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"] == "Preview changed after approval; approve again before conversion"
+
+        current_hash = self.client.get("/api/team-proposals/team-proposals-page/task-preview").json()["preview_hash"]
+        assert current_hash != approved_hash
+        unapproved_current = self.client.post(
+            "/api/team-proposals/team-proposals-page/convert-to-task",
+            json={"confirmed_preview_hash": current_hash},
+        )
+        assert unapproved_current.status_code == 409
+        assert unapproved_current.json()["detail"] == "Preview changed after approval; approve again before conversion"
+
+    def test_team_proposals_plan_conversion_rejects_stale_hash_after_approved_edit(self):
+        preview = self.client.get("/api/team-proposals/team-proposals-page/plan-preview")
+        assert preview.status_code == 200
+        approved_hash = preview.json()["preview_hash"]
+
+        approved = self.client.post(
+            "/api/team-proposals/team-proposals-page/approve-min-step",
+            json={"action_type": "plan", "confirmed_preview_hash": approved_hash},
+        )
+        assert approved.status_code == 200
+
+        edited = self.client.patch(
+            "/api/team-proposals/team-proposals-page",
+            json={"acceptance": "Acceptance changed after approval; approval must not carry over."},
+        )
+        assert edited.status_code == 200
+
+        stale = self.client.post(
+            "/api/team-proposals/team-proposals-page/convert-to-plan",
+            json={"confirmed_preview_hash": approved_hash},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"] == "Preview changed after approval; approve again before conversion"
+
     # ── Dashboard font override ─────────────────────────────────────────
 
     def test_get_dashboard_font_defaults_to_theme(self):

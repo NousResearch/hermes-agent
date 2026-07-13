@@ -628,6 +628,23 @@ def _legacy_path_has_content(path: Path) -> bool:
     return True
 
 
+def _display_home_relative(path: Path) -> str:
+    """Use a ``~/`` shorthand when *path* is inside the user's home."""
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def display_hermes_root() -> str:
+    """Return a user-friendly display string for the root Hermes directory.
+
+    Unlike :func:`display_hermes_home`, this resolves profile homes back to
+    their shared root before applying the readable ``~/`` shorthand.
+    """
+    return _display_home_relative(get_default_hermes_root())
+
+
 def display_hermes_home() -> str:
     """Return a user-friendly display string for the current HERMES_HOME.
 
@@ -641,11 +658,7 @@ def display_hermes_home() -> str:
     ``~/.hermes``.  For code that needs a real ``Path``, use
     :func:`get_hermes_home` instead.
     """
-    home = get_hermes_home()
-    try:
-        return "~/" + str(home.relative_to(Path.home()))
-    except ValueError:
-        return str(home)
+    return _display_home_relative(get_hermes_home())
 
 
 def secure_parent_dir(path: Path) -> None:

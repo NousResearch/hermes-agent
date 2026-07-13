@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -46,6 +45,7 @@ from agent.prompt_builder import (
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
+from hermes_constants import display_hermes_root
 from utils import is_truthy_value
 
 
@@ -141,20 +141,6 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     if not is_truthy_value(os.getenv("HERMES_DESKTOP_TERMINAL")):
         return hint
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
-
-
-def _display_hermes_root() -> str:
-    """Return the root Hermes directory used in prompt-visible profile hints."""
-    try:
-        from hermes_constants import get_default_hermes_root
-
-        root = get_default_hermes_root()
-    except Exception:
-        root = Path("~/.hermes").expanduser()
-    try:
-        return "~/" + str(root.relative_to(Path.home()))
-    except ValueError:
-        return str(root)
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -406,7 +392,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
-    hermes_root = _display_hermes_root()
+    hermes_root = display_hermes_root()
     if active_profile == "default":
         stable_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "

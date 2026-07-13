@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -69,3 +70,30 @@ def test_default_profile_prompt_uses_custom_hermes_root(monkeypatch):
     assert "Active Hermes profile: default." in line
     assert "under /opt/hermes/profiles/<name>/." in line
     assert "~/.hermes" not in line
+
+
+def test_named_profile_prompt_preserves_home_shorthand(tmp_path, monkeypatch):
+    home_profile = tmp_path / ".hermes" / "profiles" / "coder"
+    home_profile.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home_profile))
+    system_prompt = _stub_prompt_runtime(monkeypatch)
+
+    stable = system_prompt.build_system_prompt_parts(_minimal_agent())["stable"]
+
+    line = _active_profile_line(stable)
+    assert "Active Hermes profile: coder." in line
+    assert "reads and writes ~/.hermes/profiles/coder/." in line
+    assert "default profile's data lives at ~/.hermes/skills/" in line
+
+
+def test_default_profile_without_override_preserves_home_shorthand(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    system_prompt = _stub_prompt_runtime(monkeypatch)
+
+    stable = system_prompt.build_system_prompt_parts(_minimal_agent())["stable"]
+
+    line = _active_profile_line(stable)
+    assert "Active Hermes profile: default." in line
+    assert "under ~/.hermes/profiles/<name>/." in line

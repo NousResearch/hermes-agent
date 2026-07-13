@@ -308,6 +308,52 @@ def test_different_staged_plan_requires_fresh_exact_terminal_receipt(
     assert validated["require_fresh_generation"] is True
 
 
+def test_different_staged_plan_accepts_prior_durable_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _old_staged_config()
+    old_raw = live._canonical_bytes(old)
+    durable = {"result": {"outcome": "retired"}}
+    events: list[str] = []
+    monkeypatch.setattr(live.os.path, "lexists", lambda _path: True)
+    monkeypatch.setattr(
+        live,
+        "_read_staged_writer_config",
+        lambda *_a, **_k: (old_raw, _fake_stage_stat()),
+    )
+    monkeypatch.setattr(
+        live,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda _path: events.append("observe_prior") or (1,),
+    )
+
+    def validate(value, **kwargs: Any) -> dict[str, Any]:
+        assert value is durable
+        assert kwargs["source_config_raw"] == old_raw
+        assert kwargs["writer_config"] == old
+        assert kwargs["allowed_outcomes"] == frozenset({"retired", "claimed"})
+        events.append("validate_durable")
+        return durable
+
+    monkeypatch.setattr(
+        live,
+        "_validate_canary_preclaim_reconciliation_value",
+        validate,
+    )
+
+    digest = live._reconcile_existing_staged_writer_config(
+        Path("/etc/muncho/full-canary/staged/writer.json"),
+        b'{"different":true}',
+        mode=0o440,
+        uid=0,
+        gid=2201,
+        reconciler=lambda: events.append("reuse") or durable,
+    )
+
+    assert digest == hashlib.sha256(old_raw).hexdigest()
+    assert events == ["observe_prior", "reuse", "validate_durable"]
+
+
 def test_fresh_approval_callback_waits_for_a_new_exact_plan_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

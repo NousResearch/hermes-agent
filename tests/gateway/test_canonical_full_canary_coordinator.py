@@ -7,6 +7,7 @@ import signal
 import struct
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Mapping
 
 import pytest
 
@@ -560,6 +561,134 @@ def test_credential_prepare_approval_rejects_floating_source() -> None:
         match="credential_prepare_approval_not_fresh_or_bound",
     ):
         approval.require(coordinator_input=coordinator_input, now_unix=15)
+
+
+def test_credential_prepare_approval_loader_reads_only_its_fixed_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator_input = SimpleNamespace(
+        sha256="1" * 64,
+        revision="2" * 40,
+        value={
+            "writer_config": {
+                "canary_scope_preapproval": {
+                    "approval_source_sha256": "4" * 64,
+                }
+            }
+        },
+    )
+    payload = {
+        "schema": coordinator.CREDENTIAL_PREPARE_APPROVAL_SCHEMA,
+        "scope": "full_canary_ephemeral_admin_prepare",
+        "authority_kind": "trusted_root_bootstrap_out_of_band_owner",
+        "cryptographic_owner_proof": False,
+        "coordinator_input_sha256": coordinator_input.sha256,
+        "release_sha": coordinator_input.revision,
+        "owner_subject_sha256": "3" * 64,
+        "approval_source_sha256": "4" * 64,
+        "nonce_sha256": "5" * 64,
+        "approved_at_unix": 100,
+        "expires_at_unix": 200,
+    }
+    observed: list[Path] = []
+
+    def read(path: Path, *, maximum: int) -> bytes:
+        observed.append(path)
+        assert maximum == coordinator.MAX_OWNER_APPROVAL_BYTES
+        return coordinator._canonical_bytes(payload)
+
+    monkeypatch.setattr(coordinator, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(coordinator, "_stable_root_read", read)
+
+    approval = coordinator.load_credential_prepare_approval(
+        coordinator_input,
+        now_unix=150,
+    )
+
+    assert approval.value == payload
+    assert observed == [coordinator.CREDENTIAL_PREPARE_APPROVAL_PATH]
+
+
+def test_run_orchestration_uses_credential_prepare_approval_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator_input = _token_input()
+    calls: list[str] = []
+    emitted: list[Mapping[str, object]] = []
+    monkeypatch.setattr(coordinator, "_harden_secret_process", lambda: None)
+    monkeypatch.setattr(
+        coordinator,
+        "load_coordinator_input",
+        lambda: coordinator_input,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "load_discord_token_install_receipt",
+        lambda _input: ({}, None, None),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_services_are_exactly_stopped_and_disabled",
+        lambda: True,
+    )
+
+    def load_credential(_input):
+        calls.append("credential_prepare_approval")
+        raise coordinator.CoordinatorError(
+            "credential_prepare_approval_sentinel",
+            phase="credential_prepare_approval",
+        )
+
+    monkeypatch.setattr(
+        coordinator,
+        "load_credential_prepare_approval",
+        load_credential,
+    )
+    monkeypatch.setattr(coordinator.os.path, "lexists", lambda _path: False)
+
+    result = coordinator.run_full_canary(
+        frame_emitter=lambda value: emitted.append(dict(value)),
+    )
+
+    assert calls == ["credential_prepare_approval"]
+    assert emitted == []
+    assert result["ok"] is False
+    assert result["error_code"] == "credential_prepare_approval_sentinel"
+    assert result["credential_prepare_approval_sha256"] is None
+
+
+def test_failed_driver_cleanup_stops_when_durable_evidence_is_tampered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = SimpleNamespace()
+    events: list[str] = []
+
+    def load(_plan):
+        assert _plan is plan
+        events.append("load_evidence")
+        raise RuntimeError("bootstrap evidence file digest drifted")
+
+    monkeypatch.setattr(coordinator, "load_bootstrap_evidence_envelope", load)
+    monkeypatch.setattr(
+        coordinator,
+        "mechanically_stop_full_canary_services",
+        lambda: events.append("mechanical_stop")
+        or (
+            coordinator.GATEWAY_UNIT_NAME,
+            coordinator.WRITER_UNIT_NAME,
+            coordinator.EDGE_UNIT_NAME,
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda: events.append("observe_preclaim") or None,
+    )
+
+    with pytest.raises(RuntimeError, match="file digest drifted"):
+        coordinator._stop_failed_driver_services(plan)
+
+    assert events == ["mechanical_stop", "observe_preclaim", "load_evidence"]
 
 
 def test_secret_removal_retries_after_unlink_succeeds_but_fsync_fails(
@@ -1272,6 +1401,1165 @@ def _token_input() -> SimpleNamespace:
             }
         },
     )
+
+
+def test_recovery_reconciliation_uses_sealed_adapter_without_closing_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    plan = SimpleNamespace(
+        sha256="1" * 64,
+        artifacts={"writer_config": object()},
+        identities=SimpleNamespace(),
+    )
+    approval = SimpleNamespace(
+        value={"approval_source_sha256": "2" * 64},
+    )
+    request = object()
+    evidence = object()
+
+    class Admin:
+        tls_peer_certificate_sha256 = "3" * 64
+        closed = False
+
+    class Provisioner:
+        def __init__(self, session, **kwargs):
+            self.session = session
+            assert kwargs == {"tls_peer_certificate_sha256": "3" * 64}
+
+        def reconcile(self, observed_request, provisioning_receipt):
+            assert observed_request is request
+            assert provisioning_receipt is None
+            events.append("sealed_reconciliation")
+            self.session.close()
+            return {"raw": "reconciliation"}
+
+    monkeypatch.setattr(
+        coordinator,
+        "load_full_canary_approval",
+        lambda: approval,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_validate_artifact_source",
+        lambda *_args, **_kwargs: b"writer",
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_validate_writer_config",
+        lambda *_args, **_kwargs: {"writer": "validated"},
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_build_canary_bootstrap_provisioning_request",
+        lambda *_args, **_kwargs: request,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "PreopenedSessionBootstrapProvisioner",
+        Provisioner,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_validate_canary_bootstrap_reconciliation_receipt",
+        lambda value, **kwargs: (
+            events.append("validated")
+            or {
+                "validated": value,
+                "session_continuity": kwargs["expected_session_continuity"],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "validated_bootstrap_reconciliation_evidence",
+        lambda **kwargs: (
+            evidence
+            if kwargs["request"] is request
+            and kwargs["expected_session_continuity"] == "recovery_session"
+            else (_ for _ in ()).throw(AssertionError("evidence binding drifted"))
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "persist_bootstrap_evidence_envelope",
+        lambda _plan, observed: observed,
+    )
+    admin = Admin()
+
+    observed = coordinator._reconcile_bootstrap_authority_for_recovery(
+        plan=plan,
+        admin_session=admin,
+    )
+
+    assert observed is evidence
+    assert events == ["sealed_reconciliation", "validated"]
+    assert admin.closed is False
+
+
+def test_runtime_plan_recovery_reconciles_before_disabling_or_removing_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    credential_present = True
+    coordinator_input = _token_input()
+    coordinator_input.identities.writer_uid = 1003
+    coordinator_input.identities.writer_gid = 1004
+    plan = SimpleNamespace(revision=coordinator_input.revision, sha256="4" * 64)
+    evidence = SimpleNamespace(
+        reconciliation_receipt={"receipt_sha256": "5" * 64},
+        outcome="retired",
+    )
+
+    class Admin:
+        closed = False
+
+        def query(self, sql: str, *, maximum_rows: int):
+            assert sql == coordinator._BOOTSTRAP_ROLE_DISABLE_SQL
+            assert maximum_rows == 0
+            events.append("disable_login")
+            return SimpleNamespace(command_tag="DO", rows=(), columns=())
+
+        def close(self) -> None:
+            events.append("close_admin")
+            self.closed = True
+
+    class Lifecycle:
+        def __init__(self, observed_plan, **kwargs):
+            assert observed_plan is plan
+            assert kwargs["bootstrap_reconciliation_evidence"] is evidence
+
+        def attest_stopped_after_mechanical_stop(self, *, reason: str, **kwargs):
+            assert reason == "operator_requested"
+            assert kwargs["stopped"] == (
+                coordinator.GATEWAY_UNIT_NAME,
+                coordinator.WRITER_UNIT_NAME,
+                coordinator.EDGE_UNIT_NAME,
+            )
+            events.append("stop_and_attest")
+            return {"stop": "receipt"}
+
+    def capture(path, **_kwargs):
+        if path == coordinator.DEFAULT_PLAN_PATH:
+            return SimpleNamespace()
+        return None
+
+    def lexists(path) -> bool:
+        if path == coordinator.CANARY_BOOTSTRAP_CREDENTIAL_PATH:
+            return credential_present
+        return False
+
+    def remove_secret(*_args, **_kwargs) -> None:
+        nonlocal credential_present
+        events.append("remove_credential")
+        credential_present = False
+
+    causal_state = {
+        "discord_token_install_receipt_sha256": "6" * 64,
+        "token_device": None,
+        "token_inode": None,
+    }
+    admin = Admin()
+    monkeypatch.setattr(coordinator, "_capture_root_snapshot", capture)
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: events.append("mechanical_stop")
+        or coordinator._MechanicalStopAttempt(
+            None,
+            (
+                coordinator.GATEWAY_UNIT_NAME,
+                coordinator.WRITER_UNIT_NAME,
+                coordinator.EDGE_UNIT_NAME,
+            ),
+            None,
+        ),
+    )
+    monkeypatch.setattr(coordinator, "load_full_canary_plan", lambda: plan)
+    monkeypatch.setattr(
+        coordinator,
+        "_load_or_reconcile_bootstrap_authority",
+        lambda **_kwargs: events.append("sealed_reconciliation") or evidence,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_validate_secret_metadata",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(coordinator, "_remove_exact_secret", remove_secret)
+    monkeypatch.setattr(coordinator.os.path, "lexists", lexists)
+    monkeypatch.setattr(coordinator, "FullCanaryLifecycle", Lifecycle)
+    monkeypatch.setattr(
+        coordinator,
+        "_validate_recovery_stop_receipt",
+        lambda _value, **kwargs: (
+            (
+                "7" * 64,
+                "8" * 64,
+                "retired",
+            )
+            if kwargs["expected_bootstrap_reconciliation"] is evidence
+            else (_ for _ in ()).throw(AssertionError("reconciliation not bound"))
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_remove_recovery_root_artifact",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_recovery_discord_retirement_inputs",
+        lambda **_kwargs: (None, None, None),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_retire_discord_token_lease",
+        lambda **_kwargs: {
+            "state": "retired",
+            "discord_token_install_receipt_sha256": "6" * 64,
+            "token_device": None,
+            "token_inode": None,
+            "receipt_sha256": "9" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_services_are_exactly_stopped_and_disabled",
+        lambda: True,
+    )
+
+    result = coordinator._perform_recovery_cleanup(
+        coordinator_input=coordinator_input,
+        original_run_lease={},
+        causal_state=causal_state,
+        admin_session=admin,
+    )
+
+    assert events == [
+        "mechanical_stop",
+        "sealed_reconciliation",
+        "disable_login",
+        "remove_credential",
+        "close_admin",
+        "stop_and_attest",
+    ]
+    assert result["migration_owner_membership_removed"] is True
+    assert result["bootstrap_login_password_disabled"] is True
+    assert result["bootstrap_credential_removed"] is True
+
+
+@pytest.mark.parametrize("outcome", ["not_authorized", "retired"])
+def test_staged_plan_recovery_reconciles_then_retires_before_bound_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    events: list[str] = []
+    credential_present = True
+    coordinator_input = _token_input()
+    coordinator_input.identities.writer_uid = 1003
+    coordinator_input.identities.writer_gid = 1004
+    plan = SimpleNamespace(revision=coordinator_input.revision, sha256="4" * 64)
+    staged_snapshot = SimpleNamespace()
+    evidence = SimpleNamespace(
+        reconciliation_receipt={"receipt_sha256": "5" * 64},
+        outcome=outcome,
+    )
+
+    class Admin:
+        closed = False
+
+        def query(self, sql: str, *, maximum_rows: int):
+            assert sql == coordinator._BOOTSTRAP_ROLE_DISABLE_SQL
+            assert maximum_rows == 0
+            events.append("disable_login")
+            return SimpleNamespace(command_tag="DO", rows=(), columns=())
+
+        def close(self) -> None:
+            events.append("close_admin")
+            self.closed = True
+
+    admin = Admin()
+
+    class Lifecycle:
+        def __init__(self, observed_plan, **kwargs):
+            assert observed_plan is plan
+            assert kwargs["bootstrap_reconciliation_evidence"] is evidence
+
+        def attest_stopped_after_mechanical_stop(self, *, reason: str, **kwargs):
+            assert reason == "operator_requested"
+            assert kwargs["stopped"] == (
+                coordinator.GATEWAY_UNIT_NAME,
+                coordinator.WRITER_UNIT_NAME,
+                coordinator.EDGE_UNIT_NAME,
+            )
+            assert admin.closed is True
+            assert credential_present is False
+            events.append("stop_with_bound_reconciliation")
+            return {"stop": "receipt"}
+
+    def capture(path, **_kwargs):
+        if path == coordinator.DEFAULT_STAGED_PLAN_PATH:
+            return staged_snapshot
+        return None
+
+    def lexists(path) -> bool:
+        if path == coordinator.DEFAULT_APPROVAL_PATH:
+            return True
+        if path == coordinator.CANARY_BOOTSTRAP_CREDENTIAL_PATH:
+            return credential_present
+        return False
+
+    def remove_secret(*_args, **_kwargs) -> None:
+        nonlocal credential_present
+        events.append("remove_credential")
+        credential_present = False
+
+    causal_state = {
+        "discord_token_install_receipt_sha256": "6" * 64,
+        "token_device": None,
+        "token_inode": None,
+    }
+    monkeypatch.setattr(coordinator, "_capture_root_snapshot", capture)
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: events.append("mechanical_stop")
+        or coordinator._MechanicalStopAttempt(
+            None,
+            (
+                coordinator.GATEWAY_UNIT_NAME,
+                coordinator.WRITER_UNIT_NAME,
+                coordinator.EDGE_UNIT_NAME,
+            ),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_load_staged_plan_for_recovery",
+        lambda snapshot, **_kwargs: (
+            plan
+            if snapshot is staged_snapshot
+            else (_ for _ in ()).throw(AssertionError("wrong staged snapshot"))
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_load_or_reconcile_bootstrap_authority",
+        lambda **_kwargs: events.append("sealed_reconciliation") or evidence,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_validate_secret_metadata",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(coordinator, "_remove_exact_secret", remove_secret)
+    monkeypatch.setattr(coordinator.os.path, "lexists", lexists)
+    monkeypatch.setattr(coordinator, "FullCanaryLifecycle", Lifecycle)
+    monkeypatch.setattr(
+        coordinator,
+        "_validate_recovery_stop_receipt",
+        lambda _value, **kwargs: (
+            ("7" * 64, "8" * 64, "not_preapproved")
+            if kwargs["expected_bootstrap_reconciliation"] is evidence
+            else (_ for _ in ()).throw(AssertionError("reconciliation not bound"))
+        ),
+    )
+
+    def remove_root(path):
+        if path == coordinator.DEFAULT_STAGED_PLAN_PATH:
+            events.append("remove_staged_plan")
+
+    monkeypatch.setattr(coordinator, "_remove_recovery_root_artifact", remove_root)
+    monkeypatch.setattr(
+        coordinator,
+        "_remove_recovery_writer_artifact",
+        lambda _gid: events.append("remove_staged_writer"),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_recovery_discord_retirement_inputs",
+        lambda **_kwargs: (None, None, None),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_retire_discord_token_lease",
+        lambda **_kwargs: {
+            "state": "retired",
+            "discord_token_install_receipt_sha256": "6" * 64,
+            "token_device": None,
+            "token_inode": None,
+            "receipt_sha256": "9" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_services_are_exactly_stopped_and_disabled",
+        lambda: True,
+    )
+
+    result = coordinator._perform_recovery_cleanup(
+        coordinator_input=coordinator_input,
+        original_run_lease={},
+        causal_state=causal_state,
+        admin_session=admin,
+    )
+
+    assert events == [
+        "mechanical_stop",
+        "sealed_reconciliation",
+        "disable_login",
+        "remove_credential",
+        "close_admin",
+        "stop_with_bound_reconciliation",
+        "remove_staged_plan",
+        "remove_staged_writer",
+    ]
+    assert result["canonical_stop_receipt_sha256"] == "7" * 64
+    assert result["bootstrap_credential_removed"] is True
+
+
+def test_staged_plan_recovery_rejects_impossible_consumed_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator_input = _token_input()
+    plan = SimpleNamespace(revision=coordinator_input.revision, sha256="4" * 64)
+    staged_snapshot = SimpleNamespace()
+    class Admin:
+        closed = False
+
+        def query(self, _sql, *, maximum_rows):
+            assert maximum_rows == 0
+            return SimpleNamespace(command_tag="DO", rows=(), columns=())
+
+        def close(self):
+            self.closed = True
+
+    admin = Admin()
+    monkeypatch.setattr(
+        coordinator,
+        "_capture_root_snapshot",
+        lambda path, **_kwargs: (
+            staged_snapshot
+            if path == coordinator.DEFAULT_STAGED_PLAN_PATH
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_load_staged_plan_for_recovery",
+        lambda *_args, **_kwargs: plan,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_load_or_reconcile_bootstrap_authority",
+        lambda **_kwargs: SimpleNamespace(outcome="consumed"),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: coordinator._MechanicalStopAttempt(
+            None,
+            (
+                coordinator.GATEWAY_UNIT_NAME,
+                coordinator.WRITER_UNIT_NAME,
+                coordinator.EDGE_UNIT_NAME,
+            ),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator.os.path,
+        "lexists",
+        lambda path: path == coordinator.DEFAULT_APPROVAL_PATH,
+    )
+
+    with pytest.raises(
+        coordinator.CoordinatorError,
+        match="recovery_staged_bootstrap_outcome_invalid",
+    ):
+        coordinator._perform_recovery_cleanup(
+            coordinator_input=coordinator_input,
+            original_run_lease={},
+            causal_state={},
+            admin_session=admin,
+        )
+
+
+def test_staged_only_recovery_uses_distinct_never_authorized_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    credential_present = True
+    coordinator_input = _token_input()
+    coordinator_input.identities.writer_uid = 1003
+    coordinator_input.identities.writer_gid = 1004
+    plan = SimpleNamespace(revision=coordinator_input.revision, sha256="4" * 64)
+    staged_snapshot = SimpleNamespace(sha256="5" * 64)
+    preclaim = {
+        "receipt_sha256": "6" * 64,
+        "result": {"outcome": "not_preapproved"},
+    }
+
+    class Admin:
+        closed = False
+
+        def query(self, _sql, *, maximum_rows):
+            assert maximum_rows == 0
+            events.append("disable_login")
+            return SimpleNamespace(command_tag="DO", rows=(), columns=())
+
+        def close(self):
+            events.append("close_admin")
+            self.closed = True
+
+    def capture(path, **_kwargs):
+        events.append(
+            "snapshot_staged"
+            if path == coordinator.DEFAULT_STAGED_PLAN_PATH
+            else "snapshot_runtime"
+        )
+        return (
+            staged_snapshot
+            if path == coordinator.DEFAULT_STAGED_PLAN_PATH
+            else None
+        )
+
+    def lexists(path):
+        if path == coordinator.CANARY_BOOTSTRAP_CREDENTIAL_PATH:
+            return credential_present
+        return False
+
+    def remove_secret(*_args, **_kwargs):
+        nonlocal credential_present
+        events.append("remove_credential")
+        credential_present = False
+
+    monkeypatch.setattr(coordinator, "_capture_root_snapshot", capture)
+    monkeypatch.setattr(
+        coordinator,
+        "_load_staged_plan_for_recovery",
+        lambda *_args, **_kwargs: plan,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: events.append("mechanical_stop")
+        or coordinator._MechanicalStopAttempt(
+            (1,),
+            (
+                coordinator.GATEWAY_UNIT_NAME,
+                coordinator.WRITER_UNIT_NAME,
+                coordinator.EDGE_UNIT_NAME,
+            ),
+            None,
+        ),
+    )
+
+    def no_envelope(_plan):
+        events.append("prove_no_provisioning")
+        raise coordinator.BootstrapEvidenceUnavailable("absent")
+
+    monkeypatch.setattr(
+        coordinator,
+        "load_bootstrap_evidence_envelope",
+        no_envelope,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "load_bootstrap_never_authorized_evidence",
+        lambda _plan: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_load_or_reconcile_bootstrap_authority",
+        lambda **_kwargs: pytest.fail("must not fabricate owner approval"),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "load_full_canary_approval",
+        lambda: pytest.fail("must not load absent final approval"),
+    )
+    monkeypatch.setattr(coordinator.os.path, "lexists", lexists)
+    monkeypatch.setattr(
+        coordinator,
+        "_validate_secret_metadata",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(coordinator, "_remove_exact_secret", remove_secret)
+    monkeypatch.setattr(
+        coordinator,
+        "mechanically_reconcile_never_authorized_preclaim",
+        lambda *_args, **_kwargs: events.append("reconcile_preclaim")
+        or preclaim,
+    )
+    marker = SimpleNamespace(
+        value={"receipt_sha256": "7" * 64},
+        path=Path("/evidence/never.json"),
+        file_sha256="8" * 64,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "persist_bootstrap_never_authorized_evidence",
+        lambda *_args, **_kwargs: events.append("persist_never_authorized")
+        or marker,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_remove_recovery_root_artifact",
+        lambda path: events.append("remove_staged")
+        if path == coordinator.DEFAULT_STAGED_PLAN_PATH
+        else None,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_remove_recovery_writer_artifact",
+        lambda _gid: events.append("remove_writer"),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_recovery_discord_retirement_inputs",
+        lambda **_kwargs: (None, None, None),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_retire_discord_token_lease",
+        lambda **_kwargs: {
+            "state": "retired",
+            "discord_token_install_receipt_sha256": "9" * 64,
+            "token_device": None,
+            "token_inode": None,
+            "receipt_sha256": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_services_are_exactly_stopped_and_disabled",
+        lambda: True,
+    )
+    causal = {
+        "discord_token_install_receipt_sha256": "9" * 64,
+        "token_device": None,
+        "token_inode": None,
+    }
+
+    result = coordinator._perform_recovery_cleanup(
+        coordinator_input=coordinator_input,
+        original_run_lease={},
+        causal_state=causal,
+        admin_session=Admin(),
+    )
+
+    assert events[:9] == [
+        "mechanical_stop",
+        "snapshot_runtime",
+        "snapshot_staged",
+        "prove_no_provisioning",
+        "disable_login",
+        "remove_credential",
+        "close_admin",
+        "reconcile_preclaim",
+        "persist_never_authorized",
+    ]
+    assert result["canonical_stop_receipt_sha256"] == "7" * 64
+    assert result["preclaim_reconciliation_state"] == "not_preapproved"
+
+
+def test_staged_only_recovery_reuses_existing_never_authorized_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    coordinator_input = _token_input()
+    coordinator_input.identities.writer_gid = 1004
+    plan = SimpleNamespace(revision=coordinator_input.revision, sha256="4" * 64)
+    staged_snapshot = SimpleNamespace(sha256="5" * 64)
+    stop_order = [
+        coordinator.GATEWAY_UNIT_NAME,
+        coordinator.WRITER_UNIT_NAME,
+        coordinator.EDGE_UNIT_NAME,
+    ]
+    preclaim = {
+        "receipt_sha256": "6" * 64,
+        "result": {"outcome": "not_preapproved"},
+    }
+    marker = SimpleNamespace(
+        value={
+            "receipt_sha256": "7" * 64,
+            "staged_plan_file_sha256": staged_snapshot.sha256,
+            "mechanical_stop_order": stop_order,
+            "preclaim_reconciliation": preclaim,
+        },
+        path=Path("/evidence/never.json"),
+        file_sha256="8" * 64,
+    )
+
+    class Admin:
+        closed = False
+
+        def query(self, _sql, *, maximum_rows):
+            pytest.fail("durable never-authorized retry must not rerun SQL")
+
+        def close(self):
+            events.append("close_admin")
+            self.closed = True
+
+    monkeypatch.setattr(
+        coordinator,
+        "_capture_root_snapshot",
+        lambda path, **_kwargs: staged_snapshot
+        if path == coordinator.DEFAULT_STAGED_PLAN_PATH
+        else None,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_load_staged_plan_for_recovery",
+        lambda *_args, **_kwargs: plan,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: events.append("mechanical_stop")
+        or coordinator._MechanicalStopAttempt(
+            (1,),
+            tuple(stop_order),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "load_bootstrap_never_authorized_evidence",
+        lambda _plan: events.append("load_never_authorized") or marker,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "load_bootstrap_evidence_envelope",
+        lambda _plan: (_ for _ in ()).throw(
+            coordinator.BootstrapEvidenceUnavailable("absent")
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator.os.path,
+        "lexists",
+        lambda _path: False,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "mechanically_reconcile_never_authorized_preclaim",
+        lambda *_args, **_kwargs: pytest.fail("must not rerun preclaim SQL"),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "persist_bootstrap_never_authorized_evidence",
+        lambda *_args, **_kwargs: pytest.fail("must not republish with new time"),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_remove_recovery_root_artifact",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_remove_recovery_writer_artifact",
+        lambda _gid: None,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_recovery_discord_retirement_inputs",
+        lambda **_kwargs: (None, None, None),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_retire_discord_token_lease",
+        lambda **_kwargs: {
+            "state": "retired",
+            "discord_token_install_receipt_sha256": "9" * 64,
+            "token_device": None,
+            "token_inode": None,
+            "receipt_sha256": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_services_are_exactly_stopped_and_disabled",
+        lambda: True,
+    )
+
+    result = coordinator._perform_recovery_cleanup(
+        coordinator_input=coordinator_input,
+        original_run_lease={},
+        causal_state={
+            "discord_token_install_receipt_sha256": "9" * 64,
+            "token_device": None,
+            "token_inode": None,
+        },
+        admin_session=Admin(),
+    )
+
+    assert events == [
+        "mechanical_stop",
+        "load_never_authorized",
+        "close_admin",
+    ]
+    assert result["canonical_stop_receipt_sha256"] == "7" * 64
+    assert result["preclaim_reconciliation_state"] == "not_preapproved"
+
+
+def test_recovery_preserves_mechanical_stop_and_evidence_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator_input = _token_input()
+    plan = SimpleNamespace(revision=coordinator_input.revision)
+    events: list[str] = []
+
+    class Admin:
+        closed = False
+
+        def query(self, _sql, *, maximum_rows):
+            assert maximum_rows == 0
+            events.append("disable_login")
+            return SimpleNamespace(command_tag="DO", rows=(), columns=())
+
+        def close(self):
+            events.append("close_admin")
+            self.closed = True
+
+    monkeypatch.setattr(
+        coordinator,
+        "_capture_root_snapshot",
+        lambda path, **_kwargs: SimpleNamespace()
+        if path == coordinator.DEFAULT_PLAN_PATH
+        else None,
+    )
+    monkeypatch.setattr(coordinator, "load_full_canary_plan", lambda: plan)
+    stop_error = RuntimeError("mechanical stop failed")
+    evidence_error = RuntimeError("evidence digest drifted")
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: events.append("mechanical_stop")
+        or coordinator._MechanicalStopAttempt(None, (), stop_error),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_load_or_reconcile_bootstrap_authority",
+        lambda **_kwargs: events.append("load_evidence")
+        or (_ for _ in ()).throw(evidence_error),
+    )
+    monkeypatch.setattr(coordinator.os.path, "lexists", lambda _path: False)
+
+    with pytest.raises(BaseExceptionGroup) as captured:
+        coordinator._perform_recovery_cleanup(
+            coordinator_input=coordinator_input,
+            original_run_lease={},
+            causal_state={},
+            admin_session=Admin(),
+        )
+    assert captured.value.exceptions[:2] == (stop_error, evidence_error)
+    assert events == [
+        "mechanical_stop",
+        "load_evidence",
+        "disable_login",
+        "close_admin",
+    ]
+
+
+def test_recovery_aggregates_both_snapshot_failures_after_safe_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator_input = _token_input()
+    stop_error = RuntimeError("fixed stop failed")
+    runtime_error = RuntimeError("runtime snapshot failed")
+    staged_error = RuntimeError("staged snapshot failed")
+    events: list[str] = []
+
+    class Admin:
+        closed = False
+
+        def query(self, _sql, *, maximum_rows):
+            assert maximum_rows == 0
+            events.append("disable_login")
+            return SimpleNamespace(command_tag="DO", rows=(), columns=())
+
+        def close(self):
+            events.append("close_admin")
+            self.closed = True
+
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: events.append("mechanical_stop")
+        or coordinator._MechanicalStopAttempt(None, (), (stop_error,)),
+    )
+
+    def capture(path, **_kwargs):
+        if path == coordinator.DEFAULT_PLAN_PATH:
+            events.append("snapshot_runtime")
+            raise runtime_error
+        events.append("snapshot_staged")
+        raise staged_error
+
+    monkeypatch.setattr(coordinator, "_capture_root_snapshot", capture)
+    monkeypatch.setattr(coordinator.os.path, "lexists", lambda _path: False)
+
+    with pytest.raises(BaseExceptionGroup) as captured:
+        coordinator._perform_recovery_cleanup(
+            coordinator_input=coordinator_input,
+            original_run_lease={},
+            causal_state={},
+            admin_session=Admin(),
+        )
+    assert captured.value.exceptions == (
+        stop_error,
+        runtime_error,
+        staged_error,
+    )
+    assert events == [
+        "mechanical_stop",
+        "snapshot_runtime",
+        "snapshot_staged",
+        "disable_login",
+        "close_admin",
+    ]
+
+
+def test_prior_plan_tamper_is_loaded_only_after_fixed_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    plan_error = RuntimeError("prior plan tampered")
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: events.append("mechanical_stop")
+        or coordinator._MechanicalStopAttempt(
+            None,
+            (
+                coordinator.GATEWAY_UNIT_NAME,
+                coordinator.WRITER_UNIT_NAME,
+                coordinator.EDGE_UNIT_NAME,
+            ),
+            (),
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_capture_root_snapshot",
+        lambda path, **_kwargs: events.append(f"snapshot:{path.name}")
+        or (
+            SimpleNamespace(raw=b"tampered")
+            if path == coordinator.DEFAULT_PLAN_PATH
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "load_full_canary_plan",
+        lambda: events.append("load_plan")
+        or (_ for _ in ()).throw(plan_error),
+    )
+
+    with pytest.raises(RuntimeError, match="prior plan tampered"):
+        coordinator._reconcile_prior_plan_before_credential_prepare(
+            admin_session=SimpleNamespace(),
+        )
+    assert events[0] == "mechanical_stop"
+    assert events.index("mechanical_stop") < events.index("load_plan")
+
+
+def test_mechanical_stop_runs_after_observation_error_and_preserves_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observation_error = RuntimeError("preclaim observation failed")
+    stop_error = RuntimeError("fixed stop failed")
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        coordinator,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda: (_ for _ in ()).throw(observation_error),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "mechanically_stop_full_canary_services",
+        lambda: events.append("mechanical_stop")
+        or (_ for _ in ()).throw(stop_error),
+    )
+
+    attempt = coordinator._attempt_mechanical_reverse_stop()
+
+    assert events == ["mechanical_stop"]
+    assert attempt.prior_preclaim_generation is None
+    assert attempt.stopped == ()
+    assert attempt.errors == (stop_error, observation_error)
+    assert isinstance(attempt.error, BaseExceptionGroup)
+    assert attempt.error.exceptions == (stop_error, observation_error)
+
+
+def test_recovery_stop_validator_resolves_full_bootstrap_receipt_truth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = SimpleNamespace(revision="1" * 40, sha256="2" * 64)
+    descriptor = {
+        "schema": "muncho-full-canary-bootstrap-evidence-descriptor.v1",
+        "path": "/var/lib/muncho-full-canary/envelope.json",
+        "file_sha256": "3" * 64,
+        "envelope_sha256": "4" * 64,
+        "attempt_id": "5" * 64,
+    }
+    evidence = SimpleNamespace(
+        approval=SimpleNamespace(value={"approved_at_unix": 10}),
+        provisioning_receipt={"applied_at_unix": 11},
+        reconciliation_receipt={
+            "receipt_sha256": "6" * 64,
+            "reconciled_at_unix": 12,
+        },
+        descriptor=SimpleNamespace(to_mapping=lambda: descriptor),
+    )
+    path = Path("/var/lib/muncho-full-canary/stopped.json")
+    preclaim = {
+        "receipt_sha256": "7" * 64,
+        "result": {"outcome": "retired"},
+    }
+    unsigned = {
+        "schema": coordinator.FULL_CANARY_RECEIPT_SCHEMA,
+        "stage": "stopped",
+        "revision": plan.revision,
+        "full_canary_plan_sha256": plan.sha256,
+        "units_enabled": False,
+        "reason": "operator_requested",
+        "stop_order": [
+            coordinator.GATEWAY_UNIT_NAME,
+            coordinator.WRITER_UNIT_NAME,
+            coordinator.EDGE_UNIT_NAME,
+        ],
+        "stopped_at_unix": 13,
+        "receipt_path": str(path),
+        "bootstrap_evidence_present": True,
+        "bootstrap_evidence_descriptor": descriptor,
+        "bootstrap_never_authorized_evidence": None,
+        "owner_approval_receipt": {"scope": "exact"},
+        "owner_approval_receipt_sha256": "8" * 64,
+        "bootstrap_provisioning_receipt": {"receipt_sha256": "9" * 64},
+        "bootstrap_reconciliation": evidence.reconciliation_receipt,
+        "bootstrap_reconciliation_complete": True,
+        "bootstrap_authority_may_require_owner_cleanup": False,
+        "bootstrap_durable_evidence_recovery_required": False,
+        "preclaim_reconciliation": preclaim,
+    }
+    receipt = {
+        **unsigned,
+        "receipt_sha256": coordinator._sha256_json(unsigned),
+    }
+    monkeypatch.setattr(
+        coordinator,
+        "_stable_root_read",
+        lambda *_args, **_kwargs: coordinator._canonical_bytes(receipt),
+    )
+    resolver_calls: list[Path] = []
+
+    def reject_copied_truth(receipt_path, *, plan):
+        resolver_calls.append(receipt_path)
+        raise RuntimeError("copied approval/provisioning/flags drifted")
+
+    monkeypatch.setattr(
+        coordinator,
+        "load_bootstrap_evidence_from_receipt",
+        reject_copied_truth,
+    )
+
+    with pytest.raises(
+        coordinator.CoordinatorError,
+        match="recovery_stop_receipt_bootstrap_truth_invalid",
+    ):
+        coordinator._validate_recovery_stop_receipt(
+            receipt,
+            plan=plan,
+            expected_bootstrap_reconciliation=evidence,
+        )
+    assert resolver_calls == [path]
+
+
+def test_manual_discord_retirement_stops_before_tampered_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator_input = _token_input()
+    plan = SimpleNamespace(revision=coordinator_input.revision)
+    coordinator_input.base_plan = plan
+    gate = {}
+    events: list[str] = []
+    monkeypatch.setattr(coordinator, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        coordinator,
+        "load_coordinator_input",
+        lambda: events.append("load_input") or coordinator_input,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "validate_dedicated_canary_host",
+        lambda _plan: events.append("validate_host") or {},
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "discord_retirement_gate",
+        lambda: events.append("gate") or gate,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_load_terminal_recovery_journal",
+        lambda _input: events.append("journal") or {},
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_revalidate_discord_retirement_gate_source",
+        lambda **_kwargs: events.append("revalidate_gate") or None,
+    )
+    monkeypatch.setattr(
+        coordinator.os.path,
+        "lexists",
+        lambda path: path == coordinator.DEFAULT_PLAN_PATH,
+    )
+    monkeypatch.setattr(coordinator, "load_full_canary_plan", lambda: plan)
+    monkeypatch.setattr(
+        coordinator,
+        "_attempt_mechanical_reverse_stop",
+        lambda: events.append("mechanical_stop")
+        or coordinator._MechanicalStopAttempt(
+            None,
+            (
+                coordinator.GATEWAY_UNIT_NAME,
+                coordinator.WRITER_UNIT_NAME,
+                coordinator.EDGE_UNIT_NAME,
+            ),
+            None,
+        ),
+    )
+
+    def tampered(_plan):
+        events.append("load_evidence")
+        raise RuntimeError("evidence digest drifted")
+
+    monkeypatch.setattr(coordinator, "load_bootstrap_evidence_envelope", tampered)
+
+    with pytest.raises(
+        coordinator.CoordinatorError,
+        match="discord_token_recovery_bootstrap_evidence_required",
+    ):
+        coordinator.stop_and_retire_discord_token(
+            gate_emitter=lambda _gate: events.append("emit_gate"),
+            ack_reader=lambda **_kwargs: events.append("ack") or {},
+        )
+    assert events == [
+        "mechanical_stop",
+        "load_input",
+        "validate_host",
+        "gate",
+        "emit_gate",
+        "ack",
+        "journal",
+        "revalidate_gate",
+        "load_evidence",
+    ]
 
 
 @pytest.mark.parametrize(

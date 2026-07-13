@@ -51,6 +51,7 @@ from gateway.canonical_full_canary_runtime import (
     DEFAULT_WRITER_CONFIG,
     DEFAULT_WRITER_CONFIG_SOURCE,
     EDGE_UNIT_NAME,
+    FULL_CANARY_RECEIPT_SCHEMA,
     GATEWAY_UNIT_NAME,
     WRITER_UNIT_NAME,
     ExactArtifact,
@@ -59,6 +60,12 @@ from gateway.canonical_full_canary_runtime import (
     FullCanaryOwnerApproval,
     FullCanaryPlan,
     PreopenedSessionBootstrapProvisioner,
+    BootstrapEvidenceUnavailable,
+    BootstrapNeverAuthorizedEvidence,
+    BootstrapReconciliationEvidence,
+    _build_canary_bootstrap_provisioning_request,
+    _validate_canary_bootstrap_reconciliation_receipt,
+    _validate_artifact_source,
     _validate_edge_config,
     _validate_gateway_config,
     _validate_writer_config,
@@ -73,7 +80,18 @@ from gateway.canonical_full_canary_runtime import (
     _lifecycle_lock,
     _require_root_linux,
     validate_dedicated_canary_host,
+    validated_bootstrap_reconciliation_evidence,
+    load_bootstrap_evidence_envelope,
+    load_bootstrap_evidence_from_receipt,
+    load_bootstrap_never_authorized_evidence,
+    load_full_canary_approval,
     load_full_canary_plan,
+    mechanically_reconcile_never_authorized_preclaim,
+    mechanically_stop_full_canary_services,
+    observe_canary_preclaim_reconciliation_generation,
+    persist_bootstrap_evidence_envelope,
+    persist_bootstrap_never_authorized_evidence,
+    validate_canary_preclaim_reconciliation_receipt,
 )
 from gateway.canonical_full_canary_live_driver import (
     HonestFullCanaryDriver,
@@ -2346,7 +2364,7 @@ def load_credential_prepare_approval(
     if path != CREDENTIAL_PREPARE_APPROVAL_PATH:
         _fail("credential_prepare_approval_path_not_fixed")
     raw = _stable_root_read(
-        DISCORD_TOKEN_INSTALL_APPROVAL_PATH,
+        CREDENTIAL_PREPARE_APPROVAL_PATH,
         maximum=MAX_OWNER_APPROVAL_BYTES,
     )
     approval = CredentialPrepareApproval.from_mapping(
@@ -5215,6 +5233,134 @@ def _error_code_and_phase(
     return "coordinator_execution_failed", fallback_phase
 
 
+@dataclass(frozen=True)
+class _PriorPlanReconciliation:
+    runtime_snapshot: _RootFileSnapshot | None
+    staged_snapshot: _RootFileSnapshot | None
+    preclaim_reconciliation: Mapping[str, Any] | None
+
+
+def _reconcile_prior_plan_before_credential_prepare(
+    *,
+    admin_session: VerifiedTLSBootstrapAdminSession,
+) -> _PriorPlanReconciliation:
+    """Retire prior plan truth before a new transient credential exists."""
+
+    # The fixed stop is intentionally independent of every mutable plan and
+    # evidence byte.  A corrupt prior plan must never keep services running.
+    mechanical = _attempt_mechanical_reverse_stop()
+    errors = list(mechanical.errors)
+    runtime_snapshot: _RootFileSnapshot | None = None
+    staged_snapshot: _RootFileSnapshot | None = None
+    try:
+        runtime_snapshot = _capture_root_snapshot(DEFAULT_PLAN_PATH)
+    except BaseException as exc:
+        errors.append(exc)
+    try:
+        staged_snapshot = _capture_root_snapshot(DEFAULT_STAGED_PLAN_PATH)
+    except BaseException as exc:
+        errors.append(exc)
+    if errors:
+        _raise_preserving_cleanup_errors(
+            "prior-plan mechanical stop/snapshot failed",
+            errors,
+        )
+    if runtime_snapshot is None:
+        if staged_snapshot is not None:
+            _fail("prestage_runtime_plan_missing")
+        return _PriorPlanReconciliation(None, None, None)
+    previous: FullCanaryPlan | None = None
+    try:
+        previous = load_full_canary_plan()
+        if staged_snapshot is not None:
+            staged_previous = FullCanaryPlan.from_mapping(
+                _decode_mapping(
+                    staged_snapshot.raw,
+                    code="prestage_plan_invalid",
+                )
+            )
+            if staged_previous.to_mapping() != previous.to_mapping():
+                _fail("prestage_plan_runtime_drifted")
+    except BaseException as exc:
+        errors.append(exc)
+    prior_evidence: BootstrapReconciliationEvidence | None = None
+    if previous is not None:
+        try:
+            prior_evidence = _load_or_reconcile_bootstrap_authority(
+                plan=previous,
+                admin_session=admin_session,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+    prior_stop: Mapping[str, Any] | None = None
+    if previous is not None and prior_evidence is not None and not errors:
+        try:
+            prior_stop = FullCanaryLifecycle(
+                previous,
+                bootstrap_reconciliation_evidence=prior_evidence,
+            ).attest_stopped_after_mechanical_stop(
+                reason="operator_requested",
+                stopped=mechanical.stopped,
+                prior_generation=mechanical.prior_preclaim_generation,
+            )
+            _validate_recovery_stop_receipt(
+                prior_stop,
+                plan=previous,
+                expected_bootstrap_reconciliation=prior_evidence,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+    _raise_preserving_cleanup_errors(
+        "prior-plan mechanical stop/evidence reconciliation failed",
+        errors,
+    )
+    if prior_stop is None:
+        raise AssertionError("prior-plan stop receipt is unavailable")
+    prior_preclaim = prior_stop.get("preclaim_reconciliation")
+    if not isinstance(prior_preclaim, Mapping):
+        _fail("prestage_preclaim_reconciliation_missing")
+    return _PriorPlanReconciliation(
+        runtime_snapshot=runtime_snapshot,
+        staged_snapshot=staged_snapshot,
+        preclaim_reconciliation=copy.deepcopy(dict(prior_preclaim)),
+    )
+
+
+def _stop_failed_driver_services(plan: FullCanaryPlan) -> None:
+    """Always attempt reverse-order stop even if durable evidence is unreadable."""
+
+    mechanical = _attempt_mechanical_reverse_stop()
+    errors = list(mechanical.errors)
+    durable_evidence: BootstrapReconciliationEvidence | None = None
+    try:
+        durable_evidence = load_bootstrap_evidence_envelope(plan)
+    except BootstrapEvidenceUnavailable:
+        pass
+    except BaseException as exc:
+        errors.append(exc)
+    if not errors:
+        try:
+            lifecycle = (
+                FullCanaryLifecycle(plan)
+                if durable_evidence is None
+                else FullCanaryLifecycle(
+                    plan,
+                    bootstrap_reconciliation_evidence=durable_evidence,
+                )
+            )
+            lifecycle.attest_stopped_after_mechanical_stop(
+                reason="verification_failed",
+                stopped=mechanical.stopped,
+                prior_generation=mechanical.prior_preclaim_generation,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+    _raise_preserving_cleanup_errors(
+        "failed-driver mechanical stop/evidence attestation failed",
+        errors,
+    )
+
+
 def run_full_canary(
     *,
     frame_emitter: Callable[[Mapping[str, Any]], None],
@@ -5252,6 +5398,7 @@ def run_full_canary(
     prior_writer: _WriterSnapshot | None = None
     prior_staged_plan: _RootFileSnapshot | None = None
     prior_runtime_plan: _RootFileSnapshot | None = None
+    prior_preclaim_reconciliation: Mapping[str, Any] | None = None
     process_lease: CoordinatorProcessLease | None = None
 
     with _SignalFence() as signal_fence:
@@ -5300,6 +5447,13 @@ def run_full_canary(
                     coordinator_input.tls_peer_certificate_sha256
                 ),
             )
+            phase = "prior_plan_reconciliation"
+            prior = _reconcile_prior_plan_before_credential_prepare(
+                admin_session=admin_session,
+            )
+            prior_runtime_plan = prior.runtime_snapshot
+            prior_staged_plan = prior.staged_snapshot
+            prior_preclaim_reconciliation = prior.preclaim_reconciliation
             credential_lease = BootstrapCredentialLease(
                 coordinator_input=coordinator_input,
                 admin_session=admin_session,
@@ -5311,26 +5465,10 @@ def run_full_canary(
                 coordinator_input.identities.writer_gid
             )
 
-            def reconcile_previous() -> None:
-                nonlocal prior_staged_plan, prior_runtime_plan
-                prior_runtime_plan = _capture_root_snapshot(DEFAULT_PLAN_PATH)
-                if prior_runtime_plan is None:
+            def reconcile_previous() -> Mapping[str, Any] | None:
+                if prior_preclaim_reconciliation is None:
                     _fail("prestage_runtime_plan_missing")
-                previous = load_full_canary_plan()
-                prior_staged_plan = _capture_root_snapshot(DEFAULT_STAGED_PLAN_PATH)
-                if prior_staged_plan is not None:
-                    try:
-                        staged_previous = FullCanaryPlan.from_mapping(
-                            _decode_mapping(
-                                prior_staged_plan.raw,
-                                code="prestage_plan_invalid",
-                            )
-                        )
-                    except (TypeError, ValueError) as exc:
-                        raise CoordinatorError("prestage_plan_invalid") from exc
-                    if staged_previous.to_mapping() != previous.to_mapping():
-                        _fail("prestage_plan_runtime_drifted")
-                FullCanaryLifecycle(previous).stop(reason="operator_requested")
+                return copy.deepcopy(dict(prior_preclaim_reconciliation))
 
             def publish_staged_writer(
                 path: Path,
@@ -5547,7 +5685,7 @@ def run_full_canary(
                     cleanup_errors.append(exc)
             if driver_started and live_result is None and plan is not None:
                 try:
-                    FullCanaryLifecycle(plan).stop(reason="verification_failed")
+                    _stop_failed_driver_services(plan)
                     if not _services_are_exactly_stopped_and_disabled():
                         raise CoordinatorCleanupBlocked(
                             "full_canary_terminal_service_truth_unconfirmed",
@@ -6477,6 +6615,7 @@ def _validate_recovery_stop_receipt(
     value: Mapping[str, Any],
     *,
     plan: FullCanaryPlan,
+    expected_bootstrap_reconciliation: (BootstrapReconciliationEvidence | None) = None,
 ) -> tuple[str, str, str]:
     if not isinstance(value, Mapping):
         _fail("recovery_stop_receipt_invalid", phase="recovery_lifecycle")
@@ -6485,14 +6624,48 @@ def _validate_recovery_stop_receipt(
     preclaim = receipt.get("preclaim_reconciliation")
     result = preclaim.get("result") if isinstance(preclaim, Mapping) else None
     preclaim_state = result.get("outcome") if isinstance(result, Mapping) else None
+    bootstrap_reconciliation = receipt.get("bootstrap_reconciliation")
+    bootstrap_descriptor = receipt.get("bootstrap_evidence_descriptor")
+    expected_reconciliation = (
+        None
+        if expected_bootstrap_reconciliation is None
+        else expected_bootstrap_reconciliation.reconciliation_receipt
+    )
+    expected_descriptor = (
+        None
+        if expected_bootstrap_reconciliation is None
+        else expected_bootstrap_reconciliation.descriptor.to_mapping()
+        if expected_bootstrap_reconciliation.descriptor is not None
+        else None
+    )
+    never_authorized = receipt.get("bootstrap_never_authorized_evidence")
     receipt_path = receipt.get("receipt_path")
+    stopped_at = receipt.get("stopped_at_unix")
     if (
-        receipt.get("stage") != "stopped"
+        receipt.get("schema") != FULL_CANARY_RECEIPT_SCHEMA
+        or receipt.get("stage") != "stopped"
         or receipt.get("revision") != plan.revision
         or receipt.get("full_canary_plan_sha256") != plan.sha256
         or receipt.get("units_enabled") is not False
+        or receipt.get("reason")
+        not in {
+            "operator_requested",
+            "verification_complete",
+            "verification_failed",
+        }
+        or receipt.get("stop_order")
+        != [GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME]
+        or type(stopped_at) is not int
+        or stopped_at < 0
         or receipt.get("receipt_sha256") != _sha256_json(unsigned)
         or not isinstance(receipt_path, str)
+        or bootstrap_reconciliation != expected_reconciliation
+        or bootstrap_descriptor != expected_descriptor
+        or "bootstrap_never_authorized_evidence" not in receipt
+        or (
+            expected_bootstrap_reconciliation is not None
+            and never_authorized is not None
+        )
         or preclaim_state not in {"retired", "claimed", "not_preapproved"}
         or not isinstance(preclaim, Mapping)
         or preclaim.get("receipt_sha256") is None
@@ -6504,6 +6677,85 @@ def _validate_recovery_stop_receipt(
     )
     if persisted != _canonical_bytes(receipt):
         _fail("recovery_stop_receipt_not_durable", phase="recovery_lifecycle")
+    if expected_bootstrap_reconciliation is not None:
+        approval_time = expected_bootstrap_reconciliation.approval.value.get(
+            "approved_at_unix"
+        )
+        reconciliation_time = (
+            expected_bootstrap_reconciliation.reconciliation_receipt.get(
+                "reconciled_at_unix"
+            )
+        )
+        provisioning = expected_bootstrap_reconciliation.provisioning_receipt
+        provisioning_time = (
+            None
+            if provisioning is None
+            else provisioning.get("applied_at_unix")
+        )
+        if (
+            type(approval_time) is not int
+            or type(reconciliation_time) is not int
+            or (
+                provisioning_time is not None
+                and type(provisioning_time) is not int
+            )
+            or not approval_time
+            <= (
+                approval_time
+                if provisioning_time is None
+                else provisioning_time
+            )
+            <= reconciliation_time
+            <= stopped_at
+        ):
+            _fail(
+                "recovery_stop_receipt_temporal_order_invalid",
+                phase="recovery_lifecycle",
+            )
+        try:
+            resolved = load_bootstrap_evidence_from_receipt(
+                Path(receipt_path),
+                plan=plan,
+            )
+        except BaseException as exc:
+            raise CoordinatorError(
+                "recovery_stop_receipt_bootstrap_truth_invalid",
+                phase="recovery_lifecycle",
+            ) from exc
+        if resolved != expected_bootstrap_reconciliation:
+            _fail(
+                "recovery_stop_receipt_bootstrap_truth_drifted",
+                phase="recovery_lifecycle",
+            )
+    elif (
+        receipt.get("bootstrap_evidence_present") is not False
+        or receipt.get("bootstrap_evidence_descriptor") is not None
+        or receipt.get("owner_approval_receipt") is not None
+        or receipt.get("owner_approval_receipt_sha256") is not None
+        or receipt.get("bootstrap_provisioning_receipt") is not None
+        or receipt.get("bootstrap_reconciliation") is not None
+        or receipt.get("bootstrap_reconciliation_complete") is not False
+        or receipt.get("bootstrap_durable_evidence_recovery_required")
+        is not False
+        or (
+            never_authorized is not None
+            and (
+                not isinstance(never_authorized, Mapping)
+                or set(never_authorized)
+                != {"path", "file_sha256", "receipt_sha256"}
+                or _SHA256_RE.fullmatch(
+                    str(never_authorized.get("file_sha256", ""))
+                )
+                is None
+                or _SHA256_RE.fullmatch(
+                    str(never_authorized.get("receipt_sha256", ""))
+                )
+                is None
+                or not isinstance(never_authorized.get("path"), str)
+            )
+        )
+    ):
+        _fail("recovery_stop_receipt_invalid", phase="recovery_lifecycle")
     _digest(
         preclaim["receipt_sha256"],
         "recovery_preclaim_receipt_digest_invalid",
@@ -8490,6 +8742,157 @@ def _revalidate_recovery_worker_snapshot(
         _fail("recovery_worker_identity_drifted", phase="recovery_process")
 
 
+class _DeferredRecoveryAdminClose:
+    """Let sealed SQL finish while retaining the session for login disable."""
+
+    def __init__(self, session: VerifiedTLSBootstrapAdminSession) -> None:
+        self._session = session
+        self.closed = False
+
+    def query(self, sql: str, *, maximum_rows: int) -> Any:
+        if self.closed:
+            _fail("recovery_reconciliation_session_closed")
+        return self._session.query(sql, maximum_rows=maximum_rows)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _reconcile_bootstrap_authority_for_recovery(
+    *,
+    plan: FullCanaryPlan,
+    admin_session: VerifiedTLSBootstrapAdminSession,
+) -> BootstrapReconciliationEvidence:
+    """Replay only the sealed retirement SQL on a verified recovery session."""
+
+    try:
+        approval = load_full_canary_approval()
+        writer_raw = _validate_artifact_source(
+            plan.artifacts["writer_config"],
+            label="writer_config",
+        )
+        writer_config = _validate_writer_config(
+            writer_raw,
+            plan.identities,
+            plan=plan,
+            expected_approval_source_sha256=str(
+                approval.value["approval_source_sha256"]
+            ),
+            require_fresh_canary_scope=False,
+        )
+        request = _build_canary_bootstrap_provisioning_request(
+            plan,
+            approval,
+            writer_config,
+        )
+        deferred = _DeferredRecoveryAdminClose(admin_session)
+        provisioner = PreopenedSessionBootstrapProvisioner(
+            deferred,
+            tls_peer_certificate_sha256=(admin_session.tls_peer_certificate_sha256),
+        )
+        raw_reconciliation = provisioner.reconcile(request, None)
+        if not deferred.closed:
+            _fail(
+                "recovery_reconciliation_session_fence_missing",
+                phase="recovery_database_cleanup",
+            )
+        reconciliation = _validate_canary_bootstrap_reconciliation_receipt(
+            raw_reconciliation,
+            request=request,
+            provisioning_receipt=None,
+            approval=approval,
+            expected_session_continuity="recovery_session",
+        )
+        return persist_bootstrap_evidence_envelope(
+            plan,
+            validated_bootstrap_reconciliation_evidence(
+                plan=plan,
+                approval=approval,
+                request=request,
+                provisioning_receipt=None,
+                reconciliation_receipt=reconciliation,
+                expected_session_continuity="recovery_session",
+            ),
+        )
+    except CoordinatorError:
+        raise
+    except BaseException as exc:
+        raise CoordinatorCleanupBlocked(
+            "bootstrap_sql_reconciliation_blocked",
+            phase="recovery_database_cleanup",
+        ) from exc
+
+
+def _load_or_reconcile_bootstrap_authority(
+    *,
+    plan: FullCanaryPlan,
+    admin_session: VerifiedTLSBootstrapAdminSession,
+) -> BootstrapReconciliationEvidence:
+    try:
+        return load_bootstrap_evidence_envelope(plan)
+    except BootstrapEvidenceUnavailable:
+        return _reconcile_bootstrap_authority_for_recovery(
+            plan=plan,
+            admin_session=admin_session,
+        )
+
+
+@dataclass(frozen=True)
+class _MechanicalStopAttempt:
+    prior_preclaim_generation: tuple[int, ...] | None
+    stopped: tuple[str, ...]
+    errors: tuple[BaseException, ...] | BaseException | None = ()
+
+    def __post_init__(self) -> None:
+        if self.errors is None:
+            object.__setattr__(self, "errors", ())
+        elif isinstance(self.errors, BaseException):
+            object.__setattr__(self, "errors", (self.errors,))
+        elif not isinstance(self.errors, tuple) or any(
+            not isinstance(item, BaseException) for item in self.errors
+        ):
+            raise TypeError("mechanical stop errors are invalid")
+
+    @property
+    def error(self) -> BaseException | None:
+        errors = self.errors
+        assert isinstance(errors, tuple)
+        if not errors:
+            return None
+        if len(errors) == 1:
+            return errors[0]
+        return BaseExceptionGroup(
+            "preclaim observation and mechanical reverse stop failed",
+            list(errors),
+        )
+
+
+def _attempt_mechanical_reverse_stop() -> _MechanicalStopAttempt:
+    errors: list[BaseException] = []
+    prior: tuple[int, ...] | None = None
+    try:
+        stopped = mechanically_stop_full_canary_services()
+    except BaseException as exc:
+        errors.append(exc)
+        stopped = ()
+    try:
+        prior = observe_canary_preclaim_reconciliation_generation()
+    except BaseException as exc:
+        errors.append(exc)
+    return _MechanicalStopAttempt(prior, stopped, tuple(errors))
+
+
+def _raise_preserving_cleanup_errors(
+    label: str,
+    errors: Sequence[BaseException],
+) -> None:
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise errors[0]
+    raise BaseExceptionGroup(label, list(errors))
+
+
 def _perform_recovery_cleanup(
     *,
     coordinator_input: CoordinatorInput,
@@ -8497,65 +8900,277 @@ def _perform_recovery_cleanup(
     causal_state: Mapping[str, Any],
     admin_session: VerifiedTLSBootstrapAdminSession,
 ) -> Mapping[str, Any]:
-    database_cleanup = admin_session.query(
-        _BOOTSTRAP_ROLE_DISABLE_SQL,
-        maximum_rows=0,
-    )
-    _require_recovery_do_result(
-        database_cleanup,
-        code="recovery_database_cleanup_unconfirmed",
-    )
-    if os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH):
-        bootstrap_item = _validate_secret_metadata(
-            CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-            uid=coordinator_input.identities.writer_uid,
-            gid=coordinator_input.identities.writer_gid,
-            maximum=MAX_ADMIN_PASSWORD_BYTES,
-        )
-        _remove_exact_secret(
-            CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-            bootstrap_item,
-            state=_SecretRemovalState(),
-        )
-    admin_session.close()
-
-    runtime_snapshot = _capture_root_snapshot(DEFAULT_PLAN_PATH)
-    staged_snapshot = _capture_root_snapshot(DEFAULT_STAGED_PLAN_PATH)
+    # Fixed mechanical reverse-stop is the first recovery action.  Neither a
+    # plan/evidence snapshot nor a failing preclaim observation may delay it.
+    mechanical = _attempt_mechanical_reverse_stop()
+    cleanup_errors: list[BaseException] = list(mechanical.errors)
+    runtime_snapshot: _RootFileSnapshot | None = None
+    staged_snapshot: _RootFileSnapshot | None = None
+    snapshot_failed = False
+    for path, target in (
+        (DEFAULT_PLAN_PATH, "runtime"),
+        (DEFAULT_STAGED_PLAN_PATH, "staged"),
+    ):
+        try:
+            captured = _capture_root_snapshot(path)
+            if target == "runtime":
+                runtime_snapshot = captured
+            else:
+                staged_snapshot = captured
+        except BaseException as exc:
+            snapshot_failed = True
+            cleanup_errors.append(exc)
     canonical_stop_sha256: str | None = None
     preplan_report_sha256: str | None = None
     preclaim_sha256: str | None = None
     preclaim_state: str | None = None
-    if runtime_snapshot is not None:
-        plan = load_full_canary_plan()
-        if plan.revision != coordinator_input.revision:
-            _fail("recovery_runtime_plan_drifted", phase="recovery_lifecycle")
+    plan: FullCanaryPlan | None = None
+    staged_plan: FullCanaryPlan | None = None
+    plan_load_failed = False
+    bootstrap_reconciliation: BootstrapReconciliationEvidence | None = None
+    never_authorized_evidence: BootstrapNeverAuthorizedEvidence | None = None
+    staged_never_authorized = False
+    if not snapshot_failed and runtime_snapshot is not None:
+        try:
+            plan = load_full_canary_plan()
+            if plan.revision != coordinator_input.revision:
+                raise CoordinatorError(
+                    "recovery_runtime_plan_drifted",
+                    phase="recovery_lifecycle",
+                )
+        except BaseException as exc:
+            plan_load_failed = True
+            cleanup_errors.append(exc)
         if staged_snapshot is not None:
-            staged_plan = _load_staged_plan_for_recovery(
+            try:
+                staged_plan = _load_staged_plan_for_recovery(
+                    staged_snapshot,
+                    coordinator_input=coordinator_input,
+                )
+            except BaseException as exc:
+                plan_load_failed = True
+                cleanup_errors.append(exc)
+        if (
+            plan is not None
+            and staged_snapshot is not None
+            and staged_plan is not None
+            and staged_plan.to_mapping() != plan.to_mapping()
+        ):
+            plan_load_failed = True
+            cleanup_errors.append(
+                CoordinatorError(
+                    "recovery_plan_pair_drifted",
+                    phase="recovery_lifecycle",
+                )
+            )
+        if plan is not None and not plan_load_failed:
+            try:
+                bootstrap_reconciliation = _load_or_reconcile_bootstrap_authority(
+                    plan=plan,
+                    admin_session=admin_session,
+                )
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+    elif not snapshot_failed and staged_snapshot is not None:
+        try:
+            plan = _load_staged_plan_for_recovery(
                 staged_snapshot,
                 coordinator_input=coordinator_input,
             )
-            if staged_plan.to_mapping() != plan.to_mapping():
-                _fail("recovery_plan_pair_drifted", phase="recovery_lifecycle")
-        stop_receipt = FullCanaryLifecycle(plan).stop(reason="operator_requested")
-        (
-            canonical_stop_sha256,
-            preclaim_sha256,
-            preclaim_state,
-        ) = _validate_recovery_stop_receipt(stop_receipt, plan=plan)
-    elif staged_snapshot is not None:
-        plan = _load_staged_plan_for_recovery(
-            staged_snapshot,
-            coordinator_input=coordinator_input,
+        except BaseException as exc:
+            plan_load_failed = True
+            cleanup_errors.append(exc)
+        if plan is not None and not os.path.lexists(DEFAULT_APPROVAL_PATH):
+            try:
+                never_authorized_evidence = (
+                    load_bootstrap_never_authorized_evidence(plan)
+                )
+            except FileNotFoundError:
+                try:
+                    bootstrap_reconciliation = (
+                        load_bootstrap_evidence_envelope(plan)
+                    )
+                except BootstrapEvidenceUnavailable:
+                    staged_never_authorized = True
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+            else:
+                staged_never_authorized = True
+                try:
+                    load_bootstrap_evidence_envelope(plan)
+                except BootstrapEvidenceUnavailable:
+                    pass
+                else:
+                    cleanup_errors.append(
+                        CoordinatorCleanupBlocked(
+                            "recovery_never_authorized_evidence_conflicts",
+                            phase="recovery_database_cleanup",
+                        )
+                    )
+        elif plan is not None:
+            try:
+                bootstrap_reconciliation = (
+                    _load_or_reconcile_bootstrap_authority(
+                        plan=plan,
+                        admin_session=admin_session,
+                    )
+                )
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        if (
+            plan is not None
+            and
+            bootstrap_reconciliation is not None
+            and bootstrap_reconciliation.outcome
+            not in {"not_authorized", "retired"}
+        ):
+            cleanup_errors.append(
+                CoordinatorCleanupBlocked(
+                    "recovery_staged_bootstrap_outcome_invalid",
+                    phase="recovery_database_cleanup",
+                )
+            )
+
+    database_disabled = never_authorized_evidence is not None
+    if not database_disabled:
+        try:
+            database_cleanup = admin_session.query(
+                _BOOTSTRAP_ROLE_DISABLE_SQL,
+                maximum_rows=0,
+            )
+            _require_recovery_do_result(
+                database_cleanup,
+                code="recovery_database_cleanup_unconfirmed",
+            )
+            database_disabled = True
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+    try:
+        if os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH):
+            bootstrap_item = _validate_secret_metadata(
+                CANARY_BOOTSTRAP_CREDENTIAL_PATH,
+                uid=coordinator_input.identities.writer_uid,
+                gid=coordinator_input.identities.writer_gid,
+                maximum=MAX_ADMIN_PASSWORD_BYTES,
+            )
+            _remove_exact_secret(
+                CANARY_BOOTSTRAP_CREDENTIAL_PATH,
+                bootstrap_item,
+                state=_SecretRemovalState(),
+            )
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    try:
+        admin_session.close()
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+
+    # Unknown snapshot/plan truth cannot authorize any semantic artifact
+    # mutation.  The fixed stop, database disable, exact credential removal,
+    # and admin close above are still attempted and every error is retained.
+    if snapshot_failed or plan_load_failed:
+        _raise_preserving_cleanup_errors(
+            "recovery snapshot/plan and mechanical cleanup failed",
+            cleanup_errors,
         )
-        stop_receipt = FullCanaryLifecycle(plan).stop(reason="operator_requested")
-        (
-            canonical_stop_sha256,
-            preclaim_sha256,
-            preclaim_state,
-        ) = _validate_recovery_stop_receipt(stop_receipt, plan=plan)
-        _remove_recovery_root_artifact(DEFAULT_STAGED_PLAN_PATH)
-        _remove_recovery_writer_artifact(coordinator_input.identities.writer_gid)
+
+    if plan is not None:
+        if (
+            staged_never_authorized
+            and not cleanup_errors
+            and database_disabled
+            and not os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH)
+        ):
+            try:
+                if never_authorized_evidence is None:
+                    preclaim = mechanically_reconcile_never_authorized_preclaim(
+                        plan,
+                        prior_generation=(
+                            mechanical.prior_preclaim_generation
+                        ),
+                    )
+                    never_authorized_evidence = (
+                        persist_bootstrap_never_authorized_evidence(
+                            plan,
+                            staged_plan_file_sha256=staged_snapshot.sha256,
+                            bootstrap_login_disabled=True,
+                            stopped=mechanical.stopped,
+                            preclaim_reconciliation=preclaim,
+                        )
+                    )
+                else:
+                    if (
+                        never_authorized_evidence.value[
+                            "staged_plan_file_sha256"
+                        ]
+                        != staged_snapshot.sha256
+                        or never_authorized_evidence.value[
+                            "mechanical_stop_order"
+                        ]
+                        != list(mechanical.stopped)
+                    ):
+                        _fail(
+                            "recovery_never_authorized_evidence_drifted",
+                            phase="recovery_database_cleanup",
+                        )
+                    preclaim = never_authorized_evidence.value[
+                        "preclaim_reconciliation"
+                    ]
+                canonical_stop_sha256 = (
+                    never_authorized_evidence.value["receipt_sha256"]
+                )
+                preclaim_sha256 = preclaim["receipt_sha256"]
+                preclaim_state = preclaim["result"]["outcome"]
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        elif bootstrap_reconciliation is not None and not cleanup_errors:
+            try:
+                stop_receipt = FullCanaryLifecycle(
+                    plan,
+                    bootstrap_reconciliation_evidence=(
+                        bootstrap_reconciliation
+                    ),
+                ).attest_stopped_after_mechanical_stop(
+                    reason="operator_requested",
+                    stopped=mechanical.stopped,
+                    prior_generation=mechanical.prior_preclaim_generation,
+                )
+                (
+                    canonical_stop_sha256,
+                    preclaim_sha256,
+                    preclaim_state,
+                ) = _validate_recovery_stop_receipt(
+                    stop_receipt,
+                    plan=plan,
+                    expected_bootstrap_reconciliation=(
+                        bootstrap_reconciliation
+                    ),
+                )
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        elif not cleanup_errors:
+            cleanup_errors.append(
+                CoordinatorCleanupBlocked(
+                    "recovery_bootstrap_reconciliation_missing",
+                    phase="recovery_database_cleanup",
+                )
+            )
+        _raise_preserving_cleanup_errors(
+            "recovery stop/evidence cleanup failed",
+            cleanup_errors,
+        )
+        if runtime_snapshot is None:
+            _remove_recovery_root_artifact(DEFAULT_STAGED_PLAN_PATH)
+            _remove_recovery_writer_artifact(
+                coordinator_input.identities.writer_gid
+            )
     else:
+        _raise_preserving_cleanup_errors(
+            "preplan mechanical/database cleanup failed",
+            cleanup_errors,
+        )
         if not _services_are_exactly_stopped_and_disabled():
             _fail(
                 "recovery_preplan_services_not_stopped",
@@ -9388,25 +10003,76 @@ def stop_and_retire_discord_token(
     """Stop/prove services and idempotently finish the token retirement."""
 
     _require_root_linux()
-    coordinator_input = load_coordinator_input()
-    validate_dedicated_canary_host(coordinator_input.base_plan)
-    gate = discord_retirement_gate()
-    gate_emitter(gate)
-    ack_reader(gate=gate)
-    _load_terminal_recovery_journal(coordinator_input)
-    _revalidate_discord_retirement_gate_source(
-        coordinator_input=coordinator_input,
-        gate=gate,
+    # Stopping the fixed services is independent of, and precedes, every
+    # operator gate/journal/ack read.  Gate failure must never leave a live
+    # canary, and a stop failure must remain visible alongside gate failure.
+    mechanical = _attempt_mechanical_reverse_stop()
+    stop_errors: list[BaseException] = []
+    if mechanical.error is not None:
+        stop_errors.append(mechanical.error)
+    coordinator_input: CoordinatorInput | None = None
+    gate: Mapping[str, Any] | None = None
+    try:
+        coordinator_input = load_coordinator_input()
+        validate_dedicated_canary_host(coordinator_input.base_plan)
+        gate = discord_retirement_gate()
+        gate_emitter(gate)
+        ack_reader(gate=gate)
+        _load_terminal_recovery_journal(coordinator_input)
+        _revalidate_discord_retirement_gate_source(
+            coordinator_input=coordinator_input,
+            gate=gate,
+        )
+    except BaseException as exc:
+        stop_errors.append(exc)
+    _raise_preserving_cleanup_errors(
+        "discord recovery mechanical stop/gate failed",
+        stop_errors,
     )
+    if coordinator_input is None or gate is None:
+        raise AssertionError("discord retirement gate state is unavailable")
     if os.path.lexists(DEFAULT_PLAN_PATH):
         active_plan = load_full_canary_plan()
         if active_plan.revision != coordinator_input.revision:
             _fail("discord_token_recovery_runtime_plan_drifted")
-        stop_receipt = FullCanaryLifecycle(active_plan).stop(
-            reason="operator_requested"
+        durable_evidence: BootstrapReconciliationEvidence | None = None
+        try:
+            durable_evidence = load_bootstrap_evidence_envelope(active_plan)
+        except (OSError, RuntimeError, ValueError) as exc:
+            wrapped = CoordinatorError(
+                "discord_token_recovery_bootstrap_evidence_required",
+                phase="discord_token_retirement",
+            )
+            wrapped.__cause__ = exc
+            stop_errors.append(wrapped)
+        if durable_evidence is not None and not stop_errors:
+            try:
+                stop_receipt = FullCanaryLifecycle(
+                    active_plan,
+                    bootstrap_reconciliation_evidence=durable_evidence,
+                ).attest_stopped_after_mechanical_stop(
+                    reason="operator_requested",
+                    stopped=mechanical.stopped,
+                    prior_generation=(
+                        mechanical.prior_preclaim_generation
+                    ),
+                )
+                _validate_recovery_stop_receipt(
+                    stop_receipt,
+                    plan=active_plan,
+                    expected_bootstrap_reconciliation=durable_evidence,
+                )
+            except BaseException as exc:
+                stop_errors.append(exc)
+        _raise_preserving_cleanup_errors(
+            "discord recovery mechanical stop/evidence failed",
+            stop_errors,
         )
-        _validate_recovery_stop_receipt(stop_receipt, plan=active_plan)
     else:
+        _raise_preserving_cleanup_errors(
+            "discord recovery mechanical stop failed",
+            stop_errors,
+        )
         if any(
             os.path.lexists(path)
             for path in (

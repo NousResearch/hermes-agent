@@ -77,6 +77,7 @@ from gateway.canonical_full_canary_runtime import (
     FullCanaryOwnerApproval,
     FullCanaryPlan,
     _api_loopback_listener_identity,
+    _validate_canary_preclaim_reconciliation_value,
     _validated_e2e_fixture,
     canonical_canary_bootstrap_authorization_sha256,
     expected_live_evidence_path,
@@ -477,7 +478,7 @@ def _decode_existing_staged_writer_config(raw: bytes) -> Mapping[str, Any]:
     return value
 
 
-PrestageReconciler = Callable[[], None]
+PrestageReconciler = Callable[[], Mapping[str, Any] | None]
 
 
 def _reconcile_existing_staged_writer_config(
@@ -514,21 +515,32 @@ def _reconcile_existing_staged_writer_config(
         or not isinstance(scope, Mapping)
     ):
         _fail("staged_writer_config_unreconciled")
-    prior_receipt_generation = observe_canary_preclaim_reconciliation_generation(
-        DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH
-    )
     try:
-        reconciler()
-        validate_canary_preclaim_reconciliation_receipt(
-            source_config_path=path,
-            source_config_raw=original_raw,
-            writer_config=config,
-            writer_uid=service["writer_uid"],
-            writer_gid=gid,
-            allowed_outcomes=frozenset({"retired", "claimed"}),
-            prior_generation=prior_receipt_generation,
-            require_fresh_generation=True,
+        prior_receipt_generation = (
+            observe_canary_preclaim_reconciliation_generation(
+                DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH
+            )
         )
+        durable = reconciler()
+        if durable is None:
+            validate_canary_preclaim_reconciliation_receipt(
+                source_config_path=path,
+                source_config_raw=original_raw,
+                writer_config=config,
+                writer_uid=service["writer_uid"],
+                writer_gid=gid,
+                allowed_outcomes=frozenset({"retired", "claimed"}),
+                prior_generation=prior_receipt_generation,
+                require_fresh_generation=True,
+            )
+        else:
+            _validate_canary_preclaim_reconciliation_value(
+                durable,
+                source_config_path=path,
+                source_config_raw=original_raw,
+                writer_config=config,
+                allowed_outcomes=frozenset({"retired", "claimed"}),
+            )
     except Exception as exc:
         raise LiveCanaryError("staged_writer_config_unreconciled") from exc
     current_raw, current = _read_staged_writer_config(

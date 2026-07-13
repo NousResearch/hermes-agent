@@ -423,6 +423,51 @@ def test_stopped_preflight_host_mismatch_never_reaches_runner_or_install(
     assert install_calls == []
 
 
+def test_preflight_reports_never_authorized_without_reconciliation_attribute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _host_receipt_plan(b"{}")
+    plan = replace(
+        plan,
+        writer_activation_receipt={
+            "activation_receipt_path": "/missing/writer-receipt.json"
+        },
+    )
+    evidence = runtime.BootstrapNeverAuthorizedEvidence(
+        value={"receipt_sha256": "9" * 64},
+        path=Path("/var/lib/muncho-full-canary/never.json"),
+        file_sha256="8" * 64,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "validate_dedicated_canary_host",
+        lambda *_args, **_kwargs: {"host": "exact"},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_validate_bootstrap_lifecycle_state",
+        lambda *_args, **_kwargs: "never_authorized_reconciled",
+    )
+
+    with pytest.raises(runtime.FullCanaryPreflightError) as raised:
+        runtime.collect_full_canary_preflight(
+            plan,
+            phase="stopped",
+            bootstrap_reconciliation_evidence=evidence,
+            runner=lambda _command: (_ for _ in ()).throw(
+                RuntimeError("service state unavailable")
+            ),
+        )
+
+    assert raised.value.report["bootstrap_credential_state"] == (
+        "never_authorized_reconciled"
+    )
+    assert (
+        raised.value.report["bootstrap_reconciliation_receipt_sha256"]
+        is None
+    )
+
+
 def test_host_is_revalidated_immediately_before_first_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2127,12 +2172,16 @@ def test_writer_scope_expiry_is_exactly_fixture_bound(
     ).sha256
     config = {
         "service": {
+            "socket_path": "/run/muncho-canonical-writer/writer.sock",
             "gateway_unit": GATEWAY_UNIT_NAME,
             "gateway_uid": identities.gateway_uid,
             "writer_uid": identities.writer_uid,
             "writer_gid": identities.writer_gid,
             "socket_gid": identities.socket_client_gid,
+            "projector_gid": identities.socket_client_gid + 100,
             "owner_discord_user_ids": [fixture["owner_discord_user_id"]],
+            "connection_timeout_seconds": 30.0,
+            "max_connections": 8,
         },
         "database": {
             "host": "10.0.0.8",
@@ -2140,13 +2189,34 @@ def test_writer_scope_expiry_is_exactly_fixture_bound(
             "port": 5432,
             "database": "muncho_canary_brain",
             "user": "canonical_brain_writer_login",
+            "ca_file": "/etc/muncho/trust/cloudsql-server-ca.pem",
+            "credential_file": "/etc/muncho/credentials/canonical-writer-db-password",
+            "connect_timeout_seconds": 5.0,
+            "io_timeout_seconds": 10.0,
         },
-        "privileges": {},
+        "privileges": {
+            "schema": "canonical_brain",
+            "table_grants": [],
+            "routine_identities": [],
+            "helper_routine_identities": [],
+            "schema_privileges": ["USAGE"],
+            "database_privileges": ["CONNECT"],
+            "role_memberships": ["canonical_brain_writer"],
+            "private_schema_identity_sha256": "e" * 64,
+            "managed_cloudsqladmin_hba_rejection_receipt": hba_receipt,
+            "managed_cloudsqladmin_hba_rejection_sha256": hba_digest,
+            "deployment_lock_key": 4_841_739_663_211_427_921,
+        },
         "discord_edge_authority": {
             "enabled": True,
             "capability_private_key_file": (
                 "/etc/muncho/keys/writer-capability-private.pem"
             ),
+            "edge_receipt_public_key_file": (
+                "/etc/muncho/keys/discord-edge-receipt-public.pem"
+            ),
+            "edge_receipt_public_key_id": "f" * 64,
+            "request_timeout_seconds": 15,
         },
         "canary_scope_preapproval": {
             "grant_id": "grant:fixture-expiry",
@@ -2183,6 +2253,49 @@ def test_writer_scope_expiry_is_exactly_fixture_bound(
         plan=plan,
         expected_approval_source_sha256=approval_source,
     )
+    for section in ("service", "database", "privileges"):
+        secret_bearing = copy.deepcopy(config)
+        secret_bearing[section]["password"] = "must-never-enter-evidence"
+        with pytest.raises(RuntimeError, match="not exact|schema"):
+            _validate_writer_config(
+                runtime._canonical_bytes(secret_bearing),
+                identities,
+                plan=plan,
+                expected_approval_source_sha256=approval_source,
+            )
+
+    expired_valid_until_ms = (int(time.time()) - 600) * 1000
+    expired_fixture = {
+        **fixture,
+        "valid_until_unix_ms": expired_valid_until_ms,
+    }
+    expired_config = copy.deepcopy(config)
+    expired_config["canary_scope_preapproval"]["expires_at"] = (
+        datetime.fromtimestamp(
+            expired_valid_until_ms // 1000,
+            tz=timezone.utc,
+        ).isoformat()
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_validated_e2e_fixture",
+        lambda _plan: expired_fixture,
+    )
+    with pytest.raises(RuntimeError, match="fixture-bound/fresh"):
+        _validate_writer_config(
+            runtime._canonical_bytes(expired_config),
+            identities,
+            plan=plan,
+            expected_approval_source_sha256=approval_source,
+        )
+    assert _validate_writer_config(
+        runtime._canonical_bytes(expired_config),
+        identities,
+        plan=plan,
+        expected_approval_source_sha256=approval_source,
+        require_fresh_canary_scope=False,
+    )
+    monkeypatch.setattr(runtime, "_validated_e2e_fixture", lambda _plan: fixture)
 
     drifted = copy.deepcopy(config)
     drifted_expiry = datetime.fromtimestamp(
@@ -2625,7 +2738,10 @@ def _direct_bootstrap_request(
             approval.value["approval_source_sha256"]
         ),
         authorization_receipt_sha256=authorization,
-        database=copy.deepcopy(config["database"]),
+        database={
+            name: copy.deepcopy(config["database"][name])
+            for name in ("host", "tls_server_name", "port", "database")
+        },
         guc_bindings=gucs,
         guc_bindings_sha256=runtime._sha256_json(gucs),
         sql_path=Path("/opt/release/scripts/sql/canonical_writer_canary_bootstrap_v1.sql"),
@@ -2638,6 +2754,206 @@ def _direct_bootstrap_request(
         retire_sql_sha256=retire_digest,
         retire_sql_bytes=retire_sql,
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "name"),
+    [
+        ("endpoint", "host"),
+        ("endpoint", "tls_server_name"),
+        ("endpoint", "port"),
+        ("endpoint", "database"),
+        *[
+            ("guc", name)
+            for name in sorted(
+                {
+                    "muncho.canonical_canary_bootstrap_database",
+                    "muncho.canonical_canary_bootstrap_grant_id",
+                    "muncho.canonical_canary_bootstrap_case_id",
+                    "muncho.canonical_canary_bootstrap_release_sha256",
+                    "muncho.canonical_canary_bootstrap_fixture_sha256",
+                    "muncho.canonical_canary_bootstrap_run_id",
+                    "muncho.canonical_canary_bootstrap_session_key_sha256",
+                    "muncho.canonical_canary_bootstrap_expires_at",
+                    "muncho.canonical_canary_bootstrap_approved_by",
+                    "muncho.canonical_canary_bootstrap_approval_source_sha256",
+                    "muncho.canonical_canary_bootstrap_provisioning_receipt_sha256",
+                }
+            )
+        ],
+    ],
+)
+def test_bootstrap_request_every_endpoint_and_guc_is_writer_artifact_derived(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    name: str,
+) -> None:
+    writer_raw = b"sealed-secret-free-writer-config"
+    plan = _host_receipt_plan(b"{}")
+    plan = replace(
+        plan,
+        artifacts={
+            **dict(plan.artifacts),
+            "writer_config": replace(
+                plan.artifacts["writer_config"],
+                sha256=hashlib.sha256(writer_raw).hexdigest(),
+            ),
+        },
+    )
+    approval = _owner_approval(plan)
+    request = _direct_bootstrap_request(plan, approval)
+    writer_config = _bootstrap_intent_config()
+    writer_config["canary_scope_preapproval"][
+        "provisioning_receipt_sha256"
+    ] = request.authorization_receipt_sha256
+    monkeypatch.setattr(
+        runtime,
+        "_validate_writer_config",
+        lambda *_args, **_kwargs: writer_config,
+    )
+    runtime._bind_bootstrap_request_to_writer_config(
+        plan=plan,
+        approval=approval,
+        request=request,
+        writer_config_raw=writer_raw,
+    )
+
+    if kind == "endpoint":
+        endpoint = dict(request.database)
+        endpoint[name] = (
+            endpoint[name] + 1
+            if name == "port"
+            else str(endpoint[name]) + "-tampered"
+        )
+        tampered = replace(request, database=endpoint)
+    else:
+        gucs = dict(request.guc_bindings)
+        gucs[name] = gucs[name] + "-tampered"
+        tampered = replace(
+            request,
+            guc_bindings=gucs,
+            guc_bindings_sha256=runtime._sha256_json(gucs),
+            authorization_receipt_sha256=(
+                gucs[name]
+                if name
+                == "muncho.canonical_canary_bootstrap_provisioning_receipt_sha256"
+                else request.authorization_receipt_sha256
+            ),
+        )
+    with pytest.raises(RuntimeError, match="not derived"):
+        runtime._bind_bootstrap_request_to_writer_config(
+            plan=plan,
+            approval=approval,
+            request=tampered,
+            writer_config_raw=writer_raw,
+        )
+
+
+@pytest.mark.parametrize(
+    (
+        "phase",
+        "credential_present",
+        "target_state",
+        "tombstone_present",
+        "outcome",
+        "expected",
+    ),
+    [
+        ("stopped", True, "configured", False, None, "armed"),
+        ("live", True, "configured", False, None, None),
+        (
+            "stopped",
+            False,
+            "consumed_retired",
+            True,
+            "consumed",
+            "consumed_retired",
+        ),
+        (
+            "live",
+            False,
+            "consumed_retired",
+            True,
+            "consumed",
+            "consumed_retired",
+        ),
+        (
+            "stopped",
+            False,
+            "configured",
+            False,
+            "retired",
+            "aborted_reconciled",
+        ),
+        ("live", False, "configured", False, "retired", None),
+        ("stopped", False, "consumed_retired", True, None, None),
+        (
+            "stopped",
+            True,
+            "consumed_retired",
+            True,
+            "consumed",
+            None,
+        ),
+    ],
+)
+def test_bootstrap_preflight_accepts_only_exact_lifecycle_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    credential_present: bool,
+    target_state: str,
+    tombstone_present: bool,
+    outcome: str | None,
+    expected: str | None,
+) -> None:
+    plan = _host_receipt_plan(b"{}")
+    approval = _owner_approval(plan)
+    request = _direct_bootstrap_request(plan, approval)
+    evidence = (
+        None
+        if outcome is None
+        else runtime.BootstrapReconciliationEvidence(
+            plan_sha256=plan.sha256,
+            approval=approval,
+            request=request,
+            provisioning_receipt=None,
+            reconciliation_receipt={"outcome": outcome},
+        )
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_bootstrap_credential_is_present_and_exact",
+        lambda _plan: credential_present,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_writer_target_bootstrap_state",
+        lambda _plan: target_state,
+    )
+    monkeypatch.setattr(
+        runtime.os.path,
+        "lexists",
+        lambda _path: tombstone_present,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_revalidate_bootstrap_reconciliation_evidence",
+        lambda _plan, value: value.reconciliation_receipt,
+    )
+
+    if expected is None:
+        with pytest.raises(RuntimeError, match="bootstrap credential"):
+            runtime._validate_bootstrap_lifecycle_state(
+                plan,
+                phase=phase,
+                evidence=evidence,
+            )
+    else:
+        assert runtime._validate_bootstrap_lifecycle_state(
+            plan,
+            phase=phase,
+            evidence=evidence,
+        ) == expected
 
 
 class _PreopenedSession:
@@ -2940,6 +3256,1242 @@ def test_recovery_session_can_replay_retired_truth_with_new_executor() -> None:
     )
 
 
+def test_recovery_reconciliation_rejects_material_future_timestamp() -> None:
+    plan = _host_receipt_plan(b"{}")
+    approval = _owner_approval(plan)
+    request = _direct_bootstrap_request(plan, approval)
+    now_unix = int(time.time())
+    recovery = runtime.PreopenedSessionBootstrapProvisioner(
+        _PreopenedSession(cleanup_outcome="not_authorized"),
+        tls_peer_certificate_sha256="a" * 64,
+        now=lambda: (
+            now_unix
+            + runtime.BOOTSTRAP_RECONCILIATION_FUTURE_SKEW_SECONDS
+            + 1
+        ),
+    )
+    receipt = recovery.reconcile(request, None)
+
+    with pytest.raises(RuntimeError, match="reconciliation receipt is not exact"):
+        runtime._validate_canary_bootstrap_reconciliation_receipt(
+            receipt,
+            request=request,
+            provisioning_receipt=None,
+            approval=approval,
+            expected_session_continuity="recovery_session",
+            now_unix=now_unix,
+        )
+
+
+def test_expired_poststop_source_requires_exact_reconciliation_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _host_receipt_plan(b"{}")
+    approval = _owner_approval(plan)
+    request = _direct_bootstrap_request(plan, approval)
+    recovery_session = _PreopenedSession(cleanup_outcome="not_authorized")
+    provisioner = runtime.PreopenedSessionBootstrapProvisioner(
+        recovery_session,
+        tls_peer_certificate_sha256="a" * 64,
+    )
+    reconciliation = provisioner.reconcile(request, None)
+    evidence = runtime.validated_bootstrap_reconciliation_evidence(
+        plan=plan,
+        approval=approval,
+        request=request,
+        provisioning_receipt=None,
+        reconciliation_receipt=reconciliation,
+        expected_session_continuity="recovery_session",
+    )
+    freshness_checks: list[bool] = []
+
+    monkeypatch.setattr(
+        runtime,
+        "_validate_artifact_source",
+        lambda *_args, **_kwargs: b"expired-writer-source",
+    )
+
+    def validate_writer(
+        raw,
+        _identities,
+        *,
+        require_fresh_canary_scope=True,
+        **_kwargs,
+    ):
+        assert raw == b"expired-writer-source"
+        freshness_checks.append(require_fresh_canary_scope)
+        if require_fresh_canary_scope:
+            raise RuntimeError("writer canary scope is fixture-bound/fresh invalid")
+        return _bootstrap_intent_config()
+
+    monkeypatch.setattr(runtime, "_validate_writer_config", validate_writer)
+    monkeypatch.setattr(
+        runtime,
+        "validate_canary_preclaim_reconciliation_receipt",
+        lambda **_kwargs: {"result": {"outcome": "retired"}},
+    )
+
+    with pytest.raises(RuntimeError, match="fixture-bound/fresh"):
+        runtime.FullCanaryLifecycle(plan)._validate_poststop_preclaim_receipt(
+            prior_generation=None,
+            allow_not_preapproved=True,
+        )
+    receipt = runtime.FullCanaryLifecycle(
+        plan,
+        bootstrap_reconciliation_evidence=evidence,
+    )._validate_poststop_preclaim_receipt(
+        prior_generation=None,
+        allow_not_preapproved=True,
+    )
+
+    assert receipt["result"]["outcome"] == "retired"
+    assert freshness_checks == [True, False]
+
+
+def test_existing_invalid_bootstrap_credential_is_tamper_not_absence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential = tmp_path / "bootstrap-password"
+    credential.write_bytes(b"present-but-invalid-mode")
+    credential.chmod(0o600)
+    plan = _host_receipt_plan(b"{}")
+    plan = replace(
+        plan,
+        identities=replace(
+            plan.identities,
+            writer_uid=os.getuid(),
+            writer_gid=os.getgid(),
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "DEFAULT_CANARY_BOOTSTRAP_CREDENTIAL",
+        credential,
+    )
+
+    with pytest.raises(RuntimeError, match="metadata is invalid"):
+        runtime._bootstrap_credential_is_present_and_exact(plan)
+
+    credential.unlink()
+    assert runtime._bootstrap_credential_is_present_and_exact(plan) is False
+
+
+def _bootstrap_envelope_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[FullCanaryPlan, runtime.BootstrapReconciliationEvidence]:
+    plan = _host_receipt_plan(b"{}")
+    writer_raw = b'{"sealed":"writer"}'
+    writer_path = tmp_path / "writer.json"
+    writer_path.write_bytes(writer_raw)
+    plan = replace(
+        plan,
+        artifacts={
+            **dict(plan.artifacts),
+            "writer_config": replace(
+                plan.artifacts["writer_config"],
+                source_path=writer_path,
+                sha256=hashlib.sha256(writer_raw).hexdigest(),
+            ),
+            "e2e_fixture": ExactArtifact(
+                source_path=tmp_path / "fixture.json",
+                target_path=tmp_path / "fixture.json",
+                sha256="4" * 64,
+                mode=0o440,
+                uid=0,
+                gid=plan.identities.gateway_gid,
+            ),
+        },
+    )
+    approval = _owner_approval(plan)
+    request = _direct_bootstrap_request(plan, approval)
+    session = _PreopenedSession(cleanup_outcome="retired")
+    provisioner = runtime.PreopenedSessionBootstrapProvisioner(
+        session,
+        tls_peer_certificate_sha256="a" * 64,
+    )
+    provision = provisioner.provision(request)
+    reconciliation = provisioner.reconcile(request, provision)
+    evidence = runtime.validated_bootstrap_reconciliation_evidence(
+        plan=plan,
+        approval=approval,
+        request=request,
+        provisioning_receipt=provision,
+        reconciliation_receipt=reconciliation,
+        expected_session_continuity="same_provision_session",
+    )
+    monkeypatch.setattr(runtime, "DEFAULT_EVIDENCE_ROOT", tmp_path / "evidence")
+
+    def release_file(_plan, relative, **_kwargs):
+        if relative == runtime.DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE:
+            return request.sql_path, request.sql_bytes, request.sql_sha256
+        assert relative == runtime.DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE
+        return (
+            request.retire_sql_path,
+            request.retire_sql_bytes,
+            request.retire_sql_sha256,
+        )
+
+    monkeypatch.setattr(runtime, "_validated_release_file", release_file)
+    monkeypatch.setattr(
+        runtime,
+        "_bind_bootstrap_request_to_writer_config",
+        lambda **_kwargs: {},
+    )
+    return plan, evidence
+
+
+def _fake_root_envelope_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[Path, int]]:
+    writes: list[tuple[Path, int]] = []
+    real_recover = runtime._recover_bootstrap_evidence_staging
+    real_fallback = runtime._fallback_bootstrap_evidence_descriptor
+
+    def write(path: Path, payload: bytes, *, mode: int = 0o400) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        path.chmod(mode)
+        writes.append((path, mode))
+
+    def read(path: Path, **_kwargs):
+        return path.read_bytes(), path.lstat()
+
+    original_lstat = Path.lstat
+
+    def root_lstat(path: Path):
+        item = original_lstat(path)
+        if not any("bootstrap-reconciliation" in part for part in path.parts):
+            return item
+        return SimpleNamespace(
+            st_mode=item.st_mode,
+            st_uid=0,
+            st_gid=0,
+            st_dev=item.st_dev,
+            st_ino=item.st_ino,
+            st_nlink=item.st_nlink,
+        )
+
+    monkeypatch.setattr(runtime, "_write_exclusive_bytes", write)
+    monkeypatch.setattr(runtime, "_read_stable_file", read)
+    monkeypatch.setattr(runtime, "_read_root_file_via_parent", read)
+    monkeypatch.setattr(Path, "lstat", root_lstat)
+    monkeypatch.setattr(
+        runtime,
+        "_validate_root_directory_chain",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_root_directory",
+        lambda path, **_kwargs: path.mkdir(parents=True, exist_ok=True),
+    )
+    anchor = runtime.DEFAULT_EVIDENCE_ROOT.parent
+    anchor.chmod(0o700)
+    owner = anchor.lstat()
+    monkeypatch.setattr(
+        runtime,
+        "_recover_bootstrap_evidence_staging",
+        lambda plan: real_recover(
+            plan,
+            expected_uid=owner.st_uid,
+            expected_gid=owner.st_gid,
+            trusted_anchor=anchor,
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_fallback_bootstrap_evidence_descriptor",
+        lambda plan: real_fallback(
+            plan,
+            expected_uid=owner.st_uid,
+            expected_gid=owner.st_gid,
+            trusted_anchor=anchor,
+        ),
+    )
+    return writes
+
+
+def test_controlled_directory_chain_rejects_real_symlink_ancestor(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    anchor_item = tmp_path.lstat()
+    uid = anchor_item.st_uid
+    gid = anchor_item.st_gid
+    safe = tmp_path / "safe" / "leaf"
+    descriptor = runtime._open_root_directory_chain(
+        safe,
+        create=True,
+        expected_uid=uid,
+        expected_gid=gid,
+        trusted_anchor=tmp_path,
+    )
+    os.close(descriptor)
+    redirect = tmp_path / "redirect"
+    redirect.symlink_to(tmp_path / "safe", target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink|invalid component"):
+        runtime._open_root_directory_chain(
+            redirect / "leaf",
+            create=False,
+            expected_uid=uid,
+            expected_gid=gid,
+            trusted_anchor=tmp_path,
+        )
+
+
+def test_held_parent_descriptor_rejects_real_ancestor_replacement(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    owner = tmp_path.lstat()
+    canonical_parent = tmp_path / "tree" / "leaf"
+    descriptor = runtime._open_root_directory_chain(
+        canonical_parent,
+        create=True,
+        expected_uid=owner.st_uid,
+        expected_gid=owner.st_gid,
+        trusted_anchor=tmp_path,
+    )
+    retired_tree = tmp_path / "retired-tree"
+    os.rename(tmp_path / "tree", retired_tree)
+    canonical_parent.mkdir(parents=True, mode=0o700)
+    entry = os.open(
+        "evidence.json",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o400,
+        dir_fd=descriptor,
+    )
+    os.write(entry, b"held-parent")
+    os.fsync(entry)
+    os.close(entry)
+    os.fsync(descriptor)
+
+    with pytest.raises(RuntimeError, match="reachability changed"):
+        runtime._revalidate_root_directory_reachability(
+            canonical_parent,
+            descriptor,
+            expected_uid=owner.st_uid,
+            expected_gid=owner.st_gid,
+            trusted_anchor=tmp_path,
+        )
+    os.close(descriptor)
+    assert (retired_tree / "leaf" / "evidence.json").read_bytes() == (
+        b"held-parent"
+    )
+    assert not (canonical_parent / "evidence.json").exists()
+
+
+def test_wrong_host_proof_reaches_zero_systemctl_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[runtime.Command] = []
+    monkeypatch.setattr(
+        runtime,
+        "_observe_dedicated_canary_host",
+        lambda: (_ for _ in ()).throw(RuntimeError("wrong canary host")),
+    )
+
+    with pytest.raises(RuntimeError, match="wrong canary host"):
+        runtime._stop_all(
+            runner=lambda command: commands.append(command)
+            or runtime.subprocess.CompletedProcess(
+                command.argv,
+                0,
+                stdout=b"",
+                stderr=b"",
+            )
+        )
+    assert commands == []
+
+
+def test_same_inode_hardlink_crash_is_finalized_on_real_filesystem(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / "staging" / "evidence.tmp"
+    final = tmp_path / "final" / "evidence.json"
+    staging.parent.mkdir(mode=0o700)
+    final.parent.mkdir(mode=0o700)
+    staging.write_bytes(b'{"durable":true}')
+    staging.chmod(0o400)
+    before = staging.lstat()
+    os.link(staging, final)
+    assert staging.lstat().st_nlink == final.lstat().st_nlink == 2
+
+    runtime._finalize_same_inode_hardlink_publication(
+        staging_path=staging,
+        final_path=final,
+        staging_item=before,
+        expected_uid=before.st_uid,
+        expected_gid=before.st_gid,
+    )
+
+    assert not staging.exists()
+    assert final.read_bytes() == b'{"durable":true}'
+    assert final.lstat().st_nlink == 1
+
+
+@pytest.mark.parametrize(
+    "crash_state",
+    ("orphan", "linked_before_cleanup", "torn"),
+)
+def test_never_authorized_staging_recovers_real_filesystem_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_state: str,
+) -> None:
+    plan = SimpleNamespace(revision="1" * 40, sha256="2" * 64)
+    monkeypatch.setattr(runtime, "DEFAULT_EVIDENCE_ROOT", tmp_path / "evidence")
+    staging = runtime._bootstrap_never_authorized_staging_path(plan)
+    final = runtime._bootstrap_never_authorized_path(plan)
+    staging.parent.mkdir(parents=True, mode=0o700)
+    payload = b'{"state":"never_authorized"}'
+    staging.write_bytes(b'{"state":' if crash_state == "torn" else payload)
+    staging.chmod(0o400)
+    owner = staging.lstat()
+
+    def parse(_plan, *, path, raw):
+        value = json.loads(raw)
+        return runtime.BootstrapNeverAuthorizedEvidence(
+            value=value,
+            path=path,
+            file_sha256=hashlib.sha256(raw).hexdigest(),
+        )
+
+    monkeypatch.setattr(
+        runtime,
+        "_bootstrap_never_authorized_from_bytes",
+        parse,
+    )
+    if crash_state == "linked_before_cleanup":
+        final.parent.mkdir(parents=True, mode=0o700)
+        os.link(staging, final)
+
+    if crash_state == "torn":
+        with pytest.raises(runtime.BootstrapEvidenceUnavailable):
+            runtime._recover_bootstrap_never_authorized_staging(
+                plan,
+                    expected_uid=owner.st_uid,
+                    expected_gid=owner.st_gid,
+                trusted_anchor=tmp_path,
+            )
+        assert not staging.exists()
+        assert not final.exists()
+        return
+
+    recovered = runtime._recover_bootstrap_never_authorized_staging(
+        plan,
+        expected_uid=owner.st_uid,
+        expected_gid=owner.st_gid,
+        trusted_anchor=tmp_path,
+    )
+    assert recovered is not None
+    assert recovered.value == {"state": "never_authorized"}
+    assert not staging.exists()
+    assert final.read_bytes() == payload
+    assert final.lstat().st_nlink == 1
+
+
+def test_bootstrap_envelope_survives_crash_before_any_outcome_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, evidence = _bootstrap_envelope_fixture(tmp_path, monkeypatch)
+    writes = _fake_root_envelope_filesystem(monkeypatch)
+
+    persisted = runtime.persist_bootstrap_evidence_envelope(plan, evidence)
+    descriptor = persisted.descriptor
+    assert descriptor is not None
+    assert writes == [
+        (runtime._bootstrap_evidence_staging_path(plan, descriptor), 0o400)
+    ]
+    assert descriptor.path == (
+        runtime.DEFAULT_EVIDENCE_ROOT
+        / "plans"
+        / plan.revision
+        / plan.sha256
+        / "bootstrap-reconciliation"
+        / descriptor.attempt_id
+        / f"{descriptor.envelope_sha256}.json"
+    )
+    envelope = json.loads(descriptor.path.read_text())
+    assert envelope["predecessor_envelope_sha256"] is None
+    assert envelope["owner_approval"] == evidence.approval.value
+    assert len(envelope["bootstrap_request"]["guc_bindings"]) == 11
+
+    # There is deliberately no start/failure/stopped receipt: fallback is the
+    # crash/restart path and may accept only this sole plan-addressed envelope.
+    restarted = runtime.load_bootstrap_evidence_envelope(plan)
+    assert restarted.descriptor == descriptor
+    assert restarted.reconciliation_receipt == evidence.reconciliation_receipt
+
+
+def test_bootstrap_envelope_rejects_tamper_and_plan_ambiguity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, evidence = _bootstrap_envelope_fixture(tmp_path, monkeypatch)
+    _fake_root_envelope_filesystem(monkeypatch)
+    persisted = runtime.persist_bootstrap_evidence_envelope(plan, evidence)
+    descriptor = persisted.descriptor
+    assert descriptor is not None
+
+    original = descriptor.path.read_bytes()
+    descriptor.path.chmod(0o600)
+    descriptor.path.write_bytes(original + b"\n")
+    descriptor.path.chmod(0o400)
+    with pytest.raises(RuntimeError, match="file digest drifted"):
+        runtime.load_bootstrap_evidence_envelope(plan, descriptor)
+    descriptor.path.chmod(0o600)
+    descriptor.path.write_bytes(original)
+    descriptor.path.chmod(0o400)
+
+    conflicting_attempt = "f" * 64
+    conflicting_envelope = "e" * 64
+    conflicting_path = (
+        runtime._bootstrap_evidence_root(plan)
+        / conflicting_attempt
+        / f"{conflicting_envelope}.json"
+    )
+    conflicting_path.parent.mkdir(parents=True)
+    conflicting_path.write_bytes(original)
+    conflicting_path.chmod(0o400)
+    with pytest.raises(
+        runtime.BootstrapEvidenceAmbiguous,
+        match="ambiguous",
+    ):
+        runtime.load_bootstrap_evidence_envelope(plan)
+
+
+@pytest.mark.parametrize(
+    "crash_point",
+    ["orphan_fsynced_temp", "linked_before_temp_cleanup", "torn_temp"],
+)
+def test_bootstrap_envelope_recovers_power_loss_publication_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_point: str,
+) -> None:
+    plan, evidence = _bootstrap_envelope_fixture(tmp_path, monkeypatch)
+    _fake_root_envelope_filesystem(monkeypatch)
+    envelope = runtime._bootstrap_evidence_envelope(plan, evidence)
+    payload = runtime._canonical_bytes(envelope)
+    descriptor = runtime._descriptor_for_bootstrap_envelope(
+        plan,
+        envelope,
+        file_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    staging = runtime._bootstrap_evidence_staging_path(plan, descriptor)
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    staging.write_bytes(
+        b'{"schema":' if crash_point == "torn_temp" else payload
+    )
+    staging.chmod(0o400)
+    if crash_point == "linked_before_temp_cleanup":
+        descriptor.path.parent.mkdir(parents=True, exist_ok=True)
+        os.link(staging, descriptor.path)
+
+    if crash_point == "torn_temp":
+        with pytest.raises(runtime.BootstrapEvidenceUnavailable):
+            runtime.load_bootstrap_evidence_envelope(plan)
+        assert not staging.exists()
+        assert not descriptor.path.exists()
+        return
+
+    loaded = runtime.load_bootstrap_evidence_envelope(plan)
+    assert loaded.descriptor == descriptor
+    assert descriptor.path.read_bytes() == payload
+    assert not staging.exists()
+
+
+def test_old_receipt_without_descriptor_or_envelope_requires_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, _evidence = _bootstrap_envelope_fixture(tmp_path, monkeypatch)
+    _fake_root_envelope_filesystem(monkeypatch)
+    path = (
+        runtime.DEFAULT_EVIDENCE_ROOT
+        / "plans"
+        / plan.revision
+        / plan.sha256
+        / "stopped"
+        / "old.json"
+    )
+    unsigned = {
+        "schema": runtime.FULL_CANARY_RECEIPT_SCHEMA,
+        "stage": "stopped",
+        "revision": plan.revision,
+        "full_canary_plan_sha256": plan.sha256,
+        "receipt_path": str(path),
+        "bootstrap_reconciliation": {},
+    }
+    path.parent.mkdir(parents=True)
+    path.write_bytes(
+        runtime._canonical_bytes(
+            {**unsigned, "receipt_sha256": runtime._sha256_json(unsigned)}
+        )
+    )
+    path.chmod(0o400)
+
+    with pytest.raises(RuntimeError, match="fields are incomplete"):
+        runtime.load_bootstrap_evidence_from_receipt(path, plan=plan)
+
+
+def test_failure_receipt_null_provisioning_resolves_durable_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, seeded = _bootstrap_envelope_fixture(tmp_path, monkeypatch)
+    _fake_root_envelope_filesystem(monkeypatch)
+    recovery = runtime.PreopenedSessionBootstrapProvisioner(
+        _PreopenedSession(cleanup_outcome="not_authorized"),
+        tls_peer_certificate_sha256="a" * 64,
+    )
+    reconciliation = recovery.reconcile(seeded.request, None)
+    evidence = runtime.validated_bootstrap_reconciliation_evidence(
+        plan=plan,
+        approval=seeded.approval,
+        request=seeded.request,
+        provisioning_receipt=None,
+        reconciliation_receipt=reconciliation,
+        expected_session_continuity="recovery_session",
+    )
+    persisted = runtime.persist_bootstrap_evidence_envelope(plan, evidence)
+    assert persisted.descriptor is not None
+    path = (
+        runtime.DEFAULT_EVIDENCE_ROOT
+        / "plans"
+        / plan.revision
+        / plan.sha256
+        / "failure"
+        / "failure.json"
+    )
+
+    def write_receipt(provisioning):
+        unsigned = {
+            "schema": runtime.FULL_CANARY_RECEIPT_SCHEMA,
+            "stage": "failure",
+            "operation": "start",
+            "revision": plan.revision,
+            "full_canary_plan_sha256": plan.sha256,
+            "receipt_path": str(path),
+            "bootstrap_evidence_present": True,
+            "bootstrap_never_authorized_evidence": None,
+            "owner_approval_receipt": copy.deepcopy(
+                dict(persisted.approval.value)
+            ),
+            "owner_approval_receipt_sha256": persisted.approval.sha256,
+            "bootstrap_provisioning_receipt": provisioning,
+            "bootstrap_reconciliation": copy.deepcopy(
+                dict(persisted.reconciliation_receipt)
+            ),
+            "bootstrap_evidence_descriptor": (
+                persisted.descriptor.to_mapping()
+            ),
+            "bootstrap_reconciliation_complete": True,
+            "bootstrap_authority_may_require_owner_cleanup": False,
+            "bootstrap_durable_evidence_recovery_required": False,
+            "failed_at_unix": int(time.time()),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            path.chmod(0o600)
+        path.write_bytes(
+            runtime._canonical_bytes(
+                {
+                    **unsigned,
+                    "receipt_sha256": runtime._sha256_json(unsigned),
+                }
+            )
+        )
+        path.chmod(0o400)
+
+    write_receipt(None)
+    loaded = runtime.load_bootstrap_evidence_from_receipt(path, plan=plan)
+    assert loaded.provisioning_receipt is None
+    assert loaded.descriptor == persisted.descriptor
+
+    write_receipt({})
+    with pytest.raises(RuntimeError, match="copied bootstrap_provisioning"):
+        runtime.load_bootstrap_evidence_from_receipt(path, plan=plan)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_descriptor",
+        "approval_sha",
+        "approval_full",
+        "provisioning",
+        "reconciliation",
+        "complete_flag",
+        "cleanup_flag",
+        "recovery_flag",
+        "present_flag",
+        "timestamp",
+        "never_authorized",
+    ],
+)
+def test_evidence_receipt_rejects_every_copied_truth_or_flag_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    plan, evidence = _bootstrap_envelope_fixture(tmp_path, monkeypatch)
+    _fake_root_envelope_filesystem(monkeypatch)
+    persisted = runtime.persist_bootstrap_evidence_envelope(plan, evidence)
+    assert persisted.descriptor is not None
+    path = (
+        runtime.DEFAULT_EVIDENCE_ROOT
+        / "plans"
+        / plan.revision
+        / plan.sha256
+        / "failure"
+        / f"{mutation}.json"
+    )
+    unsigned = {
+        "schema": runtime.FULL_CANARY_RECEIPT_SCHEMA,
+        "stage": "failure",
+        "operation": "start",
+        "revision": plan.revision,
+        "full_canary_plan_sha256": plan.sha256,
+        "receipt_path": str(path),
+        "bootstrap_evidence_present": True,
+        "bootstrap_never_authorized_evidence": None,
+        "bootstrap_evidence_descriptor": persisted.descriptor.to_mapping(),
+        "owner_approval_receipt": copy.deepcopy(
+            dict(persisted.approval.value)
+        ),
+        "owner_approval_receipt_sha256": persisted.approval.sha256,
+        "bootstrap_provisioning_receipt": copy.deepcopy(
+            dict(persisted.provisioning_receipt or {})
+        ),
+        "bootstrap_reconciliation": copy.deepcopy(
+            dict(persisted.reconciliation_receipt)
+        ),
+        "bootstrap_reconciliation_complete": True,
+        "bootstrap_authority_may_require_owner_cleanup": False,
+        "bootstrap_durable_evidence_recovery_required": False,
+        "failed_at_unix": int(time.time()),
+    }
+    if mutation == "missing_descriptor":
+        unsigned["bootstrap_evidence_descriptor"] = None
+    elif mutation == "approval_sha":
+        unsigned["owner_approval_receipt_sha256"] = "f" * 64
+    elif mutation == "approval_full":
+        unsigned["owner_approval_receipt"]["owner_subject_sha256"] = "f" * 64
+    elif mutation == "provisioning":
+        unsigned["bootstrap_provisioning_receipt"] = None
+    elif mutation == "reconciliation":
+        unsigned["bootstrap_reconciliation"]["reason"] = "tampered"
+    elif mutation == "complete_flag":
+        unsigned["bootstrap_reconciliation_complete"] = False
+    elif mutation == "cleanup_flag":
+        unsigned["bootstrap_authority_may_require_owner_cleanup"] = True
+    elif mutation == "recovery_flag":
+        unsigned["bootstrap_durable_evidence_recovery_required"] = True
+    elif mutation == "present_flag":
+        unsigned["bootstrap_evidence_present"] = False
+    elif mutation == "timestamp":
+        unsigned["failed_at_unix"] = 0
+    else:
+        unsigned["bootstrap_never_authorized_evidence"] = {
+            "path": "/forged",
+            "file_sha256": "f" * 64,
+            "receipt_sha256": "e" * 64,
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        runtime._canonical_bytes(
+            {**unsigned, "receipt_sha256": runtime._sha256_json(unsigned)}
+        )
+    )
+    path.chmod(0o400)
+
+    with pytest.raises((RuntimeError, runtime.BootstrapEvidenceUnavailable)):
+        runtime.load_bootstrap_evidence_from_receipt(path, plan=plan)
+
+
+def test_start_receipt_resolves_bootstrap_envelope_before_other_consumption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _host_receipt_plan(b"{}")
+    monkeypatch.setattr(runtime, "DEFAULT_EVIDENCE_ROOT", tmp_path / "evidence")
+    path = (
+        runtime.DEFAULT_EVIDENCE_ROOT
+        / "plans"
+        / plan.revision
+        / plan.sha256
+        / "started"
+        / "start.json"
+    )
+    unsigned = {
+        "schema": runtime.FULL_CANARY_RECEIPT_SCHEMA,
+        "stage": "started",
+        "revision": plan.revision,
+        "full_canary_plan_sha256": plan.sha256,
+        "receipt_path": str(path),
+        "units_enabled": False,
+        "runtime_max_seconds": 900,
+        "start_order": [EDGE_UNIT_NAME, WRITER_UNIT_NAME, GATEWAY_UNIT_NAME],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        runtime._canonical_bytes(
+            {**unsigned, "receipt_sha256": runtime._sha256_json(unsigned)}
+        )
+    )
+    path.chmod(0o400)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "_read_stable_file",
+        lambda observed, **_kwargs: (observed.read_bytes(), observed.lstat()),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_bootstrap_evidence_from_receipt",
+        lambda observed, **_kwargs: calls.append(str(observed)) or object(),
+    )
+
+    with pytest.raises(RuntimeError, match="identity receipts"):
+        runtime.load_start_receipt(path, plan=plan)
+    assert calls == [str(path)]
+
+
+def test_runtime_cli_validate_passes_loaded_terminal_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = object()
+    evidence = object()
+    observed: list[object] = []
+    monkeypatch.setattr(runtime, "load_full_canary_plan", lambda: plan)
+    monkeypatch.setattr(
+        runtime,
+        "load_bootstrap_terminal_evidence",
+        lambda observed_plan, *, phase: (
+            evidence
+            if observed_plan is plan and phase == "stopped"
+            else pytest.fail("wrong terminal evidence load")
+        ),
+    )
+
+    def preflight(observed_plan, *, phase, bootstrap_reconciliation_evidence):
+        assert observed_plan is plan
+        assert phase == "stopped"
+        assert bootstrap_reconciliation_evidence is evidence
+        return {"ok": True}
+
+    monkeypatch.setattr(runtime, "collect_full_canary_preflight", preflight)
+    monkeypatch.setattr(runtime, "_cli_result", lambda value: observed.append(value))
+
+    assert runtime.main(["validate"]) == 0
+    assert observed == [{"ok": True}]
+
+
+def test_runtime_cli_stop_is_mechanical_before_evidence_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = object()
+    evidence = object()
+    events: list[str] = []
+    stopped = (GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME)
+
+    class Lifecycle:
+        def attest_stopped_after_mechanical_stop(self, **kwargs):
+            assert kwargs["stopped"] == stopped
+            events.append("attest")
+            return {"ok": True}
+
+    monkeypatch.setattr(
+        runtime,
+        "load_full_canary_plan",
+        lambda: events.append("load_plan") or plan,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda: events.append("observe") or (1,),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "mechanically_stop_full_canary_services",
+        lambda: events.append("mechanical_stop") or stopped,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_bootstrap_terminal_evidence",
+        lambda *_args, **_kwargs: events.append("load_evidence") or evidence,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_lifecycle_for_bootstrap_terminal_evidence",
+        lambda observed_plan, observed_evidence: (
+            Lifecycle()
+            if observed_plan is plan and observed_evidence is evidence
+            else pytest.fail("terminal evidence was not passed to lifecycle")
+        ),
+    )
+    monkeypatch.setattr(runtime, "_cli_result", lambda _value: None)
+
+    assert runtime.main(["stop"]) == 0
+    assert events == [
+        "mechanical_stop",
+        "observe",
+        "load_plan",
+        "load_evidence",
+        "attest",
+    ]
+
+
+def test_runtime_cli_verify_tamper_still_mechanically_stops(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "_observe_dedicated_canary_host",
+        lambda: events.append("host_proof") or {},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda: events.append("observe_preclaim") or None,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_full_canary_plan",
+        lambda: events.append("load_plan") or object(),
+    )
+
+    def tampered(*_args, **_kwargs):
+        events.append("load_evidence")
+        raise RuntimeError("bootstrap evidence file digest drifted")
+
+    monkeypatch.setattr(runtime, "load_bootstrap_terminal_evidence", tampered)
+    monkeypatch.setattr(
+        runtime,
+        "mechanically_stop_full_canary_services",
+        lambda: events.append("mechanical_stop")
+        or (GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME),
+    )
+    monkeypatch.setattr(runtime, "_cli_result", lambda _value: None)
+
+    assert (
+        runtime.main(
+            [
+                "verify-and-stop",
+                "--start-receipt",
+                str(tmp_path / "start.json"),
+                "--evidence-sha256",
+                "a" * 64,
+            ]
+        )
+        == 2
+    )
+    assert events == [
+        "host_proof",
+        "load_plan",
+        "load_evidence",
+        "mechanical_stop",
+        "observe_preclaim",
+    ]
+
+
+def test_runtime_cli_verify_second_start_load_is_already_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    plan = object()
+    evidence = object.__new__(runtime.BootstrapReconciliationEvidence)
+    start_path = tmp_path / "start.json"
+    load_count = 0
+
+    def load_start(path, *, plan):
+        nonlocal load_count
+        load_count += 1
+        events.append(f"load_start_{load_count}")
+        if load_count == 2:
+            raise RuntimeError("second start receipt load drifted")
+        return object()
+
+    class Lifecycle:
+        def verify_and_stop(self, **_kwargs):
+            runtime.load_start_receipt(start_path, plan=plan)
+            pytest.fail("second start receipt drift was accepted")
+
+    monkeypatch.setattr(
+        runtime,
+        "_observe_dedicated_canary_host",
+        lambda: events.append("host_proof") or {},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda: events.append("observe_preclaim") or None,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "mechanically_stop_full_canary_services",
+        lambda: events.append("mechanical_stop")
+        or (GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_full_canary_plan",
+        lambda: events.append("load_plan") or plan,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_bootstrap_terminal_evidence",
+        lambda *_args, **_kwargs: events.append("load_evidence") or evidence,
+    )
+    monkeypatch.setattr(runtime, "load_start_receipt", load_start)
+    monkeypatch.setattr(
+        runtime,
+        "expected_live_evidence_path",
+        lambda _plan: tmp_path / "evidence.json",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_lifecycle_for_bootstrap_terminal_evidence",
+        lambda *_args: events.append("construct_lifecycle") or Lifecycle(),
+    )
+    monkeypatch.setattr(runtime, "_cli_result", lambda _value: None)
+
+    assert (
+        runtime.main(
+            [
+                "verify-and-stop",
+                "--start-receipt",
+                str(start_path),
+                "--evidence-sha256",
+                "a" * 64,
+            ]
+        )
+        == 2
+    )
+    assert events == [
+        "host_proof",
+        "load_plan",
+        "load_evidence",
+        "load_start_1",
+        "construct_lifecycle",
+        "load_start_2",
+        "mechanical_stop",
+        "observe_preclaim",
+    ]
+
+
+def test_verify_and_stop_success_runs_live_verifier_before_fixed_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.canonical_full_canary_e2e import _INVARIANTS
+
+    base_plan = _host_receipt_plan(b"{}")
+    plan = replace(
+        base_plan,
+        release={**base_plan.release, "interpreter": "/usr/bin/python3"},
+        artifacts={
+            **base_plan.artifacts,
+            "e2e_fixture": ExactArtifact(
+                source_path=Path("/tmp/e2e-fixture.json"),
+                target_path=Path("/tmp/e2e-fixture.json"),
+                sha256="9" * 64,
+                mode=0o440,
+                uid=0,
+                gid=base_plan.identities.gateway_gid,
+            ),
+        },
+    )
+    events: list[str] = []
+    start = runtime.LoadedStartReceipt(
+        value={"receipt_sha256": "a" * 64},
+        file_sha256="b" * 64,
+    )
+    evidence_sha256 = "c" * 64
+
+    def runner(command):
+        if command.argv[0] == runtime.SYSTEMCTL:
+            events.append(f"stop:{command.argv[-1]}")
+            payload = b""
+        else:
+            events.append("verify_command")
+            payload = runtime._canonical_bytes(
+                {
+                    "schema": "muncho-full-canary-e2e-verification.v1",
+                    "ok": True,
+                    "fixture_sha256": plan.artifacts["e2e_fixture"].sha256,
+                    "evidence_sha256": evidence_sha256,
+                    "full_canary_start_receipt_sha256": start.file_sha256,
+                    "invariants": list(_INVARIANTS),
+                    "invariant_receipt_sha256": "d" * 64,
+                }
+            )
+        return runtime.subprocess.CompletedProcess(
+            command.argv,
+            0,
+            stdout=payload,
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        runtime,
+        "_observe_dedicated_canary_host",
+        lambda **_kwargs: events.append("host_proof") or {},
+    )
+    monkeypatch.setattr(runtime, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        runtime.FullCanaryLifecycle,
+        "_require_dedicated_host",
+        lambda self: events.append("plan_host_proof") or {},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_start_receipt",
+        lambda *_args, **_kwargs: events.append("load_start") or start,
+    )
+    monkeypatch.setattr(runtime, "_lifecycle_lock", lambda: nullcontext())
+    monkeypatch.setattr(
+        runtime.FullCanaryLifecycle,
+        "_preflight",
+        lambda self, *, phase: events.append(f"preflight:{phase}")
+        or {"report_sha256": ("e" if phase == "live" else "f") * 64},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda: events.append("observe_preclaim") or (1,),
+    )
+    monkeypatch.setattr(
+        runtime.FullCanaryLifecycle,
+        "_validate_poststop_preclaim_receipt",
+        lambda self, **_kwargs: events.append("validate_preclaim")
+        or {"result": {"outcome": "claimed"}},
+    )
+
+    def write_receipt(_plan, *, stage, value):
+        events.append(f"write:{stage}")
+        return {**value, "receipt_path": "/tmp/verified.json"}
+
+    monkeypatch.setattr(runtime, "_write_append_only_receipt", write_receipt)
+    lifecycle = runtime.FullCanaryLifecycle(plan, runner=runner)
+    result = lifecycle.verify_and_stop(
+        start_receipt_path=Path("/tmp/start.json"),
+        evidence_path=runtime.expected_live_evidence_path(plan),
+        evidence_sha256=evidence_sha256,
+    )
+
+    assert result["verified"] is True
+    assert events.index("verify_command") < events.index(
+        f"stop:{GATEWAY_UNIT_NAME}"
+    )
+    assert [event for event in events if event.startswith("stop:")] == [
+        f"stop:{GATEWAY_UNIT_NAME}",
+        f"stop:{WRITER_UNIT_NAME}",
+        f"stop:{EDGE_UNIT_NAME}",
+    ]
+    assert events[-1] == "write:verified_stopped"
+
+
+def test_verify_and_stop_start_receipt_failure_still_stops_before_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _host_receipt_plan(b"{}")
+    events: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "_observe_dedicated_canary_host",
+        lambda **_kwargs: events.append("host_proof") or {},
+    )
+    monkeypatch.setattr(runtime, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        runtime.FullCanaryLifecycle,
+        "_require_dedicated_host",
+        lambda self: events.append("plan_host_proof") or {},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_start_receipt",
+        lambda *_args, **_kwargs: events.append("load_start")
+        or (_ for _ in ()).throw(RuntimeError("start receipt tampered")),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_stop_all",
+        lambda **_kwargs: events.append("mechanical_stop")
+        or (GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda: events.append("observe_preclaim") or None,
+    )
+    monkeypatch.setattr(
+        runtime.FullCanaryLifecycle,
+        "_validate_poststop_preclaim_receipt",
+        lambda self, **_kwargs: {"result": {"outcome": "retired"}},
+    )
+    monkeypatch.setattr(
+        runtime.FullCanaryLifecycle,
+        "_preflight",
+        lambda self, *, phase: {"report_sha256": "f" * 64},
+    )
+
+    with pytest.raises(RuntimeError, match="start receipt tampered"):
+        runtime.FullCanaryLifecycle(plan).verify_and_stop(
+            start_receipt_path=Path("/tmp/start.json"),
+            evidence_path=runtime.expected_live_evidence_path(plan),
+            evidence_sha256="a" * 64,
+        )
+    assert events.index("mechanical_stop") < events.index("observe_preclaim")
+
+
+def test_lifecycle_stop_plan_host_tamper_cannot_delay_mechanical_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _host_receipt_plan(b"{}")
+    events: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "_observe_dedicated_canary_host",
+        lambda **_kwargs: events.append("compile_host_proof") or {},
+    )
+    monkeypatch.setattr(runtime, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "_stop_all",
+        lambda **_kwargs: events.append("mechanical_stop")
+        or (GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "observe_canary_preclaim_reconciliation_generation",
+        lambda: events.append("observe_preclaim") or None,
+    )
+    monkeypatch.setattr(
+        runtime.FullCanaryLifecycle,
+        "_require_dedicated_host",
+        lambda self: events.append("plan_host_validation")
+        or (_ for _ in ()).throw(RuntimeError("plan host truth tampered")),
+    )
+
+    with pytest.raises(RuntimeError, match="plan host truth tampered"):
+        runtime.FullCanaryLifecycle(plan).stop()
+    assert events == [
+        "compile_host_proof",
+        "mechanical_stop",
+        "observe_preclaim",
+        "plan_host_validation",
+    ]
+
+
 def test_close_failure_remains_retryable_for_final_abort() -> None:
     plan = _host_receipt_plan(b"{}")
     approval = _owner_approval(plan)
@@ -3002,6 +4554,7 @@ def test_noncanonical_provision_result_cannot_block_sealed_reconciliation() -> N
         ("writer_start", False),
         ("consumption", False),
         ("consumption", True),
+        ("persistence", False),
     ],
 )
 def test_every_post_provision_failure_reconciles_before_exit(
@@ -3017,6 +4570,13 @@ def test_every_post_provision_failure_reconciles_before_exit(
     request = _direct_bootstrap_request(plan, approval)
     calls: list[str] = []
     failure_receipts: list[dict] = []
+    descriptor = runtime.BootstrapEvidenceDescriptor(
+        schema=runtime.BOOTSTRAP_EVIDENCE_DESCRIPTOR_SCHEMA,
+        path=Path("/var/lib/muncho/evidence.json"),
+        file_sha256="8" * 64,
+        envelope_sha256="9" * 64,
+        attempt_id="a" * 64,
+    )
 
     class Provisioner:
         def provision(self, observed):
@@ -3129,6 +4689,23 @@ def test_every_post_provision_failure_reconciles_before_exit(
         "_validate_canary_bootstrap_reconciliation_receipt",
         lambda value, **_kwargs: value,
     )
+    def persist(*_args, evidence, **_kwargs):
+        calls.append("persist")
+        if failure == "persistence":
+            raise RuntimeError("evidence persistence failed")
+        return replace(evidence, descriptor=descriptor)
+
+    monkeypatch.setattr(runtime, "persist_bootstrap_evidence_envelope", persist)
+    monkeypatch.setattr(
+        runtime.FullCanaryLifecycle,
+        "_bootstrap_evidence_descriptor_value",
+        lambda self: (
+            None
+            if self._bootstrap_reconciliation_evidence is None
+            or self._bootstrap_reconciliation_evidence.descriptor is None
+            else descriptor.to_mapping()
+        ),
+    )
     monkeypatch.setattr(
         runtime,
         "_stop_all",
@@ -3162,18 +4739,34 @@ def test_every_post_provision_failure_reconciles_before_exit(
         plan,
         bootstrap_provisioner=Provisioner(),
     )
-    expected = ExceptionGroup if cleanup_fails else RuntimeError
+    expected = (
+        ExceptionGroup
+        if cleanup_fails or failure == "persistence"
+        else RuntimeError
+    )
     with pytest.raises(expected):
         lifecycle.start(approval)
 
     assert calls.count("reconcile") == 1
     assert calls.index("reconcile") < calls.index("stop")
-    assert failure_receipts[-1]["bootstrap_reconciliation_complete"] is (
-        not cleanup_fails
-    )
+    if cleanup_fails:
+        assert "persist" not in calls
+    elif failure == "persistence":
+        assert calls.count("persist") == 2
+        assert calls.index("reconcile") < calls.index("persist")
+        assert calls.index("persist") < calls.index("stop")
+    else:
+        assert calls.index("reconcile") < calls.index("persist") < calls.index("stop")
+    durable = not cleanup_fails and failure != "persistence"
+    assert failure_receipts[-1]["bootstrap_reconciliation_complete"] is durable
     assert failure_receipts[-1][
         "bootstrap_authority_may_require_owner_cleanup"
-    ] is cleanup_fails
+    ] is (not durable)
+    assert failure_receipts[-1][
+        "bootstrap_durable_evidence_recovery_required"
+    ] is (not durable)
+    if failure in {"provision_raises", "invalid_provision_receipt"}:
+        assert failure_receipts[-1]["bootstrap_provisioning_receipt"] is None
 
 
 @pytest.mark.parametrize("failure", ["host", "validation", "preflight", "install", "edge"])

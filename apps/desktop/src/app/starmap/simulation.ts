@@ -111,9 +111,9 @@ function chooseUnit(stamps: number[], spanDays: number): Unit {
   return best
 }
 
-function bucketLabel(ts: number, { kind, step }: Unit): string {
+function bucketLabel(ts: number, { kind, step }: Unit, locale: string): string {
   if (kind === 'day') {
-    return formatDate(ts)
+    return formatDate(ts, locale)
   }
 
   try {
@@ -121,9 +121,9 @@ function bucketLabel(ts: number, { kind, step }: Unit): string {
 
     return step >= 12
       ? String(d.getUTCFullYear())
-      : d.toLocaleDateString(undefined, { month: 'short', timeZone: 'UTC', year: 'numeric' })
+      : d.toLocaleDateString(locale === 'ar' ? 'ar-EG' : locale, { month: 'short', timeZone: 'UTC', year: 'numeric' })
   } catch {
-    return formatDate(ts)
+    return formatDate(ts, locale)
   }
 }
 
@@ -139,11 +139,17 @@ interface Layout {
 
 // Even, unlabeled-ish fallback when there's no usable time span (undated graph
 // or one instant): keep the legacy continuous mapping so nothing regresses.
-function evenLayout(recById: Map<string, number>, minTs: null | number, maxTs: null | number, timed: boolean): Layout {
+function evenLayout(
+  recById: Map<string, number>,
+  minTs: null | number,
+  maxTs: null | number,
+  timed: boolean,
+  locale: string
+): Layout {
   const rings: Ring[] = Array.from({ length: RING_STEPS + 1 }, (_, i) => ({
     label:
       timed && minTs !== null && maxTs !== null
-        ? formatDate(Math.round(minTs + (maxTs - minTs) * (i / RING_STEPS)))
+        ? formatDate(Math.round(minTs + (maxTs - minTs) * (i / RING_STEPS)), locale)
         : null,
     r: ringRadius(i),
     ratio: recForRatio(i / RING_STEPS)
@@ -174,12 +180,13 @@ function buildLayout(
   recById: Map<string, number>,
   minTs: null | number,
   maxTs: null | number,
-  timed: boolean
+  timed: boolean,
+  locale: string
 ): Layout {
   const stamps = graph.nodes.map(n => Number(n.timestamp)).filter(Number.isFinite)
 
   if (!(timed && minTs !== null && maxTs !== null && maxTs > minTs && stamps.length)) {
-    return evenLayout(recById, minTs, maxTs, timed)
+    return evenLayout(recById, minTs, maxTs, timed, locale)
   }
 
   const span = maxTs - minTs
@@ -187,7 +194,7 @@ function buildLayout(
   const starts = populatedStarts(stamps, unit)
 
   if (starts.length < 2) {
-    return evenLayout(recById, minTs, maxTs, timed)
+    return evenLayout(recById, minTs, maxTs, timed, locale)
   }
 
   const indexOfStart = new Map(starts.map((s, i) => [s, i]))
@@ -198,7 +205,7 @@ function buildLayout(
   const last = Math.max(1, starts.length - 1)
 
   const rings: Ring[] = starts.map((s, i) => ({
-    label: bucketLabel(s, unit),
+    label: bucketLabel(s, unit, locale),
     r: ringRadius(i),
     ratio: recForRatio(i / last)
   }))
@@ -256,9 +263,9 @@ function buildLayout(
 // Build the radial time simulation: a node's distance from the core encodes its
 // timestamp bucket (radial force dominates; charge/collide only spread nodes
 // around their date ring). Rings are dated, equal-width gridlines.
-export function buildSimulation(graph: StarmapGraph, onTick: () => void): BuiltSim {
+export function buildSimulation(graph: StarmapGraph, onTick: () => void, locale: string): BuiltSim {
   const { maxTs, minTs, rec: recById, timed } = computeRecency(graph.nodes)
-  const { index, rec: recOf, rings, tr: trOf } = buildLayout(graph, recById, minTs, maxTs, timed)
+  const { index, rec: recOf, rings, tr: trOf } = buildLayout(graph, recById, minTs, maxTs, timed, locale)
 
   const nodes: SimNode[] = graph.nodes.map(n => {
     const rec = recOf(n)

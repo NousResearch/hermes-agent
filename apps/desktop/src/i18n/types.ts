@@ -49,6 +49,7 @@ interface AuxTaskCopy {
 
 export interface Translations {
   common: {
+    actions: string
     apply: string
     back: string
     save: string
@@ -79,12 +80,18 @@ export interface Translations {
     refresh: string
     remove: string
     replace: string
+    reset: string
     retry: string
     run: string
     send: string
     set: string
     skip: string
     update: string
+    zoomIn: string
+    zoomOut: string
+    openFullView: string
+    openDiagram: string
+    holdModifierToZoom: string
     resizePane: (id: string) => string
     tryHint: (term: string) => string
     on: string
@@ -182,6 +189,7 @@ export interface Translations {
     updateReadyMessage: (count: number) => string
     seeWhatsNew: string
     errors: {
+      backendTimeout?: (seconds: string) => string
       elevenLabsNeedsKey: string
       elevenLabsRejectedKey: string
       methodNotAllowed: string
@@ -326,6 +334,7 @@ export interface Translations {
       completionSoundTitle: string
       completionSoundDesc: string
       completionSoundPreview: string
+      completionSoundNames: Record<number, string>
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
@@ -443,11 +452,13 @@ export interface Translations {
       automaticUpdates: string
       automaticUpdatesDesc: string
       branchCommit: (branch: string, commit: string) => string
+      unknown: string
       never: string
       justNow: string
       minAgo: (count: number) => string
       hoursAgo: (count: number) => string
       daysAgo: (count: number) => string
+      sourceInstallOnly?: (path: string) => string
     }
     /**
      * Desktop "Danger zone" uninstall section. Optional: locales that omit it
@@ -467,6 +478,36 @@ export interface Translations {
       sectionBody: string
       couldNotStart: string
       modes: Record<'gui' | 'lite' | 'full', { title: string; description: string; consequence: string }>
+    }
+    memoryProvider?: {
+      leaveBlankToKeep: string
+      set: string
+      failedLoad: string
+      savedTitle: (provider: string) => string
+      savedMessage: string
+      failedSave: (provider: string) => string
+      loading: string
+      settings: (provider: string) => string
+      fieldSet: (field: string) => string
+      fieldNotSet: (field: string) => string
+      save: string
+      connectFailed: string
+      couldNotStart: string
+      timedOut: string
+      connectionFailed: string
+      connectViaOauth: string
+      reconnect: string
+      connect: string
+      apiKeySet: string
+      oauthSet: string
+      waitingForConsent: string
+      cancel: string
+      providerNames: Record<string, string>
+      fieldLabels: Record<string, string>
+      fieldDescriptions: Record<string, string>
+      fieldPlaceholders: Record<string, string>
+      optionLabels: Record<string, string>
+      optionDescriptions: Record<string, string>
     }
     config: {
       none: string
@@ -596,6 +637,8 @@ export interface Translations {
       loading: string
       failedLoad: string
       empty: string
+      fieldLabels?: Record<string, string>
+      fieldDescriptions?: Record<string, string>
     }
     mcp: {
       loading: string
@@ -661,6 +704,8 @@ export interface Translations {
       enableTool: (tool: string) => string
       disableTool: (tool: string) => string
       noOutput: string
+      authOauth: string
+      authApiKey: string
     }
     model: {
       loading: string
@@ -682,7 +727,50 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      moaTitle: string
+      moaDesc: string
+      moaPreset: string
+      moaSetDefault: string
+      moaDelete: string
+      moaNewPreset: string
+      moaAddPreset: string
+      moaDefault: string
+      moaAggregator: string
+      moaReference: (index: number) => string
+      moaRemove: string
+      moaAddReference: string
+      moaPresets: string
+      moaPrefix: string
+      otherProviders: string
+      staleAuxWarning: (count: number, names: string, provider: string) => string
       tasks: Record<string, AuxTaskCopy>
+    }
+    computerUse: {
+      linuxNote: string
+      windowsNote: string
+      granted: string
+      notGranted: string
+      unknown: string
+      readStatusFailed: string
+      requestFailed: string
+      approveTitle: string
+      approveMessage: string
+      checking: string
+      unsupported: (platform: string) => string
+      installDriver: string
+      grantAfterInstall: string
+      grantIdentity: string
+      recheck: string
+      accessibility: string
+      accessibilityHint: string
+      screenRecording: string
+      screenRecordingHint: string
+      driverHealth: string
+      ready: string
+      notReady: string
+      readyDescription: string
+      waitingApproval: string
+      grantPermissions: string
     }
     providers: {
       connectAccount: string
@@ -710,6 +798,20 @@ export interface Translations {
         description: string
       }
       loading: string
+      providerNames?: Record<string, string>
+      providerDescriptions?: Record<string, string>
+      advancedFields?: {
+        baseUrl: string
+        baseUrlDescription: (provider: string) => string
+        region: string
+        regionDescription: (provider: string) => string
+        profile: string
+        profileDescription: (provider: string) => string
+        credentialsPath: string
+        credentialsPathDescription: (provider: string) => string
+        alternateKey: string
+        alternateKeyDescription: (provider: string) => string
+      }
     }
     sessions: {
       loading: string
@@ -775,6 +877,11 @@ export interface Translations {
       modelSelectedTitle: string
       modelSelectedMessage: (model: string) => string
       failedSelectModel: (model: string) => string
+      providerNames?: Record<string, string>
+      providerTags?: Record<string, string>
+      providerBadgeTerms?: Record<string, string>
+      envVarPrompts?: Record<string, string>
+      modelDetails?: Record<string, string>
     }
   }
 
@@ -797,6 +904,9 @@ export interface Translations {
     configured: string
     needsKeys: string
     toolsetsEnabled: (enabled: number, total: number) => string
+    toolCount: (count: number) => string
+    toolsetNames: Record<string, string>
+    toolsetDescriptions: Record<string, string>
     configureToolset: (label: string) => string
     toggleToolset: (label: string) => string
     skillsLoadFailed: string
@@ -825,6 +935,9 @@ export interface Translations {
     skillUpdated: string
     edit: string
     archive: string
+    archiveSkillTitle: (name: string) => string
+    archiveSkillDescription: string
+    archiveFailed: string
     skillArchivedTitle: string
     skillArchivedMessage: string
     hub: {
@@ -869,6 +982,7 @@ export interface Translations {
       previewFailed: string
       scanFailed: string
       searchFailed: string
+      sourceLabels?: Record<string, string>
     }
     categoryLabels?: Record<string, string>
   }
@@ -899,6 +1013,21 @@ export interface Translations {
     importSuccess: (nodes: number) => string
     importedBadge: string
     resetToMine: string
+    skill: string
+    profileMemory: string
+    learned: string
+    pinned: string
+    unknown: string
+    coreAge: string
+    playTimeline: string
+    pauseTimeline: string
+    timelineScrubber: string
+    editNode: (kind: 'memory' | 'skill') => string
+    archiveSkill: string
+    deleteMemory: string
+    editTitle: (label: string) => string
+    deleteMemoryTitle: (label: string) => string
+    deleteMemoryDescription: string
   }
   agents: {
     close: string
@@ -986,6 +1115,15 @@ export interface Translations {
       genericError: string
       referenceImageTooLarge: string
       referenceImageInvalid: string
+      reference: string
+      removeReference: string
+      unavailableTitle: string
+      unavailableDesc: string
+      setupImageGeneration: string
+      grabKeyFrom: string
+      nousPortal: string
+      openRouter: string
+      openAi: string
       adopt: string
       startOver: string
     }
@@ -1103,6 +1241,8 @@ export interface Translations {
     search: string
     loading: string
     loadFailed: string
+    platformNames: Record<string, string>
+    platformDescriptions: Record<string, string>
     states: Record<string, string>
     unknown: string
     hintPendingRestart: string
@@ -1191,6 +1331,7 @@ export interface Translations {
     deleting: string
     createDesc: string
     nameLabel: string
+    namePlaceholder: string
     cloneFrom: string
     cloneFromNone: string
     cloneFromDesc: string
@@ -1453,6 +1594,7 @@ export interface Translations {
 
   composer: {
     message: string
+    addContext: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
@@ -1537,6 +1679,7 @@ export interface Translations {
   statusStack: {
     agents: string
     background: (count: number) => string
+    backgroundProcess?: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
     running: string
@@ -1679,6 +1822,8 @@ export interface Translations {
     featuredPitch: string
     fireworksPitch: string
     openRouterPitch: string
+    openRouterName: string
+    providerNames: Record<string, string>
     apiKeyOptions: Record<string, { short: string; description: string }>
     backToSignIn: string
     getKey: string
@@ -1717,6 +1862,26 @@ export interface Translations {
     change: string
     startChatting: string
     docs: (provider: string) => string
+    runtime?: {
+      readyTitle: string
+      connected: (provider: string) => string
+      gatewayToolsTitle: string
+      gatewayToolsMessage: (labels: string[]) => string
+      gatewayToolLabels: Record<string, string>
+      providerUnavailable: (detail?: string) => string
+      tokenExchangeFailed: string
+      externalUnavailable: (provider: string, command: string) => string
+      enterValueFirst: string
+      enterEndpointFirst: string
+      endpointUnreachable: (url: string) => string
+      endpointNoModels: (url: string) => string
+      endpointSavedButUnreachable: (url: string) => string
+      localEndpoint: string
+      couldNotSaveProvider: (provider: string) => string
+      couldNotSaveEndpoint: string
+      couldNotChangeModel: string
+      unexpectedError: string
+    }
   }
 
   modelPicker: {
@@ -2042,6 +2207,8 @@ export interface Translations {
   }
 
   assistant: {
+    alerts: Record<'caution' | 'important' | 'note' | 'tip' | 'warning', string>
+    embedTitle: (provider: string) => string
     thread: {
       loadingSession: string
       showEarlier: string
@@ -2073,6 +2240,8 @@ export interface Translations {
       goForward: string
       sendEdited: string
       attachingFile: string
+      timeline: string
+      steered: string
     }
     approval: {
       gatewayDisconnected: string
@@ -2113,6 +2282,9 @@ export interface Translations {
       copyPath: string
       outputAlt: string
       rawResponse: string
+      standardOutput: string
+      standardError: string
+      payload: string
       copyActivity: string
       recoveredOne: string
       recoveredMany: (count: number) => string
@@ -2213,6 +2385,8 @@ export interface Translations {
     restartToSaveImages: string
     imageDownloadFailed: string
     openImage: string
+    overlayMessage: string
+    openInHermes: string
     downloadImage: string
     savingImage: string
     imagePreviewFailed: string

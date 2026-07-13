@@ -46,12 +46,14 @@ export const credentialPlaceholder = (key: string, info: EnvVarInfo, label: stri
 export function KeyField({
   expanded = false,
   info,
+  label,
   placeholder,
   rowProps,
   varKey
 }: {
   expanded?: boolean
   info: EnvVarInfo
+  label: string
   placeholder?: string
   rowProps: KeyRowProps
   varKey: string
@@ -85,6 +87,7 @@ export function KeyField({
   if (info.is_set && !editing) {
     return (
       <Input
+        aria-label={label}
         className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE, 'cursor-pointer text-muted-foreground')}
         onFocus={startEdit}
         readOnly
@@ -96,6 +99,7 @@ export function KeyField({
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
       <Input
+        aria-label={label}
         autoFocus={editing}
         className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE)}
         onChange={update}
@@ -168,8 +172,9 @@ export function CredentialKeyCard({
   rowProps,
   varKey
 }: CredentialKeyCardProps) {
+  const { t } = useI18n()
   const docsUrl = info.url?.trim()
-  const description = info.description?.trim()
+  const description = (t.settings.keys.fieldDescriptions?.[varKey] ?? info.description)?.trim()
   const expandable = Boolean(description || docsUrl)
 
   return (
@@ -233,7 +238,14 @@ export function CredentialKeyCard({
             }
           }}
         >
-          <KeyField expanded={expanded} info={info} placeholder={placeholder} rowProps={rowProps} varKey={varKey} />
+          <KeyField
+            expanded={expanded}
+            info={info}
+            label={label}
+            placeholder={placeholder}
+            rowProps={rowProps}
+            varKey={varKey}
+          />
         </div>
 
         {expandable && expanded && (
@@ -255,8 +267,10 @@ export function CredentialKeyCard({
 /** Provider API key group — collapsible card; description, docs link, and advanced fields expand on click. */
 export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps }: ProviderKeyRowsProps) {
   const { t } = useI18n()
+  const providerCopy = t.settings.providers
+  const providerName = providerCopy.providerNames?.[group.name] ?? group.name
   const docsUrl = group.docsUrl?.trim()
-  const description = group.description?.trim()
+  const description = (providerCopy.providerDescriptions?.[group.name] ?? group.description)?.trim()
   const expandable = Boolean(description || docsUrl || group.advanced.length > 0)
 
   return (
@@ -300,7 +314,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
           />
 
           <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-            {group.name}
+            {providerName}
           </span>
 
           {expandable && (
@@ -325,7 +339,8 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
           <KeyField
             expanded={expanded}
             info={group.primary[1]}
-            placeholder={t.settings.credentials.pasteLabelKey(group.name)}
+            label={t.settings.credentials.pasteLabelKey(providerName)}
+            placeholder={t.settings.credentials.pasteLabelKey(providerName)}
             rowProps={rowProps}
             varKey={group.primary[0]}
           />
@@ -340,9 +355,35 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
             )}
 
             {group.advanced.map(([key, info]) => {
-              const fieldLabel = isKeyVar(key, info)
-                ? prettyName(key.replace(/(?:_API_KEY|_TOKEN|_KEY)$/i, ''))
-                : friendlyFieldLabel(key, info)
+              const advanced = providerCopy.advancedFields
+              let generatedLabel: string | undefined
+              let generatedDescription: string | undefined
+
+              if (advanced && (/(?:^|_)BASE_URL$/.test(key) || /_API_BASE_URL$/.test(key))) {
+                generatedLabel = advanced.baseUrl
+                generatedDescription = advanced.baseUrlDescription(providerName)
+              } else if (advanced && /_REGION$/.test(key)) {
+                generatedLabel = advanced.region
+                generatedDescription = advanced.regionDescription(providerName)
+              } else if (advanced && /_PROFILE$/.test(key)) {
+                generatedLabel = advanced.profile
+                generatedDescription = advanced.profileDescription(providerName)
+              } else if (advanced && /_CREDENTIALS_PATH$/.test(key)) {
+                generatedLabel = advanced.credentialsPath
+                generatedDescription = advanced.credentialsPathDescription(providerName)
+              } else if (advanced && isKeyVar(key, info)) {
+                generatedLabel = advanced.alternateKey
+                generatedDescription = advanced.alternateKeyDescription(providerName)
+              }
+
+              const fieldLabel =
+                t.settings.keys.fieldLabels?.[key] ??
+                generatedLabel ??
+                (isKeyVar(key, info)
+                  ? prettyName(key.replace(/(?:_API_KEY|_TOKEN|_KEY)$/i, ''))
+                  : friendlyFieldLabel(key, info))
+              const fieldDescription =
+                t.settings.keys.fieldDescriptions?.[key] ?? generatedDescription ?? info.description
 
               return (
                 <ListRow
@@ -350,11 +391,13 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
                     <KeyField
                       expanded={expanded}
                       info={info}
+                      label={fieldLabel}
                       placeholder={credentialPlaceholder(key, info, fieldLabel)}
                       rowProps={rowProps}
                       varKey={key}
                     />
                   }
+                  description={fieldDescription}
                   key={key}
                   title={fieldLabel}
                 />

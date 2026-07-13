@@ -231,9 +231,23 @@ function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
 }
 
+function resolvePluginLabel(
+  manifest: PluginManifest,
+  t: Translations,
+): string {
+  if (manifest.name === "hermes-achievements") {
+    return t.achievements.navLabel ?? t.achievements.hero.title;
+  }
+  if (manifest.name === "kanban") {
+    return t.kanban.navLabel ?? t.kanban.board;
+  }
+  return manifest.label;
+}
+
 function buildNavItems(
   builtIn: NavItem[],
   manifests: PluginManifest[],
+  t: Translations,
 ): NavItem[] {
   const items = [...builtIn];
 
@@ -243,7 +257,7 @@ function buildNavItems(
 
     const pluginItem: NavItem = {
       path: manifest.tab.path,
-      label: manifest.label,
+      label: resolvePluginLabel(manifest, t),
       icon: resolveIcon(manifest.icon),
     };
 
@@ -270,8 +284,9 @@ function buildNavItems(
 function partitionSidebarNav(
   builtIn: NavItem[],
   manifests: PluginManifest[],
+  t: Translations,
 ): { coreItems: NavItem[]; pluginItems: NavItem[] } {
-  const merged = buildNavItems(builtIn, manifests);
+  const merged = buildNavItems(builtIn, manifests, t);
   const builtinPaths = new Set(builtIn.map((i) => i.path));
   const coreItems: NavItem[] = [];
   const pluginItems: NavItem[] = [];
@@ -437,8 +452,8 @@ export default function App() {
   }, [embeddedChat, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
-    () => partitionSidebarNav(builtinNav, manifests),
-    [builtinNav, manifests],
+    () => partitionSidebarNav(builtinNav, manifests, t),
+    [builtinNav, manifests, t],
   );
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
@@ -450,9 +465,9 @@ export default function App() {
         .filter((m) => !m.tab.hidden)
         .map((m) => ({
           path: m.tab.override ?? m.tab.path,
-          label: m.label,
+          label: resolvePluginLabel(m, t),
         })),
-    [manifests],
+    [manifests, t],
   );
 
   const layoutVariant = theme.layoutVariant ?? "standard";
@@ -561,7 +576,9 @@ export default function App() {
               collapsed && "lg:w-14",
             )}
             style={{
-              background: "var(--component-sidebar-background)",
+              background: mobileOpen
+                ? "var(--background-base)"
+                : "var(--component-sidebar-background)",
               clipPath: "var(--component-sidebar-clip-path)",
               borderImage: "var(--component-sidebar-border-image)",
             }}
@@ -714,7 +731,7 @@ export default function App() {
                 isDesktopCollapsed && "lg:hidden",
               )}
             >
-              <AuthWidget />
+              <AuthWidget authRequired={sidebarStatus?.auth_required} />
               <SidebarFooter status={sidebarStatus} />
             </div>
           </aside>

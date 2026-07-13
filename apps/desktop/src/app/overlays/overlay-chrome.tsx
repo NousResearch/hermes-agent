@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 interface OverlayIconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  'aria-label': string
   children: ReactNode
 }
 

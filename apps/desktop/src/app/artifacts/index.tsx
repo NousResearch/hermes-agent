@@ -23,7 +23,6 @@ import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLi
 import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
-import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
@@ -41,8 +40,13 @@ import {
   collectArtifactsForSession
 } from './artifact-utils'
 
-function formatArtifactTime(timestamp: number): string {
-  return fmtDayTime.format(new Date(timestamp))
+function formatArtifactTime(timestamp: number, locale: string): string {
+  return new Intl.DateTimeFormat(locale === 'ar' ? 'ar-EG' : locale, {
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short'
+  }).format(new Date(timestamp))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {
@@ -103,7 +107,7 @@ interface ArtifactsViewProps extends React.ComponentProps<'section'> {
 }
 
 export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: ArtifactsViewProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const a = t.artifacts
   const navigate = useNavigate()
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
@@ -131,7 +135,9 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
 
         const session = sessions[index]
-        nextArtifacts.push(...collectArtifactsForSession(session, result.value.messages))
+        nextArtifacts.push(
+          ...collectArtifactsForSession(session, result.value.messages, t.sidebar.row.untitledPlaceholder)
+        )
       })
 
       setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
@@ -141,7 +147,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     } finally {
       setRefreshing(false)
     }
-  }, [a])
+  }, [a, t.sidebar.row.untitledPlaceholder])
 
   useRefreshHotkey(refreshArtifacts)
 
@@ -336,6 +342,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       artifact={artifact}
                       failedImage={failedImageIds.has(artifact.id)}
                       key={artifact.id}
+                      locale={locale}
                       onImageError={markImageFailed}
                       onOpenChat={sessionId => navigate(sessionRoute(sessionId))}
                     />
@@ -424,11 +431,12 @@ function ArtifactsPagination({ className, itemLabel, onPageChange, page, pageSiz
 interface ArtifactImageCardProps {
   artifact: ArtifactRecord
   failedImage: boolean
+  locale: string
   onImageError: (id: string) => void
   onOpenChat: (sessionId: string) => void
 }
 
-function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: ArtifactImageCardProps) {
+function ArtifactImageCard({ artifact, failedImage, locale, onImageError, onOpenChat }: ArtifactImageCardProps) {
   const { t } = useI18n()
   const a = t.artifacts
   const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
@@ -490,7 +498,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         </div>
 
         <div className="truncate text-[0.625rem] text-(--ui-text-tertiary)">
-          {artifact.sessionTitle} · {formatArtifactTime(artifact.timestamp)}
+          {artifact.sessionTitle} · {formatArtifactTime(artifact.timestamp, locale)}
         </div>
 
         <div className="flex flex-wrap gap-1.5">
@@ -596,12 +604,14 @@ function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) 
 }
 
 function SessionCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
+  const { locale } = useI18n()
+
   return (
     <ArtifactCellAction onClick={() => ctx.onOpenChat(artifact.sessionId)} title={artifact.sessionTitle}>
       <span className="flex min-w-0 flex-col">
         <span className="truncate">{artifact.sessionTitle}</span>
         <span className="truncate text-[0.6875rem] font-normal text-(--ui-text-tertiary)">
-          {formatArtifactTime(artifact.timestamp)}
+          {formatArtifactTime(artifact.timestamp, locale)}
         </span>
       </span>
     </ArtifactCellAction>

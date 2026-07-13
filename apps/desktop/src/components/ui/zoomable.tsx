@@ -2,8 +2,9 @@
 
 import { type ReactNode, useEffect, useState } from 'react'
 
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { Check, Copy, Maximize, RefreshCw, X, ZoomIn, ZoomOut } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -27,8 +28,10 @@ interface ZoomableProps {
  * (see useZoomPan) and optionally copied. Content-agnostic — wrap a diagram,
  * image, or any node.
  */
-export function Zoomable({ children, overlay, onCopy, label = 'Open full view', className }: ZoomableProps) {
+export function Zoomable({ children, overlay, onCopy, label, className }: ZoomableProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
+  const accessibleLabel = label ?? t.common.openFullView
 
   return (
     <>
@@ -37,7 +40,7 @@ export function Zoomable({ children, overlay, onCopy, label = 'Open full view', 
         <button
           className="block w-full cursor-zoom-in text-left"
           onClick={() => setOpen(true)}
-          title={label}
+          title={accessibleLabel}
           type="button"
         >
           {children}
@@ -50,7 +53,7 @@ export function Zoomable({ children, overlay, onCopy, label = 'Open full view', 
         </span>
       </div>
       {open && (
-        <ZoomPanViewer onCopy={onCopy} onOpenChange={setOpen} open={open}>
+        <ZoomPanViewer label={accessibleLabel} onCopy={onCopy} onOpenChange={setOpen} open={open}>
           {overlay ?? children}
         </ZoomPanViewer>
       )}
@@ -60,11 +63,13 @@ export function Zoomable({ children, overlay, onCopy, label = 'Open full view', 
 
 function ZoomPanViewer({
   children,
+  label,
   onCopy,
   onOpenChange,
   open
 }: {
   children: ReactNode
+  label: string
   onCopy?: () => Promise<void> | void
   onOpenChange: (open: boolean) => void
   open: boolean
@@ -83,6 +88,7 @@ function ZoomPanViewer({
         className="flex h-[85vh] w-[90vw] max-w-[90vw] flex-col gap-0 overflow-hidden p-0"
         showCloseButton={false}
       >
+        <DialogTitle className="sr-only">{label}</DialogTitle>
         <div
           className={cn(
             'relative flex-1 touch-none select-none overflow-hidden',
@@ -115,6 +121,7 @@ function Toolbar({
   zoomIn: () => void
   zoomOut: () => void
 }) {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
 
   const copy = async () => {
@@ -129,25 +136,25 @@ function Toolbar({
 
   return (
     <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/70 bg-background/85 p-1 shadow-sm backdrop-blur">
-      <ToolbarButton label="Zoom out" onClick={zoomOut}>
+      <ToolbarButton label={t.common.zoomOut} onClick={zoomOut}>
         <ZoomOut className="size-4" />
       </ToolbarButton>
-      <ToolbarButton label="Reset" onClick={reset}>
+      <ToolbarButton label={t.common.reset} onClick={reset}>
         <RefreshCw className="size-4" />
       </ToolbarButton>
-      <ToolbarButton label="Zoom in" onClick={zoomIn}>
+      <ToolbarButton label={t.common.zoomIn} onClick={zoomIn}>
         <ZoomIn className="size-4" />
       </ToolbarButton>
       {onCopy && (
         <>
           <Divider />
-          <ToolbarButton label={copied ? 'Copied' : 'Copy'} onClick={() => void copy()}>
+          <ToolbarButton label={copied ? t.common.copied : t.common.copy} onClick={() => void copy()}>
             {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
           </ToolbarButton>
         </>
       )}
       <Divider />
-      <ToolbarButton label="Close" onClick={onClose}>
+      <ToolbarButton label={t.common.close} onClick={onClose}>
         <X className="size-4" />
       </ToolbarButton>
     </div>

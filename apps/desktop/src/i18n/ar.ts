@@ -4,6 +4,7 @@ import type { Translations } from './types'
 
 export const ar: Translations = {
   common: {
+    actions: 'إجراءات',
     apply: 'تطبيق',
     back: 'رجوع',
     save: 'حفظ',
@@ -34,12 +35,18 @@ export const ar: Translations = {
     refresh: 'تحديث',
     remove: 'إزالة',
     replace: 'استبدال',
+    reset: 'إعادة الضبط',
     retry: 'إعادة المحاولة',
     run: 'تشغيل',
     send: 'إرسال',
     set: 'ضبط',
     skip: 'تخطي',
     update: 'تحديث',
+    zoomIn: 'تكبير',
+    zoomOut: 'تصغير',
+    openFullView: 'فتح العرض الكامل',
+    openDiagram: 'فتح المخطّط',
+    holdModifierToZoom: 'اضغط على مفتاح الأوامر للتكبير',
     resizePane: _id => 'تغيير حجم الجزء',
     tryHint: term => `جرّب «${term}»`,
     on: 'مفعّل',
@@ -148,14 +155,16 @@ export const ar: Translations = {
             : `${count} تغييرًا جديدًا متاحًا.`,
     seeWhatsNew: 'عرض الجديد',
     errors: {
-      elevenLabsNeedsKey: 'يتطلب تحويل الكلام إلى نص من ElevenLabs المفتاح ELEVENLABS_API_KEY.',
-      elevenLabsRejectedKey: 'رفض ElevenLabs مفتاح الواجهة البرمجية (401).',
+      backendTimeout: seconds =>
+        `لم يستجب هرمس خلال ${Number.isFinite(Number(seconds)) ? Number(seconds).toLocaleString('ar-EG') : seconds} ثانية. تحقق من الاتصال ثم أعد المحاولة.`,
+      elevenLabsNeedsKey: 'يتطلب تحويل الكلام إلى نص من إليفن لابز المفتاح ELEVENLABS_API_KEY.',
+      elevenLabsRejectedKey: 'رفض إليفن لابز مفتاح الواجهة البرمجية (401).',
       methodNotAllowed:
         'رفضت واجهة سطح المكتب الخلفية الطلب (405 Method Not Allowed). جرّب إعادة تشغيل هرمس لسطح المكتب.',
       microphonePermission: 'رُفض إذن الميكروفون.',
-      openaiRejectedApiKey: 'رفض OpenAI مفتاح الواجهة البرمجية.',
-      openaiRejectedApiKeyWithStatus: status => `رفض OpenAI مفتاح الواجهة البرمجية (${status} invalid_api_key).`,
-      openaiTtsNeedsKey: 'يتطلب تحويل النص إلى كلام من OpenAI المفتاح VOICE_TOOLS_OPENAI_KEY أو OPENAI_API_KEY.'
+      openaiRejectedApiKey: 'رفض أوبن إيه آي مفتاح الواجهة البرمجية.',
+      openaiRejectedApiKeyWithStatus: status => `رفض أوبن إيه آي مفتاح الواجهة البرمجية (${status} invalid_api_key).`,
+      openaiTtsNeedsKey: 'يتطلب تحويل النص إلى كلام من أوبن إيه آي المفتاح VOICE_TOOLS_OPENAI_KEY أو OPENAI_API_KEY.'
     },
     voice: {
       configureSpeechToText: 'اضبط تحويل الكلام إلى نص لاستخدام الوضع الصوتي.',
@@ -191,8 +200,7 @@ export const ar: Translations = {
   },
 
   remoteDisplayBanner: {
-    message: reason =>
-      `التصيير البرمجي مُفعّل — اكتُشف عرض بعيد (${reason}). تعطيل تسريع كرت الرسومات لمنع الوميض.`
+    message: reason => `التصيير البرمجي مُفعّل — اكتُشف عرض بعيد (${reason}). تعطيل تسريع كرت الرسومات لمنع الوميض.`
   },
 
   titlebar: {
@@ -331,7 +339,7 @@ export const ar: Translations = {
       apiKeys: 'الأدوات والمفاتيح',
       keysTools: 'الأدوات',
       keysSettings: 'الإعدادات',
-      mcp: 'MCP',
+      mcp: 'بروتوكول سياق النموذج',
       archivedChats: 'المحادثات المؤرشفة',
       about: 'حول',
       notifications: 'الإشعارات'
@@ -372,7 +380,23 @@ export const ar: Translations = {
       testUnsupported: 'لا يدعم هذا النظام إشعارات سطح المكتب.',
       completionSoundTitle: 'صوت الاكتمال',
       completionSoundDesc: 'يُشغّل عند اكتمال دورة للوكيل. اختر صوتًا معدًا مسبقًا وعاينه هنا.',
-      completionSoundPreview: 'معاينة'
+      completionSoundPreview: 'معاينة',
+      completionSoundNames: {
+        1: 'راحة بنغمتين',
+        2: 'رنين زجاجي',
+        3: 'ماريمبا هادئة',
+        4: 'رسالة بثلاث نغمات',
+        5: 'وشوشة هوائية',
+        6: 'عنقود اكتشاف',
+        7: 'الأنظمة جاهزة',
+        8: 'طرفية آي بي إم',
+        9: 'زقزقة مودم',
+        10: 'أجراس الريح',
+        11: 'وعاء رنان',
+        12: 'تصاعد القيثارة',
+        13: 'نبضة سونار',
+        14: 'صندوق موسيقي'
+      }
     },
     sections: {
       model: 'النموذج',
@@ -401,7 +425,7 @@ export const ar: Translations = {
       title: 'المظهر',
       uiScaleTitle: 'مقياس الواجهة',
       uiScaleDesc: (percent: number) =>
-        `يضبط حجم النصّ وعناصر التحكّم في التطبيق كلّه. يعمل أيضًا Cmd/Ctrl مع + و- و0. الحالي: ${percent}%.`,
+        `يضبط حجم النصّ وعناصر التحكّم في التطبيق كلّه. ويمكن استخدام اختصارات التكبير والتصغير وإعادة الضبط. الحالي: ${percent}%.`,
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'شاهد سطح مكتبك عبر النافذة كاملة. لنظامي ماك وويندوز فقط.',
       intro:
@@ -537,14 +561,14 @@ export const ar: Translations = {
       terminal: {
         cwd: 'مجلد العمل',
         backend: 'واجهة التنفيذ الخلفية',
-        modalMode: 'وضع صندوق Modal الرملي',
+        modalMode: 'وضع صندوق مودال الرملي',
         timeout: 'مهلة الأمر',
         persistentShell: 'صدفة مستمرة',
         envPassthrough: 'تمرير متغيرات البيئة',
-        dockerImage: 'صورة Docker',
-        singularityImage: 'صورة Singularity',
-        modalImage: 'صورة Modal',
-        daytonaImage: 'صورة Daytona'
+        dockerImage: 'صورة دوكر',
+        singularityImage: 'صورة سنجيولاريتي',
+        modalImage: 'صورة مودال',
+        daytonaImage: 'صورة دايتونا'
       },
       fileReadMaxChars: 'حد قراءة الملفات',
       toolOutput: {
@@ -575,28 +599,28 @@ export const ar: Translations = {
         echoTranscripts: 'إظهار النصوص المفرّغة',
         provider: 'مزوّد تحويل الكلام إلى نص',
         local: { model: 'نموذج التفريغ المحلي', language: 'لغة التفريغ' },
-        openai: { model: 'نموذج OpenAI للتفريغ' },
-        groq: { model: 'نموذج Groq للتفريغ' },
-        mistral: { model: 'نموذج Mistral للتفريغ' },
+        openai: { model: 'نموذج أوبن إيه آي للتفريغ' },
+        groq: { model: 'نموذج جروك للتفريغ' },
+        mistral: { model: 'نموذج ميسترال للتفريغ' },
         elevenlabs: {
-          modelId: 'نموذج ElevenLabs للتفريغ',
-          languageCode: 'لغة ElevenLabs',
+          modelId: 'نموذج إليفن لابز للتفريغ',
+          languageCode: 'لغة إليفن لابز',
           tagAudioEvents: 'وسم الأحداث الصوتية',
           diarize: 'تمييز المتحدثين'
         }
       },
       tts: {
         provider: 'مزوّد تحويل النص إلى كلام',
-        edge: { voice: 'صوت Edge' },
-        openai: { model: 'نموذج OpenAI الصوتي', voice: 'صوت OpenAI' },
-        elevenlabs: { voiceId: 'صوت ElevenLabs', modelId: 'نموذج ElevenLabs' },
-        xai: { voiceId: 'صوت xAI (Grok)', language: 'لغة xAI' },
-        minimax: { model: 'نموذج MiniMax الصوتي', voiceId: 'صوت MiniMax' },
-        mistral: { model: 'نموذج Mistral الصوتي', voiceId: 'صوت Mistral' },
-        gemini: { model: 'نموذج Gemini الصوتي', voice: 'صوت Gemini' },
-        neutts: { model: 'نموذج NeuTTS', device: 'جهاز NeuTTS' },
-        kittentts: { model: 'نموذج KittenTTS', voice: 'صوت KittenTTS' },
-        piper: { voice: 'صوت Piper' }
+        edge: { voice: 'صوت إيدج' },
+        openai: { model: 'نموذج أوبن إيه آي الصوتي', voice: 'صوت أوبن إيه آي' },
+        elevenlabs: { voiceId: 'صوت إليفن لابز', modelId: 'نموذج إليفن لابز' },
+        xai: { voiceId: 'صوت إكس إيه آي جروك', language: 'لغة إكس إيه آي' },
+        minimax: { model: 'نموذج ميني ماكس الصوتي', voiceId: 'صوت ميني ماكس' },
+        mistral: { model: 'نموذج ميسترال الصوتي', voiceId: 'صوت ميسترال' },
+        gemini: { model: 'نموذج جيمناي الصوتي', voice: 'صوت جيمناي' },
+        neutts: { model: 'نموذج نيو تي تي إس', device: 'جهاز نيو تي تي إس' },
+        kittentts: { model: 'نموذج كيتن تي تي إس', voice: 'صوت كيتن تي تي إس' },
+        piper: { voice: 'صوت بايبر' }
       },
       memory: {
         memoryEnabled: 'الذاكرة المستمرة',
@@ -654,6 +678,7 @@ export const ar: Translations = {
       builtin: 'مدمج',
       honcho: 'هونتشو',
       local: 'محلي',
+      edge: 'إيدج',
       stash: 'حفظ جانبي',
       discard: 'تجاهل',
       tiny: 'صغير جدًا',
@@ -678,7 +703,7 @@ export const ar: Translations = {
     fieldDescriptions: defineFieldCopy({
       model: 'يُستخدم للمحادثات الجديدة ما لم تختر نموذجًا آخر من محرر الرسالة.',
       modelContextLength: 'اتركه صفرًا لاستخدام نافذة السياق المكتشفة للنموذج المحدد.',
-      fallbackProviders: 'إدخالات احتياطية بصيغة provider:model تُجرّب عند فشل النموذج الافتراضي.',
+      fallbackProviders: 'إدخالات احتياطية بصيغة مزوّد:نموذج تُجرّب عند فشل النموذج الافتراضي.',
       display: {
         personality: 'أسلوب المساعد الافتراضي للجلسات الجديدة.',
         showReasoning: 'يعرض محتوى الاستدلال عندما توفره الواجهة الخلفية.',
@@ -690,18 +715,18 @@ export const ar: Translations = {
       agent: {
         imageInputMode: 'يتحكم في كيفية إرسال مرفقات الصور إلى النموذج.',
         maxTurns: 'أقصى عدد لدورات استدعاء الأدوات قبل أن يوقف هرمس التشغيل.',
-        serviceTier: 'فئة خدمة الواجهة البرمجية (OpenAI/Anthropic).'
+        serviceTier: 'فئة خدمة الواجهة البرمجية لأوبن إيه آي وأنثروبيك.'
       },
       terminal: {
         cwd: 'مجلد المشروع الافتراضي لعمليات الأدوات والطرفية.',
         backend: 'بيئة تنفيذ أوامر الطرفية.',
-        modalMode: 'وضع صندوق Modal الرملي.',
+        modalMode: 'وضع صندوق مودال الرملي.',
         persistentShell: 'يحافظ على حالة الصدفة بين الأوامر عندما تدعمها الواجهة الخلفية.',
         envPassthrough: 'متغيرات البيئة التي تُمرر إلى تنفيذ الأدوات.',
-        dockerImage: 'صورة الحاوية المستخدمة عندما تكون واجهة التنفيذ الخلفية Docker.',
-        singularityImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية Singularity.',
-        modalImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية Modal.',
-        daytonaImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية Daytona.'
+        dockerImage: 'صورة الحاوية المستخدمة عندما تكون واجهة التنفيذ الخلفية دوكر.',
+        singularityImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية سنجيولاريتي.',
+        modalImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية مودال.',
+        daytonaImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية دايتونا.'
       },
       codeExecution: { mode: 'مدى تقييد تنفيذ الشيفرة بالمشروع الحالي.' },
       fileReadMaxChars: 'أقصى عدد من المحارف التي يقرأها هرمس في عملية قراءة ملف واحدة.',
@@ -720,18 +745,20 @@ export const ar: Translations = {
       compression: { enabled: 'يلخّص السياق الأقدم عندما تكبر المحادثة.' },
       voice: { autoTts: 'يقرأ ردود المساعد تلقائيًا.' },
       tts: {
+        provider: 'المزوّد المستخدم لتحويل النص إلى كلام.',
         xai: {
-          voiceId: 'معرّف صوت xAI (مثل eve) أو معرّف صوت مخصص.',
+          voiceId: 'معرّف صوت إكس إيه آي، مثل eve، أو معرّف صوت مخصص.',
           language: 'رمز لغة النطق، مثل en.'
         },
-        neutts: { device: 'جهاز الاستنتاج المحلي لـ NeuTTS.' }
+        neutts: { device: 'جهاز الاستنتاج المحلي لنيو تي تي إس.' }
       },
       stt: {
         enabled: 'يفعّل تفريغ الكلام محليًا أو عبر مزوّد.',
         echoTranscripts: 'يعيد نشر النص الخام للرسالة الصوتية في المحادثة.',
+        provider: 'المزوّد المستخدم لتحويل الكلام إلى نص.',
         elevenlabs: {
-          modelId: 'نموذج Scribe من ElevenLabs للتفريغ.',
-          languageCode: 'رمز لغة ISO-639-3 اختياري. اتركه فارغًا ليكتشف ElevenLabs اللغة تلقائيًا.'
+          modelId: 'نموذج سكرايب من إليفن لابز للتفريغ.',
+          languageCode: 'رمز لغة اختياري وفق معيار آيزو. اتركه فارغًا لتكتشف إليفن لابز اللغة تلقائيًا.'
         }
       },
       updates: {
@@ -771,14 +798,28 @@ export const ar: Translations = {
       automaticUpdates: 'التحديثات التلقائية',
       automaticUpdatesDesc: 'يتحقق هرمس من التحديثات تلقائيًا في الخلفية وينبهك عند جاهزيتها.',
       branchCommit: (branch, commit) => `الفرع ${branch} · الإيداع ${commit}`,
+      unknown: 'غير معروف',
       never: 'أبدًا',
       justNow: 'الآن',
       minAgo: count =>
-        count === 1 ? 'قبل دقيقة' : count === 2 ? 'قبل دقيقتين' : count <= 10 ? `قبل ${count} دقائق` : `قبل ${count} دقيقة`,
+        count === 1
+          ? 'قبل دقيقة'
+          : count === 2
+            ? 'قبل دقيقتين'
+            : count <= 10
+              ? `قبل ${count} دقائق`
+              : `قبل ${count} دقيقة`,
       hoursAgo: count =>
-        count === 1 ? 'قبل ساعة' : count === 2 ? 'قبل ساعتين' : count <= 10 ? `قبل ${count} ساعات` : `قبل ${count} ساعة`,
+        count === 1
+          ? 'قبل ساعة'
+          : count === 2
+            ? 'قبل ساعتين'
+            : count <= 10
+              ? `قبل ${count} ساعات`
+              : `قبل ${count} ساعة`,
       daysAgo: count =>
-        count === 1 ? 'قبل يوم' : count === 2 ? 'قبل يومين' : count <= 10 ? `قبل ${count} أيام` : `قبل ${count} يومًا`
+        count === 1 ? 'قبل يوم' : count === 2 ? 'قبل يومين' : count <= 10 ? `قبل ${count} أيام` : `قبل ${count} يومًا`,
+      sourceInstallOnly: path => `${path} ليس نسخة جيت؛ لا يعمل التحديث الذاتي لسطح المكتب إلا من تثبيت مصدري.`
     },
     uninstall: {
       dangerZone: 'منطقة الخطر',
@@ -809,6 +850,54 @@ export const ar: Translations = {
             'يزيل التطبيق والوكيل وكل بيانات المستخدم — الإعدادات والمحادثات والمهام المجدولة والأسرار والسجلات.',
           consequence: 'كل شيء — واجهة المحادثة ووكيل هرمس وكل إعداداتك ومحادثاتك وأسرارك وسجلاتك'
         }
+      }
+    },
+    memoryProvider: {
+      leaveBlankToKeep: 'اتركه فارغًا للاحتفاظ بالقيمة الحالية',
+      set: 'مضبوط',
+      failedLoad: 'تعذر تحميل إعدادات مزوّد الذاكرة',
+      savedTitle: provider => `حُفظت إعدادات ${provider}`,
+      savedMessage: 'حُدّث إعداد مزوّد الذاكرة.',
+      failedSave: provider => `تعذر حفظ إعدادات ${provider}`,
+      loading: 'جارٍ تحميل إعدادات مزوّد الذاكرة...',
+      settings: provider => `إعدادات ${provider}`,
+      fieldSet: field => `${field}: مضبوط`,
+      fieldNotSet: field => `${field}: غير مضبوط`,
+      save: 'حفظ',
+      connectFailed: 'تعذر بدء الاتصال',
+      couldNotStart: 'تعذر بدء الاتصال.',
+      timedOut: 'انتهت المهلة. أعد المحاولة.',
+      connectionFailed: 'فشل الاتصال.',
+      connectViaOauth: 'الاتصال عبر التفويض',
+      reconnect: 'إعادة الاتصال',
+      connect: 'اتصال',
+      apiKeySet: 'مفتاح الواجهة مضبوط',
+      oauthSet: 'التفويض مضبوط',
+      waitingForConsent: 'في انتظار الموافقة في المتصفح...',
+      cancel: 'إلغاء',
+      providerNames: { hindsight: 'هايندسايت' },
+      fieldLabels: {
+        mode: 'الوضع',
+        api_key: 'مفتاح الواجهة البرمجية',
+        api_url: 'رابط الواجهة البرمجية',
+        bank_id: 'معرّف مخزن الذاكرة',
+        recall_budget: 'ميزانية الاسترجاع'
+      },
+      fieldDescriptions: {
+        mode: 'كيفية اتصال هرمس بخدمة هايندسايت.',
+        api_key: 'يُستخدم للمصادقة مع واجهة هايندسايت البرمجية.'
+      },
+      fieldPlaceholders: { api_key: 'أدخل مفتاح واجهة هايندسايت البرمجية' },
+      optionLabels: {
+        cloud: 'سحابي',
+        local_external: 'محلي خارجي',
+        low: 'منخفضة',
+        mid: 'متوسطة',
+        high: 'مرتفعة'
+      },
+      optionDescriptions: {
+        cloud: 'واجهة هايندسايت السحابية؛ خفيفة ولا تحتاج إلا إلى مفتاح واجهة.',
+        local_external: 'الاتصال بنسخة هايندسايت قائمة.'
       }
     },
     config: {
@@ -865,7 +954,7 @@ export const ar: Translations = {
       remoteTitle: 'بوابة بعيدة',
       remoteDesc: 'تصل غلاف سطح المكتب بواجهة هرمس خلفية بعيدة.',
       remoteAuthHint:
-        'تستخدم البوابات المستضافة OAuth أو اسم مستخدم وكلمة مرور، وقد تستخدم البوابات الذاتية رمز جلسة.',
+        'تستخدم البوابات المستضافة أو أوث أو اسم مستخدم وكلمة مرور، وقد تستخدم البوابات الذاتية رمز جلسة.',
       cloudTitle: 'سحابة هرمس',
       cloudDesc: 'سجّل الدخول مرة واحدة إلى سحابة هرمس واختر من الوكلاء في حسابك — دون لصق أي رابط.',
       cloudSignInTitle: 'سحابة هرمس',
@@ -907,9 +996,9 @@ export const ar: Translations = {
       signInWith: provider => `تسجيل الدخول عبر ${provider}`,
       authTitle: 'المصادقة',
       authSignedInPassword: 'تستخدم هذه البوابة اسم مستخدم وكلمة مرور. أنت مسجل الدخول، وتُجدّد الجلسة تلقائيًا.',
-      authSignedInOauth: 'تستخدم هذه البوابة OAuth. أنت مسجل الدخول، وتُجدّد الجلسة تلقائيًا.',
+      authSignedInOauth: 'تستخدم هذه البوابة أو أوث. أنت مسجل الدخول، وتُجدّد الجلسة تلقائيًا.',
       authNeedsPassword: 'تستخدم هذه البوابة اسم مستخدم وكلمة مرور. سجّل الدخول لتفويض تطبيق سطح المكتب.',
-      authNeedsOauth: provider => `تستخدم هذه البوابة OAuth. سجّل الدخول عبر ${provider} لتفويض تطبيق سطح المكتب.`,
+      authNeedsOauth: provider => `تستخدم هذه البوابة أو أوث. سجّل الدخول عبر ${provider} لتفويض تطبيق سطح المكتب.`,
       tokenTitle: 'رمز الجلسة',
       tokenDesc: 'رمز جلسة لوحة التحكم المستخدم للوصول عبر REST وWebSocket. اتركه فارغًا للإبقاء على الرمز المحفوظ.',
       existingToken: value => `الرمز الحالي ${value}`,
@@ -945,7 +1034,114 @@ export const ar: Translations = {
     keys: {
       loading: 'جارٍ تحميل مفاتيح الواجهة البرمجية وبيانات الاعتماد...',
       failedLoad: 'فشل تحميل مفاتيح الواجهة البرمجية',
-      empty: 'لا يوجد شيء مضبوط في هذه الفئة بعد.'
+      empty: 'لا يوجد شيء مضبوط في هذه الفئة بعد.',
+      fieldLabels: {
+        AGENT_BROWSER_ENGINE: 'محرك المتصفح المحلي',
+        BRAVE_SEARCH_API_KEY: 'مفتاح بحث بريف',
+        BROWSER_USE_API_KEY: 'مفتاح براوزر يوز',
+        BROWSERBASE_API_KEY: 'مفتاح براوزربيس',
+        BROWSERBASE_PROJECT_ID: 'معرّف مشروع براوزربيس',
+        BRV_API_KEY: 'مفتاح بايت روفر',
+        CAMOFOX_API_KEY: 'مفتاح كاموفوكس',
+        CAMOFOX_URL: 'رابط كاموفوكس',
+        ELEVENLABS_API_KEY: 'مفتاح إليفن لابس',
+        EXA_API_KEY: 'مفتاح إكسا',
+        FAL_KEY: 'مفتاح فال',
+        FIRECRAWL_API_KEY: 'مفتاح فايركراول',
+        FIRECRAWL_API_URL: 'رابط واجهة فايركراول',
+        FIRECRAWL_BROWSER_TTL: 'مدة جلسة متصفح فايركراول',
+        FIRECRAWL_GATEWAY_URL: 'رابط بوابة فايركراول',
+        GITHUB_TOKEN: 'رمز جيت هب',
+        HERMES_LANGFUSE_BASE_URL: 'رابط خادم لانج فيوز',
+        HERMES_LANGFUSE_PUBLIC_KEY: 'المفتاح العام للانج فيوز',
+        HERMES_LANGFUSE_SECRET_KEY: 'المفتاح السري للانج فيوز',
+        HINDSIGHT_API_KEY: 'مفتاح هايندسايت',
+        HINDSIGHT_API_URL: 'رابط واجهة هايندسايت',
+        HONCHO_API_KEY: 'مفتاح هونتشو',
+        HONCHO_BASE_URL: 'الرابط الأساسي لهونتشو',
+        KREA_API_KEY: 'مفتاح كريا',
+        MEM0_API_KEY: 'مفتاح ميم زيرو',
+        MISTRAL_API_KEY: 'مفتاح ميسترال',
+        OPENVIKING_API_KEY: 'مفتاح أوبن فايكنج',
+        OPENVIKING_ENDPOINT: 'نقطة أوبن فايكنج',
+        PARALLEL_API_KEY: 'مفتاح باراليل',
+        RETAINDB_API_KEY: 'مفتاح ريتين دي بي',
+        RETAINDB_BASE_URL: 'الرابط الأساسي لريتين دي بي',
+        SEARXNG_URL: 'رابط سيركس إن جي',
+        SUPERMEMORY_API_KEY: 'مفتاح سوبر ميموري',
+        TAVILY_API_KEY: 'مفتاح تافيلي',
+        TOOL_GATEWAY_DOMAIN: 'نطاق بوابة الأدوات',
+        TOOL_GATEWAY_SCHEME: 'بروتوكول بوابة الأدوات',
+        TOOL_GATEWAY_USER_TOKEN: 'رمز مستخدم بوابة الأدوات',
+        VOICE_TOOLS_OPENAI_KEY: 'مفتاح أوبن إيه آي للصوت',
+        GATEWAY_ALLOW_ALL_USERS: 'السماح لجميع مستخدمي البوابة',
+        GATEWAY_PROXY_KEY: 'مفتاح وكيل البوابة',
+        GATEWAY_PROXY_URL: 'رابط وكيل البوابة',
+        HERMES_EPHEMERAL_SYSTEM_PROMPT: 'توجيه النظام المؤقت',
+        HERMES_PREFILL_MESSAGES_FILE: 'ملف رسائل التمهيد',
+        HERMES_SIMPLEX_TEXT_BATCH_DELAY: 'مهلة تجميع نصوص سيمبلكس',
+        RAFT_PROFILE: 'ملف رافت الشخصي',
+        SMS_ALLOWED_USERS: 'مستخدمو الرسائل النصية المسموح لهم',
+        SMS_HOME_CHANNEL: 'قناة الرسائل النصية الرئيسية',
+        SUDO_PASSWORD: 'كلمة مرور الصلاحيات المرتفعة',
+        WECOM_ALLOWED_USERS: 'مستخدمو وي كوم المسموح لهم',
+        WECOM_HOME_CHANNEL: 'قناة وي كوم الرئيسية',
+        WECOM_WEBSOCKET_URL: 'رابط اتصال وي كوم الفوري'
+      },
+      fieldDescriptions: {
+        AGENT_BROWSER_ENGINE:
+          'محرك التصفح في الوضع المحلي: تلقائي لاستخدام كروم افتراضيًا، أو لايت باندا الأسرع من دون لقطات، أو كروم صراحة.',
+        BRAVE_SEARCH_API_KEY: 'رمز اشتراك واجهة بحث بريف؛ تتيح الفئة المجانية ألفي استعلام شهريًا.',
+        BROWSER_USE_API_KEY: 'مفتاح براوزر يوز للمتصفح السحابي؛ وهو اختياري لأن المتصفح المحلي يعمل بدونه.',
+        BROWSERBASE_API_KEY: 'مفتاح براوزربيس للمتصفح السحابي؛ وهو اختياري لأن المتصفح المحلي يعمل بدونه.',
+        BROWSERBASE_PROJECT_ID: 'معرّف مشروع براوزربيس؛ لا يلزم إلا عند استخدام المتصفح السحابي.',
+        BRV_API_KEY: 'مفتاح بايت روفر للمزامنة السحابية الاختيارية؛ التخزين محلي أولًا افتراضيًا.',
+        CAMOFOX_API_KEY: 'رمز اختياري يُرسل إلى خادم كاموفوكس البعيد الذي يتطلب مصادقة.',
+        CAMOFOX_URL: 'رابط خادم كاموفوكس للتصفح المحلي المقاوم للكشف.',
+        ELEVENLABS_API_KEY: 'مفتاح إليفن لابس للأصوات المتميزة وتحويل الكلام إلى نص.',
+        EXA_API_KEY: 'مفتاح إكسا للبحث الأصلي بالذكاء الاصطناعي واستخراج المحتوى.',
+        FAL_KEY: 'مفتاح فال لتوليد الصور والفيديو.',
+        FIRECRAWL_API_KEY: 'مفتاح فايركراول للبحث في الويب واستخراج الصفحات.',
+        FIRECRAWL_API_URL: 'رابط واجهة فايركراول للنسخ المستضافة ذاتيًا.',
+        FIRECRAWL_BROWSER_TTL: 'مدة بقاء جلسة متصفح فايركراول بالثواني؛ الافتراضي ثلاثمئة.',
+        FIRECRAWL_GATEWAY_URL: 'رابط بديل دقيق لبوابة فايركراول، مخصص لمشتركي نوس.',
+        GITHUB_TOKEN: 'رمز جيت هب لمركز المهارات، يرفع حدود الاستدعاء ويفعّل نشر المهارات.',
+        HERMES_LANGFUSE_BASE_URL: 'رابط خادم لانج فيوز.',
+        HERMES_LANGFUSE_PUBLIC_KEY: 'المفتاح العام لمشروع لانج فيوز.',
+        HERMES_LANGFUSE_SECRET_KEY: 'المفتاح السري لمشروع لانج فيوز.',
+        HINDSIGHT_API_KEY: 'مفتاح هايندسايت للذاكرة المستمرة الواعية بالعلاقات.',
+        HINDSIGHT_API_URL: 'الرابط الأساسي لواجهة هايندسايت.',
+        HONCHO_API_KEY: 'مفتاح هونتشو للذاكرة المستمرة الأصلية بالذكاء الاصطناعي.',
+        HONCHO_BASE_URL: 'الرابط الأساسي لنسخة هونتشو المستضافة ذاتيًا، ولا تحتاج إلى مفتاح.',
+        KREA_API_KEY: 'مفتاح كريا لتوليد الصور بنماذج كريا اثنان.',
+        MEM0_API_KEY: 'مفتاح منصة ميم زيرو للذاكرة الدلالية المستمرة.',
+        MISTRAL_API_KEY: 'مفتاح ميسترال لتحويل النص إلى كلام والكلام إلى نص.',
+        OPENVIKING_API_KEY: 'مفتاح أوبن فايكنج؛ اتركه فارغًا في وضع التطوير المحلي.',
+        OPENVIKING_ENDPOINT: 'رابط خادم أوبن فايكنج.',
+        PARALLEL_API_KEY: 'مفتاح باراليل للبحث في الويب واستخراج المحتوى.',
+        RETAINDB_API_KEY: 'مفتاح ريتين دي بي للذاكرة المستمرة.',
+        RETAINDB_BASE_URL: 'الرابط الأساسي لنسخة ريتين دي بي المستضافة ذاتيًا.',
+        SEARXNG_URL: 'رابط نسخة سيركس إن جي للبحث المجاني المستضاف ذاتيًا.',
+        SUPERMEMORY_API_KEY: 'مفتاح سوبر ميموري للذاكرة المستمرة ضمن المحادثة.',
+        TAVILY_API_KEY: 'مفتاح تافيلي للبحث في الويب واستخراج المحتوى.',
+        TOOL_GATEWAY_DOMAIN: 'لاحقة النطاق المشتركة لبوابة أدوات مشتركي نوس، وتُشتق منها عناوين المزوّدين.',
+        TOOL_GATEWAY_SCHEME: 'بروتوكول رابط بوابة الأدوات؛ الآمن افتراضيًا، ويمكن تغييره للاختبار المحلي.',
+        TOOL_GATEWAY_USER_TOKEN: 'رمز وصول صريح لمشترك نوس عند طلبات بوابة الأدوات؛ وهو اختياري.',
+        VOICE_TOOLS_OPENAI_KEY: 'مفتاح أوبن إيه آي لتفريغ الصوت وتحويل النص إلى كلام.',
+        GATEWAY_ALLOW_ALL_USERS: 'يسمح لجميع المستخدمين بالتفاعل مع بوتات المراسلة؛ وهو معطّل افتراضيًا.',
+        GATEWAY_PROXY_KEY: 'رمز مصادقة مع خادم هرمس البعيد في وضع الوكيل.',
+        GATEWAY_PROXY_URL: 'رابط خادم هرمس بعيد تُحوّل إليه الرسائل في وضع الوكيل.',
+        HERMES_EPHEMERAL_SYSTEM_PROMPT: 'توجيه نظام مؤقت يُحقن وقت الاستدعاء ولا يُحفظ في الجلسات.',
+        HERMES_PREFILL_MESSAGES_FILE: 'مسار ملف بيانات يحوي رسائل تمهيد مؤقتة للأمثلة المسبقة.',
+        HERMES_SIMPLEX_TEXT_BATCH_DELAY: 'مدة الهدوء بالثواني لجمع الرسائل النصية المتتابعة في حدث واحد.',
+        RAFT_PROFILE: 'معرّف ملف وكيل رافت؛ يفعّل المحوّل تلقائيًا عند ضبطه.',
+        SMS_ALLOWED_USERS: 'أرقام الهواتف المسموح لها بمحادثة البوت، مفصولة بفواصل.',
+        SMS_HOME_CHANNEL: 'رقم الهاتف الافتراضي لتسليم المهام المجدولة والإشعارات.',
+        SUDO_PASSWORD: 'كلمة مرور أوامر الطرفية التي تتطلب صلاحيات الجذر.',
+        WECOM_ALLOWED_USERS: 'معرّفات مستخدمي وي كوم المسموح لهم بمحادثة البوت، مفصولة بفواصل.',
+        WECOM_HOME_CHANNEL: 'معرّف المحادثة الافتراضي لتسليم المهام المجدولة والإشعارات.',
+        WECOM_WEBSOCKET_URL: 'رابط الاتصال الفوري لروبوت وي كوم الذكي.'
+      }
     },
     mcp: {
       loading: 'جارٍ تحميل خوادم بروتوكول سياق النموذج...',
@@ -985,8 +1181,8 @@ export const ar: Translations = {
       toggleFailed: name => `فشل تبديل ${name}`,
       tabServers: 'الخوادم',
       tabCatalog: 'الكتالوج',
-      catalogLoading: 'جارٍ تحميل كتالوج MCP...',
-      catalogLoadFailed: 'فشل تحميل كتالوج MCP',
+      catalogLoading: 'جارٍ تحميل كتالوج بروتوكول سياق النموذج...',
+      catalogLoadFailed: 'فشل تحميل كتالوج بروتوكول سياق النموذج',
       catalogEmpty: 'لا توجد مدخلات في الكتالوج.',
       catalogInstalled: 'مثبت',
       catalogEnabled: 'مفعل',
@@ -1011,7 +1207,9 @@ export const ar: Translations = {
       unsavedConnect: 'غير محفوظ — احفظ mcp.json للاتصال.',
       enableTool: tool => `تفعيل ${tool}`,
       disableTool: tool => `تعطيل ${tool}`,
-      noOutput: 'لا مخرجات بعد.'
+      noOutput: 'لا مخرجات بعد.',
+      authOauth: 'أو أوث',
+      authApiKey: 'مفتاح الواجهة البرمجية'
     },
     model: {
       loading: 'جارٍ تحميل إعداد النموذج...',
@@ -1033,16 +1231,67 @@ export const ar: Translations = {
       fallbackAdd: 'إضافة احتياطيّ',
       fallbackEmpty: 'لا نماذج احتياطيّة — يُستعمل النموذج الافتراضيّ ما لم يفشل.',
       notInCatalog: 'ليس في قائمة نماذج هذا المزوّد — قد تلجأ الطلبات إلى نموذج احتياطيّ.',
+      moaTitle: 'مزيج الوكلاء',
+      moaDesc: 'اضبط إعدادات مسبقة مسماة تظهر كنماذج ضمن مزود مزيج الوكلاء. النموذج الجامع هو النموذج المنفذ.',
+      moaPreset: 'الإعداد المسبق',
+      moaSetDefault: 'تعيين افتراضيا',
+      moaDelete: 'حذف',
+      moaNewPreset: 'إعداد مسبق جديد',
+      moaAddPreset: 'إضافة إعداد مسبق',
+      moaDefault: 'الافتراضي',
+      moaAggregator: 'النموذج الجامع',
+      moaReference: index => `النموذج المرجعي ${index}`,
+      moaRemove: 'إزالة',
+      moaAddReference: 'إضافة نموذج مرجعي',
+      moaPresets: 'إعدادات مزيج الوكلاء',
+      moaPrefix: 'مزيج',
+      otherProviders: 'مزودين آخرين',
+      staleAuxWarning: (count, names, provider) =>
+        count === 1
+          ? `لا تزال مهمة مساعدة واحدة (${names}) تعمل على ${provider}، لا على نموذجك الرئيسي.`
+          : count === 2
+            ? `لا تزال مهمتان مساعدتان (${names}) تعملان على ${provider}، لا على نموذجك الرئيسي.`
+            : count <= 10
+              ? `لا تزال ${count} مهام مساعدة (${names}) تعمل على ${provider}، لا على نموذجك الرئيسي.`
+              : `لا تزال ${count} مهمة مساعدة (${names}) تعمل على ${provider}، لا على نموذجك الرئيسي.`,
       tasks: {
         vision: { label: 'الرؤية', hint: 'تحليل الصور' },
         web_extract: { label: 'استخراج الويب', hint: 'تلخيص الصفحات' },
         compression: { label: 'الضغط', hint: 'ضغط السياق' },
         skills_hub: { label: 'مركز المهارات', hint: 'البحث عن المهارات' },
         approval: { label: 'الموافقة', hint: 'الموافقة التلقائية الذكية' },
-        mcp: { label: 'MCP', hint: 'توجيه أدوات MCP' },
+        mcp: { label: 'بروتوكول سياق النموذج', hint: 'توجيه أدوات بروتوكول سياق النموذج' },
         title_generation: { label: 'إنشاء العناوين', hint: 'عناوين الجلسات' },
         curator: { label: 'القيّم', hint: 'مراجعة استخدام المهارات' }
       }
+    },
+    computerUse: {
+      linuxNote: 'يتحكم في سطح المكتب عبر منظومة الإتاحة لإكس دون مطالبة أذونات.',
+      windowsNote: 'قد يعرض التشغيل الأول مطالبة الحماية في ويندوز لعامل إتاحة برنامج التحكم؛ اسمح له.',
+      granted: 'ممنوح',
+      notGranted: 'غير ممنوح',
+      unknown: 'غير معروف',
+      readStatusFailed: 'تعذر قراءة حالة التحكم بالحاسوب',
+      requestFailed: 'تعذر طلب الأذونات',
+      approveTitle: 'الموافقة في إعدادات النظام',
+      approveMessage: 'سيعرض ماك حوار أذونات منسوبا إلى كوا درايفر. وافق عليه ثم عد إلى هنا.',
+      checking: 'جارٍ فحص حالة التحكم بالحاسوب…',
+      unsupported: platform => `التحكم بالحاسوب غير مدعوم على هذه المنصة (${platform}).`,
+      installDriver: 'ثبّت مشغل كوا درايفر أدناه للتحكم في هذا الجهاز.',
+      grantAfterInstall: ' ثم امنحه إذني الإتاحة وتسجيل الشاشة هنا.',
+      grantIdentity:
+        'ترتبط الأذونات بهوية كوا درايفر نفسه (com.trycua.driver)، لا بهرمس، لذلك يُنسب الحوار إلى العملية التي تتحكم في ماك.',
+      recheck: 'إعادة الفحص',
+      accessibility: 'الإتاحة',
+      accessibilityHint: 'يتيح لكوا درايفر النقر والكتابة وقراءة شجرة الإتاحة.',
+      screenRecording: 'تسجيل الشاشة',
+      screenRecordingHint: 'يتيح لكوا درايفر التقاط صور لنوافذ التطبيقات.',
+      driverHealth: 'سلامة المشغل',
+      ready: 'جاهز',
+      notReady: 'غير جاهز',
+      readyDescription: 'التحكم بالحاسوب جاهز. اطلب من الوكيل التقاط تطبيق والتفاعل معه.',
+      waitingApproval: 'في انتظار الموافقة…',
+      grantPermissions: 'منح الأذونات'
     },
     providers: {
       connectAccount: 'ربط حساب',
@@ -1066,13 +1315,87 @@ export const ar: Translations = {
       noProviderKeys: 'لا تتوفر مفاتيح واجهة برمجية للمزوّدين.',
       searchKeys: 'ابحث عن مزوّد…',
       noKeysMatch: 'لا مزوّد يطابق بحثك.',
-      loading: 'جارٍ تحميل المزوّدين...'
+      loading: 'جارٍ تحميل المزوّدين...',
+      providerNames: {
+        OpenRouter: 'أوبن راوتر',
+        Anthropic: 'أنثروبيك',
+        xAI: 'إكس إيه آي',
+        DeepSeek: 'ديب سيك',
+        MiniMax: 'ميني ماكس',
+        'MiniMax (China)': 'ميني ماكس (الصين)',
+        'OpenCode Zen': 'أوبن كود زِن',
+        'OpenCode Go': 'أوبن كود جو',
+        'NVIDIA NIM': 'إنفيديا نيم',
+        'Ollama Cloud': 'سحابة أولاما',
+        'LM Studio': 'إل إم ستوديو',
+        'Xiaomi MiMo': 'شاومي ميمو',
+        'Arcee AI': 'آرسي إيه آي',
+        'GMI Cloud': 'سحابة جي إم آي',
+        'Azure Foundry': 'أزور فاوندري',
+        'Alibaba Cloud (Coding Plan)': 'سحابة علي بابا (خطة البرمجة)',
+        'Fireworks AI': 'فايروركس إيه آي',
+        'GitHub Copilot': 'مساعد جيت هب',
+        'Google AI Studio': 'استوديو جوجل للذكاء الاصطناعي',
+        HuggingFace: 'هاجينج فيس',
+        'Kilo Code': 'كيلو كود',
+        'Kimi / Kimi Coding Plan': 'كيمي وخطة كيمي للبرمجة',
+        'Kimi / Moonshot (China)': 'كيمي ومون شوت (الصين)',
+        NovitaAI: 'نوفيتا إيه آي',
+        'OpenAI API': 'واجهة أوبن إيه آي البرمجية',
+        'Qwen Cloud': 'سحابة كوين',
+        'StepFun Step Plan': 'خطة ستيب فن',
+        'Tencent TokenHub': 'مركز رموز تينسنت',
+        'Z.AI (GLM)': 'زي إيه آي (جي إل إم)'
+      },
+      providerDescriptions: {
+        OpenRouter: 'مئات النماذج المتقدمة خلف مفتاح واحد.',
+        Anthropic: 'وصول مباشر إلى نماذج كلود.',
+        xAI: 'وصول مباشر إلى نماذج جروك.',
+        DeepSeek: 'وصول مباشر إلى نماذج ديب سيك.',
+        MiniMax: 'نقطة ميني ماكس الدولية ونماذجها.',
+        'MiniMax (China)': 'نقطة ميني ماكس داخل الصين.',
+        'OpenCode Zen': 'وصول مدفوع بحسب الاستخدام إلى نماذج برمجة منتقاة.',
+        'OpenCode Go': 'اشتراك شهري لنماذج البرمجة المفتوحة.',
+        'NVIDIA NIM': 'خدمة إنفيديا نيم أو نقطة محلية خاصة بك.',
+        'Ollama Cloud': 'نماذج مفتوحة مستضافة في سحابة أولاما.',
+        'LM Studio': 'خادم محلي متوافق مع واجهة أوبن إيه آي.',
+        'Xiaomi MiMo': 'نماذج ميمو الخاصة بشاومي.',
+        'Arcee AI': 'نماذج صغيرة ومتوسطة تستضيفها آرسي.',
+        'GMI Cloud': 'حوسبة رسومية وخدمة نماذج عبر سحابة جي إم آي.',
+        'Azure Foundry': 'نقاط أزور فاوندري المخصصة والمتوافقة مع مزوّدي النماذج.',
+        'Alibaba Cloud (Coding Plan)': 'خطة البرمجة السحابية من علي بابا.',
+        'Fireworks AI': 'وصول مباشر إلى النماذج المستضافة لدى فايروركس.',
+        'GitHub Copilot': 'وصول إلى نماذج مساعد جيت هب.',
+        'Google AI Studio': 'وصول مباشر إلى نماذج جيميني من استوديو جوجل.',
+        HuggingFace: 'أكثر من عشرين نموذجًا مفتوحًا عبر مزوّدي الاستدلال.',
+        'Kilo Code': 'وصول إلى نماذج كيلو كود.',
+        'Kimi / Kimi Coding Plan': 'نماذج كيمي ونقاط البرمجة من مون شوت.',
+        'Kimi / Moonshot (China)': 'نقطة مون شوت داخل الصين.',
+        NovitaAI: 'وصول مباشر إلى نماذج نوفيتا.',
+        'OpenAI API': 'وصول مباشر إلى نماذج أوبن إيه آي.',
+        'Qwen Cloud': 'نماذج كوين ومزوّدون متعددون عبر سحابة علي بابا.',
+        'StepFun Step Plan': 'نماذج البرمجة ضمن خطة ستيب فن.',
+        'Tencent TokenHub': 'نماذج تينسنت عبر مركز الرموز.',
+        'Z.AI (GLM)': 'نماذج جي إل إم ونقاط زي إيه آي المستضافة.'
+      },
+      advancedFields: {
+        baseUrl: 'الرابط الأساسي البديل',
+        baseUrlDescription: provider => `رابط أساسي بديل لخدمة ${provider}.`,
+        region: 'المنطقة',
+        regionDescription: provider => `المنطقة المستخدمة عند الاتصال بخدمة ${provider}.`,
+        profile: 'ملف المصادقة',
+        profileDescription: provider => `ملف المصادقة المستخدم للاتصال بخدمة ${provider}.`,
+        credentialsPath: 'مسار بيانات الاعتماد',
+        credentialsPathDescription: provider => `مسار بيانات الاعتماد المستخدمة للاتصال بخدمة ${provider}.`,
+        alternateKey: 'مفتاح بديل',
+        alternateKeyDescription: provider => `بيانات اعتماد إضافية أو بديلة لخدمة ${provider}.`
+      }
     },
     sessions: {
       loading: 'جارٍ تحميل الجلسات المؤرشفة…',
       archivedTitle: 'الجلسات المؤرشفة',
       archivedIntro:
-        'تُخفى المحادثات المؤرشفة من الشريط الجانبي مع الاحتفاظ برسائلها. انقر مع Ctrl أو ⌘ على محادثة في الشريط لأرشفتها.',
+        'تُخفى المحادثات المؤرشفة من الشريط الجانبي مع الاحتفاظ برسائلها. انقر مع مفتاح التحكم أو الأوامر على محادثة في الشريط لأرشفتها.',
       emptyArchivedTitle: 'لا جلسات مؤرشفة',
       emptyArchivedDesc: 'أرشف محادثة لإخفائها هنا.',
       unarchive: 'إلغاء الأرشفة',
@@ -1083,7 +1406,7 @@ export const ar: Translations = {
       deleteConfirm: title => `حذف «${title}» نهائيًا؟ لا يمكن التراجع عن ذلك.`,
       defaultDirTitle: 'مجلد المشروع الافتراضي',
       defaultDirDesc: 'تبدأ الجلسات الجديدة في هذا المجلد ما لم تختر غيره. اتركه فارغًا لاستخدام مجلد المنزل.',
-      defaultDirUpdated: 'حُدّث مجلد المشروع الافتراضي؛ ابدأ محادثة جديدة (Ctrl/⌘+N) لتطبيقه',
+      defaultDirUpdated: 'حُدّث مجلد المشروع الافتراضي؛ ابدأ محادثة جديدة لتطبيقه',
       defaultsTo: label => `الافتراضي هو ${label}.`,
       change: 'تغيير',
       choose: 'اختيار',
@@ -1134,14 +1457,237 @@ export const ar: Translations = {
       modelInactiveHint: 'اختر هذه الواجهة أولًا لتغيير نموذجها.',
       modelSelectedTitle: 'اختير النموذج',
       modelSelectedMessage: model => `يسري ${model} على الجلسات الجديدة.`,
-      failedSelectModel: model => `فشل اختيار ${model}`
+      failedSelectModel: model => `فشل اختيار ${model}`,
+      providerNames: {
+        'Nous Subscription': 'اشتراك نوس',
+        'Firecrawl Self-Hosted': 'فايركراول المستضاف ذاتيًا',
+        'Brave Search (Free)': 'بحث بريف (مجاني)',
+        'DuckDuckGo (ddgs)': 'دك دك جو (دي دي جي إس)',
+        Exa: 'إكسا',
+        Firecrawl: 'فايركراول',
+        Parallel: 'باراليل',
+        SearXNG: 'سيركس إن جي',
+        Tavily: 'تافيلي',
+        'xAI Web Search (Grok)': 'بحث إكس إيه آي للويب (جروك)',
+        'Local Browser': 'المتصفح المحلي',
+        'Nous Subscription (Browser Use cloud)': 'اشتراك نوس (سحابة براوزر يوز)',
+        Camofox: 'كاموفوكس',
+        'Browser Use': 'براوزر يوز',
+        Browserbase: 'براوزربيس',
+        'FAL.ai': 'فال',
+        Krea: 'كريا',
+        'Nous Portal (image)': 'بوابة نوس (الصور)',
+        OpenAI: 'أوبن إيه آي',
+        'OpenAI (Codex auth)': 'أوبن إيه آي (مصادقة كودكس)',
+        'OpenRouter (image)': 'أوبن راوتر (الصور)',
+        'xAI Grok Imagine (image)': 'جروك إماجن من إكس إيه آي (الصور)',
+        FAL: 'فال',
+        'xAI Grok Imagine': 'جروك إماجن من إكس إيه آي',
+        'xAI Grok OAuth (SuperGrok / Premium+)': 'مصادقة جروك من إكس إيه آي (سوبر جروك أو بريميوم بلس)',
+        'xAI API key': 'مفتاح واجهة إكس إيه آي البرمجية',
+        'Microsoft Edge TTS': 'تحويل النص إلى كلام من مايكروسوفت إيدج',
+        'OpenAI TTS': 'تحويل النص إلى كلام من أوبن إيه آي',
+        'xAI TTS': 'تحويل النص إلى كلام من إكس إيه آي',
+        ElevenLabs: 'إليفن لابس',
+        'Mistral (Voxtral TTS)': 'ميسترال (تحويل النص إلى كلام بفوكسترال)',
+        'Google Gemini TTS': 'تحويل النص إلى كلام من جوجل جيميني',
+        KittenTTS: 'كيتن تي تي إس',
+        Piper: 'بايبر',
+        'Home Assistant': 'مساعد المنزل',
+        'Spotify Web API': 'واجهة سبوتيفاي للويب',
+        'cua-driver (background)': 'مشغّل كوا درايفر (في الخلفية)'
+      },
+      providerTags: {
+        'Managed Firecrawl billed to your subscription': 'فايركراول مُدار وتُحتسب تكلفته على اشتراكك.',
+        'Run your own Firecrawl instance (Docker)': 'شغّل نسخة فايركراول خاصة بك عبر دوكر.',
+        'Free-tier API key — 2k queries/mo, search only.':
+          'مفتاح من الفئة المجانية يتيح ألفي استعلام شهريًا، للبحث فقط.',
+        'Search via the ddgs Python package — no API key (pair with any extract provider)':
+          'بحث عبر حزمة دي دي جي إس لبايثون بلا مفتاح، ويمكن إقرانه بأي مزوّد استخراج.',
+        'Semantic + neural web search with content extraction.': 'بحث دلالي وعصبي في الويب مع استخراج المحتوى.',
+        'Full search + extract; supports direct API and Nous tool-gateway routing.':
+          'بحث واستخراج كاملان، مع دعم الواجهة المباشرة والتوجيه عبر بوابة أدوات نوس.',
+        'Objective-tuned search + parallel page extraction.': 'بحث مضبوط بحسب الهدف مع استخراج متوازٍ للصفحات.',
+        'Free, privacy-respecting metasearch. Point SEARXNG_URL at your instance.':
+          'بحث تجميعي مجاني يحترم الخصوصية؛ وجّه رابط سيركس إن جي إلى نسختك.',
+        'Search + extract in one provider.': 'بحث واستخراج في مزوّد واحد.',
+        "Agentic web search via Grok's web_search tool — uses xAI Grok OAuth or XAI_API_KEY.":
+          'بحث وكيلي في الويب عبر أداة جروك، باستخدام مصادقة جروك أو مفتاح إكس إيه آي.',
+        'Headless Chromium, no API key needed': 'كروميوم بلا واجهة، ولا يحتاج إلى مفتاح واجهة برمجية.',
+        'Managed Browser Use billed to your subscription': 'براوزر يوز مُدار وتُحتسب تكلفته على اشتراكك.',
+        'Anti-detection browser (Firefox/Camoufox)': 'متصفح مقاوم للكشف مبني على فايرفوكس وكاموفوكس.',
+        'Cloud browser with remote execution': 'متصفح سحابي مع تنفيذ عن بُعد.',
+        'Cloud browser with stealth and proxies': 'متصفح سحابي مع التخفي والخوادم الوكيلة.',
+        'Managed FAL image generation billed to your subscription':
+          'توليد صور مُدار عبر فال وتُحتسب تكلفته على اشتراكك.',
+        'Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc. — text-to-image & image editing':
+          'اختر من نماذج فلكس وجي بي تي إيمج ونانو بنانا وغيرها، لتحويل النص إلى صورة وتحرير الصور.',
+        'Krea 2 foundation model — Medium ($0.03), Large ($0.06), Medium Turbo ($0.015). Style transfer, moodboards, reference-guided generation. Direct key or managed Nous Subscription gateway.':
+          'نموذج كريا اثنان الأساسي بثلاث فئات؛ يدعم نقل الأسلوب ولوحات المزاج والتوليد الموجّه بالمراجع، عبر مفتاح مباشر أو بوابة اشتراك نوس.',
+        'Reference-grounded image generation via Nous Portal (OpenRouter-backed)':
+          'توليد صور مستند إلى المراجع عبر بوابة نوس المدعومة بأوبن راوتر.',
+        'gpt-image-2 at low/medium/high quality tiers — text-to-image & image editing':
+          'نموذج جي بي تي إيمج اثنان بفئات جودة منخفضة ومتوسطة وعالية، لتحويل النص إلى صورة وتحرير الصور.',
+        'gpt-image-2 via ChatGPT/Codex OAuth — no API key required; supports text and image inputs':
+          'نموذج جي بي تي إيمج اثنان عبر مصادقة شات جي بي تي أو كودكس، بلا مفتاح، ويدعم مدخلات النص والصورة.',
+        'Gemini Flash Image & more via OpenRouter; uses OPENROUTER_API_KEY':
+          'جيميني فلاش إيمج ونماذج أخرى عبر أوبن راوتر، باستخدام مفتاحه البرمجي.',
+        'grok-imagine-image - text-to-image & image editing; uses xAI Grok OAuth or XAI_API_KEY. xAI Imagine storage is enabled so generated media gets a reusable public URL without an automatic expiry. xAI may bill for stored files and public URL hosting. Disable this with `image_gen.xai.storage.enabled: false` or set `expires_after` to change the retention.':
+          'جروك إماجن للصور يحوّل النص إلى صورة ويحرر الصور عبر مصادقة جروك أو مفتاح إكس إيه آي. التخزين مفعّل لمنح الوسائط رابطًا عامًا قابلًا لإعادة الاستخدام، وقد تترتب عليه تكلفة؛ ويمكن تعطيله أو تغيير مدة الاحتفاظ من الإعدادات.',
+        'Managed FAL video generation billed to your subscription':
+          'توليد فيديو مُدار عبر فال وتُحتسب تكلفته على اشتراكك.',
+        'LTX, Pixverse, Veo 3.1, Seedance 2.0, Kling 4K, Happy Horse — text-to-video & image-to-video':
+          'نماذج إل تي إكس وبكسفيرس وفيو وسيدانس وكلينج وهابي هورس، لتحويل النص أو الصورة إلى فيديو.',
+        'grok-imagine-video for text/reference; grok-imagine-video-1.5 for image-to-video; edit/extend: pass the stored public HTTPS MP4 (`video` / `public_url` from a prior Imagine result); uses xAI Grok OAuth or XAI_API_KEY. xAI Imagine storage is enabled so generated media gets a reusable public URL without an automatic expiry. xAI may bill for stored files and public URL hosting. Disable this with `video_gen.xai.storage.enabled: false` or set `expires_after` to change the retention.':
+          'جروك إماجن للفيديو يدعم النص والمراجع وتحويل الصورة إلى فيديو وتحرير الفيديو أو تمديده، عبر مصادقة جروك أو مفتاح إكس إيه آي. التخزين مفعّل لمنح الوسائط رابطًا عامًا قابلًا لإعادة الاستخدام، وقد تترتب عليه تكلفة؛ ويمكن تعطيله أو تغيير مدة الاحتفاظ من الإعدادات.',
+        'Browser login at accounts.x.ai — no API key required':
+          'تسجيل دخول بالمتصفح إلى حساب إكس إيه آي، ولا يحتاج إلى مفتاح.',
+        'Direct xAI API billing via XAI_API_KEY': 'فوترة مباشرة لواجهة إكس إيه آي عبر مفتاحها البرمجي.',
+        'Good quality, no API key needed': 'جودة جيدة، ولا يحتاج إلى مفتاح واجهة برمجية.',
+        'Managed OpenAI TTS billed to your subscription':
+          'تحويل نص إلى كلام مُدار عبر أوبن إيه آي وتُحتسب تكلفته على اشتراكك.',
+        'High quality voices': 'أصوات عالية الجودة.',
+        'Grok voices — uses xAI Grok OAuth or XAI_API_KEY': 'أصوات جروك عبر مصادقة جروك أو مفتاح إكس إيه آي.',
+        'Most natural voices': 'الأصوات الأكثر طبيعية.',
+        'Multilingual, native Opus': 'متعدد اللغات مع دعم أصلي لتنسيق أوبس.',
+        '30 prebuilt voices, controllable via prompts': 'ثلاثون صوتًا جاهزًا يمكن التحكم فيها بالتوجيهات.',
+        'Lightweight local ONNX TTS (~25MB), no API key':
+          'تحويل محلي خفيف للنص إلى كلام، بحجم يقارب خمسة وعشرين ميجابايت، وبلا مفتاح.',
+        'Local neural TTS, 44 languages (voices ~20-90MB)':
+          'تحويل عصبي محلي للنص إلى كلام يدعم أربعًا وأربعين لغة، بأصوات بين عشرين وتسعين ميجابايت تقريبًا.',
+        'REST API integration': 'تكامل عبر واجهة برمجية بأسلوب ريست.',
+        'PKCE OAuth — opens the setup wizard': 'مصادقة آمنة تفتح معالج الإعداد.',
+        'Background computer-use via cua-driver — does NOT steal your cursor or focus. Works with any model.':
+          'تحكم بالحاسوب في الخلفية عبر مشغّل كوا درايفر، من دون الاستحواذ على المؤشر أو التركيز، ويعمل مع أي نموذج.'
+      },
+      providerBadgeTerms: {
+        subscription: 'اشتراك',
+        free: 'مجاني',
+        paid: 'مدفوع',
+        preview: 'معاينة',
+        local: 'محلي',
+        'self-hosted': 'مستضاف ذاتيًا',
+        'no key': 'بلا مفتاح',
+        'search only': 'للبحث فقط',
+        'optional gateway': 'بوابة اختيارية',
+        '★ recommended': '★ موصى به'
+      },
+      envVarPrompts: {
+        FIRECRAWL_API_URL: 'رابط نسخة فايركراول الخاصة بك',
+        BRAVE_SEARCH_API_KEY: 'مفتاح واجهة بحث بريف من الفئة المجانية',
+        EXA_API_KEY: 'مفتاح واجهة إكسا البرمجية',
+        FIRECRAWL_API_KEY: 'مفتاح واجهة فايركراول البرمجية',
+        PARALLEL_API_KEY: 'مفتاح واجهة باراليل البرمجية',
+        SEARXNG_URL: 'رابط نسخة سيركس إن جي',
+        TAVILY_API_KEY: 'مفتاح واجهة تافيلي البرمجية',
+        CAMOFOX_URL: 'رابط خادم كاموفوكس',
+        BROWSER_USE_API_KEY: 'مفتاح واجهة براوزر يوز البرمجية',
+        BROWSERBASE_API_KEY: 'مفتاح واجهة براوزربيس البرمجية',
+        BROWSERBASE_PROJECT_ID: 'معرّف مشروع براوزربيس',
+        FAL_KEY: 'مفتاح واجهة فال البرمجية',
+        KREA_API_KEY: 'مفتاح واجهة كريا البرمجية',
+        OPENAI_API_KEY: 'مفتاح واجهة أوبن إيه آي البرمجية',
+        OPENROUTER_API_KEY: 'مفتاح واجهة أوبن راوتر البرمجية',
+        XAI_API_KEY: 'مفتاح واجهة إكس إيه آي البرمجية',
+        VOICE_TOOLS_OPENAI_KEY: 'مفتاح واجهة أوبن إيه آي البرمجية',
+        ELEVENLABS_API_KEY: 'مفتاح واجهة إليفن لابس البرمجية',
+        MISTRAL_API_KEY: 'مفتاح واجهة ميسترال البرمجية',
+        GEMINI_API_KEY: 'مفتاح واجهة جيميني البرمجية',
+        HASS_TOKEN: 'رمز وصول طويل الأمد لمساعد المنزل',
+        HASS_URL: 'رابط مساعد المنزل'
+      },
+      modelDetails: {
+        '<1s': 'أقل من ثانية',
+        '~6s': 'نحو ست ثوان',
+        '~2s': 'نحو ثانيتين',
+        '~8s': 'نحو ثماني ثوان',
+        '~15s': 'نحو خمس عشرة ثانية',
+        '~20s': 'نحو عشرين ثانية',
+        '~5s': 'نحو خمس ثوان',
+        '~12s': 'نحو اثنتي عشرة ثانية',
+        '~15-25s': 'نحو خمس عشرة إلى خمس وعشرين ثانية',
+        '~25-60s': 'نحو خمس وعشرين إلى ستين ثانية',
+        '~8-15s': 'نحو ثماني إلى خمس عشرة ثانية',
+        '~40s': 'نحو أربعين ثانية',
+        '~2min': 'نحو دقيقتين',
+        '~5-10s': 'نحو خمس إلى عشر ثوان',
+        '~10-20s': 'نحو عشر إلى عشرين ثانية',
+        '~30-60s': 'نحو ثلاثين إلى ستين ثانية',
+        '~30-90s': 'نحو ثلاثين إلى تسعين ثانية',
+        '~60-120s': 'نحو ستين إلى مئة وعشرين ثانية',
+        '~120-300s': 'نحو مئة وعشرين إلى ثلاثمئة ثانية',
+        '~60-240s': 'نحو ستين إلى مئتين وأربعين ثانية',
+        'Fast, crisp text': 'سريع مع نص واضح.',
+        'Studio photorealism': 'واقعية فوتوغرافية بمستوى الاستوديو.',
+        'Bilingual EN/CN, 6B': 'ثنائي اللغة للإنجليزية والصينية، بستة مليارات معلمة.',
+        'Gemini 3 Pro, reasoning depth, text rendering': 'جيميني ثلاثة برو، بعمق استدلال وإخراج جيد للنص.',
+        'Prompt adherence': 'التزام قوي بالتوجيه.',
+        'SOTA text rendering + CJK, world-aware photorealism':
+          'إخراج متقدم للنص ولغات شرق آسيا، مع واقعية فوتوغرافية واعية بالعالم.',
+        'Best typography': 'أفضل معالجة للخطوط.',
+        'Design, brand systems, production-ready': 'مناسب للتصميم وأنظمة العلامات وجاهز للإنتاج.',
+        'LLM-based, complex text': 'مبني على نموذج لغوي وقادر على النصوص المعقدة.',
+        'Illustration, anime, painting, expressive/artistic styles':
+          'ممتاز للرسوم والأنمي والرسم والأساليب التعبيرية والفنية.',
+        'Photorealism, raw textured looks (motion blur, grain, film)':
+          'واقعية فوتوغرافية ومظاهر خام ذات نسيج، مثل ضبابية الحركة والحبيبات والفيلم.',
+        'Illustration, anime, painting, expressive styles. Faster + cheaper.':
+          'للرسوم والأنمي والرسم والأساليب التعبيرية، وهو أسرع وأقل تكلفة.',
+        'Photorealism, raw textured looks (motion blur, grain), expressive styles.':
+          'واقعية فوتوغرافية ومظاهر خام ذات نسيج وأساليب تعبيرية.',
+        'Fastest Krea 2 — medium quality at lower latency / cost.':
+          'أسرع فئات كريا اثنان، بجودة متوسطة وزمن انتظار وتكلفة أقل.',
+        'Highest fidelity; best prompt adherence; slower on OpenRouter':
+          'أعلى دقة وأفضل التزام بالتوجيه، لكنه أبطأ على أوبن راوتر.',
+        'Fast, reliable fallback with good layout adherence': 'بديل سريع وموثوق مع التزام جيد بالتخطيط.',
+        'Fast iteration, lowest cost': 'تكرار سريع بأقل تكلفة.',
+        'Balanced — default': 'متوازن، وهو الافتراضي.',
+        'Highest fidelity, strongest prompt adherence': 'أعلى دقة وأقوى التزام بالتوجيه.',
+        'Fast, high-quality': 'سريع وعالي الجودة.',
+        'Higher fidelity / detail; slower than the standard model.': 'دقة وتفاصيل أعلى، لكنه أبطأ من النموذج القياسي.',
+        '22B model with native audio generation. Affordable.':
+          'نموذج باثنتين وعشرين مليار معلمة مع توليد صوت أصلي وتكلفة معقولة.',
+        'Affordable. Negative prompts. 1-15s durations.':
+          'تكلفة معقولة، ويدعم التوجيهات السلبية ومددًا من ثانية إلى خمس عشرة ثانية.',
+        'Google DeepMind. Cinematic, native audio, strong prompt adherence.':
+          'من جوجل ديب مايند؛ سينمائي بصوت أصلي والتزام قوي بالتوجيه.',
+        'ByteDance. Cinematic, synchronized audio + lip-sync, 4-15s.':
+          'من بايت دانس؛ سينمائي بصوت متزامن ومزامنة للشفاه ومدد من أربع إلى خمس عشرة ثانية.',
+        '4K output, native audio (Chinese/English), 3-15s.':
+          'إخراج فائق الدقة وصوت أصلي بالصينية والإنجليزية، ومدد من ثلاث إلى خمس عشرة ثانية.',
+        'Alibaba. New model, sparse public docs — conservative defaults.':
+          'من علي بابا؛ نموذج جديد قليل التوثيق العام مع إعدادات افتراضية محافظة.',
+        'Text-to-video; legacy image-to-video fallback.': 'تحويل النص إلى فيديو، مع بديل قديم لتحويل الصورة إلى فيديو.',
+        'Latest xAI image-to-video model.': 'أحدث نموذج من إكس إيه آي لتحويل الصورة إلى فيديو.',
+        '$0.006/MP': '٠٫٠٠٦ دولار لكل ميجابكسل',
+        '$0.03/MP': '٠٫٠٣ دولار لكل ميجابكسل',
+        '$0.005/MP': '٠٫٠٠٥ دولار لكل ميجابكسل',
+        '$0.15/image (1K)': '٠٫١٥ دولار للصورة بدقة ألف',
+        '$0.034/image': '٠٫٠٣٤ دولار للصورة',
+        '$0.04–0.06/image': 'من ٠٫٠٤ إلى ٠٫٠٦ دولار للصورة',
+        '$0.03-0.09/image': 'من ٠٫٠٣ إلى ٠٫٠٩ دولار للصورة',
+        '$0.25/image': '٠٫٢٥ دولار للصورة',
+        '$0.02/MP': '٠٫٠٢ دولار لكل ميجابكسل',
+        '$0.030 (text) / $0.035 (style refs)': '٠٫٠٣ دولار للنص، و٠٫٠٣٥ لمراجع الأسلوب',
+        '$0.060 (text) / $0.065 (style refs)': '٠٫٠٦ دولار للنص، و٠٫٠٦٥ لمراجع الأسلوب',
+        '$0.030 (text) / $0.035 (style refs) / $0.040 (moodboards)':
+          '٠٫٠٣ دولار للنص، و٠٫٠٣٥ لمراجع الأسلوب، و٠٫٠٤ للوحات المزاج',
+        '$0.060 (text) / $0.065 (style refs) / $0.070 (moodboards)':
+          '٠٫٠٦ دولار للنص، و٠٫٠٦٥ لمراجع الأسلوب، و٠٫٠٧ للوحات المزاج',
+        '$0.015 (text) / $0.0175 (style refs)': '٠٫٠١٥ دولار للنص، و٠٫٠١٧٥ لمراجع الأسلوب',
+        varies: 'متغير',
+        cheap: 'اقتصادي',
+        premium: 'متميز',
+        'see https://docs.x.ai/developers/models/grok-imagine-video': 'راجع صفحة نموذج جروك إماجن للفيديو.',
+        'see https://docs.x.ai/developers/pricing': 'راجع صفحة تسعير إكس إيه آي.'
+      }
     }
   },
 
   skills: {
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
-    tabMcp: 'MCP',
+    tabMcp: 'بروتوكول سياق النموذج',
     tabHub: 'تصفح المركز',
     all: 'الكل',
     searchSkills: 'البحث في المهارات...',
@@ -1157,6 +1703,62 @@ export const ar: Translations = {
     configured: 'مضبوطة',
     needsKeys: 'تحتاج مفاتيح',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} من مجموعات الأدوات مفعّلة`,
+    toolCount: count =>
+      count === 1 ? 'أداة واحدة' : count === 2 ? 'أداتان' : count <= 10 ? `${count} أدوات` : `${count} أداة`,
+    toolsetNames: {
+      web: 'بحث الويب واستخراجه',
+      browser: 'أتمتة المتصفح',
+      terminal: 'الطرفية والعمليات',
+      file: 'عمليات الملفات',
+      code_execution: 'تنفيذ الشيفرة',
+      vision: 'الرؤية وتحليل الصور',
+      video: 'تحليل الفيديو',
+      image_gen: 'توليد الصور',
+      video_gen: 'توليد الفيديو',
+      x_search: 'البحث في إكس',
+      tts: 'تحويل النص إلى كلام',
+      skills: 'المهارات',
+      todo: 'تخطيط المهام',
+      memory: 'الذاكرة',
+      context_engine: 'محرك السياق',
+      session_search: 'البحث في الجلسات',
+      clarify: 'أسئلة التوضيح',
+      delegation: 'تفويض المهام',
+      cronjob: 'المهام المجدولة',
+      homeassistant: 'مساعد المنزل',
+      spotify: 'سبوتيفاي',
+      discord: 'ديسكورد للقراءة والمشاركة',
+      discord_admin: 'إدارة خادم ديسكورد',
+      yuanbao: 'يوانباو',
+      computer_use: 'التحكم بالحاسوب'
+    },
+    toolsetDescriptions: {
+      web: 'البحث في الويب واستخراج محتوى الصفحات',
+      browser: 'التنقل والنقر والكتابة والتمرير',
+      terminal: 'تشغيل أوامر الطرفية وإدارة العمليات',
+      file: 'قراءة الملفات وكتابتها وتعديلها والبحث فيها',
+      code_execution: 'تنفيذ الشيفرة',
+      vision: 'تحليل الصور',
+      video: 'تحليل الفيديو باستخدام نموذج يدعمه',
+      image_gen: 'توليد الصور',
+      video_gen: 'توليد الفيديو من نص أو صورة أو مرجع',
+      x_search: 'البحث في منصة إكس',
+      tts: 'تحويل النص إلى كلام',
+      skills: 'عرض المهارات وإدارتها',
+      todo: 'إنشاء خطط المهام ومتابعتها',
+      memory: 'ذاكرة مستمرة بين الجلسات',
+      context_engine: 'أدوات التشغيل التي يوفرها محرك السياق النشط',
+      session_search: 'البحث في المحادثات السابقة',
+      clarify: 'طرح أسئلة توضيحية',
+      delegation: 'تفويض المهام إلى وكلاء فرعيين',
+      cronjob: 'إنشاء المهام المجدولة وعرضها وتحديثها وتشغيلها',
+      homeassistant: 'التحكم في أجهزة المنزل الذكي',
+      spotify: 'التشغيل والبحث وقوائم التشغيل والمكتبة',
+      discord: 'جلب الرسائل والبحث عن الأعضاء وإنشاء سلاسل',
+      discord_admin: 'عرض القنوات والأدوار وتثبيت الرسائل وإسناد الأدوار',
+      yuanbao: 'معلومات المجموعات واستعلامات الأعضاء والرسائل الخاصة',
+      computer_use: 'التحكم في سطح المكتب عبر مشغّل كوا درايفر'
+    },
     configureToolset: label => `ضبط ${label}`,
     toggleToolset: label => `تبديل مجموعة أدوات ${label}`,
     skillsLoadFailed: 'فشل تحميل المهارات',
@@ -1196,16 +1798,19 @@ export const ar: Translations = {
     skillUpdated: 'حُدّثت المهارة',
     edit: 'تحرير',
     archive: 'أرشفة',
+    archiveSkillTitle: name => `أرشفة ${name}؟`,
+    archiveSkillDescription: 'ستُؤرشف المهارة، ويمكن استعادتها بالأمر `hermes curator restore`.',
+    archiveFailed: 'فشلت الأرشفة',
     skillArchivedTitle: 'أُرشفت المهارة',
     skillArchivedMessage: 'قابلة للاستعادة عبر hermes curator restore.',
     hub: {
-      searchPlaceholder: 'ابحث في مركز المهارات (الرسمي، GitHub، المجتمع)...',
+      searchPlaceholder: 'ابحث في مركز المهارات (الرسمي، جيت هب، المجتمع)...',
       search: 'بحث',
       searching: 'جارٍ البحث...',
       connectingHubs: 'جارٍ الاتصال بمراكز المهارات...',
       connectedHubs: 'المراكز المتصلة:',
       featured: 'مهارات مميزة',
-      landingHint: 'ابحث في المركز لتصفح المهارات القابلة للتثبيت من الفهرس الرسمي وGitHub ومصادر المجتمع.',
+      landingHint: 'ابحث في المركز لتصفح المهارات القابلة للتثبيت من الفهرس الرسمي وجيت هب ومصادر المجتمع.',
       noResults: 'لا توجد مهارات مطابقة في المركز.',
       resultCount: (count, ms) => `${count} نتيجة${ms !== null ? ` خلال ${ms} م.ث` : ''}`,
       timedOut: sources => `انتهت المهلة: ${sources}`,
@@ -1243,21 +1848,33 @@ export const ar: Translations = {
       loadFailed: 'فشل تحميل مركز المهارات',
       previewFailed: 'فشلت معاينة المهارة',
       scanFailed: 'فشل الفحص الأمني',
-      searchFailed: 'فشل البحث في المركز'
+      searchFailed: 'فشل البحث في المركز',
+      sourceLabels: {
+        official: 'الرسمي (نوس)',
+        'hermes-index': 'فهرس هرمس',
+        'skills-sh': 'سكيلز دوت إس إتش',
+        'well-known': 'المصادر المعروفة',
+        url: 'رابط مباشر',
+        github: 'جيت هب',
+        clawhub: 'كلاو هب',
+        'claude-marketplace': 'سوق كلود',
+        lobehub: 'لوب هب',
+        'browse-sh': 'براوز دوت إس إتش'
+      }
     },
     categoryLabels: {
-      'apple': 'آبل',
+      apple: 'آبل',
       'autonomous-ai-agents': 'وكلاء مستقلون',
-      'creative': 'إبداع',
+      creative: 'إبداع',
       'data-science': 'علم البيانات',
-      'email': 'البريد',
-      'general': 'عام',
-      'github': 'GitHub',
-      'media': 'وسائط',
-      'mlops': 'عمليات تعلم آلي',
+      email: 'البريد',
+      general: 'عام',
+      github: 'جيت هب',
+      media: 'وسائط',
+      mlops: 'عمليات تعلم آلي',
       'note-taking': 'تدوين',
-      'productivity': 'إنتاجية',
-      'research': 'بحث',
+      productivity: 'إنتاجية',
+      research: 'بحث',
       'smart-home': 'منزل ذكي',
       'social-media': 'تواصل اجتماعي',
       'software-development': 'تطوير برمجيات'
@@ -1289,7 +1906,22 @@ export const ar: Translations = {
     importEmpty: 'الصق رمز مخطّط لتحميله.',
     importSuccess: nodes => `حُمِّل مخطّطٌ به ${nodes} ${nodes === 1 ? 'عقدة' : 'عقدة'}.`,
     importedBadge: 'مخطّط مستورَد',
-    resetToMine: 'العودة إلى مخطّطي'
+    resetToMine: 'العودة إلى مخطّطي',
+    skill: 'مهارة',
+    profileMemory: 'ذاكرة الملف الشخصي',
+    learned: 'متعلَّمة',
+    pinned: 'مثبّتة',
+    unknown: 'غير معروف',
+    coreAge: 'المركز أقدم · الأطراف أحدث',
+    playTimeline: 'تشغيل خط الزمن',
+    pauseTimeline: 'إيقاف خط الزمن مؤقتا',
+    timelineScrubber: 'شريط خط الزمن',
+    editNode: kind => (kind === 'skill' ? 'تحرير المهارة…' : 'تحرير الذاكرة…'),
+    archiveSkill: 'أرشفة المهارة',
+    deleteMemory: 'حذف الذاكرة',
+    editTitle: label => `تحرير ${label}`,
+    deleteMemoryTitle: label => `حذف ${label}؟`,
+    deleteMemoryDescription: 'ستُحذف هذه الذاكرة نهائيا.'
   },
 
   agents: {
@@ -1386,11 +2018,19 @@ export const ar: Translations = {
       slowProviderHint: 'قد يستغرق هذا عدة دقائق',
       remix: 'إعادة مزج',
       remixConfirmTitle: 'إعادة مزج هذا الشكل؟',
-      remixConfirmBody:
-        'يولّد هذا مجموعة جديدة من المسودّات منطلقًا من هذا الشكل. قد يستغرق عدة دقائق.',
+      remixConfirmBody: 'يولّد هذا مجموعة جديدة من المسودّات منطلقًا من هذا الشكل. قد يستغرق عدة دقائق.',
       genericError: 'فشل التوليد — أعد المحاولة أو اختر اقتراحًا.',
       referenceImageTooLarge: 'الصورة المرجعية كبيرة جدًّا. استخدم واحدةً أصغر من ١٦ ميغابايت.',
       referenceImageInvalid: 'تعذّر قراءة تلك الصورة المرجعية. جرّب صيغة PNG أو JPG أو WebP أو GIF.',
+      reference: 'صورة مرجعية',
+      removeReference: 'إزالة الصورة المرجعية',
+      unavailableTitle: 'أضف مزود صور للبدء بالتوليد',
+      unavailableDesc: 'يتطلب إنشاء حيوان مخصص مزودا يستطيع الاستناد إلى صورة مرجعية.',
+      setupImageGeneration: 'إعداد توليد الصور',
+      grabKeyFrom: 'احصل على مفتاح من',
+      nousPortal: 'بوابة نوس',
+      openRouter: 'أوبن راوتر',
+      openAi: 'أوبن إيه آي',
       adopt: 'تبنٍّ',
       startOver: 'البدء من جديد'
     },
@@ -1530,6 +2170,72 @@ export const ar: Translations = {
     search: 'البحث في المراسلة...',
     loading: 'جارٍ تحميل منصات المراسلة...',
     loadFailed: 'فشل تحميل منصات المراسلة',
+    platformNames: {
+      telegram: 'تيليجرام',
+      discord: 'ديسكورد',
+      slack: 'سلاك',
+      mattermost: 'ماترموست',
+      matrix: 'ماتريكس',
+      signal: 'سيجنال',
+      whatsapp: 'واتساب',
+      bluebubbles: 'بلو بابلز',
+      homeassistant: 'مساعد المنزل',
+      email: 'البريد الإلكتروني',
+      sms: 'الرسائل النصية عبر تويليو',
+      dingtalk: 'دينج توك',
+      feishu: 'فيشو ولارك',
+      google_chat: 'محادثات جوجل',
+      wecom: 'وي كوم لبوت المجموعة',
+      wecom_callback: 'وي كوم للتطبيق',
+      weixin: 'وي شين ووي تشات الشخصي',
+      qqbot: 'بوت كيو كيو',
+      teams: 'مايكروسوفت تيمز',
+      yuanbao: 'يوانباو',
+      api_server: 'خادم الواجهة البرمجية',
+      webhook: 'خطاطيف الويب',
+      irc: 'آي آر سي',
+      line: 'لاين',
+      msgraph_webhook: 'خطاف مايكروسوفت جراف',
+      ntfy: 'إن تي إف واي',
+      photon: 'فوتون',
+      raft: 'رافت',
+      relay: 'ريلاي',
+      simplex: 'سيمبلكس',
+      whatsapp_cloud: 'واتساب السحابي'
+    },
+    platformDescriptions: {
+      telegram: 'شغّل هرمس من الرسائل الخاصة والمجموعات والموضوعات في تيليجرام.',
+      discord: 'اربط هرمس بالرسائل الخاصة والقنوات والمواضيع في ديسكورد.',
+      slack: 'استخدم هرمس من سلاك عبر وضع المقبس، وحدد أعضاء سلاك المسموح للبوت بالرد عليهم.',
+      mattermost: 'اربط هرمس بقنوات ماترموست ورسائله المباشرة.',
+      matrix: 'استخدم هرمس في غرف ماتريكس ورسائله المباشرة.',
+      signal: 'اتصل عبر جسر سيجنال ذي واجهة نقل الحالة التمثيلية.',
+      whatsapp: 'استخدم هرمس عبر جسر واتساب المرفق مع مصادقة برمز الاستجابة السريعة.',
+      bluebubbles: 'استخدم هرمس عبر رسائل آبل من خلال خادم بلو بابلز.',
+      homeassistant: 'تحكم في منزلك الذكي من هرمس عبر مساعد المنزل.',
+      email: 'تحدث إلى هرمس عبر صندوق بريد يدعم بروتوكولي الاستقبال والإرسال.',
+      sms: 'أرسل الرسائل النصية واستقبلها عبر تويليو.',
+      dingtalk: 'اربط هرمس بمجموعات دينج توك.',
+      feishu: 'استخدم هرمس داخل فيشو أو لارك.',
+      google_chat: 'اربط هرمس بمحادثات جوجل عبر النشر والاشتراك السحابي.',
+      wecom: 'بوت مجموعة في وي كوم للإرسال فقط عبر خطاف ويب.',
+      wecom_callback: 'تكامل ثنائي الاتجاه مع وي كوم عبر تطبيق رد الاتصال.',
+      weixin: 'اربط حساب وي تشات شخصيا عبر واجهة بوت آي لينك من تنسنت.',
+      qqbot: 'اربط هرمس ببوت كيو كيو من منصته المفتوحة.',
+      teams: 'اربط هرمس بقنوات مايكروسوفت تيمز ومحادثاته.',
+      yuanbao: 'اربط هرمس بخدمة يوانباو من تنسنت.',
+      api_server: 'اعرض هرمس كواجهة برمجية متوافقة مع أوبن إيه آي لأدوات مثل أوبن ويب يو آي.',
+      webhook: 'استقبل الأحداث من جيت هب وجيت لاب ومصادر خطاطيف الويب الأخرى.',
+      irc: 'اربط هرمس بقنوات آي آر سي ورسائلها الخاصة.',
+      line: 'استخدم هرمس في محادثات لاين ومجموعاتها.',
+      msgraph_webhook: 'استقبل أحداث مايكروسوفت جراف عبر خطاف ويب.',
+      ntfy: 'تبادل الرسائل مع هرمس عبر موضوعات إن تي إف واي.',
+      photon: 'اربط هرمس بمنصة فوتون سبيكترم.',
+      raft: 'اربط هرمس بمنصة رافت.',
+      relay: 'اربط هرمس بمنصة ريلاي.',
+      simplex: 'استخدم هرمس عبر جهات اتصال ومجموعات سيمبلكس.',
+      whatsapp_cloud: 'اربط هرمس بواجهة واتساب السحابية.'
+    },
     states: {
       connected: 'متصل',
       connecting: 'جارٍ الاتصال',
@@ -1585,6 +2291,20 @@ export const ar: Translations = {
         help: 'موصى به. معرّفات رقمية مفصولة بفواصل من @userinfobot. من دونها يستطيع أي شخص مراسلة البوت.'
       },
       TELEGRAM_PROXY: { label: 'رابط الوكيل', help: 'يلزم فقط على الشبكات التي تحجب تيليجرام.' },
+      TELEGRAM_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع مستخدمي تيليجرام',
+        help: 'للتطوير فقط. عند تفعيله يستطيع أي مستخدم في تيليجرام تشغيل البوت.',
+        placeholder: 'فعّل أو عطّل'
+      },
+      TELEGRAM_HOME_CHANNEL: {
+        label: 'معرّف المحادثة الرئيسية',
+        help: 'المحادثة الافتراضية لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      TELEGRAM_HOME_CHANNEL_NAME: {
+        label: 'اسم المحادثة الرئيسية',
+        help: 'الاسم المعروض للمحادثة الرئيسية في السجلات والحالة.',
+        placeholder: 'اسم المحادثة الرئيسية'
+      },
       DISCORD_BOT_TOKEN: {
         label: 'رمز البوت',
         help: 'أنشئ تطبيقًا في بوابة مطوري ديسكورد، وأضف بوتًا، ثم الصق رمزه.'
@@ -1593,7 +2313,7 @@ export const ar: Translations = {
         label: 'معرّفات مستخدمي ديسكورد المسموح لهم',
         help: 'موصى به. معرّفات مستخدمي ديسكورد مفصولة بفواصل.'
       },
-      DISCORD_REPLY_TO_MODE: { label: 'أسلوب الرد', help: 'first أو all أو off.' },
+      DISCORD_REPLY_TO_MODE: { label: 'أسلوب الرد', help: 'الرسالة الأولى أو كل الرسائل أو الإيقاف.' },
       DISCORD_ALLOW_ALL_USERS: {
         label: 'السماح لجميع مستخدمي ديسكورد',
         help: 'للتطوير فقط. عند تفعيله يستطيع أي شخص مراسلة البوت دون قائمة سماح.'
@@ -1607,50 +2327,139 @@ export const ar: Translations = {
         help: 'الاسم المعروض للقناة الرئيسية في السجلات والحالة.'
       },
       BLUEBUBBLES_ALLOW_ALL_USERS: {
-        label: 'السماح لجميع مستخدمي iMessage',
-        help: 'عند تفعيله تُتجاوز قائمة سماح BlueBubbles.'
+        label: 'السماح لجميع مستخدمي آي مسج',
+        help: 'عند تفعيله تُتجاوز قائمة سماح بلو بابلز.'
       },
-      MATTERMOST_ALLOW_ALL_USERS: { label: 'السماح لجميع مستخدمي Mattermost' },
+      MATTERMOST_ALLOW_ALL_USERS: { label: 'السماح لجميع مستخدمي ماترموست' },
       MATTERMOST_HOME_CHANNEL: { label: 'القناة الرئيسية' },
-      QQ_ALLOW_ALL_USERS: { label: 'السماح لجميع مستخدمي QQ' },
-      QQBOT_HOME_CHANNEL: { label: 'قناة QQ الرئيسية', help: 'القناة أو المجموعة الافتراضية لتسليم المهام المجدولة.' },
-      QQBOT_HOME_CHANNEL_NAME: { label: 'اسم قناة QQ الرئيسية' },
+      QQ_ALLOW_ALL_USERS: { label: 'السماح لجميع مستخدمي كيو كيو' },
+      QQBOT_HOME_CHANNEL: {
+        label: 'قناة كيو كيو الرئيسية',
+        help: 'القناة أو المجموعة الافتراضية لتسليم المهام المجدولة.'
+      },
+      QQBOT_HOME_CHANNEL_NAME: { label: 'اسم قناة كيو كيو الرئيسية' },
       SLACK_BOT_TOKEN: {
         label: 'رمز بوت سلاك',
-        help: 'استخدم رمز البوت من OAuth & Permissions بعد تثبيت تطبيق سلاك.',
+        help: 'استخدم رمز البوت من صفحة أو أوث والأذونات بعد تثبيت تطبيق سلاك.',
         placeholder: 'الصق رمز بوت سلاك'
       },
       SLACK_APP_TOKEN: {
         label: 'رمز تطبيق سلاك',
-        help: 'استخدم رمز مستوى التطبيق المطلوب لوضع Socket.',
+        help: 'استخدم رمز مستوى التطبيق المطلوب لوضع المقبس.',
         placeholder: 'الصق رمز تطبيق سلاك'
       },
       SLACK_ALLOWED_USERS: {
         label: 'معرّفات مستخدمي سلاك المسموح لهم',
         help: 'موصى به. معرّفات مستخدمي سلاك مفصولة بفواصل.'
       },
-      MATTERMOST_URL: { label: 'رابط الخادم', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'رمز البوت' },
+      SLACK_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع مستخدمي سلاك',
+        help: 'للتطوير فقط. عند تفعيله يستطيع أي مستخدم في سلاك تشغيل البوت.'
+      },
+      SLACK_HOME_CHANNEL: {
+        label: 'معرّف قناة سلاك الرئيسية',
+        help: 'القناة الافتراضية لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      SLACK_HOME_CHANNEL_NAME: {
+        label: 'اسم قناة سلاك الرئيسية',
+        help: 'الاسم المعروض لقناة سلاك الرئيسية.'
+      },
+      MATTERMOST_URL: {
+        label: 'رابط الخادم',
+        help: 'رابط خادم ماترموست، مثل الرابط الذي يبدأ ببروتوكول الاتصال الآمن.',
+        placeholder: 'https://mattermost.example.com'
+      },
+      MATTERMOST_TOKEN: {
+        label: 'رمز البوت',
+        help: 'رمز بوت ماترموست أو رمز وصول شخصي.'
+      },
       MATTERMOST_ALLOWED_USERS: {
         label: 'معرّفات المستخدمين المسموح لهم',
-        help: 'موصى به. معرّفات مستخدمي Mattermost مفصولة بفواصل.'
+        help: 'موصى به. معرّفات مستخدمي ماترموست مفصولة بفواصل.'
       },
-      MATRIX_HOMESERVER: { label: 'رابط الخادم الرئيسي (homeserver)', placeholder: 'https://matrix.org' },
-      MATRIX_ACCESS_TOKEN: { label: 'رمز الوصول' },
-      MATRIX_USER_ID: { label: 'معرّف مستخدم البوت', placeholder: '@hermes:example.org' },
+      MATTERMOST_ALLOWED_CHANNELS: {
+        label: 'معرّفات القنوات المسموح بها',
+        help: 'عند ضبطها لا يستجيب البوت إلا في هذه القنوات.'
+      },
+      MATTERMOST_FREE_RESPONSE_CHANNELS: {
+        label: 'قنوات الاستجابة الحرة',
+        help: 'قنوات ماترموست التي يستجيب فيها البوت دون الحاجة إلى الإشارة إليه.'
+      },
+      MATTERMOST_REPLY_MODE: {
+        label: 'أسلوب الرد',
+        help: 'اختر الرد داخل سلسلة أو الرد المسطح.'
+      },
+      MATTERMOST_REQUIRE_MENTION: {
+        label: 'اشتراط الإشارة في القنوات',
+        help: 'عند تفعيله لا يستجيب البوت في القنوات إلا عند الإشارة إليه.'
+      },
+      MATRIX_HOMESERVER: {
+        label: 'رابط الخادم الرئيسي',
+        help: 'رابط الخادم الرئيسي لشبكة ماتريكس.',
+        placeholder: 'https://matrix.org'
+      },
+      MATRIX_ACCESS_TOKEN: {
+        label: 'رمز الوصول',
+        help: 'رمز وصول ماتريكس، وهو مفضّل على تسجيل الدخول بكلمة المرور.'
+      },
+      MATRIX_USER_ID: {
+        label: 'معرّف مستخدم البوت',
+        help: 'معرّف مستخدم ماتريكس الكامل للبوت.',
+        placeholder: '@hermes:example.org'
+      },
       MATRIX_ALLOWED_USERS: {
-        label: 'معرّفات مستخدمي Matrix المسموح لهم',
+        label: 'معرّفات مستخدمي ماتريكس المسموح لهم',
         help: 'موصى به. معرّفات مفصولة بفواصل بصيغة @user:server.'
       },
-      SIGNAL_HTTP_URL: {
-        label: 'رابط جسر Signal',
-        placeholder: 'http://127.0.0.1:8080',
-        help: 'رابط جسر signal-cli REST يعمل حاليًا.'
+      MATRIX_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع مستخدمي ماتريكس',
+        help: 'للتطوير فقط. عند تفعيله يستطيع أي مستخدم تشغيل البوت.'
       },
-      SIGNAL_ACCOUNT: { label: 'رقم الهاتف', help: 'الرقم المسجل في جسر signal-cli.' },
+      MATRIX_AUTO_THREAD: {
+        label: 'إنشاء سلاسل تلقائيًا في الغرف',
+        help: 'ينشئ سلسلة تلقائيًا لرسائل غرف ماتريكس.'
+      },
+      MATRIX_DEVICE_ID: {
+        label: 'معرّف جهاز ماتريكس',
+        help: 'معرّف ثابت يحافظ على مفاتيح التشفير بين مرات التشغيل.'
+      },
+      MATRIX_DM_AUTO_THREAD: {
+        label: 'إنشاء سلاسل تلقائيًا في الرسائل الخاصة',
+        help: 'ينشئ سلسلة تلقائيًا لرسائل ماتريكس الخاصة.'
+      },
+      MATRIX_FREE_RESPONSE_ROOMS: {
+        label: 'غرف الاستجابة الحرة',
+        help: 'غرف ماتريكس التي يستجيب فيها البوت دون الحاجة إلى الإشارة إليه.'
+      },
+      MATRIX_HOME_CHANNEL: {
+        label: 'معرّف الغرفة الرئيسية',
+        help: 'الغرفة الافتراضية لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      MATRIX_HOME_CHANNEL_NAME: {
+        label: 'اسم الغرفة الرئيسية',
+        help: 'الاسم المعروض لغرفة ماتريكس الرئيسية.'
+      },
+      MATRIX_PASSWORD: {
+        label: 'كلمة مرور ماتريكس',
+        help: 'بديل لتسجيل الدخول برمز الوصول.'
+      },
+      MATRIX_RECOVERY_KEY: {
+        label: 'مفتاح استعادة ماتريكس',
+        help: 'مفتاح استعادة التحقق بعد تبديل مفاتيح الجهاز.'
+      },
+      MATRIX_REQUIRE_MENTION: {
+        label: 'اشتراط الإشارة في الغرف',
+        help: 'عند تفعيله لا يستجيب البوت في الغرف إلا عند الإشارة إليه.'
+      },
+      SIGNAL_HTTP_URL: {
+        label: 'رابط جسر سيجنال',
+        placeholder: 'http://127.0.0.1:8080',
+        help: 'رابط جسر سيجنال البرمجي الذي يعمل حاليًا.'
+      },
+      SIGNAL_ACCOUNT: { label: 'رقم الهاتف', help: 'الرقم المسجل في جسر سيجنال.' },
       SIGNAL_ALLOWED_USERS: {
-        label: 'مستخدمو Signal المسموح لهم',
-        help: 'موصى به. معرّفات Signal مفصولة بفواصل.'
+        label: 'مستخدمو سيجنال المسموح لهم',
+        help: 'موصى به. معرّفات سيجنال مفصولة بفواصل.'
       },
       WHATSAPP_ENABLED: {
         label: 'تفعيل جسر واتساب',
@@ -1661,117 +2470,461 @@ export const ar: Translations = {
         label: 'مستخدمو واتساب المسموح لهم',
         help: 'موصى به. أرقام الهواتف أو معرّفات واتساب مفصولة بفواصل.'
       },
+      WHATSAPP_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع مستخدمي واتساب',
+        help: 'للتطوير فقط. عند تفعيله يستطيع أي مستخدم تشغيل البوت.'
+      },
+      WHATSAPP_DM_POLICY: {
+        label: 'سياسة الرسائل الخاصة',
+        help: 'تحدد كيفية السماح برسائل واتساب الخاصة.'
+      },
+      WHATSAPP_HOME_CHANNEL: {
+        label: 'معرّف المحادثة الرئيسية',
+        help: 'المحادثة الافتراضية لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      WHATSAPP_HOME_CHANNEL_NAME: {
+        label: 'اسم المحادثة الرئيسية',
+        help: 'الاسم المعروض لمحادثة واتساب الرئيسية.'
+      },
       HASS_URL: {
-        label: 'رابط Home Assistant',
-        help: 'الرابط الأساسي لخادم Home Assistant، مثل https://homeassistant.local:8123.'
+        label: 'رابط مساعد المنزل',
+        help: 'الرابط الأساسي لخادم مساعد المنزل، مثل https://homeassistant.local:8123.'
       },
       HASS_TOKEN: {
-        label: 'رمز وصول Home Assistant',
-        help: 'رمز وصول طويل الأمد من Home Assistant (الملف الشخصي → الأمان).'
+        label: 'رمز وصول مساعد المنزل',
+        help: 'رمز وصول طويل الأمد من مساعد المنزل، من الملف الشخصي ثم الأمان.'
       },
       EMAIL_ADDRESS: { label: 'عنوان البريد الإلكتروني', help: 'العنوان الذي يرسل هرمس منه ويستقبل عليه.' },
       EMAIL_PASSWORD: { label: 'كلمة مرور البريد', help: 'كلمة مرور الحساب أو كلمة مرور تطبيق مخصصة.' },
-      EMAIL_IMAP_HOST: { label: 'خادم IMAP', help: 'مضيف خادم IMAP، مثل imap.gmail.com.' },
-      EMAIL_SMTP_HOST: { label: 'خادم SMTP', help: 'مضيف خادم SMTP، مثل smtp.gmail.com.' },
+      EMAIL_IMAP_HOST: { label: 'خادم استقبال البريد', help: 'مضيف خادم استقبال البريد، مثل imap.gmail.com.' },
+      EMAIL_SMTP_HOST: { label: 'خادم إرسال البريد', help: 'مضيف خادم إرسال البريد، مثل smtp.gmail.com.' },
+      EMAIL_ALLOWED_USERS: {
+        label: 'عناوين البريد المسموح لها',
+        help: 'عناوين البريد الإلكتروني المسموح لها بمراسلة البوت، مفصولة بفواصل.'
+      },
+      EMAIL_HOME_ADDRESS: {
+        label: 'عنوان البريد الرئيسي',
+        help: 'العنوان الافتراضي لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      EMAIL_SMTP_PORT: {
+        label: 'منفذ خادم الإرسال',
+        help: 'منفذ خادم إرسال البريد، وقيمته الافتراضية ٥٨٧.'
+      },
       TWILIO_ACCOUNT_SID: {
-        label: 'معرّف حساب Twilio (Account SID)',
-        help: 'من لوحة تحكم Twilio.'
+        label: 'معرّف حساب تويليو',
+        help: 'من لوحة تحكم تويليو.'
       },
       TWILIO_AUTH_TOKEN: {
-        label: 'رمز مصادقة Twilio (Auth Token)',
-        help: 'من لوحة تحكم Twilio.'
+        label: 'رمز مصادقة تويليو',
+        help: 'من لوحة تحكم تويليو.'
       },
-      DINGTALK_CLIENT_ID: { label: 'معرّف العميل (Client ID)', help: 'معرّف عميل DingTalk (مفتاح التطبيق).' },
-      DINGTALK_CLIENT_SECRET: { label: 'سر العميل (Client Secret)', help: 'سر عميل DingTalk (سر التطبيق).' },
-      FEISHU_APP_ID: { label: 'معرّف التطبيق (App ID)', help: 'معرّف تطبيق Feishu / Lark.' },
-      FEISHU_APP_SECRET: { label: 'سر التطبيق (App secret)', help: 'سر تطبيق Feishu / Lark.' },
-      FEISHU_ENCRYPT_KEY: { label: 'مفتاح التشفير', help: 'مفتاح تشفير أحداث Feishu / Lark.' },
-      FEISHU_VERIFICATION_TOKEN: { label: 'رمز التحقق', help: 'رمز تحقق Feishu / Lark.' },
-      WECOM_BOT_ID: { label: 'معرّف بوت WeCom', help: 'مفتاح الويب هوك لروبوت المجموعة في WeCom.' },
-      WECOM_SECRET: { label: 'سر WeCom', help: 'سر روبوت المجموعة في WeCom.' },
-      WECOM_CALLBACK_CORP_ID: { label: 'معرّف مؤسسة WeCom', help: 'معرّف المؤسسة في WeCom.' },
-      WECOM_CALLBACK_CORP_SECRET: { label: 'سر مؤسسة WeCom', help: 'سر تطبيق WeCom الخاص بالمؤسسة.' },
-      WECOM_CALLBACK_AGENT_ID: { label: 'معرّف وكيل WeCom', help: 'معرّف الوكيل لتطبيق WeCom الذاتي البناء.' },
-      WECOM_CALLBACK_TOKEN: { label: 'رمز WeCom', help: 'رمز التحقق من الاستدعاء الراجع في WeCom.' },
+      TWILIO_PHONE_NUMBER: {
+        label: 'رقم هاتف تويليو',
+        help: 'رقم قادر على إرسال الرسائل النصية بصيغة دولية.'
+      },
+      DINGTALK_CLIENT_ID: { label: 'معرّف العميل', help: 'معرّف عميل دينج توك، وهو مفتاح التطبيق.' },
+      DINGTALK_CLIENT_SECRET: { label: 'سر العميل', help: 'سر عميل دينج توك، وهو سر التطبيق.' },
+      DINGTALK_ALLOWED_USERS: {
+        label: 'المستخدمون المسموح لهم',
+        help: 'معرّفات الموظفين أو المرسلين المسموح لهم بمراسلة البوت، مفصولة بفواصل.'
+      },
+      DINGTALK_HOME_CHANNEL: {
+        label: 'معرّف المحادثة الرئيسية',
+        help: 'المحادثة الافتراضية لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      DINGTALK_HOME_CHANNEL_NAME: {
+        label: 'اسم المحادثة الرئيسية',
+        help: 'الاسم المعروض لمحادثة دينج توك الرئيسية.'
+      },
+      DINGTALK_WEBHOOK_URL: {
+        label: 'رابط خطاف روبوت دينج توك',
+        help: 'رابط اختياري لروبوت ثابت يُستخدم في التسليم بين المنصات والمهام المجدولة.'
+      },
+      FEISHU_APP_ID: { label: 'معرّف التطبيق', help: 'معرّف تطبيق فيشو أو لارك.' },
+      FEISHU_APP_SECRET: { label: 'سر التطبيق', help: 'سر تطبيق فيشو أو لارك.' },
+      FEISHU_ENCRYPT_KEY: { label: 'مفتاح التشفير', help: 'مفتاح تشفير أحداث فيشو أو لارك.' },
+      FEISHU_VERIFICATION_TOKEN: { label: 'رمز التحقق', help: 'رمز تحقق فيشو أو لارك.' },
+      FEISHU_ALLOWED_USERS: {
+        label: 'مستخدمو فيشو المسموح لهم',
+        help: 'معرّفات مستخدمي فيشو المسموح لهم بمراسلة البوت، مفصولة بفواصل.'
+      },
+      FEISHU_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع مستخدمي فيشو',
+        help: 'للتطوير فقط. عند تفعيله يستطيع أي مستخدم تشغيل البوت.'
+      },
+      FEISHU_DOMAIN: {
+        label: 'النطاق',
+        help: 'اختر فيشو للصين أو لارك للنطاق الدولي.'
+      },
+      FEISHU_HOME_CHANNEL: {
+        label: 'معرّف المحادثة الرئيسية',
+        help: 'المحادثة الافتراضية لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      FEISHU_HOME_CHANNEL_NAME: {
+        label: 'اسم المحادثة الرئيسية',
+        help: 'الاسم المعروض لمحادثة فيشو الرئيسية.'
+      },
+      GOOGLE_CHAT_ALLOWED_USERS: {
+        label: 'عناوين البريد المسموح لها',
+        help: 'عناوين بريد المستخدمين المسموح لهم بالتفاعل مع البوت، مفصولة بفواصل.'
+      },
+      GOOGLE_CHAT_HOME_CHANNEL: {
+        label: 'معرّف المساحة الرئيسية',
+        help: 'المساحة الافتراضية لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      GOOGLE_CHAT_PROJECT_ID: {
+        label: 'معرّف مشروع جوجل السحابي',
+        help: 'المشروع الذي يستضيف موضوع النشر والاشتراك لأحداث المحادثة.'
+      },
+      GOOGLE_CHAT_SERVICE_ACCOUNT_JSON: {
+        label: 'مسار مفتاح حساب الخدمة',
+        help: 'مسار ملف مفتاح حساب الخدمة أو محتواه. اتركه فارغًا لاستخدام بيانات الاعتماد الافتراضية.'
+      },
+      GOOGLE_CHAT_SUBSCRIPTION_NAME: {
+        label: 'اسم اشتراك النشر والاشتراك',
+        help: 'المسار الكامل للاشتراك الذي يستقبل أحداث محادثات جوجل.'
+      },
+      WECOM_BOT_ID: { label: 'معرّف بوت وي كوم', help: 'مفتاح خطاف الويب لروبوت المجموعة في وي كوم.' },
+      WECOM_SECRET: { label: 'سر وي كوم', help: 'سر روبوت المجموعة في وي كوم.' },
+      WECOM_CALLBACK_CORP_ID: { label: 'معرّف مؤسسة وي كوم', help: 'معرّف المؤسسة في وي كوم.' },
+      WECOM_CALLBACK_CORP_SECRET: { label: 'سر مؤسسة وي كوم', help: 'سر تطبيق وي كوم الخاص بالمؤسسة.' },
+      WECOM_CALLBACK_AGENT_ID: {
+        label: 'معرّف وكيل وي كوم',
+        help: 'معرّف الوكيل لتطبيق وي كوم الذاتي البناء.'
+      },
+      WECOM_CALLBACK_TOKEN: { label: 'رمز وي كوم', help: 'رمز التحقق من الاستدعاء الراجع في وي كوم.' },
       WECOM_CALLBACK_ENCODING_AES_KEY: {
-        label: 'مفتاح AES لـ WeCom',
-        help: 'مفتاح ترميز AES للاستدعاء الراجع في WeCom.'
+        label: 'مفتاح تشفير وي كوم',
+        help: 'مفتاح تشفير الاستدعاء الراجع في وي كوم.'
       },
-      WEIXIN_ACCOUNT_ID: { label: 'معرّف الحساب', help: 'معرّف الحساب الرسمي في WeChat.' },
-      WEIXIN_TOKEN: { label: 'رمز الاستدعاء الراجع', help: 'رمز الاستدعاء الراجع في WeChat.' },
-      WEIXIN_BASE_URL: { label: 'الرابط الأساسي', help: 'الرابط الأساسي لمنصة WeChat.' },
+      WEIXIN_ACCOUNT_ID: { label: 'معرّف الحساب', help: 'معرّف الحساب الرسمي في وي تشات.' },
+      WEIXIN_TOKEN: { label: 'رمز الاستدعاء الراجع', help: 'رمز الاستدعاء الراجع في وي تشات.' },
+      WEIXIN_BASE_URL: { label: 'الرابط الأساسي', help: 'الرابط الأساسي لمنصة وي تشات.' },
       BLUEBUBBLES_SERVER_URL: {
-        label: 'رابط خادم BlueBubbles',
-        help: 'رابط خادم BlueBubbles لتكامل iMessage، مثل http://192.168.1.10:1234.'
+        label: 'رابط خادم بلو بابلز',
+        help: 'رابط خادم بلو بابلز لتكامل آي مسج، مثل http://192.168.1.10:1234.'
       },
       BLUEBUBBLES_PASSWORD: {
-        label: 'كلمة مرور خادم BlueBubbles',
-        help: 'من BlueBubbles Server → Settings → API.'
+        label: 'كلمة مرور خادم بلو بابلز',
+        help: 'من إعدادات واجهة خادم بلو بابلز البرمجية.'
       },
       BLUEBUBBLES_ALLOWED_USERS: {
-        label: 'عناوين iMessage المسموح لها',
-        help: 'موصى به. عناوين iMessage (بريد إلكتروني أو هاتف) مفصولة بفواصل.'
+        label: 'عناوين آي مسج المسموح لها',
+        help: 'موصى به. عناوين آي مسج، من بريد إلكتروني أو هاتف، مفصولة بفواصل.'
       },
-      QQ_APP_ID: { label: 'معرّف تطبيق QQ', help: 'معرّف التطبيق من منصة QQ المفتوحة (q.qq.com).' },
-      QQ_CLIENT_SECRET: { label: 'سر عميل QQ', help: 'سر العميل من منصة QQ المفتوحة.' },
+      QQ_APP_ID: { label: 'معرّف تطبيق كيو كيو', help: 'معرّف التطبيق من منصة كيو كيو المفتوحة.' },
+      QQ_CLIENT_SECRET: { label: 'سر عميل كيو كيو', help: 'سر العميل من منصة كيو كيو المفتوحة.' },
       QQ_ALLOWED_USERS: {
-        label: 'معرّفات مستخدمي QQ المسموح لهم',
-        help: 'موصى به. معرّفات مستخدمي QQ مفصولة بفواصل.'
+        label: 'معرّفات مستخدمي كيو كيو المسموح لهم',
+        help: 'موصى به. معرّفات مستخدمي كيو كيو مفصولة بفواصل.'
+      },
+      QQ_GROUP_ALLOWED_USERS: {
+        label: 'معرّفات مجموعات كيو كيو المسموح لها',
+        help: 'معرّفات المجموعات المسموح لها بالتفاعل مع البوت، مفصولة بفواصل.'
+      },
+      QQ_SANDBOX: {
+        label: 'وضع كيو كيو التجريبي',
+        help: 'يفعّل وضع الاختبار أثناء التطوير.'
+      },
+      IRC_ALLOWED_USERS: {
+        label: 'الأسماء المستعارة المسموح لها',
+        help: 'الأسماء المستعارة المسموح لها بمراسلة البوت، مفصولة بفواصل.'
+      },
+      IRC_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع مستخدمي آي آر سي',
+        help: 'للتطوير فقط. عند تفعيله يستطيع أي شخص في القناة مراسلة البوت.'
+      },
+      IRC_CHANNEL: {
+        label: 'قناة آي آر سي',
+        help: 'القناة التي ينضم إليها البوت.'
+      },
+      IRC_HOME_CHANNEL: {
+        label: 'القناة الرئيسية',
+        help: 'القناة الافتراضية لتسليم مخرجات المهام المجدولة والإشعارات.'
+      },
+      IRC_NICKNAME: {
+        label: 'الاسم المستعار للبوت',
+        help: 'الاسم الذي يظهر به البوت في آي آر سي.'
+      },
+      IRC_NICKSERV_PASSWORD: {
+        label: 'كلمة مرور خدمة الأسماء',
+        help: 'كلمة مرور تعريف الاسم المستعار عند الحاجة.'
+      },
+      IRC_PORT: {
+        label: 'منفذ آي آر سي',
+        help: 'منفذ الخادم، ويُستخدم المنفذ الآمن افتراضيًا.'
+      },
+      IRC_SERVER: {
+        label: 'خادم آي آر سي',
+        help: 'اسم مضيف خادم آي آر سي.'
+      },
+      IRC_SERVER_PASSWORD: {
+        label: 'كلمة مرور الخادم',
+        help: 'كلمة مرور خادم آي آر سي عند الحاجة.'
+      },
+      IRC_USE_TLS: {
+        label: 'استخدام الاتصال الآمن',
+        help: 'يشفّر الاتصال بخادم آي آر سي.'
+      },
+      LINE_ALLOWED_GROUPS: {
+        label: 'معرّفات مجموعات لاين المسموح لها',
+        help: 'المجموعات التي يستجيب فيها البوت، مفصولة بفواصل.'
+      },
+      LINE_ALLOWED_ROOMS: {
+        label: 'معرّفات غرف لاين المسموح لها',
+        help: 'الغرف التي يستجيب فيها البوت، مفصولة بفواصل.'
+      },
+      LINE_ALLOWED_USERS: {
+        label: 'معرّفات مستخدمي لاين المسموح لهم',
+        help: 'المستخدمون المسموح لهم بمراسلة البوت مباشرة، مفصولون بفواصل.'
+      },
+      LINE_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع مستخدمي لاين',
+        help: 'للتطوير فقط. يعطّل قائمة السماح.'
+      },
+      LINE_CHANNEL_ACCESS_TOKEN: {
+        label: 'رمز وصول قناة لاين',
+        help: 'رمز الوصول طويل الأمد من لوحة مطوري لاين.'
+      },
+      LINE_CHANNEL_SECRET: {
+        label: 'سر قناة لاين',
+        help: 'يُستخدم للتحقق من توقيع خطاف الويب.'
+      },
+      LINE_HOME_CHANNEL: {
+        label: 'معرّف القناة الرئيسية',
+        help: 'المستخدم أو المجموعة أو الغرفة الافتراضية لتسليم الإشعارات والمهام المجدولة.'
+      },
+      LINE_HOST: {
+        label: 'مضيف خطاف الويب',
+        help: 'عنوان ربط خادم خطاف الويب.'
+      },
+      LINE_PORT: {
+        label: 'منفذ خطاف الويب',
+        help: 'منفذ استماع خادم خطاف الويب.'
+      },
+      LINE_PUBLIC_URL: {
+        label: 'الرابط العام الآمن',
+        help: 'الرابط العام المستخدم لإرسال الصور والصوت والفيديو إلى لاين.'
+      },
+      LINE_SLOW_RESPONSE_THRESHOLD: {
+        label: 'عتبة الاستجابة البطيئة',
+        help: 'عدد الثواني قبل إظهار زر انتظار الاستجابة الطويلة.'
+      },
+      NTFY_ALLOWED_USERS: {
+        label: 'الموضوعات المسموح لها',
+        help: 'أسماء الموضوعات المسموح لها بمراسلة البوت، مفصولة بفواصل.'
+      },
+      NTFY_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع الموضوعات',
+        help: 'للتطوير فقط. يعطّل قائمة السماح.'
+      },
+      NTFY_HOME_CHANNEL: {
+        label: 'الموضوع الرئيسي',
+        help: 'الموضوع الافتراضي لتسليم الإشعارات والمهام المجدولة.'
+      },
+      NTFY_HOME_CHANNEL_NAME: {
+        label: 'اسم الموضوع الرئيسي',
+        help: 'الاسم البشري المعروض للموضوع الرئيسي.'
+      },
+      NTFY_MARKDOWN: {
+        label: 'تنسيق الردود',
+        help: 'يرسل الردود بتنسيق النص المنسق عند تفعيله.'
+      },
+      NTFY_PUBLISH_TOPIC: {
+        label: 'موضوع نشر الردود',
+        help: 'الموضوع الذي تُنشر إليه ردود البوت.'
+      },
+      NTFY_SERVER_URL: {
+        label: 'رابط خادم إن تي إف واي',
+        help: 'الرابط الأساسي للخادم.'
+      },
+      NTFY_TOKEN: {
+        label: 'رمز مصادقة إن تي إف واي',
+        help: 'رمز المصادقة أو بيانات المستخدم وكلمة المرور.'
+      },
+      NTFY_TOPIC: {
+        label: 'موضوع الاشتراك',
+        help: 'اسم الموضوع الذي يشترك فيه البوت.'
+      },
+      PHOTON_ALLOWED_USERS: {
+        label: 'المستخدمون المسموح لهم',
+        help: 'أرقام الهواتف الدولية المسموح لها بمراسلة البوت، مفصولة بفواصل.'
+      },
+      PHOTON_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع المرسلين',
+        help: 'للتطوير فقط. يعطّل قائمة السماح.'
+      },
+      PHOTON_DASHBOARD_HOST: {
+        label: 'مضيف لوحة فوتون',
+        help: 'عنوان الواجهة البرمجية للوحة فوتون.'
+      },
+      PHOTON_HOME_CHANNEL: {
+        label: 'وجهة فوتون الرئيسية',
+        help: 'الوجهة الافتراضية لتسليم الإشعارات والمهام المجدولة.'
+      },
+      PHOTON_HOME_CHANNEL_NAME: {
+        label: 'اسم الوجهة الرئيسية',
+        help: 'الاسم البشري المعروض للوجهة الرئيسية.'
+      },
+      PHOTON_MARKDOWN: {
+        label: 'عرض الردود كنص منسق',
+        help: 'يرسل ردود الوكيل بتنسيق منسق حيث تدعمه المنصة.'
+      },
+      PHOTON_MENTION_PATTERNS: {
+        label: 'أنماط الإشارة في المجموعات',
+        help: 'أنماط الكلمات التي توقظ البوت داخل المحادثات الجماعية.'
+      },
+      PHOTON_NODE_BIN: {
+        label: 'مسار مشغّل نود',
+        help: 'مسار الملف التنفيذي لنود.'
+      },
+      PHOTON_PROJECT_ID: {
+        label: 'معرّف مشروع فوتون',
+        help: 'معرّف مشروع سبيكترم المرتبط بالتكامل.'
+      },
+      PHOTON_PROJECT_SECRET: {
+        label: 'سر مشروع فوتون',
+        help: 'السر المقترن بمعرّف مشروع سبيكترم.'
+      },
+      PHOTON_REACTIONS: {
+        label: 'تفعيل تفاعلات الحالة',
+        help: 'يستخدم التفاعلات لإظهار حالة المعالجة وتمرير تفاعلات المستخدم إلى الوكيل.'
+      },
+      PHOTON_REQUIRE_MENTION: {
+        label: 'اشتراط الإشارة في المجموعات',
+        help: 'يتجاهل رسائل المجموعات التي لا تطابق كلمة إيقاظ.'
+      },
+      PHOTON_SIDECAR_AUTOSTART: {
+        label: 'تشغيل الخدمة المرافقة تلقائيًا',
+        help: 'يشغّل خدمة نود المرافقة عند الاتصال.'
+      },
+      PHOTON_SIDECAR_PORT: {
+        label: 'منفذ الخدمة المرافقة',
+        help: 'منفذ التحكم المحلي بالخدمة المرافقة.'
+      },
+      PHOTON_SPECTRUM_HOST: {
+        label: 'مضيف فوتون سبيكترم',
+        help: 'عنوان الواجهة البرمجية لفوتون سبيكترم.'
+      },
+      PHOTON_TELEMETRY: {
+        label: 'تفعيل القياسات',
+        help: 'يرسل قياسات حزمة سبيكترم من الخدمة المرافقة.'
+      },
+      SIMPLEX_ALLOWED_USERS: {
+        label: 'جهات الاتصال المسموح لها',
+        help: 'معرّفات جهات اتصال سيمبلكس المسموح لها بمراسلة البوت.'
+      },
+      SIMPLEX_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع جهات الاتصال',
+        help: 'للتطوير فقط. يعطّل قائمة السماح.'
+      },
+      SIMPLEX_AUTO_ACCEPT: {
+        label: 'قبول طلبات الاتصال تلقائيًا',
+        help: 'يقبل طلبات الاتصال الواردة تلقائيًا.'
+      },
+      SIMPLEX_GROUP_ALLOWED: {
+        label: 'المجموعات المسموح بها',
+        help: 'معرّفات مجموعات سيمبلكس التي يشارك فيها البوت.'
+      },
+      SIMPLEX_HOME_CHANNEL: {
+        label: 'جهة الاتصال أو المجموعة الرئيسية',
+        help: 'الوجهة الافتراضية لتسليم الإشعارات والمهام المجدولة.'
+      },
+      SIMPLEX_HOME_CHANNEL_NAME: {
+        label: 'اسم الوجهة الرئيسية',
+        help: 'الاسم البشري المعروض للوجهة الرئيسية.'
+      },
+      SIMPLEX_WS_URL: {
+        label: 'رابط خدمة سيمبلكس',
+        help: 'رابط مقبس الويب لخدمة محادثات سيمبلكس.'
+      },
+      TEAMS_ALLOWED_USERS: {
+        label: 'مستخدمو تيمز المسموح لهم',
+        help: 'معرّفات مستخدمي تيمز أو أسماؤهم الرئيسية، مفصولة بفواصل.'
+      },
+      TEAMS_ALLOW_ALL_USERS: {
+        label: 'السماح لجميع مستخدمي تيمز',
+        help: 'للتطوير فقط. عند تفعيله يستطيع أي مستخدم تشغيل البوت.'
+      },
+      TEAMS_CLIENT_ID: {
+        label: 'معرّف تطبيق تيمز',
+        help: 'معرّف تطبيق مايكروسوفت المستخدم في إطار البوت.'
+      },
+      TEAMS_CLIENT_SECRET: {
+        label: 'سر تطبيق تيمز',
+        help: 'سر تطبيق مايكروسوفت المستخدم في إطار البوت.'
+      },
+      TEAMS_HOME_CHANNEL: {
+        label: 'القناة الرئيسية',
+        help: 'المحادثة أو القناة الافتراضية لتسليم الإشعارات والمهام المجدولة.'
+      },
+      TEAMS_HOME_CHANNEL_NAME: {
+        label: 'اسم القناة الرئيسية',
+        help: 'الاسم المعروض لقناة تيمز الرئيسية.'
+      },
+      TEAMS_PORT: {
+        label: 'منفذ خطاف الويب',
+        help: 'منفذ استماع إطار البوت.'
+      },
+      TEAMS_TENANT_ID: {
+        label: 'معرّف مستأجر مايكروسوفت',
+        help: 'معرّف المستأجر الذي يستضيف تطبيق البوت.'
       },
       API_SERVER_ENABLED: {
         label: 'تفعيل خادم الواجهة البرمجية',
-        help: 'يفعّل الواجهة البرمجية المتوافقة مع OpenAI ليتصل بها مثل Open WebUI و LobeChat.'
+        help: 'يفعّل الواجهة البرمجية المتوافقة مع أوبن إيه آي لتتصل بها أدوات مثل أوبن ويب يو آي ولوب تشات.'
       },
       API_SERVER_KEY: {
         label: 'مفتاح مصادقة الواجهة البرمجية',
-        help: 'رمز Bearer لمصادقة الخادم. مطلوب متى كان الخادم مفعّلًا، ويرفض الخادم البدء من دونه.'
+        help: 'رمز حامل لمصادقة الخادم. مطلوب متى كان الخادم مفعّلًا، ويرفض الخادم البدء من دونه.'
       },
       API_SERVER_PORT: { label: 'منفذ الخادم', help: 'منفذ خادم الواجهة البرمجية (الافتراضي 8642).' },
       API_SERVER_HOST: {
         label: 'مضيف الخادم',
-        help: 'عنوان الربط (الافتراضي 127.0.0.1). يبقى API_SERVER_KEY مطلوبًا حتى على الربط المحلي.'
+        help: 'عنوان الربط المحلي. يبقى مفتاح مصادقة الخادم مطلوبًا حتى على الربط المحلي.'
       },
       API_SERVER_MODEL_NAME: {
         label: 'اسم النموذج المعلن',
-        help: 'الاسم المعروض على المسار /v1/models. الافتراضي اسم الملف الشخصي.'
+        help: 'الاسم المعروض في مسار النماذج. الافتراضي اسم الملف الشخصي.'
       },
       WEBHOOK_ENABLED: {
         label: 'تفعيل الويب هوك',
-        help: 'يفعّل محوّل الويب هوك لاستقبال الأحداث من GitHub و GitLab وغيرهما.'
+        help: 'يفعّل محوّل خطاف الويب لاستقبال الأحداث من جيت هب وجيت لاب وغيرهما.'
       },
-      WEBHOOK_PORT: { label: 'منفذ الويب هوك', help: 'منفذ خادم HTTP للويب هوك (الافتراضي 8644).' },
-      WEBHOOK_SECRET: { label: 'سر الويب هوك', help: 'سر HMAC عام للتحقق من توقيعات الويب هوك.' }
+      WEBHOOK_PORT: { label: 'منفذ الويب هوك', help: 'منفذ خادم الويب للخطاف، وقيمته الافتراضية ٨٦٤٤.' },
+      WEBHOOK_SECRET: { label: 'سر الويب هوك', help: 'سر عام للتحقق من توقيعات خطاف الويب.' }
     },
     platformIntro: {
       telegram:
         'في تيليجرام، راسل @BotFather ونفّذ الأمر /newbot وانسخ الرمز الذي يعطيك إياه، ثم خذ معرّفك الرقمي من @userinfobot.',
       discord:
         'افتح بوابة مطوري ديسكورد، وأنشئ تطبيقًا، وأضف إليه بوتًا، ثم انسخ رمزه. وادعُ البوت إلى خادمك بالنطاقات الصحيحة.',
-      slack: 'أنشئ تطبيق سلاك، وفعّل وضع Socket، وثبّته في مساحة العمل، ثم انسخ رمز البوت ورمز مستوى التطبيق.',
-      mattermost: 'على خادم Mattermost لديك، أنشئ حساب بوت أو رمز وصول شخصيًا، ثم الصق رابط الخادم والرمز هنا.',
+      slack: 'أنشئ تطبيق سلاك، وفعّل وضع المقبس، وثبّته في مساحة العمل، ثم انسخ رمز البوت ورمز مستوى التطبيق.',
+      mattermost: 'على خادم ماترموست لديك، أنشئ حساب بوت أو رمز وصول شخصيًا، ثم الصق رابط الخادم والرمز هنا.',
       matrix: 'سجّل الدخول إلى خادمك الرئيسي بحساب البوت، ثم انسخ رمز الوصول ومعرّف المستخدم ورابط الخادم الرئيسي.',
-      signal: 'شغّل جسر signal-cli REST في مكان يمكن الوصول إليه، ثم وجّه هرمس إلى الرابط ورقم الهاتف المسجل.',
-      whatsapp: 'شغّل جسر واتساب المرفق مع هرمس، وامسح رمز QR عند أول تشغيل، ثم فعّل المنصة.',
+      google_chat: 'اربط هرمس بمحادثات جوجل عبر خدمة النشر والاشتراك السحابية.',
+      signal: 'شغّل جسر سيجنال البرمجي في مكان يمكن الوصول إليه، ثم وجّه هرمس إلى الرابط ورقم الهاتف المسجل.',
+      whatsapp: 'شغّل جسر واتساب المرفق مع هرمس، وامسح رمز الاستجابة السريعة عند أول تشغيل، ثم فعّل المنصة.',
       bluebubbles:
-        'شغّل خادم BlueBubbles على جهاز Mac يعمل عليه iMessage، واكشف واجهته البرمجية، ثم وجّه هرمس إلى الرابط مع كلمة مرور الخادم.',
-      homeassistant: 'في Home Assistant، افتح ملفك الشخصي وأنشئ رمز وصول طويل الأمد، ثم الصقه هنا مع رابط HA لديك.',
+        'شغّل خادم بلو بابلز على جهاز ماك يعمل عليه آي مسج، واكشف واجهته البرمجية، ثم وجّه هرمس إلى الرابط مع كلمة مرور الخادم.',
+      homeassistant: 'في مساعد المنزل، افتح ملفك الشخصي وأنشئ رمز وصول طويل الأمد، ثم الصقه هنا مع رابط الخادم.',
       email:
-        'استخدم صندوق بريد مخصصًا. لحسابات Gmail/Workspace، أنشئ كلمة مرور تطبيق واستخدم imap.gmail.com / smtp.gmail.com.',
-      sms: 'احصل على Account SID و Auth Token من لوحة تحكم Twilio، إضافة إلى رقم هاتف يمكنه إرسال الرسائل النصية.',
-      dingtalk: 'أنشئ تطبيق DingTalk في لوحة المطورين، ثم انسخ Client ID (مفتاح التطبيق) و Client Secret هنا.',
-      feishu: 'أنشئ تطبيق Feishu / Lark، وفعّل قدرة البوت فيه، وانسخ App ID و App secret ومفاتيح تشفير الأحداث.',
+        'استخدم صندوق بريد مخصصًا. لحسابات جيميل أو مساحة العمل، أنشئ كلمة مرور تطبيق واستخدم خادمي الاستقبال والإرسال المناسبين.',
+      sms: 'احصل على معرّف الحساب ورمز المصادقة من لوحة تحكم تويليو، إضافة إلى رقم يرسل الرسائل النصية.',
+      dingtalk: 'أنشئ تطبيق دينج توك في لوحة المطورين، ثم انسخ معرّف العميل وسره هنا.',
+      feishu: 'أنشئ تطبيق فيشو أو لارك، وفعّل قدرة البوت فيه، وانسخ معرّف التطبيق وسره ومفاتيح تشفير الأحداث.',
       wecom:
-        'أضف روبوت مجموعة في WeCom وانسخ مفتاح الويب هوك الخاص به في WECOM_BOT_ID. للإرسال فقط — استخدم خيار WeCom (تطبيق) للتواصل ثنائي الاتجاه.',
+        'أضف روبوت مجموعة في وي كوم وانسخ مفتاح خطاف الويب الخاص به. هذا الخيار للإرسال فقط؛ استخدم خيار تطبيق وي كوم للتواصل ثنائي الاتجاه.',
       wecom_callback:
-        'جهّز تطبيق WeCom ذاتي البناء، واكشف رابط الاستدعاء الراجع الخاص به، وأدخل معرّف المؤسسة والسر ومعرّف الوكيل ومفتاح AES.',
+        'جهّز تطبيق وي كوم ذاتي البناء، واكشف رابط الاستدعاء الراجع الخاص به، وأدخل معرّف المؤسسة والسر ومعرّف الوكيل ومفتاح التشفير.',
       weixin:
-        'سجّل الدخول إلى منصة الحسابات الرسمية في WeChat، وانسخ AppID و Token، ووجّه رابط الاستدعاء الراجع للرسائل إلى هرمس.',
-      qqbot: 'سجّل تطبيقًا على منصة QQ المفتوحة (q.qq.com) وانسخ App ID و Client Secret.',
-      yuanbao: 'اربط هرمس بخدمة Yuanbao (元宝) من Tencent.',
+        'سجّل الدخول إلى منصة الحسابات الرسمية في وي تشات، وانسخ معرّف التطبيق والرمز، ووجّه رابط الاستدعاء الراجع للرسائل إلى هرمس.',
+      qqbot: 'سجّل تطبيقًا على منصة كيو كيو المفتوحة وانسخ معرّف التطبيق وسر العميل.',
+      yuanbao: 'اربط هرمس بخدمة يوانباو من تينسنت.',
       api_server:
-        'اكشف هرمس كواجهة برمجية متوافقة مع OpenAI. اضبط مفتاح مصادقة، ثم وجّه Open WebUI أو LobeChat وغيرهما إلى المضيف والمنفذ.',
+        'اكشف هرمس كواجهة برمجية متوافقة مع أوبن إيه آي. اضبط مفتاح مصادقة، ثم وجّه أوبن ويب يو آي أو لوب تشات وغيرهما إلى المضيف والمنفذ.',
       webhook:
-        'شغّل خادم HTTP تستطيع الأدوات الأخرى (GitHub و GitLab والتطبيقات المخصصة) إرسال POST إليه. استخدم السر للتحقق من التوقيعات.'
+        'شغّل خادم ويب تستطيع الأدوات الأخرى، مثل جيت هب وجيت لاب والتطبيقات المخصصة، إرسال الطلبات إليه. استخدم السر للتحقق من التوقيعات.'
     }
   },
 
@@ -1833,6 +2986,7 @@ export const ar: Translations = {
     deleting: 'جارٍ الحذف...',
     createDesc: 'الملفات الشخصية بيئات هرمس مستقلة، ولكل منها إعداداتها ومهاراتها وملف SOUL.md.',
     nameLabel: 'الاسم',
+    namePlaceholder: 'my-profile',
     cloneFromDefault: 'نسخ الملف الافتراضي',
     cloneFromDefaultDesc: 'ينسخ الإعدادات والمهارات وSOUL.md من ملفك الشخصي الافتراضي.',
     cloneFrom: 'النسخ من',
@@ -1864,7 +3018,8 @@ export const ar: Translations = {
   cron: {
     close: 'إغلاق المهام المجدولة',
     title: 'المهام المجدولة',
-    count: count => (count === 1 ? 'مهمة واحدة' : count === 2 ? 'مهمتان' : count <= 10 ? `${count} مهام` : `${count} مهمة`),
+    count: count =>
+      count === 1 ? 'مهمة واحدة' : count === 2 ? 'مهمتان' : count <= 10 ? `${count} مهام` : `${count} مهمة`,
     search: 'البحث في المهام المجدولة...',
     loading: 'جارٍ تحميل المهام المجدولة...',
     states: {
@@ -1899,7 +3054,7 @@ export const ar: Translations = {
       monthly: 'اليوم الأول من كل شهر الساعة 9:00 صباحًا',
       hourly: 'عند بداية كل ساعة',
       'every-15-minutes': 'كل 15 دقيقة',
-      custom: 'صيغة Cron أو عبارة إنجليزية طبيعية'
+      custom: 'تعبير جدولة أو عبارة طبيعية'
     },
     days: {
       '0': 'الأحد',
@@ -1919,7 +3074,7 @@ export const ar: Translations = {
     topOfHour: 'عند بداية كل ساعة',
     everyHourAt: minute => `كل ساعة عند :${minute}`,
     newCron: 'مهمة مجدولة جديدة',
-    emptyDescNew: 'جدول موجّهًا ليعمل وفق تعبير Cron. سيشغله هرمس ويسلّم النتيجة إلى الوجهة التي تختارها.',
+    emptyDescNew: 'جدول موجّهًا ليعمل وفق تعبير زمني. سيشغله هرمس ويسلّم النتيجة إلى الوجهة التي تختارها.',
     emptyDescSearch: 'جرّب عبارة بحث أوسع.',
     emptyTitleNew: 'لا توجد مهام مجدولة بعد',
     emptyTitleSearch: 'لا نتائج مطابقة',
@@ -1956,7 +3111,7 @@ export const ar: Translations = {
     editTitle: 'تعديل المهمة المجدولة',
     createTitle: 'مهمة مجدولة جديدة',
     editDesc: 'حدّث الجدول أو الموجّه أو وجهة التسليم. تُطبق التغييرات في التشغيل التالي.',
-    createDesc: 'جدول موجّهًا ليعمل تلقائيًا. استخدم صيغة Cron أو عبارة إنجليزية طبيعية مثل "every 15 minutes".',
+    createDesc: 'جدول موجّهًا ليعمل تلقائيًا. استخدم تعبيرًا زمنيًا أو عبارة طبيعية مثل «كل خمس عشرة دقيقة».',
     nameLabel: 'الاسم',
     namePlaceholder: 'الموجز الصباحي',
     promptLabel: 'الموجّه',
@@ -1965,7 +3120,7 @@ export const ar: Translations = {
     deliverLabel: 'التسليم إلى',
     customScheduleLabel: 'جدول مخصص',
     customPlaceholder: '0 9 * * * أو weekdays at 9am',
-    customHint: 'تعبير Cron أو عبارة إنجليزية مثل "every hour" أو "weekdays at 9am".',
+    customHint: 'تعبير زمني أو عبارة طبيعية مثل «كل ساعة» أو «أيام العمل عند التاسعة صباحًا».',
     optional: 'اختياري',
     promptRequired: 'الموجّه مطلوب.',
     promptScheduleRequired: 'الموجّه والجدول مطلوبان.',
@@ -2032,7 +3187,7 @@ export const ar: Translations = {
     groupTitleGrouped: 'إلغاء تجميع الجلسات',
     groupTitleUngrouped: 'التجميع حسب مساحة العمل',
     allPinned: 'كل ما هنا مثبت. ألغ تثبيت محادثة لتظهر ضمن المحادثات الأخيرة.',
-    shiftClickHint: 'انقر مع Shift لتثبيت المحادثة',
+    shiftClickHint: 'انقر مع مفتاح التبديل لتثبيت المحادثة',
     noWorkspace: 'بلا مساحة عمل',
     noProject: 'لا يوجد مشروع',
     projectEmpty: 'لا توجد جلسات بعد',
@@ -2146,6 +3301,7 @@ export const ar: Translations = {
 
   composer: {
     message: 'رسالة',
+    addContext: 'إضافة سياق',
     wakingProfile: profile => `جارٍ تنشيط ${profile}…`,
     placeholderStarting: 'جارٍ بدء هرمس...',
     placeholderReconnecting: 'جارٍ إعادة الاتصال بهرمس…',
@@ -2208,7 +3364,7 @@ export const ar: Translations = {
       'composer.mention': 'الإشارة إلى الملفات والمجلدات والروابط ومستودع Git',
       'composer.slash': 'لوحة الأوامر المائلة',
       'composer.help': 'هذه المساعدة السريعة، احذفها لإغلاقها',
-      'composer.sendNewline': 'إرسال · Shift+Enter لسطر جديد',
+      'composer.sendNewline': 'إرسال · مفتاح التبديل مع الإدخال لسطر جديد',
       'composer.sendQueued': 'إرسال الدورة التالية في الانتظار',
       'keybinds.openPanel': 'جميع اختصارات لوحة المفاتيح',
       'composer.cancel': 'إغلاق النافذة وإلغاء التشغيل',
@@ -2279,6 +3435,7 @@ export const ar: Translations = {
   statusStack: {
     agents: 'الوكلاء',
     background: count => `${count} في الخلفية`,
+    backgroundProcess: 'عملية في الخلفية',
     subagents: count =>
       count === 1
         ? 'وكيل فرعي واحد'
@@ -2327,7 +3484,7 @@ export const ar: Translations = {
       stopGenerating: 'إيقاف التوليد',
       createPr: 'إنشاء طلب سحب',
       openPr: 'فتح طلب السحب',
-      ghMissing: 'ثبّت واجهة GitHub السطرية (gh) وسجّل الدخول لفتح طلبات السحب',
+      ghMissing: 'ثبّت واجهة جيت هب السطرية (gh) وسجّل الدخول لفتح طلبات السحب',
       agentShip: 'اطلب من هرمس فتح طلب سحب',
       agentShipPrompt: 'راجع التغييرات الحالية، وأودِعها برسالة إيداع تقليدية واضحة، وادفع الفرع، وافتح طلب سحب.',
       newBranch: 'فرع جديد',
@@ -2464,6 +3621,16 @@ export const ar: Translations = {
     connected: 'متصل',
     featuredPitch: 'اشتراك واحد وأكثر من 300 نموذج متقدم؛ الطريقة الموصى بها لتشغيل هرمس',
     openRouterPitch: 'مفتاح واحد ومئات النماذج؛ خيار افتراضي جيد',
+    openRouterName: 'أوبن راوتر',
+    providerNames: {
+      nous: 'بوابة نوس',
+      'openai-codex': 'أوبن إيه آي عبر المصادقة',
+      'minimax-oauth': 'ميني ماكس',
+      'qwen-oauth': 'كوين كود',
+      'xai-oauth': 'إكس إيه آي جروك',
+      anthropic: 'أنثروبيك عبر مفتاح الواجهة',
+      'claude-code': 'أنثروبيك عبر المصادقة مع رصيد استخدام إضافي'
+    },
     apiKeyOptions: {
       fireworks: {
         short: 'واجهة نماذج مباشرة',
@@ -2473,12 +3640,12 @@ export const ar: Translations = {
         short: 'مفتاح واحد ونماذج كثيرة',
         description: 'يستضيف مئات النماذج خلف مفتاح واحد. خيار افتراضي جيد للتثبيتات الجديدة.'
       },
-      openai: { short: 'نماذج فئة GPT', description: 'وصول مباشر إلى نماذج OpenAI.' },
-      gemini: { short: 'نماذج Gemini', description: 'وصول مباشر إلى نماذج Google Gemini.' },
-      xai: { short: 'نماذج Grok', description: 'وصول مباشر إلى نماذج xAI Grok.' },
+      openai: { short: 'نماذج فئة جي بي تي', description: 'وصول مباشر إلى نماذج أوبن إيه آي.' },
+      gemini: { short: 'نماذج جيمناي', description: 'وصول مباشر إلى نماذج جوجل جيمناي.' },
+      xai: { short: 'نماذج جروك', description: 'وصول مباشر إلى نماذج إكس إيه آي جروك.' },
       local: {
         short: 'مستضاف ذاتيًا',
-        description: 'وجّه هرمس إلى نقطة نهاية محلية أو مستضافة ذاتيًا متوافقة مع OpenAI، مثل vLLM وllama.cpp وOllama.'
+        description: 'وجّه هرمس إلى نقطة نهاية محلية أو مستضافة ذاتيًا متوافقة مع أوبن إيه آي.'
       }
     },
     backToSignIn: 'العودة إلى تسجيل الدخول',
@@ -2523,7 +3690,47 @@ export const ar: Translations = {
     price: (input, output) => `${input} إدخال / ${output} إخراج لكل مليون وحدة`,
     change: 'تغيير',
     startChatting: 'بدء',
-    docs: provider => `توثيق ${provider}`
+    docs: provider => `توثيق ${provider}`,
+    runtime: {
+      readyTitle: 'هرمس جاهز',
+      connected: provider => `تم ربط ${provider}.`,
+      gatewayToolsTitle: 'فُعّلت بوابة الأدوات',
+      gatewayToolsMessage: labels => {
+        const list =
+          labels.length === 1
+            ? labels[0]
+            : labels.length === 2
+              ? `${labels[0]} و${labels[1]}`
+              : `${labels.slice(0, -1).join('، ')}، و${labels[labels.length - 1]}`
+
+        return `ستعمل ${list} الآن عبر اشتراكك في نوس، ولا تحتاج إلى مفاتيح واجهات منفصلة.`
+      },
+      gatewayToolLabels: {
+        browser: 'أتمتة المتصفح',
+        image_gen: 'توليد الصور',
+        tts: 'تحويل النص إلى كلام',
+        video_gen: 'توليد الفيديو',
+        web: 'البحث في الويب واستخراج محتواه'
+      },
+      providerUnavailable: detail =>
+        detail
+          ? `تم الاتصال، لكن هرمس لم يستطع تعيين مزوّد صالح للاستخدام. ${detail}`
+          : 'تم الاتصال، لكن هرمس لم يستطع تعيين مزوّد صالح للاستخدام.',
+      tokenExchangeFailed: 'فشل استبدال رمز الدخول.',
+      externalUnavailable: (provider, command) =>
+        `ما زال هرمس لا يستطيع الوصول إلى ${provider}. شغّل الأمر ${command} في الطرفية أولًا.`,
+      enterValueFirst: 'أدخل قيمة أولًا.',
+      enterEndpointFirst: 'أدخل رابط نقطة النهاية أولًا.',
+      endpointUnreachable: url => `تعذر الوصول إلى ${url}.`,
+      endpointNoModels: url =>
+        `تم الاتصال بـ ${url}، لكنه لم يعلن عن أي نماذج. شغّل نموذجًا على نقطة النهاية ثم أعد المحاولة.`,
+      endpointSavedButUnreachable: url => `حُفظ الإعداد، لكن هرمس ما زال لا يستطيع الوصول إلى ${url}.`,
+      localEndpoint: 'نقطة نهاية محلية أو مخصصة',
+      couldNotSaveProvider: provider => `تعذر حفظ ${provider}`,
+      couldNotSaveEndpoint: 'تعذر حفظ نقطة النهاية المحلية',
+      couldNotChangeModel: 'تعذر تغيير النموذج',
+      unexpectedError: 'فشلت العملية. أعد المحاولة.'
+    }
   },
 
   modelPicker: {
@@ -2606,7 +3813,16 @@ export const ar: Translations = {
               ? `متأخر عن ${branch} بـ ${count} إيداعات`
               : `متأخر عن ${branch} بـ ${count} إيداعًا`,
       tokensShort: value => `${value} وحدة`,
-      reasoningShort: { none: 'إيقاف', minimal: 'أدنى', low: 'منخفض', medium: 'متوسط', high: 'عالٍ', xhigh: 'فائق', max: 'أقصى', ultra: 'خارق' },
+      reasoningShort: {
+        none: 'إيقاف',
+        minimal: 'أدنى',
+        low: 'منخفض',
+        medium: 'متوسط',
+        high: 'عالٍ',
+        xhigh: 'فائق',
+        max: 'أقصى',
+        ultra: 'خارق'
+      },
       desktopVersion: version => `هرمس لسطح المكتب ${version}`,
       backendVersion: version => `الواجهة الخلفية ${version}`,
       clientLabel: version => `العميل ${version}`,
@@ -2648,7 +3864,7 @@ export const ar: Translations = {
       contextUsagePanel: {
         categories: {
           conversation: 'المحادثة',
-          mcp: 'MCP',
+          mcp: 'بروتوكول سياق النموذج',
           memory: 'الذاكرة',
           rules: 'القواعد',
           skills: 'المهارات',
@@ -2666,8 +3882,9 @@ export const ar: Translations = {
       session: 'الجلسة',
       runtimeSessionElapsed: 'المدة المنقضية لجلسة التشغيل',
       yoloOn:
-        'وضع YOLO مفعّل؛ ستتم الموافقة تلقائيًا على الأوامر الخطرة. انقر لتعطيله، أو انقر مع Shift لتبديله عامًا.',
-      yoloOff: 'وضع YOLO معطّل؛ انقر للموافقة تلقائيًا على الأوامر الخطرة، أو انقر مع Shift لتبديله عامًا.',
+        'وضع التجاوز التلقائي مفعّل؛ ستتم الموافقة تلقائيًا على الأوامر الخطرة. انقر لتعطيله، أو انقر مع مفتاح التبديل لتبديله عامًا.',
+      yoloOff:
+        'وضع التجاوز التلقائي معطّل؛ انقر للموافقة تلقائيًا على الأوامر الخطرة، أو انقر مع مفتاح التبديل لتبديله عامًا.',
       modelNone: 'لا شيء',
       noModel: 'لا نموذج',
       switchModel: 'تبديل النموذج',
@@ -2727,8 +3944,8 @@ export const ar: Translations = {
     hide: 'إخفاء',
     openPreview: 'فتح المعاينة',
     openInBrowser: 'فتح في المتصفّح',
-    linkHint: 'النقر مع ⌘/Ctrl لفتح لوحة المعاينة',
-    sourceLineTitle: 'انقر للتحديد · انقر مع Shift للتوسيع · اسحب إلى محرر الرسالة',
+    linkHint: 'النقر مع مفتاح الأوامر أو التحكم لفتح لوحة المعاينة',
+    sourceLineTitle: 'انقر للتحديد · انقر مع مفتاح التبديل للتوسيع · اسحب إلى محرر الرسالة',
     source: 'المصدر',
     renderedPreview: 'المعاينة',
     diff: 'الفروق',
@@ -2813,7 +4030,8 @@ export const ar: Translations = {
       reloadingNow: 'جارٍ إعادة تحميل المعاينة الآن.',
       restartFailedTitle: 'فشلت إعادة تشغيل المعاينة',
       restartFailedMessage: 'تعذر على هرمس إعادة تشغيل الخادم.',
-      stillWorking: 'لا يزال هرمس يعمل، لكن لم تصل نتيجة إعادة التشغيل بعد. ربما يعمل أمر الخادم في المقدمة لا في الخلفية.',
+      stillWorking:
+        'لا يزال هرمس يعمل، لكن لم تصل نتيجة إعادة التشغيل بعد. ربما يعمل أمر الخادم في المقدمة لا في الخلفية.',
       workspaceReloading: 'تغيرت مساحة العمل؛ جارٍ إعادة تحميل المعاينة',
       fileChanged: url => `تغير ملف؛ جارٍ إعادة تحميل المعاينة: ${url}`,
       filesChanged: (count, url) =>
@@ -2835,6 +4053,14 @@ export const ar: Translations = {
   },
 
   assistant: {
+    alerts: {
+      caution: 'تنبيه',
+      important: 'مهم',
+      note: 'ملاحظة',
+      tip: 'نصيحة',
+      warning: 'تحذير'
+    },
+    embedTitle: provider => `تضمين ${provider}`,
     thread: {
       loadingSession: 'جارٍ تحميل الجلسة',
       showEarlier: 'عرض الرسائل الأقدم',
@@ -2872,7 +4098,9 @@ export const ar: Translations = {
       restoreNext: 'استعادة نقطة التحقق التالية',
       goForward: 'تقدم',
       sendEdited: 'إرسال الرسالة المعدلة',
-      attachingFile: 'جارٍ إرفاق الملف…'
+      attachingFile: 'جارٍ إرفاق الملف…',
+      timeline: 'خط زمن المحادثة',
+      steered: 'وُجّهت'
     },
     approval: {
       gatewayDisconnected: 'بوابة هرمس غير متصلة',
@@ -2914,6 +4142,9 @@ export const ar: Translations = {
       copyPath: 'نسخ المسار',
       outputAlt: 'مخرجات الأداة',
       rawResponse: 'الاستجابة الخام',
+      standardOutput: 'المخرجات القياسية',
+      standardError: 'الأخطاء القياسية',
+      payload: 'حمولة الأداة',
       copyActivity: 'نسخ النشاط',
       recoveredOne: 'نجح بعد محاولة فاشلة واحدة',
       recoveredMany: count =>
@@ -2923,8 +4154,7 @@ export const ar: Translations = {
             ? `نجح بعد ${count} محاولات فاشلة`
             : `نجح بعد ${count} محاولة فاشلة`,
       failedOne: 'فشلت خطوة واحدة',
-      failedMany: count =>
-        count === 2 ? 'فشلت خطوتان' : count <= 10 ? `فشلت ${count} خطوات` : `فشلت ${count} خطوة`,
+      failedMany: count => (count === 2 ? 'فشلت خطوتان' : count <= 10 ? `فشلت ${count} خطوات` : `فشلت ${count} خطوة`),
       statusRunning: 'يعمل',
       statusError: 'خطأ',
       statusRecovered: 'نجح',
@@ -3022,11 +4252,11 @@ export const ar: Translations = {
             ? `تتوفر ${count} أوامر مهارات.`
             : `يتوفر ${count} أمر مهارة.`,
     warningLine: message => `تحذير: ${message}`,
-    yoloArmed: 'فُعّل وضع YOLO لهذه المحادثة',
-    yoloOff: 'وضع YOLO معطّل',
-    yoloSystem: active => `وضع YOLO ${active ? 'مفعّل' : 'معطّل'} لهذه الجلسة`,
-    yoloTitle: 'YOLO',
-    yoloToggleFailed: 'تعذر تبديل وضع YOLO',
+    yoloArmed: 'فُعّل وضع التجاوز التلقائي لهذه المحادثة',
+    yoloOff: 'وضع التجاوز التلقائي معطّل',
+    yoloSystem: active => `وضع التجاوز التلقائي ${active ? 'مفعّل' : 'معطّل'} لهذه الجلسة`,
+    yoloTitle: 'التجاوز التلقائي',
+    yoloToggleFailed: 'تعذر تبديل وضع التجاوز التلقائي',
     profileStatus: current =>
       `الملف الشخصي: ${current}. استخدم /profile <name> أو منتقي «جلسة جديدة» لبدء محادثة في ملف آخر.`,
     unknownProfile: 'ملف شخصي غير معروف',
@@ -3064,6 +4294,8 @@ export const ar: Translations = {
     restartToSaveImages: 'أعد تشغيل هرمس لسطح المكتب لحفظ الصور',
     imageDownloadFailed: 'فشل تنزيل الصورة',
     openImage: 'فتح الصورة',
+    overlayMessage: 'رسالة…',
+    openInHermes: 'فتح في هرمس',
     downloadImage: 'تنزيل الصورة',
     savingImage: 'جارٍ حفظ الصورة',
     imagePreviewFailed: 'فشلت معاينة الصورة',

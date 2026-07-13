@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { Direction } from 'radix-ui'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
@@ -23,6 +24,10 @@ function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
       </button>
     </div>
   )
+}
+
+function DirectionProbe() {
+  return <p data-testid="direction">{Direction.useDirection()}</p>
 }
 
 describe('I18nProvider', () => {
@@ -152,6 +157,16 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('label').textContent).toBe('اللغة')
     expect(document.documentElement.lang).toBe('ar')
     expect(document.documentElement.dir).toBe('rtl')
+  })
+
+  it('provides the Arabic direction to portaled Radix components', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="ar">
+        <DirectionProbe />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('direction').textContent).toBe('rtl')
   })
 
   it('does not overwrite unsupported configured languages', async () => {

@@ -892,14 +892,14 @@ export function ChatSidebar({
           // the seed fetch was capped, so assume more until a per-platform load
           // resolves the count.
           hasMore: known != null ? known > ordered.length : messagingTruncated,
-          label: sessionSourceLabel(sourceId) ?? sourceId,
+          label: t.messaging.platformNames[sourceId] ?? sessionSourceLabel(sourceId) ?? sourceId,
           sessions: ordered,
           sourceId,
           total
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, t.messaging.platformNames])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.

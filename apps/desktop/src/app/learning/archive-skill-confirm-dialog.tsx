@@ -3,17 +3,15 @@ import { deleteLearningNode } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { notify } from '@/store/notifications'
 
-export const ARCHIVE_SKILL_DESCRIPTION = 'The skill is archived and can be restored with `hermes curator restore`.'
-
 export function notifySkillArchived(t: Translations): void {
   notify({ kind: 'success', message: t.skills.skillArchivedMessage, title: t.skills.skillArchivedTitle })
 }
 
-export async function archiveLearningSkill(id: string): Promise<void> {
+export async function archiveLearningSkill(id: string, fallbackMessage = 'Archive failed'): Promise<void> {
   const res = await deleteLearningNode(id)
 
   if (!res.ok) {
-    throw new Error(res.message || 'Archive failed')
+    throw new Error(res.message || fallbackMessage)
   }
 }
 
@@ -50,8 +48,8 @@ export function ArchiveSkillConfirmDialog({
 
   return (
     <ConfirmDialog
-      confirmLabel="Archive"
-      description={ARCHIVE_SKILL_DESCRIPTION}
+      confirmLabel={t.skills.archive}
+      description={t.skills.archiveSkillDescription}
       destructive
       dismissOnConfirm
       onClose={onClose}
@@ -59,7 +57,7 @@ export function ArchiveSkillConfirmDialog({
         const rollback = onApply()
 
         fireOptimistic(
-          archiveLearningSkill(skillId).then(() => {
+          archiveLearningSkill(skillId, t.skills.archiveFailed).then(() => {
             notifySkillArchived(t)
             onSuccess?.()
           }),
@@ -68,7 +66,7 @@ export function ArchiveSkillConfirmDialog({
         )
       }}
       open={open}
-      title={`Archive ${skillName}?`}
+      title={t.skills.archiveSkillTitle(skillName)}
     />
   )
 }

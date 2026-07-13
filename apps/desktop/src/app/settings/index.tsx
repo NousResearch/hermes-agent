@@ -248,12 +248,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const navFooter = (
     <>
       <Tip label={t.settings.exportConfig}>
-        <OverlayIconButton onClick={() => void exportConfig()}>
+        <OverlayIconButton aria-label={t.settings.exportConfig} onClick={() => void exportConfig()}>
           <Download />
         </OverlayIconButton>
       </Tip>
       <Tip label={t.settings.importConfig}>
         <OverlayIconButton
+          aria-label={t.settings.importConfig}
           onClick={() => {
             triggerHaptic('open')
             importInputRef.current?.click()
@@ -264,6 +265,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       </Tip>
       <Tip label={t.settings.resetToDefaults}>
         <OverlayIconButton
+          aria-label={t.settings.resetToDefaults}
           className="hover:text-destructive"
           onClick={() => {
             triggerHaptic('warning')

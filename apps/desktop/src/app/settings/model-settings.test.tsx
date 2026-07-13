@@ -35,9 +35,9 @@ vi.mock('@/hermes', () => ({
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
+  setApiRequestProfile: vi.fn(),
   getHermesConfigRecord: () => getHermesConfigRecord(),
-  saveHermesConfig: (config: unknown) => saveHermesConfig(config),
-  setApiRequestProfile: () => {}
+  saveHermesConfig: (config: unknown) => saveHermesConfig(config)
 }))
 
 vi.mock('@/store/onboarding', () => ({
@@ -279,8 +279,7 @@ describe('ModelSettings', () => {
     fireEvent.click(applyButton)
 
     // The switch-time notice names the pinned provider and offers a reset.
-    expect(await screen.findByText(/still run on/)).toBeTruthy()
-    expect(screen.getByText('nous')).toBeTruthy()
+    expect(await screen.findByText(/still run on nous/)).toBeTruthy()
   })
 
   it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {

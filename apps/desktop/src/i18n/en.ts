@@ -4,6 +4,7 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   common: {
+    actions: 'Actions',
     apply: 'Apply',
     back: 'Back',
     save: 'Save',
@@ -34,12 +35,18 @@ export const en: Translations = {
     refresh: 'Refresh',
     remove: 'Remove',
     replace: 'Replace',
+    reset: 'Reset',
     retry: 'Retry',
     run: 'Run',
     send: 'Send',
     set: 'Set',
     skip: 'Skip',
     update: 'Update',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
+    openFullView: 'Open full view',
+    openDiagram: 'Open diagram',
+    holdModifierToZoom: 'Hold ⌘ to zoom',
     resizePane: id => `Resize ${id}`,
     tryHint: term => `Try “${term}”`,
     on: 'On',
@@ -131,6 +138,8 @@ export const en: Translations = {
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
     seeWhatsNew: "See what's new",
     errors: {
+      backendTimeout: seconds =>
+        `Hermes did not respond within ${seconds} seconds. Check the connection and try again.`,
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
       methodNotAllowed:
@@ -377,7 +386,23 @@ export const en: Translations = {
       testUnsupported: 'This system does not support native notifications.',
       completionSoundTitle: 'Completion Sound',
       completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview'
+      completionSoundPreview: 'Preview',
+      completionSoundNames: {
+        1: 'Two-note comfort',
+        2: 'Glass ping',
+        3: 'Soft marimba',
+        4: 'Tri-tone message',
+        5: 'Airy whoosh',
+        6: 'Discovery cluster',
+        7: 'Systems online',
+        8: 'IBM terminal',
+        9: 'Modem chirp',
+        10: 'Wind chimes',
+        11: 'Singing bowl',
+        12: 'Harp lift',
+        13: 'Sonar ping',
+        14: 'Music box'
+      }
     },
     sections: {
       model: 'Model',
@@ -508,6 +533,7 @@ export const en: Translations = {
       automaticUpdatesDesc:
         'Hermes checks for updates automatically in the background and lets you know when one is ready.',
       branchCommit: (branch, commit) => `Branch ${branch} · Commit ${commit}`,
+      unknown: 'unknown',
       never: 'never',
       justNow: 'just now',
       minAgo: count => `${count} min ago`,
@@ -544,6 +570,48 @@ export const en: Translations = {
           description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
           consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
         }
+      }
+    },
+    memoryProvider: {
+      leaveBlankToKeep: 'Leave blank to keep current value',
+      set: 'Set',
+      failedLoad: 'Memory provider settings failed to load',
+      savedTitle: provider => `${provider} saved`,
+      savedMessage: 'Memory provider configuration updated.',
+      failedSave: provider => `Failed to save ${provider} settings`,
+      loading: 'Loading memory provider settings...',
+      settings: provider => `${provider} settings`,
+      fieldSet: field => `${field} set`,
+      fieldNotSet: field => `${field} not set`,
+      save: 'Save',
+      connectFailed: 'Failed to start connection',
+      couldNotStart: 'Could not start the connection.',
+      timedOut: 'Timed out. Try again.',
+      connectionFailed: 'Connection failed.',
+      connectViaOauth: 'Connect via OAuth',
+      reconnect: 'Reconnect',
+      connect: 'Connect',
+      apiKeySet: 'API key set',
+      oauthSet: 'OAuth set',
+      waitingForConsent: 'Waiting for browser consent...',
+      cancel: 'Cancel',
+      providerNames: { hindsight: 'Hindsight' },
+      fieldLabels: {
+        mode: 'Mode',
+        api_key: 'API key',
+        api_url: 'API URL',
+        bank_id: 'Bank ID',
+        recall_budget: 'Recall budget'
+      },
+      fieldDescriptions: {
+        mode: 'How Hermes connects to Hindsight.',
+        api_key: 'Used to authenticate with the Hindsight API.'
+      },
+      fieldPlaceholders: { api_key: 'Enter Hindsight API key' },
+      optionLabels: { cloud: 'Cloud', local_external: 'Local External', low: 'low', mid: 'mid', high: 'high' },
+      optionDescriptions: {
+        cloud: 'Hindsight Cloud API (lightweight, just needs an API key)',
+        local_external: 'Connect to an existing Hindsight instance'
       }
     },
     config: {
@@ -747,7 +815,9 @@ export const en: Translations = {
       unsavedConnect: 'Unsaved — save mcp.json to connect.',
       enableTool: tool => `Enable ${tool}`,
       disableTool: tool => `Disable ${tool}`,
-      noOutput: 'No output yet.'
+      noOutput: 'No output yet.',
+      authOauth: 'OAuth',
+      authApiKey: 'API key'
     },
     model: {
       loading: 'Loading model configuration...',
@@ -769,6 +839,24 @@ export const en: Translations = {
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      moaTitle: 'Mixture of Agents',
+      moaDesc:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+      moaPreset: 'Preset',
+      moaSetDefault: 'Set default',
+      moaDelete: 'Delete',
+      moaNewPreset: 'new preset',
+      moaAddPreset: 'Add preset',
+      moaDefault: 'Default',
+      moaAggregator: 'Aggregator',
+      moaReference: index => `Reference ${index}`,
+      moaRemove: 'Remove',
+      moaAddReference: 'Add reference model',
+      moaPresets: 'Mixture of Agents presets',
+      moaPrefix: 'Mixture',
+      otherProviders: 'other providers',
+      staleAuxWarning: (count, names, provider) =>
+        `${count} auxiliary ${count === 1 ? 'task' : 'tasks'} (${names}) still run on ${provider}, not your main model.`,
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
@@ -779,6 +867,34 @@ export const en: Translations = {
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
       }
+    },
+    computerUse: {
+      linuxNote: 'Drives your desktop through the X11 or XWayland accessibility stack without a permission prompt.',
+      windowsNote: 'First run may trigger a Windows SmartScreen prompt for the driver accessibility worker. Allow it.',
+      granted: 'Granted',
+      notGranted: 'Not granted',
+      unknown: 'Unknown',
+      readStatusFailed: 'Could not read Computer Use status',
+      requestFailed: 'Could not request permissions',
+      approveTitle: 'Approve in System Settings',
+      approveMessage: 'macOS will show a permission dialog attributed to CuaDriver. Approve it, then return here.',
+      checking: 'Checking Computer Use status…',
+      unsupported: platform => `Computer Use is not supported on this platform (${platform}).`,
+      installDriver: 'Install the cua-driver backend below to drive this machine.',
+      grantAfterInstall: ' Then grant Accessibility and Screen Recording here.',
+      grantIdentity:
+        "Grants attach to CuaDriver's own identity (com.trycua.driver), not Hermes, so the dialog is attributed to the process that drives your Mac.",
+      recheck: 'Recheck',
+      accessibility: 'Accessibility',
+      accessibilityHint: 'Lets cua-driver post clicks and keystrokes and read the accessibility tree.',
+      screenRecording: 'Screen Recording',
+      screenRecordingHint: 'Lets cua-driver capture screenshots of app windows.',
+      driverHealth: 'Driver health',
+      ready: 'Ready',
+      notReady: 'Not ready',
+      readyDescription: 'Computer Use is ready. Ask the agent to capture an app and click around.',
+      waitingApproval: 'Waiting for approval…',
+      grantPermissions: 'Grant permissions'
     },
     providers: {
       connectAccount: 'Connect an account',
@@ -898,6 +1014,9 @@ export const en: Translations = {
     configured: 'Configured',
     needsKeys: 'Needs keys',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} toolsets enabled`,
+    toolCount: count => `${count} ${count === 1 ? 'tool' : 'tools'}`,
+    toolsetNames: {},
+    toolsetDescriptions: {},
     configureToolset: label => `Configure ${label}`,
     toggleToolset: label => `Toggle ${label} toolset`,
     skillsLoadFailed: 'Skills failed to load',
@@ -930,6 +1049,9 @@ export const en: Translations = {
     skillUpdated: 'Skill updated',
     edit: 'Edit',
     archive: 'Archive',
+    archiveSkillTitle: name => `Archive ${name}?`,
+    archiveSkillDescription: 'The skill is archived and can be restored with `hermes curator restore`.',
+    archiveFailed: 'Archive failed',
     skillArchivedTitle: 'Skill archived',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     hub: {
@@ -981,18 +1103,18 @@ export const en: Translations = {
       searchFailed: 'Hub search failed'
     },
     categoryLabels: {
-      'apple': 'Apple',
+      apple: 'Apple',
       'autonomous-ai-agents': 'Autonomous AI Agents',
-      'creative': 'Creative',
+      creative: 'Creative',
       'data-science': 'Data Science',
-      'email': 'Email',
-      'general': 'General',
-      'github': 'GitHub',
-      'media': 'Media',
-      'mlops': 'MLOps',
+      email: 'Email',
+      general: 'General',
+      github: 'GitHub',
+      media: 'Media',
+      mlops: 'MLOps',
       'note-taking': 'Note Taking',
-      'productivity': 'Productivity',
-      'research': 'Research',
+      productivity: 'Productivity',
+      research: 'Research',
       'smart-home': 'Smart Home',
       'social-media': 'Social Media',
       'software-development': 'Software Development'
@@ -1025,7 +1147,22 @@ export const en: Translations = {
     importEmpty: 'Paste a map code to load it.',
     importSuccess: nodes => `Loaded a map with ${nodes} ${nodes === 1 ? 'node' : 'nodes'}.`,
     importedBadge: 'imported map',
-    resetToMine: 'Back to my map'
+    resetToMine: 'Back to my map',
+    skill: 'Skill',
+    profileMemory: 'Profile memory',
+    learned: 'Learned',
+    pinned: 'Pinned',
+    unknown: 'Unknown',
+    coreAge: 'core = oldest · outer = newer',
+    playTimeline: 'Play timeline',
+    pauseTimeline: 'Pause timeline',
+    timelineScrubber: 'Timeline scrubber',
+    editNode: kind => `Edit ${kind}…`,
+    archiveSkill: 'Archive skill',
+    deleteMemory: 'Delete memory',
+    editTitle: label => `Edit ${label}`,
+    deleteMemoryTitle: label => `Delete ${label}?`,
+    deleteMemoryDescription: 'This memory is removed permanently.'
   },
   agents: {
     close: 'Close agents',
@@ -1114,6 +1251,15 @@ export const en: Translations = {
       genericError: 'Generation failed — try again or pick a suggestion.',
       referenceImageTooLarge: 'Reference image is too large. Use one under 16 MB.',
       referenceImageInvalid: 'Could not read that reference image. Try a PNG, JPG, WebP, or GIF.',
+      reference: 'Reference',
+      removeReference: 'Remove reference',
+      unavailableTitle: 'Add an image backend to generate',
+      unavailableDesc: 'Hatching a custom pet needs a provider that can use a reference image.',
+      setupImageGeneration: 'Set up image generation',
+      grabKeyFrom: 'Grab a key from',
+      nousPortal: 'Nous Portal',
+      openRouter: 'OpenRouter',
+      openAi: 'OpenAI',
       adopt: 'Adopt',
       startOver: 'Start over'
     },
@@ -1246,6 +1392,8 @@ export const en: Translations = {
     search: 'Search messaging...',
     loading: 'Loading messaging platforms...',
     loadFailed: 'Messaging platforms failed to load',
+    platformNames: {},
+    platformDescriptions: {},
     states: {
       connected: 'Connected',
       connecting: 'Connecting',
@@ -1425,6 +1573,7 @@ export const en: Translations = {
     deleting: 'Deleting...',
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
+    namePlaceholder: 'my-profile',
     cloneFrom: 'Clone from',
     cloneFromNone: 'None (blank)',
     cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
@@ -1735,6 +1884,7 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
+    addContext: 'Add context',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
@@ -1867,6 +2017,7 @@ export const en: Translations = {
   statusStack: {
     agents: 'Agents',
     background: count => `${count} Background`,
+    backgroundProcess: 'Background process',
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tasks ${done}/${total}`,
     running: 'Running',
@@ -2033,6 +2184,16 @@ export const en: Translations = {
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
     fireworksPitch: 'Direct model API — Fireworks-hosted frontier models',
     openRouterPitch: 'One key, hundreds of models — a solid default',
+    openRouterName: 'OpenRouter',
+    providerNames: {
+      nous: 'Nous Portal',
+      'openai-codex': 'OpenAI OAuth (ChatGPT)',
+      'minimax-oauth': 'MiniMax',
+      'qwen-oauth': 'Qwen Code',
+      'xai-oauth': 'xAI Grok',
+      anthropic: 'Anthropic API Key',
+      'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription'
+    },
     apiKeyOptions: {
       fireworks: {
         short: 'direct model API',
@@ -2092,7 +2253,43 @@ export const en: Translations = {
     price: (input, output) => `${input} in / ${output} out per Mtok`,
     change: 'Change',
     startChatting: 'Begin',
-    docs: provider => `${provider} docs`
+    docs: provider => `${provider} docs`,
+    runtime: {
+      readyTitle: 'Hermes is ready',
+      connected: provider => `${provider} connected.`,
+      gatewayToolsTitle: 'Tool Gateway enabled',
+      gatewayToolsMessage: labels => {
+        const list =
+          labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
+
+        return `${list} now run through your Nous subscription. No separate API keys are needed.`
+      },
+      gatewayToolLabels: {
+        browser: 'browser automation',
+        image_gen: 'image generation',
+        tts: 'text-to-speech',
+        video_gen: 'video generation',
+        web: 'web search and extraction'
+      },
+      providerUnavailable: detail =>
+        detail
+          ? `Connected, but Hermes still cannot resolve a usable provider. ${detail}`
+          : 'Connected, but Hermes still cannot resolve a usable provider.',
+      tokenExchangeFailed: 'Token exchange failed.',
+      externalUnavailable: (provider, command) =>
+        `Hermes still cannot reach ${provider}. Run \`${command}\` in a terminal first.`,
+      enterValueFirst: 'Enter a value first.',
+      enterEndpointFirst: 'Enter the endpoint URL first.',
+      endpointUnreachable: url => `Could not reach ${url}.`,
+      endpointNoModels: url =>
+        `Connected to ${url}, but it advertised no models. Start a model on that endpoint and try again.`,
+      endpointSavedButUnreachable: url => `Saved, but Hermes still cannot reach ${url}.`,
+      localEndpoint: 'Local or custom endpoint',
+      couldNotSaveProvider: provider => `Could not save ${provider}`,
+      couldNotSaveEndpoint: 'Could not save local endpoint',
+      couldNotChangeModel: 'Could not change model',
+      unexpectedError: 'The operation failed. Try again.'
+    }
   },
 
   modelPicker: {
@@ -2178,7 +2375,16 @@ export const en: Translations = {
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
       tokensShort: value => `${value} tok`,
-      reasoningShort: { none: 'Off', minimal: 'Min', low: 'Low', medium: 'Med', high: 'High', xhigh: 'XHigh', max: 'Max', ultra: 'Ultra' },
+      reasoningShort: {
+        none: 'Off',
+        minimal: 'Min',
+        low: 'Low',
+        medium: 'Med',
+        high: 'High',
+        xhigh: 'XHigh',
+        max: 'Max',
+        ultra: 'Ultra'
+      },
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,
@@ -2420,6 +2626,14 @@ export const en: Translations = {
   },
 
   assistant: {
+    alerts: {
+      caution: 'Caution',
+      important: 'Important',
+      note: 'Note',
+      tip: 'Tip',
+      warning: 'Warning'
+    },
+    embedTitle: provider => `${provider} embed`,
     thread: {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
@@ -2454,7 +2668,9 @@ export const en: Translations = {
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
       sendEdited: 'Send edited message',
-      attachingFile: 'Attaching…'
+      attachingFile: 'Attaching…',
+      timeline: 'Conversation timeline',
+      steered: 'steered'
     },
     approval: {
       gatewayDisconnected: 'Hermes gateway is not connected',
@@ -2496,6 +2712,9 @@ export const en: Translations = {
       copyPath: 'Copy path',
       outputAlt: 'Tool output',
       rawResponse: 'Raw response',
+      standardOutput: 'standard output',
+      standardError: 'standard error',
+      payload: 'Tool payload',
       copyActivity: 'Copy activity',
       recoveredOne: 'Recovered after 1 failed step',
       recoveredMany: count => `Recovered after ${count} failed steps`,
@@ -2633,6 +2852,8 @@ export const en: Translations = {
     restartToSaveImages: 'Restart Hermes Desktop to save images',
     imageDownloadFailed: 'Image download failed',
     openImage: 'Open image',
+    overlayMessage: 'Message…',
+    openInHermes: 'Open in Hermes',
     downloadImage: 'Download image',
     savingImage: 'Saving image',
     imagePreviewFailed: 'Image preview failed',

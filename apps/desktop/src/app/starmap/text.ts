@@ -1,34 +1,38 @@
-import { fmtDate } from '@/lib/time'
+import type { Translations } from '@/i18n'
 import type { StarmapNode } from '@/types/hermes'
 
-export function formatDate(ts?: null | number): string {
+const localeTag = (locale: string): string => (locale === 'ar' ? 'ar-EG' : locale)
+
+export function formatDate(ts: null | number | undefined, locale: string, unknown = 'unknown'): string {
   if (!ts) {
-    return 'unknown'
+    return unknown
   }
 
   try {
-    return fmtDate.format(new Date(ts * 1000))
+    return new Intl.DateTimeFormat(localeTag(locale), { day: 'numeric', month: 'short', year: 'numeric' }).format(
+      new Date(ts * 1000)
+    )
   } catch {
-    return 'unknown'
+    return unknown
   }
 }
 
 // Tag-style badge items for the hover tooltip — date first. Use-count is NOT a
 // badge (rendered separately, right-aligned) so it's excluded here.
-export function metaBadges(n: StarmapNode): string[] {
-  const out: string[] = [formatDate(n.timestamp)]
+export function metaBadges(n: StarmapNode, t: Translations, locale: string): string[] {
+  const out: string[] = [formatDate(n.timestamp, locale, t.starmap.unknown)]
 
   if (n.kind === 'memory') {
-    out.push(n.memorySource === 'profile' ? 'profile memory' : 'memory')
+    out.push(n.memorySource === 'profile' ? t.starmap.profileMemory : t.starmap.memory)
   } else {
-    out.push(n.category)
+    out.push(t.skills.categoryLabels?.[n.category.trim().toLowerCase()] ?? n.category)
 
     if (n.createdBy === 'agent') {
-      out.push('learned')
+      out.push(t.starmap.learned)
     }
 
     if (n.pinned) {
-      out.push('pinned')
+      out.push(t.starmap.pinned)
     }
   }
 

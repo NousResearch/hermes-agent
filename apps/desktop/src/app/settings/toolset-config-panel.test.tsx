@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import type { ToolsetConfig } from '@/types/hermes'
 
 const getToolsetConfig = vi.fn()
@@ -99,6 +100,112 @@ describe('ToolsetConfigPanel', () => {
     expect(await screen.findByText('Microsoft Edge TTS')).toBeTruthy()
     expect(screen.getByText('ElevenLabs')).toBeTruthy()
     expect(getToolsetConfig).toHaveBeenCalledWith('tts')
+  })
+
+  it('localizes live provider copy, badges, and credential prompts in Arabic', async () => {
+    getToolsetConfig.mockResolvedValue(
+      config({
+        name: 'browser',
+        active_provider: 'Local Browser',
+        providers: [
+          {
+            name: 'Local Browser',
+            badge: '★ recommended · free',
+            tag: 'Headless Chromium, no API key needed',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true
+          },
+          {
+            name: 'Camofox',
+            badge: 'free · local',
+            tag: 'Anti-detection browser (Firefox/Camoufox)',
+            env_vars: [
+              {
+                key: 'CAMOFOX_URL',
+                prompt: 'Camofox server URL',
+                url: null,
+                default: 'http://localhost:9377',
+                is_set: false
+              }
+            ],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: false
+          }
+        ]
+      })
+    )
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(
+      <I18nProvider configClient={null} initialLocale="ar">
+        <ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />
+      </I18nProvider>
+    )
+
+    expect(await screen.findByText('المتصفح المحلي')).toBeTruthy()
+    expect(screen.getByText('★ موصى به · مجاني')).toBeTruthy()
+    expect(await screen.findByText('كروميوم بلا واجهة، ولا يحتاج إلى مفتاح واجهة برمجية.')).toBeTruthy()
+    expect(screen.getByText('كاموفوكس')).toBeTruthy()
+    expect(screen.queryByText('Local Browser')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /كاموفوكس/ }))
+
+    expect(await screen.findByText('متصفح مقاوم للكشف مبني على فايرفوكس وكاموفوكس.')).toBeTruthy()
+    expect(screen.getByText('رابط خادم كاموفوكس')).toBeTruthy()
+    await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('browser', 'Camofox'))
+  })
+
+  it('localizes live model catalog details in Arabic', async () => {
+    getToolsetConfig.mockResolvedValue(
+      config({
+        name: 'image_gen',
+        active_provider: 'OpenAI',
+        providers: [
+          {
+            name: 'OpenAI',
+            badge: 'paid',
+            tag: 'gpt-image-2 at low/medium/high quality tiers — text-to-image & image editing',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true
+          }
+        ]
+      })
+    )
+    getToolsetModels.mockResolvedValue({
+      name: 'image_gen',
+      has_models: true,
+      provider: 'OpenAI',
+      plugin: 'openai',
+      models: [
+        {
+          id: 'gpt-image-2-medium',
+          display: 'GPT Image 2 (Medium)',
+          speed: '~40s',
+          strengths: 'Balanced — default',
+          price: 'varies'
+        }
+      ],
+      current: 'gpt-image-2-medium',
+      default: 'gpt-image-2-medium'
+    })
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(
+      <I18nProvider configClient={null} initialLocale="ar">
+        <ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="image_gen" />
+      </I18nProvider>
+    )
+
+    expect(await screen.findByText('أوبن إيه آي')).toBeTruthy()
+    expect(screen.getByText('مدفوع')).toBeTruthy()
+    expect(await screen.findByText('نحو أربعين ثانية')).toBeTruthy()
+    expect(screen.getByText('متوازن، وهو الافتراضي.')).toBeTruthy()
+    expect(screen.getByText('متغير')).toBeTruthy()
   })
 
   it('selects a provider when clicked', async () => {

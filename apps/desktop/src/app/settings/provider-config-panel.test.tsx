@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import type { MemoryProviderConfig } from '@/types/hermes'
 
 const getMemoryProviderConfig = vi.fn()
@@ -94,12 +95,16 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderPanel(provider = 'hindsight') {
+async function renderPanel(provider = 'hindsight', locale: 'ar' | 'en' = 'en') {
   const { ProviderConfigPanel } = await import('./provider-config-panel')
 
   let result: ReturnType<typeof render>
   await act(async () => {
-    result = render(<ProviderConfigPanel provider={provider} />)
+    result = render(
+      <I18nProvider configClient={null} initialLocale={locale}>
+        <ProviderConfigPanel provider={provider} />
+      </I18nProvider>
+    )
   })
 
   return result!
@@ -128,6 +133,19 @@ describe('ProviderConfigPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
     })
     expect(await screen.findByLabelText('API URL')).toBeTruthy()
+  })
+
+  it('localizes the provider schema and controls in Arabic', async () => {
+    await renderPanel('hindsight', 'ar')
+
+    expect(await screen.findByRole('button', { name: /إعدادات هايندسايت/ })).toBeTruthy()
+    expect(screen.getByLabelText('رابط الواجهة البرمجية')).toBeTruthy()
+    expect(screen.getByText('سحابي')).toBeTruthy()
+    expect(
+      screen.getAllByText('واجهة هايندسايت السحابية؛ خفيفة ولا تحتاج إلا إلى مفتاح واجهة.').length
+    ).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'حفظ' })).toBeTruthy()
+    expect(screen.queryByText('Mode')).toBeNull()
   })
 
   it('saves edited values without requiring a secret replacement', async () => {

@@ -4,17 +4,27 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { en } from "@/i18n/en";
+import {
+  configDescription,
+  configFieldLabel,
+} from "@/lib/config-labels";
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
+  const { t } = useI18n();
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
   const description = schema.description ? String(schema.description) : "";
+  const translatedDescription = description
+    ? configDescription(schemaKey, description, t.config)
+    : "";
 
-  if (!keyPath && !description) return null;
+  if (!keyPath && !translatedDescription) return null;
 
   return (
     <div className="flex flex-col gap-0.5">
       {keyPath && <span className="text-xs font-mono text-text-tertiary">{keyPath}</span>}
-      {description && <span className="text-xs text-text-secondary">{description}</span>}
+      {translatedDescription && (
+        <span className="text-xs text-text-secondary">{translatedDescription}</span>
+      )}
     </div>
   );
 }
@@ -47,7 +57,9 @@ function NestedValueEditor({
       <div className="grid gap-2 border border-border p-2">
         {Object.entries(value).map(([subKey, subVal]) => (
           <div key={subKey} className="grid gap-1">
-            <Label className="text-xs text-muted-foreground">{subKey}</Label>
+            <Label className="text-xs text-muted-foreground">
+              {configFieldLabel(`${fieldKey}.${subKey}`, t.config)}
+            </Label>
             <NestedValueEditor
               fieldKey={`${fieldKey}.${subKey}`}
               value={subVal}
@@ -96,8 +108,7 @@ export function AutoField({
   onChange,
 }: AutoFieldProps) {
   const { t } = useI18n();
-  const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
-  const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const label = configFieldLabel(schemaKey, t.config);
 
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
     return (
@@ -116,7 +127,11 @@ export function AutoField({
           <Label className="text-sm">{label}</Label>
           <FieldHint schema={schema} schemaKey={schemaKey} />
         </div>
-        <Switch checked={!!value} onCheckedChange={onChange} />
+        <Switch
+          checked={!!value}
+          onCheckedChange={onChange}
+          aria-label={label}
+        />
       </div>
     );
   }

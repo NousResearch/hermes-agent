@@ -150,6 +150,11 @@ export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
 
 interface StaleAuxWarningProps {
   applying: boolean
+  copy: {
+    otherProviders: string
+    resetAllToMain: string
+    staleAuxWarning: (count: number, names: string, provider: string) => string
+  }
   onReset: () => void
   slots: readonly StaleAuxAssignment[]
   taskLabel: (key: string) => string
@@ -159,7 +164,7 @@ interface StaleAuxWarningProps {
 // current main. Surfaces the silent credit-burn path (e.g. aux pinned to a
 // $0-balance provider after switching main away from it) and offers the
 // existing one-click reset rather than auto-clearing legitimate pins.
-function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarningProps) {
+function StaleAuxWarning({ applying, copy, onReset, slots, taskLabel }: StaleAuxWarningProps) {
   if (!slots.length) {
     return null
   }
@@ -172,11 +177,10 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
       <AlertTriangle className="size-3.5 shrink-0" />
       <span className="grow">
-        {slots.length} auxiliary task{slots.length === 1 ? '' : 's'} ({names}) still run on{' '}
-        <span className="font-mono">{allSameProvider ? provider : 'other providers'}</span>, not your main model.
+        {copy.staleAuxWarning(slots.length, names, allSameProvider ? provider : copy.otherProviders)}
       </span>
       <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
-        Reset all to main
+        {copy.resetAllToMain}
       </Button>
     </div>
   )
@@ -838,6 +842,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <div className="mt-2">
             <StaleAuxWarning
               applying={applying}
+              copy={m}
               onReset={() => void resetAuxiliaryModels()}
               slots={switchStaleAux}
               taskLabel={auxiliaryTaskLabel}
@@ -863,6 +868,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <div className="mb-2.5">
             <StaleAuxWarning
               applying={applying}
+              copy={m}
               onReset={() => void resetAuxiliaryModels()}
               slots={persistentStaleAux}
               taskLabel={auxiliaryTaskLabel}
@@ -907,7 +913,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
                         value={auxDraft.provider}
                       >
-                        <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                        <SelectTrigger
+                          aria-label={`${copy.label}: ${m.provider}`}
+                          className={cn('min-w-32', CONTROL_TEXT)}
+                        >
                           <SelectValue placeholder={m.provider} />
                         </SelectTrigger>
                         <SelectContent>
@@ -922,7 +931,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
                         value={auxDraft.model}
                       >
-                        <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                        <SelectTrigger
+                          aria-label={`${copy.label}: ${m.model}`}
+                          className={cn('min-w-48', CONTROL_TEXT)}
+                        >
                           <SelectValue placeholder={m.model} />
                         </SelectTrigger>
                         <SelectContent>
@@ -965,15 +977,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
-          <p className="mb-2 text-xs text-muted-foreground">
-            Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
-            acting model.
-          </p>
+          <SectionHeading icon={Cpu} title={m.moaTitle} />
+          <p className="mb-2 text-xs text-muted-foreground">{m.moaDesc}</p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
+                <SelectValue placeholder={m.moaPreset} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
@@ -996,7 +1005,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="text"
             >
-              Set default
+              {m.moaSetDefault}
             </Button>
             <Button
               disabled={Object.keys(moa.presets).length <= 1 || applying}
@@ -1022,12 +1031,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="ghost"
             >
-              Delete
+              {m.moaDelete}
             </Button>
             <Input
               className={cn('w-40', CONTROL_TEXT)}
               onChange={event => setNewMoaPresetName(event.target.value)}
-              placeholder="new preset"
+              placeholder={m.moaNewPreset}
               value={newMoaPresetName}
             />
             <Button
@@ -1050,11 +1059,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="textStrong"
             >
-              Add preset
+              {m.moaAddPreset}
             </Button>
           </div>
           <div className="mb-2 text-xs text-muted-foreground">
-            Default: <span className="font-mono">{moa.default_preset}</span>
+            {m.moaDefault}: <span className="font-mono">{moa.default_preset}</span>
           </div>
           <div className="grid gap-1">
             {currentMoaPreset.reference_models.map((slot, index) => (
@@ -1072,7 +1081,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       }
                       value={slot.provider}
                     >
-                      <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                      <SelectTrigger
+                        aria-label={`${m.moaReference(index + 1)}: ${m.provider}`}
+                        className={cn('min-w-32', CONTROL_TEXT)}
+                      >
                         <SelectValue placeholder={m.provider} />
                       </SelectTrigger>
                       <SelectContent>
@@ -1101,7 +1113,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       }
                       value={slot.model}
                     >
-                      <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                      <SelectTrigger
+                        aria-label={`${m.moaReference(index + 1)}: ${m.model}`}
+                        className={cn('min-w-48', CONTROL_TEXT)}
+                      >
                         <SelectValue placeholder={m.model} />
                       </SelectTrigger>
                       <SelectContent>
@@ -1123,7 +1138,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       size="sm"
                       variant="ghost"
                     >
-                      Remove
+                      {m.moaRemove}
                     </Button>
                   </div>
                 }
@@ -1133,7 +1148,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   </span>
                 }
                 key={`${selectedMoaPreset}-${index}`}
-                title={`Reference ${index + 1}`}
+                title={m.moaReference(index + 1)}
               />
             ))}
             <Button
@@ -1144,7 +1159,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="textStrong"
             >
-              Add reference model
+              {m.moaAddReference}
             </Button>
             <ListRow
               below={
@@ -1158,7 +1173,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     }
                     value={currentMoaPreset.aggregator.provider}
                   >
-                    <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                    <SelectTrigger
+                      aria-label={`${m.moaAggregator}: ${m.provider}`}
+                      className={cn('min-w-32', CONTROL_TEXT)}
+                    >
                       <SelectValue placeholder={m.provider} />
                     </SelectTrigger>
                     <SelectContent>
@@ -1185,7 +1203,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     }
                     value={currentMoaPreset.aggregator.model}
                   >
-                    <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                    <SelectTrigger
+                      aria-label={`${m.moaAggregator}: ${m.model}`}
+                      className={cn('min-w-48', CONTROL_TEXT)}
+                    >
                       <SelectValue placeholder={m.model} />
                     </SelectTrigger>
                     <SelectContent>
@@ -1206,7 +1227,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title="Aggregator"
+              title={m.moaAggregator}
             />
           </div>
         </section>

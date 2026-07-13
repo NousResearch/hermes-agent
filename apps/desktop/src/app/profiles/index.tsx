@@ -546,7 +546,7 @@ function CreateProfileDialog({
               autoFocus
               id="new-profile-name"
               onValueChange={setName}
-              placeholder="my-profile"
+              placeholder={p.namePlaceholder}
               sanitize={slug}
               value={name}
             />

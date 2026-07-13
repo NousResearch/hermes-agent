@@ -1,3 +1,5 @@
+import type { Translations } from '@/i18n'
+
 import { darken, luminance, mixRgb, rgba } from './color'
 import {
   LIT_BAND_ALPHA,
@@ -35,6 +37,7 @@ export interface Scene {
   hoverLink: null | string
   hoverRing: null | number
   links: SimLink[]
+  locale: string
   memById: Map<string, MemoryCard>
   nodes: SimNode[]
   palette: Palette
@@ -46,6 +49,7 @@ export interface Scene {
   size: { h: number; w: number }
   // Scrub jumps: snap every ease to its target this frame (no birth/fade replay).
   snapMotion?: boolean
+  translations: Translations
   vp: Viewport
 }
 
@@ -174,6 +178,7 @@ export function drawScene(scene: Scene): DrawResult {
     hoverLink,
     hoverRing,
     links,
+    locale,
     memById,
     nodes,
     palette,
@@ -182,6 +187,7 @@ export function drawScene(scene: Scene): DrawResult {
     selectedRing,
     size,
     snapMotion = false,
+    translations,
     vp
   } = scene
 
@@ -600,7 +606,7 @@ export function drawScene(scene: Scene): DrawResult {
     // The date (index 0) stays sans; the rest of the tags are monospace.
     const badgeFontFor = (i: number) => (i === 0 ? badgeFont : monoFont)
 
-    const badges = metaBadges(tip)
+    const badges = metaBadges(tip, translations, locale)
     const use = countLabel(tip)
     const titleText = tip.kind === 'memory' ? memById.get(tip.id)?.body.split('\n')[0]?.trim() || tip.label : tip.label
 

@@ -51,6 +51,11 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import {
+  configCategoryLabel,
+  configFieldLabel,
+  configSectionLabel,
+} from "@/lib/config-labels";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -156,9 +161,7 @@ export default function ConfigPage() {
   }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
-    const key = cat as keyof typeof t.config.categories;
-    if (t.config.categories[key]) return t.config.categories[key];
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    return configCategoryLabel(cat, t.config);
   }
 
   useEffect(() => {
@@ -252,8 +255,7 @@ export default function ConfigPage() {
   const searchMatchedFields = useMemo(() => {
     if (!isSearching || !schema) return [];
     return Object.entries(schema).filter(([key, s]) => {
-      const label = key.split(".").pop() ?? key;
-      const humanLabel = label.replace(/_/g, " ");
+      const humanLabel = configFieldLabel(key, t.config);
       return (
         key.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
@@ -265,7 +267,7 @@ export default function ConfigPage() {
           .includes(lowerSearch)
       );
     });
-  }, [isSearching, lowerSearch, schema]);
+  }, [isSearching, lowerSearch, schema, t.config]);
 
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
@@ -412,7 +414,7 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
-                {section.replace(/_/g, " ")}
+                {configSectionLabel(section, t.config)}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>

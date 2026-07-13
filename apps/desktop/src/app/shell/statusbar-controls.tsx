@@ -97,6 +97,8 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const accessibleLabel =
+    typeof item.label === 'string' || typeof item.label === 'number' ? String(item.label) : item.title
 
   // Render escape hatch: the contribution owns its own chrome/state/tooltip.
   if (item.render) {
@@ -121,7 +123,12 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     // way profile-switcher.tsx stacks Popover/ContextMenu/Tooltip triggers.
     const trigger = (
       <DropdownMenuTrigger asChild>
-        <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+        <button
+          aria-label={accessibleLabel}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          disabled={item.disabled}
+          type="button"
+        >
           {content}
         </button>
       </DropdownMenuTrigger>
@@ -205,7 +212,13 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   if (item.href || item.variant === 'link') {
     return (
       <Tip label={tooltipLabel}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+        <a
+          aria-label={accessibleLabel}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          href={item.href}
+          rel="noreferrer"
+          target="_blank"
+        >
           {content}
         </a>
       </Tip>
@@ -215,6 +228,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   return (
     <Tip label={tooltipLabel}>
       <button
+        aria-label={accessibleLabel}
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
         disabled={item.disabled}
         onClick={event => {

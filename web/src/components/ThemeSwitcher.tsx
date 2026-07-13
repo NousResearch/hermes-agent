@@ -28,12 +28,16 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
   const { themeName, availableThemes, setTheme, fontId, fontChoices, setFont } = useTheme();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
 
-  const close = useCallback(() => setOpen(false), []);
+  const close = useCallback(() => {
+    setOpen(false);
+    setAnchorRect(null);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -57,7 +61,10 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
   }, [open, close, useMobileSheet]);
 
   const current = availableThemes.find((th) => th.name === themeName);
-  const label = current?.label ?? themeName;
+  const label =
+    (current && t.theme.names?.[current.name]) ??
+    current?.label ??
+    themeName;
   const sheetTitle = t.theme?.title ?? "Theme";
 
   return (
@@ -65,7 +72,12 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       <Button
         ghost
         size={collapsed ? "icon" : undefined}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (!open) {
+            setAnchorRect(wrapperRef.current?.getBoundingClientRect() ?? null);
+          }
+          setOpen((value) => !value);
+        }}
         className={cn(
           collapsed
             ? "text-text-secondary hover:text-foreground hover:bg-transparent"
@@ -113,7 +125,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       )}
 
       {open && !useMobileSheet && (() => {
-        const rect = wrapperRef.current?.getBoundingClientRect();
+        const rect = anchorRect;
         const dropdown = (
           <div
             ref={dropdownRef}

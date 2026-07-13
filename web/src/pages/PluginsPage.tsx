@@ -74,11 +74,16 @@ function setupHasInstallableSteps(setup?: MemoryProviderSetupInfo) {
 }
 
 function SetupCommandBlock({ code, label }: { code: string; label: string }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[0.6875rem] text-muted-foreground">{label}</span>
-        <CopyButton text={code} />
+        <CopyButton
+          text={code}
+          label={t.common.copy ?? "Copy"}
+          copiedLabel={t.common.copied ?? "Copied"}
+        />
       </div>
       <div className="border border-border bg-background/40 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed">
         <code className="break-all">{code}</code>
@@ -710,6 +715,7 @@ export default function PluginsPage() {
                             ) : field.kind === "boolean" ? (
                               <Switch
                                 checked={Boolean(value)}
+                                aria-label={field.label}
                                 onCheckedChange={(next) =>
                                   setMemoryValues((current) => ({ ...current, [field.key]: next }))
                                 }
@@ -845,7 +851,11 @@ export default function PluginsPage() {
 
               <div className="flex items-center gap-3">
 
-                <Switch checked={installForce} onCheckedChange={setInstallForce} />
+                <Switch
+                  checked={installForce}
+                  onCheckedChange={setInstallForce}
+                  aria-label={t.pluginsPage.forceReinstall}
+                />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.forceReinstall}
@@ -854,7 +864,11 @@ export default function PluginsPage() {
 
               <div className="flex items-center gap-3">
 
-                <Switch checked={installEnable} onCheckedChange={setInstallEnable} />
+                <Switch
+                  checked={installEnable}
+                  onCheckedChange={setInstallEnable}
+                  aria-label={t.pluginsPage.enableAfterInstall}
+                />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.enableAfterInstall}

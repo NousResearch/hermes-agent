@@ -34,12 +34,18 @@ export const zhHant = defineLocale({
     refresh: '重新整理',
     remove: '移除',
     replace: '取代',
+    reset: '重設',
     retry: '重試',
     run: '執行',
     send: '傳送',
     set: '設定',
     skip: '略過',
     update: '更新',
+    zoomIn: '放大',
+    zoomOut: '縮小',
+    openFullView: '開啟完整檢視',
+    openDiagram: '開啟圖表',
+    holdModifierToZoom: '按住 ⌘ 以縮放',
     tryHint: term => `試試「${term}」`,
     on: '開啟',
     off: '關閉'
@@ -890,6 +896,9 @@ export const zhHant = defineLocale({
     skillUpdated: '技能已更新',
     edit: '編輯',
     archive: '封存',
+    archiveSkillTitle: name => `封存 ${name}？`,
+    archiveSkillDescription: '技能將被封存，可透過 `hermes curator restore` 還原。',
+    archiveFailed: '封存失敗',
     skillArchivedTitle: '技能已封存',
     skillArchivedMessage: '可透過 hermes curator restore 還原。'
   },
@@ -907,7 +916,13 @@ export const zhHant = defineLocale({
     loadFailed: '無法載入記憶圖譜',
     loading: '載入中…',
     emptyTitle: '尚無學習內容',
-    emptyDesc: '當 Hermes 為你的工作建立技能與記憶時，會顯示在這裡。'
+    emptyDesc: '當 Hermes 為你的工作建立技能與記憶時，會顯示在這裡。',
+    editNode: kind => (kind === 'skill' ? '編輯技能…' : '編輯記憶…'),
+    archiveSkill: '封存技能',
+    deleteMemory: '刪除記憶',
+    editTitle: label => `編輯 ${label}`,
+    deleteMemoryTitle: label => `刪除 ${label}？`,
+    deleteMemoryDescription: '此記憶將被永久刪除。'
   },
   agents: {
     close: '關閉代理',
@@ -1247,6 +1262,7 @@ export const zhHant = defineLocale({
     deleting: '刪除中…',
     createDesc: '設定檔是獨立的 Hermes 環境：各自擁有獨立的設定、技能和 SOUL.md。',
     nameLabel: '名稱',
+    namePlaceholder: 'my-profile',
     cloneFrom: '複製來源',
     cloneFromNone: '無（空白）',
     cloneFromDesc: '從選取的來源設定檔複製設定、技能和 SOUL.md。',
@@ -1548,6 +1564,7 @@ export const zhHant = defineLocale({
 
   composer: {
     message: '訊息',
+    addContext: '新增內容',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',
     placeholderReconnecting: '正在重新連線至 Hermes…',

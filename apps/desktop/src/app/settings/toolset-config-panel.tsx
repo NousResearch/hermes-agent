@@ -58,6 +58,7 @@ interface EnvVarFieldProps {
 function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
+  const prompt = copy.envVarPrompts?.[envVar.key] ?? envVar.prompt
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -128,9 +129,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
               {isSet ? copy.set : copy.notSet}
             </Pill>
           </div>
-          {envVar.prompt && envVar.prompt !== envVar.key && (
-            <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
-          )}
+          {prompt && prompt !== envVar.key && <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{prompt}</p>}
         </div>
         {!editing && (
           <EnvVarActionsMenu
@@ -160,7 +159,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             autoFocus
             className="min-w-52 flex-1 font-mono"
             onChange={e => setValue(e.target.value)}
-            placeholder={envVar.prompt || envVar.key}
+            placeholder={prompt || envVar.key}
             type={envVar.default ? 'text' : 'password'}
             value={value}
           />
@@ -383,6 +382,9 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCat
         {catalog.models.map(model => {
           const isSelected = selected === model.id
           const isDefault = catalog.default === model.id
+          const speed = model.speed ? (copy.modelDetails?.[model.speed] ?? model.speed) : ''
+          const strengths = model.strengths ? (copy.modelDetails?.[model.strengths] ?? model.strengths) : ''
+          const price = model.price ? (copy.modelDetails?.[model.price] ?? model.price) : ''
 
           return (
             <button
@@ -411,9 +413,9 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCat
                 {saving === model.id && <Loader2 className="size-3 animate-spin" />}
               </span>
               <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[0.68rem] text-muted-foreground">
-                {model.speed && <span>{model.speed}</span>}
-                {model.strengths && <span>{model.strengths}</span>}
-                {model.price && <span className="font-mono">{model.price}</span>}
+                {speed && <span>{speed}</span>}
+                {strengths && <span>{strengths}</span>}
+                {price && <span className="font-mono">{price}</span>}
               </span>
             </button>
           )
@@ -483,6 +485,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   async function handleSelect(provider: ToolProvider) {
     setActiveProvider(provider.name)
     setSelecting(provider.name)
+    const providerName = copy.providerNames?.[provider.name] ?? provider.name
 
     try {
       await selectToolsetProvider(toolset, provider.name)
@@ -497,10 +500,10 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
             }
           : current
       )
-      notify({ kind: 'success', title: copy.selectedTitle, message: copy.selectedMessage(provider.name) })
+      notify({ kind: 'success', title: copy.selectedTitle, message: copy.selectedMessage(providerName) })
       onConfiguredChange?.()
     } catch (err) {
-      notifyError(err, copy.failedSelect(provider.name))
+      notifyError(err, copy.failedSelect(providerName))
     } finally {
       setSelecting(null)
     }
@@ -539,6 +542,18 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       {providers.map(provider => {
         const isActive = activeProvider === provider.name
         const configured = providerConfigured(provider, envState)
+        const providerName = copy.providerNames?.[provider.name] ?? provider.name
+        const providerTag = provider.tag ? (copy.providerTags?.[provider.tag] ?? provider.tag) : ''
+        const providerBadge = provider.badge
+          ? provider.badge
+              .split('·')
+              .map(term => {
+                const normalized = term.trim()
+
+                return copy.providerBadgeTerms?.[normalized] ?? normalized
+              })
+              .join(' · ')
+          : ''
 
         return (
           <div className="overflow-hidden rounded-xl bg-background/60" key={provider.name}>
@@ -552,8 +567,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
               type="button"
             >
               <span className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-sm font-medium">{provider.name}</span>
-                {provider.badge && <Pill>{provider.badge}</Pill>}
+                <span className="truncate text-sm font-medium">{providerName}</span>
+                {providerBadge && <Pill>{providerBadge}</Pill>}
                 {configured && (
                   <Pill tone="primary">
                     <Check className="size-3" />
@@ -566,7 +581,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
             {isActive && (
               <div className="grid gap-2 bg-muted/20 p-3">
-                {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
+                {providerTag && <p className="text-[0.72rem] text-muted-foreground">{providerTag}</p>}
                 {provider.requires_nous_auth && (
                   <p className="text-[0.72rem] text-muted-foreground">{copy.nousIncluded}</p>
                 )}

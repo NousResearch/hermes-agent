@@ -305,7 +305,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
                   >
                     {/* Spinner overlays the (dimmed) label rather than pushing it,
                         so a chip never resizes as its search starts/finishes. */}
-                    <span className={cn(fetching && 'opacity-30')}>{source.label}</span>
+                    <span className={cn(fetching && 'opacity-30')}>{h.sourceLabels?.[source.id] ?? source.label}</span>
                     {fetching && (
                       <span className="absolute inset-0 grid place-items-center">
                         <Loader2 className="size-2.5 animate-spin" />

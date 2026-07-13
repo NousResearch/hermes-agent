@@ -1,0 +1,8 @@
+"CFBundleDisplayName" = "هرمس";
+"CFBundleName" = "هرمس";
+"CFBundleURLName" = "بروتوكول هرمس";
+"NSAudioCaptureUsageDescription" = "يستخدم هرمس التقاط الصوت للمحادثات الصوتية.";
+"NSBluetoothAlwaysUsageDescription" = "يحتاج هرمس إلى الوصول إلى البلوتوث.";
+"NSBluetoothPeripheralUsageDescription" = "يحتاج هرمس إلى الوصول إلى أجهزة البلوتوث.";
+"NSCameraUsageDescription" = "يحتاج هرمس إلى الوصول إلى الكاميرا.";
+"NSMicrophoneUsageDescription" = "يستخدم هرمس الميكروفون للإدخال الصوتي والمحادثات الصوتية.";

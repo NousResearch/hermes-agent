@@ -302,7 +302,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                         {name}
                         {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                       </span>
-                      {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+                      {isCurrent ? <Codicon className="ms-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>
                     <ModelEditSubmenu
                       effort={effEffort}
@@ -326,7 +326,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
       {moaPresets.length > 0 ? (
         <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{t.settings.model.moaPresets}</DropdownMenuLabel>
           {moaPresets.map(preset => {
             const isCurrentMoa = optionsProvider === 'moa' && optionsModel === preset
 
@@ -339,8 +339,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                   void selectMoaPreset(preset)
                 }}
               >
-                <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
-                {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+                <span className="min-w-0 flex-1 truncate">
+                  {t.settings.model.moaPrefix}: {preset}
+                </span>
+                {isCurrentMoa ? <Codicon className="ms-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )
           })}

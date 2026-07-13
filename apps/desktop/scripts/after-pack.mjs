@@ -8,10 +8,11 @@
  * to the stock "Electron" icon/name (the bug when the stamp lived only in
  * install.ps1, which the update path doesn't use).
  *
- * Windows-only: rcedit edits PE resources, irrelevant on macOS/Linux where the
- * app identity comes from the bundle Info.plist / desktop entry. Best-effort:
- * a stamp failure must never fail an otherwise-good build (worst case is the
- * stock icon, not a broken app), so we log and resolve rather than throw.
+ * On macOS, stages the Arabic InfoPlist.strings after Electron's locale pruning
+ * so permission prompts and the localized app name ship in the final bundle.
+ * On Windows, rcedit stamps the PE identity. The Windows stamp is best-effort:
+ * a failure must never fail an otherwise-good build (worst case is the stock
+ * icon, not a broken app), so we log and resolve rather than throw.
  *
  * electron-builder passes a context with:
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
@@ -19,11 +20,34 @@
  *   - packager.appInfo.productFilename: the exe basename (e.g. 'Hermes')
  */
 
+import { copyFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 
 import { stampExeIdentity } from './set-exe-identity.mjs'
 
+export async function stageMacLocalizedInfoPlist(context) {
+  const productName = context.packager?.appInfo?.productFilename || 'Hermes'
+  const desktopRoot = path.resolve(import.meta.dirname, '..')
+  const source = path.join(desktopRoot, 'electron', 'localization', 'ar.lproj', 'InfoPlist.strings')
+  const destinationDir = path.join(
+    context.appOutDir,
+    `${productName}.app`,
+    'Contents',
+    'Resources',
+    'ar.lproj'
+  )
+
+  await mkdir(destinationDir, { recursive: true })
+  await copyFile(source, path.join(destinationDir, 'InfoPlist.strings'))
+}
+
 export default async function afterPack(context) {
+  if (context.electronPlatformName === 'darwin') {
+    await stageMacLocalizedInfoPlist(context)
+
+    return
+  }
+
   if (context.electronPlatformName !== 'win32') {
     return
   }

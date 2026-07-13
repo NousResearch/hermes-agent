@@ -3,7 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { MessagingPlatformInfo } from '@/types/hermes'
+import { I18nProvider } from '@/i18n'
+import type { MessagingEnvVarInfo, MessagingPlatformInfo } from '@/types/hermes'
 
 const getMessagingPlatforms = vi.fn()
 const updateMessagingPlatform = vi.fn()
@@ -42,6 +43,21 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
   }
 }
 
+function envVar(patch: Partial<MessagingEnvVarInfo> = {}): MessagingEnvVarInfo {
+  return {
+    advanced: false,
+    description: 'A field.',
+    is_password: false,
+    is_set: false,
+    key: 'EXAMPLE_KEY',
+    prompt: 'Example field',
+    redacted_value: null,
+    required: true,
+    url: null,
+    ...patch
+  }
+}
+
 beforeEach(() => {
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })
 })
@@ -51,14 +67,16 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderMessaging() {
+async function renderMessaging(locale: 'ar' | 'en' = 'en') {
   const { MessagingView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
-      <MemoryRouter>
-        <MessagingView />
-      </MemoryRouter>
+      <I18nProvider configClient={null} initialLocale={locale}>
+        <MemoryRouter>
+          <MessagingView />
+        </MemoryRouter>
+      </I18nProvider>
     )
   })
 
@@ -91,5 +109,90 @@ describe('MessagingView setup-guide link', () => {
     })
 
     await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
+  })
+
+  it('localizes required Mattermost credential help in Arabic', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          id: 'mattermost',
+          name: 'Mattermost',
+          description: 'Connect Hermes to Mattermost channels and direct messages.',
+          env_vars: [
+            envVar({
+              key: 'MATTERMOST_URL',
+              prompt: 'Mattermost server URL',
+              description: 'Mattermost server URL (e.g. https://mm.example.com)'
+            }),
+            envVar({
+              key: 'MATTERMOST_TOKEN',
+              prompt: 'Mattermost bot token',
+              description: 'Mattermost bot token or personal access token',
+              is_password: true
+            })
+          ]
+        })
+      ]
+    })
+
+    await renderMessaging('ar')
+
+    expect(await screen.findByText('رابط خادم ماترموست، مثل الرابط الذي يبدأ ببروتوكول الاتصال الآمن.')).toBeTruthy()
+    expect(screen.getByText('رمز بوت ماترموست أو رمز وصول شخصي.')).toBeTruthy()
+    expect(screen.queryByText(/Mattermost server URL/)).toBeNull()
+  })
+
+  it('localizes required Matrix credential help in Arabic', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          id: 'matrix',
+          name: 'Matrix',
+          description: 'Use Hermes in Matrix rooms and direct messages.',
+          env_vars: [
+            envVar({
+              key: 'MATRIX_HOMESERVER',
+              prompt: 'Matrix homeserver URL',
+              description: 'Matrix homeserver URL (e.g. https://matrix.example.org)'
+            }),
+            envVar({
+              key: 'MATRIX_ACCESS_TOKEN',
+              prompt: 'Matrix access token',
+              description: 'Matrix access token (preferred over password login)',
+              is_password: true
+            }),
+            envVar({
+              key: 'MATRIX_USER_ID',
+              prompt: 'Matrix user ID (@user:server)',
+              description: 'Matrix user ID (e.g. @hermes:example.org)'
+            })
+          ]
+        })
+      ]
+    })
+
+    await renderMessaging('ar')
+
+    expect(await screen.findByText('رابط الخادم الرئيسي لشبكة ماتريكس.')).toBeTruthy()
+    expect(screen.getByText('رمز وصول ماتريكس، وهو مفضّل على تسجيل الدخول بكلمة المرور.')).toBeTruthy()
+    expect(screen.getByText('معرّف مستخدم ماتريكس الكامل للبوت.')).toBeTruthy()
+    expect(screen.queryByText(/Matrix homeserver URL/)).toBeNull()
+  })
+
+  it('localizes the Google Chat setup introduction in Arabic', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          id: 'google_chat',
+          name: 'Google Chat',
+          description: 'Connect Hermes to Google Chat via Cloud Pub/Sub.'
+        })
+      ]
+    })
+
+    await renderMessaging('ar')
+
+    expect(await screen.findByText('اربط هرمس بمحادثات جوجل عبر خدمة النشر والاشتراك السحابية.')).toBeTruthy()
+    expect(screen.queryByText('Connect Hermes to Google Chat via Cloud Pub/Sub.')).toBeNull()
   })
 })

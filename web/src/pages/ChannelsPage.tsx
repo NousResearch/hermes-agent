@@ -36,6 +36,7 @@ import type {
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n";
 import { en } from "@/i18n/en";
 import { cn, themedBody } from "@/lib/utils";
 
@@ -47,7 +48,21 @@ const SLACK_TOKEN_PREFIXES: Record<string, string> = {
   SLACK_APP_TOKEN: "xapp-",
 };
 
-type ChannelsCopy = NonNullable<typeof en.channelsPage>;
+type ChannelsCopy = NonNullable<Translations["channelsPage"]>;
+
+function platformName(
+  platform: MessagingPlatform,
+  copy: ChannelsCopy,
+): string {
+  return copy.platformNames?.[platform.id] ?? platform.name;
+}
+
+function platformDescription(
+  platform: MessagingPlatform,
+  copy: ChannelsCopy,
+): string {
+  return copy.platformDescriptions?.[platform.id] ?? platform.description;
+}
 
 function interpolate(
   template: string,
@@ -224,7 +239,7 @@ export default function ChannelsPage() {
       const body: MessagingPlatformUpdate = { env, enabled: true };
       await api.updateMessagingPlatform(editing.id, body);
       showToast(
-        copy.savedNamed.replace("{name}", editing.name),
+        copy.savedNamed.replace("{name}", platformName(editing, copy)),
         "success",
       );
       setEditing(null);
@@ -396,7 +411,7 @@ export default function ChannelsPage() {
               >
                 {editing.id === "telegram"
                   ? copy.telegramManualTitle
-                  : `${copy.configure} ${editing.name}`}
+                  : `${copy.configure} ${platformName(editing, copy)}`}
               </h2>
               {editing.docs_url && (
                 <a
@@ -576,12 +591,12 @@ export default function ChannelsPage() {
                     <div className="flex flex-col gap-0.5 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mondwest normal-case text-sm font-medium">
-                          {platform.name}
+                          {platformName(platform, copy)}
                         </span>
                         <Badge tone={badge.tone}>{badge.label}</Badge>
                       </div>
                       <span className="text-xs text-muted-foreground">
-                        {platform.description}
+                        {platformDescription(platform, copy)}
                       </span>
                       {platform.error_message && (
                         <span className="text-xs text-destructive">
@@ -599,7 +614,7 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`${copy.enable} ${platform.name}`}
+                          aria-label={`${copy.enable} ${platformName(platform, copy)}`}
                         />
                       )}
                     </div>

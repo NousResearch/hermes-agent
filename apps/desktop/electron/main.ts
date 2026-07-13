@@ -30,6 +30,11 @@ import {
 import nodePty from 'node-pty'
 
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
+import {
+  applicationMenuCopy,
+  type ApplicationMenuLocale,
+  normalizeApplicationMenuLocale
+} from './application-menu-copy'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
@@ -573,6 +578,7 @@ const APP_ICON_PATHS = [
 ]
 
 let rendererTitleBarTheme = null
+let applicationMenuLocale: ApplicationMenuLocale = 'en'
 const terminalSessions = new Map()
 
 // Force the NATIVE window appearance (vibrancy material, titlebar, the
@@ -4734,33 +4740,34 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean) {
 }
 
 function buildApplicationMenu() {
+  const copy = applicationMenuCopy(applicationMenuLocale)
   const template = []
 
   const checkForUpdatesItem = {
-    label: 'Check for Updates…',
+    label: copy.checkForUpdates,
     click: () => sendOpenUpdatesRequested()
   }
 
   if (IS_MAC) {
     template.push({
-      label: APP_NAME,
+      label: copy.appName,
       submenu: [
-        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
+        { label: copy.about, click: () => showAboutPanelFresh() },
         checkForUpdatesItem,
         { type: 'separator' },
-        { role: 'services' },
+        { label: copy.services, role: 'services' },
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
+        { label: copy.hide, role: 'hide' },
+        { label: copy.hideOthers, role: 'hideOthers' },
+        { label: copy.unhide, role: 'unhide' },
         { type: 'separator' },
-        { role: 'quit' }
+        { label: copy.quit, role: 'quit' }
       ]
     })
   }
 
   template.push({
-    label: 'File',
+    label: copy.file,
     submenu: [
       IS_MAC
         ? {
@@ -4771,40 +4778,40 @@ function buildApplicationMenu() {
             // renderer's close-active-tab. Clicking the item still closes the tab
             // (or window) via the same request.
             click: () => sendClosePreviewRequested(),
-            label: 'Close'
+            label: copy.close
           }
-        : { role: 'quit' }
+        : { label: copy.quit, role: 'quit' }
     ]
   })
   template.push({
-    label: 'Edit',
+    label: copy.edit,
     submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
+      { label: copy.undo, role: 'undo' },
+      { label: copy.redo, role: 'redo' },
       { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      { role: 'delete' },
-      { role: 'selectAll' }
+      { label: copy.cut, role: 'cut' },
+      { label: copy.copy, role: 'copy' },
+      { label: copy.paste, role: 'paste' },
+      { label: copy.delete, role: 'delete' },
+      { label: copy.selectAll, role: 'selectAll' }
     ]
   })
   template.push({
-    label: 'View',
+    label: copy.view,
     submenu: [
-      { role: 'reload' },
-      { role: 'forceReload' },
-      { role: 'toggleDevTools' },
+      { label: copy.reload, role: 'reload' },
+      { label: copy.forceReload, role: 'forceReload' },
+      { label: copy.toggleDevTools, role: 'toggleDevTools' },
       { type: 'separator' },
       {
-        label: 'Actual Size',
+        label: copy.actualSize,
         accelerator: 'CommandOrControl+0',
         click: () => {
           setAndPersistZoomLevel(mainWindow, 0)
         }
       },
       {
-        label: 'Zoom In',
+        label: copy.zoomIn,
         accelerator: 'CommandOrControl+Plus',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -4813,7 +4820,7 @@ function buildApplicationMenu() {
         }
       },
       {
-        label: 'Zoom Out',
+        label: copy.zoomOut,
         accelerator: 'CommandOrControl+-',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -4822,17 +4829,24 @@ function buildApplicationMenu() {
         }
       },
       { type: 'separator' },
-      { role: 'togglefullscreen' }
+      { label: copy.fullscreen, role: 'togglefullscreen' }
     ]
   })
   template.push({
-    label: 'Window',
+    label: copy.window,
     submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      ? [
+          { label: copy.minimize, role: 'minimize' },
+          { label: copy.zoom, role: 'zoom' },
+          { label: copy.front, role: 'front' }
+        ]
+      : [
+          { label: copy.minimize, role: 'minimize' },
+          { label: copy.close, role: 'close' }
+        ]
   })
   template.push({
-    label: 'Help',
+    label: copy.help,
     role: 'help',
     submenu: [checkForUpdatesItem]
   })
@@ -8534,6 +8548,20 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
   if (nativeTheme.themeSource !== mode) {
     nativeTheme.themeSource = mode
     writePersistedThemeSource(mode)
+  }
+})
+
+ipcMain.on('hermes:application-locale', (_event, value) => {
+  const nextLocale = normalizeApplicationMenuLocale(value)
+
+  if (nextLocale === applicationMenuLocale) {
+    return
+  }
+
+  applicationMenuLocale = nextLocale
+
+  if (IS_MAC && app.isReady()) {
+    Menu.setApplicationMenu(buildApplicationMenu())
   }
 })
 

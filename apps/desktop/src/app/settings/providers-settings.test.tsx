@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
@@ -202,5 +203,39 @@ describe('ProvidersSettings', () => {
     fireEvent.click(row)
 
     await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null))
+  })
+
+  it('localizes provider cards and advanced fields in Arabic', async () => {
+    getEnvVars.mockResolvedValue({
+      OPENROUTER_API_KEY: keyVar({
+        provider: 'openrouter',
+        provider_label: 'OpenRouter',
+        description: 'OpenRouter API key',
+        url: 'https://openrouter.ai/keys'
+      }),
+      OPENROUTER_BASE_URL: keyVar({
+        advanced: true,
+        is_password: false,
+        provider: 'openrouter',
+        provider_label: 'OpenRouter',
+        description: 'OpenRouter base URL override'
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(
+      <I18nProvider configClient={null} initialLocale="ar">
+        <ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />
+      </I18nProvider>
+    )
+
+    const title = await screen.findByText('أوبن راوتر')
+    fireEvent.click(title.closest('[role="button"]') as HTMLElement)
+
+    expect(await screen.findByText('مئات النماذج المتقدمة خلف مفتاح واحد.')).toBeTruthy()
+    expect(screen.getByText('الرابط الأساسي البديل')).toBeTruthy()
+    expect(screen.getByText('رابط أساسي بديل لخدمة أوبن راوتر.')).toBeTruthy()
+    expect(screen.queryByText('OpenRouter')).toBeNull()
   })
 })

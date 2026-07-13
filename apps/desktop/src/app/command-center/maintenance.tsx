@@ -29,20 +29,38 @@ import type { ActionStatusResponse } from '@/types/hermes'
 const ACTION_POLL_MS = 1200
 const ACTION_POLL_LIMIT = 240 // ~5 minutes of polling before giving up.
 
-function formatBytes(size: number): string {
+function localeTag(locale: string): string {
+  return locale === 'ar' ? 'ar-EG' : locale
+}
+
+function formatBytes(size: number, locale: string): string {
   if (size <= 0) {
     return ''
   }
 
+  const number = new Intl.NumberFormat(localeTag(locale), { maximumFractionDigits: 1, minimumFractionDigits: 1 })
+  const units =
+    locale === 'ar'
+      ? { byte: 'بايت', kilobyte: 'كيلوبايت', megabyte: 'ميغابايت' }
+      : { byte: 'B', kilobyte: 'KB', megabyte: 'MB' }
+
   if (size >= 1024 * 1024) {
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`
+    return `${number.format(size / (1024 * 1024))} ${units.megabyte}`
   }
 
   if (size >= 1024) {
-    return `${(size / 1024).toFixed(1)} KB`
+    return `${number.format(size / 1024)} ${units.kilobyte}`
   }
 
-  return `${size} B`
+  return `${new Intl.NumberFormat(localeTag(locale)).format(size)} ${units.byte}`
+}
+
+function formatDateTime(value: string, locale: string): string {
+  const date = new Date(value)
+
+  return Number.isNaN(date.valueOf())
+    ? value
+    : new Intl.DateTimeFormat(localeTag(locale), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
 /** Maintenance panel — desktop parity for `hermes doctor` / `security audit` /
@@ -50,7 +68,7 @@ function formatBytes(size: number): string {
  *  ops section). Spawn-based actions tail their logs inline via the shared
  *  /api/actions status endpoint. */
 export function MaintenancePanel() {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const mm = t.commandCenter.maintenance
 
   const [actionName, setActionName] = useState<null | string>(null)
@@ -127,11 +145,11 @@ export function MaintenancePanel() {
         setActionName(started.name)
         notify({ kind: 'success', title: mm.actionStarted(label), message: '' })
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(locale === 'ar' ? mm.actionFailed(label) : err instanceof Error ? err.message : String(err))
         notifyError(err, mm.actionFailed(label))
       }
     },
-    [mm]
+    [locale, mm]
   )
 
   const shareDebug = useCallback(async () => {
@@ -142,12 +160,12 @@ export function MaintenancePanel() {
     try {
       setShare(await runDebugShare())
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(locale === 'ar' ? mm.debugShareFailed : err instanceof Error ? err.message : String(err))
       notifyError(err, mm.debugShareFailed)
     } finally {
       setSharing(false)
     }
-  }, [mm])
+  }, [locale, mm])
 
   const toggleCurator = useCallback(async () => {
     if (!curator) {
@@ -289,7 +307,9 @@ export function MaintenancePanel() {
               <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                 {mm.curatorDesc}
                 {' · '}
-                {curator.last_run_at ? mm.curatorLastRun(curator.last_run_at) : mm.curatorNeverRan}
+                {curator.last_run_at
+                  ? mm.curatorLastRun(formatDateTime(curator.last_run_at, locale))
+                  : mm.curatorNeverRan}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
@@ -328,7 +348,7 @@ export function MaintenancePanel() {
               onReset={() => void doResetMemory('memory', mm.memoryFile)}
               resetLabel={mm.resetMemory}
               size={memory.builtin_files.memory}
-              sizeLabel={memory.builtin_files.memory > 0 ? formatBytes(memory.builtin_files.memory) : mm.empty}
+              sizeLabel={memory.builtin_files.memory > 0 ? formatBytes(memory.builtin_files.memory, locale) : mm.empty}
             />
             <MemoryFileRow
               busy={memoryBusy}
@@ -336,7 +356,7 @@ export function MaintenancePanel() {
               onReset={() => void doResetMemory('user', mm.userFile)}
               resetLabel={mm.resetUser}
               size={memory.builtin_files.user}
-              sizeLabel={memory.builtin_files.user > 0 ? formatBytes(memory.builtin_files.user) : mm.empty}
+              sizeLabel={memory.builtin_files.user > 0 ? formatBytes(memory.builtin_files.user, locale) : mm.empty}
             />
           </div>
         )}

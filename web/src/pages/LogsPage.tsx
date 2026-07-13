@@ -43,10 +43,16 @@ const LINE_COLORS: Record<string, string> = {
   debug: "text-text-tertiary",
 };
 
-const formatFilterLabel = (value: string) => value.toUpperCase();
+const formatFilterLabel = (
+  value: string,
+  labels?: Record<string, string>,
+) => labels?.[value] ?? value.toUpperCase();
 
-const toSegmentOptions = <T extends string>(values: readonly T[]) =>
-  values.map((v) => ({ value: v, label: formatFilterLabel(v) }));
+const toSegmentOptions = <T extends string>(
+  values: readonly T[],
+  labels?: Record<string, string>,
+) =>
+  values.map((v) => ({ value: v, label: formatFilterLabel(v, labels) }));
 
 const filterGroupClass =
   "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
@@ -89,8 +95,9 @@ export default function LogsPage() {
     setAfterTitle(
       <span className="flex items-center gap-1.5">
         <Badge tone="secondary" className="text-xs">
-          {formatFilterLabel(file)} · {formatFilterLabel(level)} ·{" "}
-          {formatFilterLabel(component)}
+          {formatFilterLabel(file, t.logs.filterLabels)} ·{" "}
+          {formatFilterLabel(level, t.logs.filterLabels)} ·{" "}
+          {formatFilterLabel(component, t.logs.filterLabels)}
         </Badge>
         <Button
           type="button"
@@ -140,6 +147,7 @@ export default function LogsPage() {
     t.common.live,
     t.common.refresh,
     t.logs.autoRefresh,
+    t.logs.filterLabels,
     fetchLogs,
   ]);
 
@@ -166,7 +174,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={file}
             onChange={setFile}
-            options={toSegmentOptions(FILES)}
+            options={toSegmentOptions(FILES, t.logs.filterLabels)}
           />
         </FilterGroup>
 
@@ -175,7 +183,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={level}
             onChange={setLevel}
-            options={toSegmentOptions(LEVELS)}
+            options={toSegmentOptions(LEVELS, t.logs.filterLabels)}
           />
         </FilterGroup>
 
@@ -184,7 +192,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={component}
             onChange={setComponent}
-            options={toSegmentOptions(COMPONENTS)}
+            options={toSegmentOptions(COMPONENTS, t.logs.filterLabels)}
           />
         </FilterGroup>
 

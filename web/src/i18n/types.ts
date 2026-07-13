@@ -63,6 +63,8 @@ export interface Translations {
     messaging: string;
     item?: string;
     commaSeparatedValues?: string;
+    copy?: string;
+    copied?: string;
     // Optional: non-English locales fall back to the English literal in the
     // component until translated, matching the enriched-profiles keys.
     gateway?: string;
@@ -405,7 +407,10 @@ export interface Translations {
     | "whatsappWaitingQr"
     | "whatsappScanLinkedDevices",
     string
-  >;
+  > & {
+    platformNames?: Record<string, string>;
+    platformDescriptions?: Record<string, string>;
+  };
 
   webhooksPage?: Record<
     | "copy"
@@ -536,6 +541,7 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
+    filterLabels?: Record<string, string>;
   };
 
   // ── Cron page ──
@@ -851,6 +857,8 @@ export interface Translations {
     managingProfile?: string;
     browseHub?: string;
     editSkill?: string;
+    enableSkill?: string;
+    disableSkill?: string;
     saved?: string;
     newSkill?: string;
     /** "Learn a skill" dialog — optional; falls back to English literals. */
@@ -907,6 +915,13 @@ export interface Translations {
       discord: string;
       auxiliary: string;
     };
+    /** Dynamic schema labels used by the generated config editor. */
+    categoryLabels?: Record<string, string>;
+    sectionLabels?: Record<string, string>;
+    fieldLabels?: Record<string, string>;
+    fieldLeafLabels?: Record<string, string>;
+    fieldTerms?: Record<string, string>;
+    descriptionOverrides?: Record<string, string>;
   };
 
   // ── Env / Keys page ──
@@ -943,6 +958,7 @@ export interface Translations {
     settingsSection?: string;
     jumpToSection?: string;
     saved?: string;
+    providerLabels?: Record<string, string>;
   };
 
   // ── OAuth ──
@@ -1003,6 +1019,7 @@ export interface Translations {
       external: string;
     };
     expiresIn: string;
+    providerNames?: Record<string, string>;
   };
 
   // ── Language switcher ──
@@ -1032,6 +1049,18 @@ export interface Translations {
 
   // ── Achievements plugin (plugins/hermes-achievements) ──
   achievements: {
+    navLabel?: string;
+    categories?: Record<string, string>;
+    tierNames?: Record<string, string>;
+    items?: Record<string, { name: string; description: string }>;
+    metrics?: Record<string, string>;
+    criteriaText?: {
+      secret: string;
+      secretDescription: string;
+      requirement: string;
+      tierLadder: string;
+      fallback: string;
+    };
     hero: {
       kicker: string;
       title: string;
@@ -1124,11 +1153,19 @@ export interface Translations {
       hint: string;
       clipboard_unsupported: string;
       tweet_text: string;
+      tier_suffix?: string;
     };
   };
 
   // ── Kanban ──
   kanban: {
+    navLabel?: string;
+    tooltips?: Record<string, string>;
+    orchestration?: Record<string, string>;
+    bulk?: Record<string, string>;
+    taskText?: Record<string, string>;
+    extra?: Record<string, string>;
+    trash?: Record<string, string>;
     loading: string;
     loadFailed: string;
     loadFailedHint: string;
@@ -1247,6 +1284,7 @@ export interface Translations {
       triage: string;
       todo: string;
       scheduled: string;
+      review?: string;
       ready: string;
       running: string;
       blocked: string;
@@ -1257,6 +1295,7 @@ export interface Translations {
       triage: string;
       todo: string;
       scheduled: string;
+      review?: string;
       ready: string;
       running: string;
       blocked: string;

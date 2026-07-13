@@ -102,14 +102,14 @@ export function NotificationsSettings() {
               }}
               value={String(completionSoundVariantId)}
             >
-              <SelectTrigger className={cn('min-w-56', CONTROL_TEXT)}>
+              <SelectTrigger aria-label={copy.completionSoundTitle} className={cn('min-w-56', CONTROL_TEXT)}>
                 <SelectValue />
               </SelectTrigger>
 
               <SelectContent>
                 {COMPLETION_SOUND_VARIANTS.map(variant => (
                   <SelectItem key={variant.id} value={String(variant.id)}>
-                    {variant.name}
+                    {copy.completionSoundNames[variant.id] ?? variant.name}
                   </SelectItem>
                 ))}
               </SelectContent>

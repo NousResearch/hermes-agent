@@ -34,12 +34,18 @@ export const zh: Translations = {
     refresh: '刷新',
     remove: '移除',
     replace: '替换',
+    reset: '重置',
     retry: '重试',
     run: '运行',
     send: '发送',
     set: '设置',
     skip: '跳过',
     update: '更新',
+    zoomIn: '放大',
+    zoomOut: '缩小',
+    openFullView: '打开完整视图',
+    openDiagram: '打开图表',
+    holdModifierToZoom: '按住 ⌘ 以缩放',
     resizePane: id => `调整 ${id} 的大小`,
     tryHint: term => `试试“${term}”`,
     on: '开',
@@ -367,7 +373,23 @@ export const zh: Translations = {
       testUnsupported: '此系统不支持原生通知。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
-      completionSoundPreview: '预览'
+      completionSoundPreview: '预览',
+      completionSoundNames: {
+        1: '双音舒缓',
+        2: '玻璃轻响',
+        3: '柔和木琴',
+        4: '三音消息',
+        5: '轻柔掠声',
+        6: '发现和弦',
+        7: '系统上线',
+        8: '终端提示',
+        9: '调制解调器鸣声',
+        10: '风铃',
+        11: '颂钵',
+        12: '竖琴上行',
+        13: '声呐脉冲',
+        14: '八音盒'
+      }
     },
     sections: {
       model: '模型',
@@ -700,6 +722,7 @@ export const zh: Translations = {
       automaticUpdates: '自动更新',
       automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，并在有可用更新时通知你。',
       branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
+      unknown: '未知',
       never: '从未',
       justNow: '刚刚',
       minAgo: count => `${count} 分钟前`,
@@ -904,7 +927,9 @@ export const zh: Translations = {
       unsavedConnect: '未保存 — 保存 mcp.json 以连接。',
       enableTool: tool => `启用 ${tool}`,
       disableTool: tool => `禁用 ${tool}`,
-      noOutput: '暂无输出。'
+      noOutput: '暂无输出。',
+      authOauth: 'OAuth',
+      authApiKey: 'API 密钥'
     },
     model: {
       loading: '正在加载模型配置...',
@@ -926,6 +951,23 @@ export const zh: Translations = {
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
+      moaTitle: '多代理混合',
+      moaDesc: '配置具名预设，并将其作为多代理混合提供方下的模型显示。聚合模型负责最终执行。',
+      moaPreset: '预设',
+      moaSetDefault: '设为默认',
+      moaDelete: '删除',
+      moaNewPreset: '新预设',
+      moaAddPreset: '添加预设',
+      moaDefault: '默认',
+      moaAggregator: '聚合模型',
+      moaReference: index => `参考模型 ${index}`,
+      moaRemove: '移除',
+      moaAddReference: '添加参考模型',
+      moaPresets: '多代理混合预设',
+      moaPrefix: '混合',
+      otherProviders: '其他提供方',
+      staleAuxWarning: (count, names, provider) =>
+        `${count} 个辅助任务 (${names}) 仍在 ${provider} 上运行，而不是主模型。`,
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         web_extract: { label: '网页提取', hint: '页面总结' },
@@ -936,6 +978,34 @@ export const zh: Translations = {
         title_generation: { label: '标题生成', hint: '会话标题' },
         curator: { label: '维护器', hint: '技能使用审查' }
       }
+    },
+    computerUse: {
+      linuxNote: '通过 X11 或 XWayland 辅助功能栈控制桌面，无需权限提示。',
+      windowsNote: '首次运行可能触发 Windows SmartScreen 提示，请允许驱动辅助功能工作进程。',
+      granted: '已授权',
+      notGranted: '未授权',
+      unknown: '未知',
+      readStatusFailed: '无法读取计算机控制状态',
+      requestFailed: '无法请求权限',
+      approveTitle: '在系统设置中批准',
+      approveMessage: 'macOS 会显示归属于 CuaDriver 的权限对话框。批准后返回此处。',
+      checking: '正在检查计算机控制状态…',
+      unsupported: platform => `此平台不支持计算机控制 (${platform})。`,
+      installDriver: '请在下方安装 cua-driver 后端以控制此计算机。',
+      grantAfterInstall: ' 然后在此授予辅助功能和屏幕录制权限。',
+      grantIdentity:
+        '权限归属于 CuaDriver 自身标识 (com.trycua.driver)，而非 Hermes，因此对话框会归属于实际控制 Mac 的进程。',
+      recheck: '重新检查',
+      accessibility: '辅助功能',
+      accessibilityHint: '允许 cua-driver 点击、输入并读取辅助功能树。',
+      screenRecording: '屏幕录制',
+      screenRecordingHint: '允许 cua-driver 捕获应用窗口截图。',
+      driverHealth: '驱动状态',
+      ready: '就绪',
+      notReady: '未就绪',
+      readyDescription: '计算机控制已就绪。可让代理捕获应用并进行操作。',
+      waitingApproval: '等待批准…',
+      grantPermissions: '授予权限'
     },
     providers: {
       connectAccount: '连接账号',
@@ -1050,6 +1120,9 @@ export const zh: Translations = {
     configured: '已配置',
     needsKeys: '需要密钥',
     toolsetsEnabled: (enabled, total) => `已启用 ${enabled}/${total} 个工具集`,
+    toolCount: count => `${count} 个工具`,
+    toolsetNames: {},
+    toolsetDescriptions: {},
     configureToolset: label => `配置 ${label}`,
     toggleToolset: label => `切换 ${label} 工具集`,
     skillsLoadFailed: '技能加载失败',
@@ -1082,6 +1155,9 @@ export const zh: Translations = {
     skillUpdated: '技能已更新',
     edit: '编辑',
     archive: '归档',
+    archiveSkillTitle: name => `归档 ${name}？`,
+    archiveSkillDescription: '技能将被归档，可使用 `hermes curator restore` 恢复。',
+    archiveFailed: '归档失败',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     hub: {
@@ -1158,7 +1234,22 @@ export const zh: Translations = {
     importEmpty: '粘贴图谱代码以加载。',
     importSuccess: nodes => `已加载包含 ${nodes} 个节点的图谱。`,
     importedBadge: '导入的图谱',
-    resetToMine: '返回我的图谱'
+    resetToMine: '返回我的图谱',
+    skill: '技能',
+    profileMemory: '配置记忆',
+    learned: '已学习',
+    pinned: '已固定',
+    unknown: '未知',
+    coreAge: '中心最旧 · 外圈更新',
+    playTimeline: '播放时间线',
+    pauseTimeline: '暂停时间线',
+    timelineScrubber: '时间线滑块',
+    editNode: kind => (kind === 'skill' ? '编辑技能…' : '编辑记忆…'),
+    archiveSkill: '归档技能',
+    deleteMemory: '删除记忆',
+    editTitle: label => `编辑 ${label}`,
+    deleteMemoryTitle: label => `删除 ${label}？`,
+    deleteMemoryDescription: '此记忆将被永久删除。'
   },
   agents: {
     close: '关闭代理',
@@ -1246,6 +1337,15 @@ export const zh: Translations = {
       genericError: '生成失败——请重试或选择一个建议。',
       referenceImageTooLarge: '参考图过大。请使用小于 16 MB 的图片。',
       referenceImageInvalid: '无法读取该参考图。请尝试 PNG、JPG、WebP 或 GIF。',
+      reference: '参考图',
+      removeReference: '移除参考图',
+      unavailableTitle: '添加图像后端以开始生成',
+      unavailableDesc: '生成自定义宠物需要可使用参考图的提供方。',
+      setupImageGeneration: '设置图像生成',
+      grabKeyFrom: '获取密钥：',
+      nousPortal: 'Nous Portal',
+      openRouter: 'OpenRouter',
+      openAi: 'OpenAI',
       adopt: '领养',
       startOver: '重新开始'
     },
@@ -1378,6 +1478,8 @@ export const zh: Translations = {
     search: '搜索消息平台…',
     loading: '正在加载消息平台…',
     loadFailed: '消息平台加载失败',
+    platformNames: {},
+    platformDescriptions: {},
     states: {
       connected: '已连接',
       connecting: '连接中',
@@ -1555,6 +1657,7 @@ export const zh: Translations = {
     deleting: '删除中…',
     createDesc: '配置档案是相互独立的 Hermes 环境：各自拥有独立的配置、技能和 SOUL.md。',
     nameLabel: '名称',
+    namePlaceholder: 'my-profile',
     cloneFrom: '克隆来源',
     cloneFromNone: '无（空白）',
     cloneFromDesc: '从选中的来源配置档案复制配置、技能和 SOUL.md。',
@@ -1862,6 +1965,7 @@ export const zh: Translations = {
 
   composer: {
     message: '消息',
+    addContext: '添加上下文',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',
@@ -2157,6 +2261,16 @@ export const zh: Translations = {
     featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
     fireworksPitch: '直接模型 API — Fireworks 托管的前沿模型',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
+    openRouterName: 'OpenRouter',
+    providerNames: {
+      nous: 'Nous Portal',
+      'openai-codex': 'OpenAI OAuth (ChatGPT)',
+      'minimax-oauth': 'MiniMax',
+      'qwen-oauth': 'Qwen Code',
+      'xai-oauth': 'xAI Grok',
+      anthropic: 'Anthropic API 密钥',
+      'claude-code': 'Anthropic OAuth：需要额外使用额度'
+    },
     apiKeyOptions: {
       fireworks: { short: '直接模型 API', description: '直接访问 Fireworks AI 托管的模型。' },
       openrouter: { short: '一个密钥，多个模型', description: '用一个密钥访问数百个模型。适合新安装的默认选择。' },
@@ -2531,6 +2645,14 @@ export const zh: Translations = {
   },
 
   assistant: {
+    alerts: {
+      caution: '注意',
+      important: '重要',
+      note: '备注',
+      tip: '提示',
+      warning: '警告'
+    },
+    embedTitle: provider => `${provider} 嵌入内容`,
     thread: {
       loadingSession: '正在加载会话',
       showEarlier: '显示更早的消息',
@@ -2562,7 +2684,9 @@ export const zh: Translations = {
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
       sendEdited: '发送编辑后的消息',
-      attachingFile: '正在附加…'
+      attachingFile: '正在附加…',
+      timeline: '对话时间线',
+      steered: '已引导'
     },
     approval: {
       gatewayDisconnected: 'Hermes 网关未连接',
@@ -2604,6 +2728,9 @@ export const zh: Translations = {
       copyPath: '复制路径',
       outputAlt: '工具输出',
       rawResponse: '原始响应',
+      standardOutput: '标准输出',
+      standardError: '标准错误',
+      payload: '工具载荷',
       copyActivity: '复制活动',
       recoveredOne: '在 1 个失败步骤后已恢复',
       recoveredMany: count => `在 ${count} 个失败步骤后已恢复`,
@@ -2727,6 +2854,8 @@ export const zh: Translations = {
     restartToSaveImages: '重启 Hermes 桌面版以保存图片',
     imageDownloadFailed: '图片下载失败',
     openImage: '打开图片',
+    overlayMessage: '消息…',
+    openInHermes: '在 Hermes 中打开',
     downloadImage: '下载图片',
     savingImage: '正在保存图片',
     imagePreviewFailed: '图片预览失败',

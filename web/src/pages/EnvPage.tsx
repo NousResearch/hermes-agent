@@ -394,7 +394,9 @@ function ProviderGroupCard({
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           )}
           <span className="font-semibold text-sm tracking-wide">
-            {group.name === "Other" ? t.common.other : group.name}
+            {group.name === "Other"
+              ? t.common.other
+              : (t.env.providerLabels?.[group.name] ?? group.name)}
           </span>
           {hasAnyConfigured && (
             <Badge tone="success" className="text-xs">

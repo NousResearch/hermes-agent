@@ -3,6 +3,7 @@ import type { ThreadMessage } from '@assistant-ui/react'
 import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import { translateNow } from '@/i18n'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
@@ -61,7 +62,7 @@ export function createClientSessionState(
 }
 
 export function sessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  return session.title?.trim() || session.preview?.trim() || translateNow('sidebar.row.untitledPlaceholder')
 }
 
 export function coerceGatewayText(value: unknown): string {

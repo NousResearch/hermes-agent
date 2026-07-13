@@ -884,6 +884,7 @@ export default function SystemPage() {
                 <Checkbox
                   checked={hookApprove}
                   id="hook-approve"
+                  aria-label={copy.approveNow}
                   onCheckedChange={(checked) => setHookApprove(checked === true)}
                 />
                 <Label
@@ -1298,8 +1299,9 @@ export default function SystemPage() {
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
-                {copy.builtInFiles} — MEMORY.md:{" "}
-                {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
+                {copy.builtInFiles} — {copy.memoryFile ?? "MEMORY.md"}:{" "}
+                {formatBytes(memory?.builtin_files.memory ?? 0)} ·{" "}
+                {copy.userFile ?? "USER.md"}:{" "}
                 {formatBytes(memory?.builtin_files.user ?? 0)}
               </span>
               <div className="flex items-center gap-2 ms-auto">
@@ -1649,6 +1651,7 @@ export default function SystemPage() {
                 checked={shareRedact}
                 disabled={sharing}
                 id="share-redact"
+                aria-label={copy.redactBeforeUpload}
                 onCheckedChange={(checked) => setShareRedact(checked === true)}
               />
               <Label

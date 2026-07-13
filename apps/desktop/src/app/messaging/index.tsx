@@ -182,13 +182,21 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
 
     return platforms.filter(platform =>
-      [platform.id, platform.name, platform.description, platform.state]
+      [
+        platform.id,
+        platform.name,
+        platform.description,
+        m.platformNames[platform.id],
+        m.platformDescriptions[platform.id],
+        platform.state
+      ]
         .filter(Boolean)
         .some(value => String(value).toLowerCase().includes(q))
     )
-  }, [platforms, query])
+  }, [m.platformDescriptions, m.platformNames, platforms, query])
 
   async function handleToggle(platform: MessagingPlatformInfo, enabled: boolean) {
+    const platformName = m.platformNames[platform.id] ?? platform.name
     setSaving(`enabled:${platform.id}`)
 
     try {
@@ -207,18 +215,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       )
       notify({
         kind: 'success',
-        title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
+        title: enabled ? m.platformEnabled(platformName) : m.platformDisabled(platformName),
         message: m.restartToApply,
         action: restartGatewayAction
       })
     } catch (err) {
-      notifyError(err, m.failedUpdate(platform.name))
+      notifyError(err, m.failedUpdate(platformName))
     } finally {
       setSaving(null)
     }
   }
 
   async function handleSave(platform: MessagingPlatformInfo) {
+    const platformName = m.platformNames[platform.id] ?? platform.name
     const env = trimEdits(edits[platform.id] || {})
 
     if (Object.keys(env).length === 0) {
@@ -233,18 +242,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       await refreshPlatforms()
       notify({
         kind: 'success',
-        title: m.setupSaved(platform.name),
+        title: m.setupSaved(platformName),
         message: m.restartToReconnect,
         action: restartGatewayAction
       })
     } catch (err) {
-      notifyError(err, m.failedSave(platform.name))
+      notifyError(err, m.failedSave(platformName))
     } finally {
       setSaving(null)
     }
   }
 
   async function handleClear(platform: MessagingPlatformInfo, key: string) {
+    const platformName = m.platformNames[platform.id] ?? platform.name
     setSaving(`clear:${key}`)
 
     try {
@@ -257,7 +267,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
+      notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platformName) })
     } catch (err) {
       notifyError(err, m.failedClear(key))
     } finally {
@@ -270,7 +280,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {...props}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
-      searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
+      searchHints={platforms
+        ?.slice(0, 5)
+        .map(platform => t.common.tryHint((m.platformNames[platform.id] ?? platform.name).toLowerCase()))}
       searchPlaceholder={m.search}
       searchValue={query}
     >
@@ -338,6 +350,9 @@ function PlatformRow({
   onSelect: () => void
   platform: MessagingPlatformInfo
 }) {
+  const { t } = useI18n()
+  const platformName = t.messaging.platformNames[platform.id] ?? platform.name
+
   return (
     <button
       className={cn(
@@ -347,9 +362,9 @@ function PlatformRow({
       onClick={onSelect}
       type="button"
     >
-      <PlatformAvatar platformId={platform.id} platformName={platform.name} />
+      <PlatformAvatar platformId={platform.id} platformName={platformName} />
       <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-        <span className="truncate text-[length:var(--conversation-text-font-size)] font-normal">{platform.name}</span>
+        <span className="truncate text-[length:var(--conversation-text-font-size)] font-normal">{platformName}</span>
         <StatusDot tone={stateTone(platform)} />
       </span>
     </button>
@@ -371,6 +386,8 @@ function PlatformDetail({
 }) {
   const { t } = useI18n()
   const m = t.messaging
+  const platformName = m.platformNames[platform.id] ?? platform.name
+  const platformDescription = m.platformDescriptions[platform.id] ?? platform.description
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const requiredFields = platform.env_vars.filter(field => field.required)
@@ -381,17 +398,17 @@ function PlatformDetail({
   return (
     <>
       <header className="flex items-start gap-3">
-        <PlatformAvatar platformId={platform.id} platformName={platform.name} />
+        <PlatformAvatar platformId={platform.id} platformName={platformName} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
+            <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platformName}</h3>
             <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
             {/* Resting states earn no pill — only actionable ones. */}
             {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
           </div>
           <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {platform.description}
+            {platformDescription}
           </p>
           <PlatformHint platform={platform} />
         </div>
@@ -517,11 +534,12 @@ function PlatformActionBar({
   const { t } = useI18n()
   const m = t.messaging
   const isSavingEnv = saving === `env:${platform.id}`
+  const platformName = m.platformNames[platform.id] ?? platform.name
 
   return (
     <>
       <Switch
-        aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+        aria-label={platform.enabled ? m.disableAria(platformName) : m.enableAria(platformName)}
         checked={platform.enabled}
         disabled={saving === `enabled:${platform.id}`}
         onCheckedChange={onToggle}

@@ -113,7 +113,11 @@ function dayName(value: string, c: Translations['cron']): string {
   return c.days[value] ?? c.dayFallback(value)
 }
 
-function formatCronTime(minute: string, hour: string): string {
+function localeTag(locale: string): string {
+  return locale === 'ar' ? 'ar-EG' : locale
+}
+
+function formatCronTime(minute: string, hour: string, locale: string): string {
   const numericHour = Number(hour)
   const numericMinute = Number(minute)
 
@@ -121,7 +125,7 @@ function formatCronTime(minute: string, hour: string): string {
     return `${hour}:${minute}`
   }
 
-  return new Date(2000, 0, 1, numericHour, numericMinute).toLocaleTimeString(undefined, {
+  return new Date(2000, 0, 1, numericHour, numericMinute).toLocaleTimeString(localeTag(locale), {
     hour: 'numeric',
     minute: '2-digit'
   })
@@ -186,7 +190,7 @@ function scheduleOptionForExpr(expr: string): ScheduleOption {
   return SCHEDULE_OPTIONS[SCHEDULE_OPTIONS.length - 1]
 }
 
-function scheduleSummary(option: ScheduleOption, expr: string, c: Translations['cron']): string {
+function scheduleSummary(option: ScheduleOption, expr: string, c: Translations['cron'], locale: string): string {
   const parts = cronParts(expr)
 
   if (!parts) {
@@ -196,19 +200,19 @@ function scheduleSummary(option: ScheduleOption, expr: string, c: Translations['
   const [minute, hour, dayOfMonth, , dayOfWeek] = parts
 
   if (option.value === 'daily') {
-    return c.everyDayAt(formatCronTime(minute, hour))
+    return c.everyDayAt(formatCronTime(minute, hour, locale))
   }
 
   if (option.value === 'weekdays') {
-    return c.weekdaysAt(formatCronTime(minute, hour))
+    return c.weekdaysAt(formatCronTime(minute, hour, locale))
   }
 
   if (option.value === 'weekly') {
-    return c.everyDayOfWeekAt(dayName(dayOfWeek, c), formatCronTime(minute, hour))
+    return c.everyDayOfWeekAt(dayName(dayOfWeek, c), formatCronTime(minute, hour, locale))
   }
 
   if (option.value === 'monthly') {
-    return c.monthlyOnDayAt(dayOfMonth, formatCronTime(minute, hour))
+    return c.monthlyOnDayAt(dayOfMonth, formatCronTime(minute, hour, locale))
   }
 
   if (option.value === 'hourly') {
@@ -218,7 +222,7 @@ function scheduleSummary(option: ScheduleOption, expr: string, c: Translations['
   return c.scheduleHints[option.value] ?? ''
 }
 
-function formatTime(iso?: null | string): string {
+function formatTime(iso: null | string | undefined, locale: string): string {
   if (!iso) {
     return '—'
   }
@@ -229,7 +233,7 @@ function formatTime(iso?: null | string): string {
     return iso
   }
 
-  return date.toLocaleString()
+  return date.toLocaleString(localeTag(locale))
 }
 
 function matchesQuery(job: CronJob, q: string): boolean {
@@ -251,7 +255,7 @@ interface CronViewProps extends React.ComponentProps<'section'> {
 }
 
 export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setStatusbarItemGroup }: CronViewProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const c = t.cron
   // Source of truth is the shared atom (also fed by the controller poll), so the
   // sidebar and this overlay never drift — a delete here clears the sidebar row
@@ -465,6 +469,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
                 busy={busyJobId === selectedJob.id}
                 c={c}
                 job={selectedJob}
+                locale={locale}
                 onOpenSession={onOpenSession}
                 onPauseResume={() => void handlePauseResume(selectedJob)}
                 onTrigger={() => void handleTrigger(selectedJob)}
@@ -476,7 +481,12 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         </>
       )}
 
-      <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
+      <CronEditorDialog
+        editor={editor}
+        locale={locale}
+        onClose={() => setEditor({ mode: 'closed' })}
+        onSave={handleEditorSave}
+      />
 
       <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
         <DialogContent className="max-w-md">
@@ -535,6 +545,7 @@ function CronJobDetail({
   busy,
   c,
   job,
+  locale,
   onOpenSession,
   onPauseResume,
   onTrigger
@@ -542,6 +553,7 @@ function CronJobDetail({
   busy: boolean
   c: Translations['cron']
   job: CronJob
+  locale: string
   onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
@@ -572,8 +584,8 @@ function CronJobDetail({
         <PanelMeta
           rows={[
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
-            { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
-            { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
+            { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at, locale) },
+            { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at, locale) },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver }
           ]}
         />
@@ -593,19 +605,19 @@ function CronJobDetail({
         </section>
       ) : null}
 
-      <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+      <CronJobRuns c={c} jobId={job.id} locale={locale} onOpenSession={onOpenSession} />
     </PanelDetail>
   )
 }
 
-function formatRunTime(seconds?: null | number): string {
+function formatRunTime(seconds: null | number | undefined, locale: string): string {
   if (!seconds) {
     return '—'
   }
 
   const date = new Date(seconds * 1000)
 
-  return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString()
+  return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString(localeTag(locale))
 }
 
 // Runs are produced by the background scheduler tick (no UI signal), so poll
@@ -616,10 +628,12 @@ const RUNS_POLL_INTERVAL_MS = 8000
 function CronJobRuns({
   c,
   jobId,
+  locale,
   onOpenSession
 }: {
   c: Translations['cron']
   jobId: string
+  locale: string
   onOpenSession?: (sessionId: string) => void
 }) {
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
@@ -686,7 +700,7 @@ function CronJobRuns({
             >
               <span className="truncate text-foreground/85">{run.title?.trim() || run.preview?.trim() || run.id}</span>
               <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
-                {formatRunTime(run.last_active || run.started_at)}
+                {formatRunTime(run.last_active || run.started_at, locale)}
               </span>
             </button>
           ))}
@@ -698,10 +712,12 @@ function CronJobRuns({
 
 function CronEditorDialog({
   editor,
+  locale,
   onClose,
   onSave
 }: {
   editor: EditorState
+  locale: string
   onClose: () => void
   onSave: (values: EditorValues) => Promise<void>
 }) {
@@ -750,7 +766,7 @@ function CronEditorDialog({
     }
   }
 
-  const scheduleHint = scheduleSummary(selectedScheduleOption, schedule, c)
+  const scheduleHint = scheduleSummary(selectedScheduleOption, schedule, c, locale)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()

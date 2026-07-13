@@ -28,6 +28,14 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('notifications.updateReadyMessage', 2)).toBe('2 new changes available.')
   })
 
+  it('translates backend timeout summaries for Arabic notifications', () => {
+    setRuntimeI18nLocale('ar')
+
+    expect(translateNow('notifications.errors.backendTimeout', '15')).toBe(
+      'لم يستجب هرمس خلال ١٥ ثانية. تحقق من الاتصال ثم أعد المحاولة.'
+    )
+  })
+
   it('translates migrated overlap keys for newly supported locales', () => {
     setRuntimeI18nLocale('ja')
     expect(translateNow('common.save')).toBe('保存')

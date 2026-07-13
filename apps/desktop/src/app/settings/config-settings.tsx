@@ -112,7 +112,7 @@ function ConfigField({
   if (schema.type === 'boolean') {
     return row(
       <div className="flex items-center justify-end">
-        <Switch checked={Boolean(value)} onCheckedChange={onChange} />
+        <Switch aria-label={label} checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
     )
   }
@@ -125,7 +125,7 @@ function ConfigField({
         onValueChange={next => onChange(next === EMPTY_SELECT_VALUE ? '' : next)}
         value={String(value ?? '') || EMPTY_SELECT_VALUE}
       >
-        <SelectTrigger className={CONTROL_TEXT}>
+        <SelectTrigger aria-label={label} className={CONTROL_TEXT}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -146,6 +146,7 @@ function ConfigField({
   if (schema.type === 'number') {
     return row(
       <Input
+        aria-label={label}
         className={CONTROL_TEXT}
         onChange={e => {
           const raw = e.target.value
@@ -165,6 +166,7 @@ function ConfigField({
   if (schema.type === 'list') {
     return row(
       <Input
+        aria-label={label}
         className={CONTROL_TEXT}
         onChange={e =>
           onChange(
@@ -183,6 +185,7 @@ function ConfigField({
   if (typeof value === 'object' && value !== null) {
     return row(
       <Textarea
+        aria-label={label}
         className={cn('min-h-28 resize-y bg-background font-mono', CONTROL_TEXT)}
         onChange={e => {
           try {
@@ -204,6 +207,7 @@ function ConfigField({
   return row(
     isLong ? (
       <Textarea
+        aria-label={label}
         className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
         placeholder={c.notSet}
@@ -211,6 +215,7 @@ function ConfigField({
       />
     ) : (
       <Input
+        aria-label={label}
         className={CONTROL_TEXT}
         onChange={e => onChange(e.target.value)}
         placeholder={c.notSet}

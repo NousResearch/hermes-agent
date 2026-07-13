@@ -63,7 +63,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
       {visible.map(group => (
         <div className="grid gap-2" key={group.category}>
           {group.entries.map(([key, info]: [string, EnvVarInfo]) => {
-            const label = credentialRowLabel(key, info)
+            const label = t.settings.keys.fieldLabels?.[key] ?? credentialRowLabel(key, info)
 
             return (
               <CredentialKeyCard

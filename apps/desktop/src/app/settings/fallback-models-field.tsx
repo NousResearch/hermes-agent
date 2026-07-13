@@ -124,7 +124,7 @@ export function FallbackModelsField({
           <div className="flex flex-wrap items-center gap-2" key={index}>
             <span className="w-4 shrink-0 text-center font-mono text-[0.7rem] text-muted-foreground">{index + 1}</span>
             <Select onValueChange={provider => updateRow(index, { provider, model: '' })} value={entry.provider}>
-              <SelectTrigger className={cn('min-w-36', CONTROL_TEXT)}>
+              <SelectTrigger aria-label={m.provider} className={cn('min-w-36', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.provider} />
               </SelectTrigger>
               <SelectContent>
@@ -136,7 +136,7 @@ export function FallbackModelsField({
               </SelectContent>
             </Select>
             <Select onValueChange={model => updateRow(index, { model })} value={entry.model}>
-              <SelectTrigger className={cn('min-w-52 flex-1', CONTROL_TEXT)}>
+              <SelectTrigger aria-label={m.model} className={cn('min-w-52 flex-1', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.model} />
               </SelectTrigger>
               <SelectContent>

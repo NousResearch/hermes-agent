@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { deleteLearningNode, editLearningNode, getLearningNode } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { evictStarmapNode, loadStarmapGraph } from '@/store/starmap'
 
@@ -33,6 +34,7 @@ interface EditState {
 
 /** Right-click actions for a star-map node: edit (modal) or delete (confirm). */
 export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextMenuProps) {
+  const { t } = useI18n()
   const [editing, setEditing] = useState<EditState | null>(null)
   const [deleting, setDeleting] = useState<Omit<NodeMenuTarget, 'x' | 'y'> | null>(null)
   const [loading, setLoading] = useState(false)
@@ -120,22 +122,22 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
           >
             <div className="truncate px-2 py-1 text-[0.68rem] text-muted-foreground">{target.label}</div>
             <button
-              className="block w-full cursor-pointer rounded-md px-2 py-1 text-left text-xs hover:bg-(--ui-control-active-background) hover:text-foreground disabled:opacity-50"
+              className="block w-full cursor-pointer rounded-md px-2 py-1 text-start text-xs hover:bg-(--ui-control-active-background) hover:text-foreground disabled:opacity-50"
               disabled={loading}
               onClick={() => void openEdit()}
               type="button"
             >
-              Edit {noun}…
+              {t.starmap.editNode(target.kind)}
             </button>
             <button
-              className="block w-full cursor-pointer rounded-md px-2 py-1 text-left text-xs text-destructive hover:bg-destructive/10"
+              className="block w-full cursor-pointer rounded-md px-2 py-1 text-start text-xs text-destructive hover:bg-destructive/10"
               onClick={() => {
                 setDeleting({ id: target.id, kind: target.kind, label: target.label })
                 onClose()
               }}
               type="button"
             >
-              {target.kind === 'skill' ? 'Archive skill' : 'Delete memory'}
+              {target.kind === 'skill' ? t.starmap.archiveSkill : t.starmap.deleteMemory}
             </button>
           </div>
         </>
@@ -144,7 +146,7 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
       <Dialog onOpenChange={value => !value && !saving && setEditing(null)} open={Boolean(editing)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Edit {editing?.label}</DialogTitle>
+            <DialogTitle>{t.starmap.editTitle(editing?.label ?? '')}</DialogTitle>
           </DialogHeader>
           <div className="h-80">
             {editing && (
@@ -162,10 +164,10 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
           <DialogFooter>
             <Button disabled={saving} onClick={() => setEditing(null)} type="button" variant="ghost">
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button disabled={saving} onClick={() => void save()}>
-              {saving ? 'Saving…' : 'Save'}
+              {saving ? t.common.saving : t.common.save}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -186,8 +188,8 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
         />
       ) : (
         <ConfirmDialog
-          confirmLabel="Delete"
-          description="This memory is removed permanently."
+          confirmLabel={t.common.delete}
+          description={t.starmap.deleteMemoryDescription}
           destructive
           dismissOnConfirm
           onClose={() => setDeleting(null)}
@@ -211,7 +213,7 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
             )
           }}
           open={Boolean(deleting)}
-          title={`Delete ${deleting?.label ?? ''}?`}
+          title={t.starmap.deleteMemoryTitle(deleting?.label ?? '')}
         />
       )}
     </>

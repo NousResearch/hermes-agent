@@ -78,12 +78,14 @@ export function SidebarSessionRow({
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
-  const handleLabel = `Reorder ${title}`
+  const handleLabel = t.sidebar.projects.reorder(title)
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
-  const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
+  const handoffLabel = handoffSource
+    ? (t.messaging.platformNames[handoffSource] ?? sessionSourceLabel(handoffSource) ?? handoffSource)
+    : null
   // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
   // True when the session's most recent turn finished in the background (while

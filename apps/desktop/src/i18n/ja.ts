@@ -34,12 +34,18 @@ export const ja = defineLocale({
     refresh: '更新',
     remove: '削除',
     replace: '置き換え',
+    reset: 'リセット',
     retry: '再試行',
     run: '実行',
     send: '送信',
     set: '設定',
     skip: 'スキップ',
     update: '更新',
+    zoomIn: '拡大',
+    zoomOut: '縮小',
+    openFullView: '全体表示を開く',
+    openDiagram: '図を開く',
+    holdModifierToZoom: '⌘ を押しながらズーム',
     tryHint: term => `「${term}」を試す`,
     on: 'オン',
     off: 'オフ'
@@ -918,6 +924,9 @@ export const ja = defineLocale({
     skillUpdated: 'スキルを更新しました',
     edit: '編集',
     archive: 'アーカイブ',
+    archiveSkillTitle: name => `${name} をアーカイブしますか？`,
+    archiveSkillDescription: 'スキルはアーカイブされ、`hermes curator restore` で復元できます。',
+    archiveFailed: 'アーカイブに失敗しました',
     skillArchivedTitle: 'スキルをアーカイブしました',
     skillArchivedMessage: 'hermes curator restore で復元できます。'
   },
@@ -935,7 +944,13 @@ export const ja = defineLocale({
     loadFailed: 'メモリグラフを読み込めませんでした',
     loading: '読み込み中…',
     emptyTitle: 'まだ学習はありません',
-    emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。'
+    emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。',
+    editNode: kind => (kind === 'skill' ? 'スキルを編集…' : 'メモリを編集…'),
+    archiveSkill: 'スキルをアーカイブ',
+    deleteMemory: 'メモリを削除',
+    editTitle: label => `${label} を編集`,
+    deleteMemoryTitle: label => `${label} を削除しますか？`,
+    deleteMemoryDescription: 'このメモリは完全に削除されます。'
   },
   agents: {
     close: 'エージェントを閉じる',
@@ -1292,6 +1307,7 @@ export const ja = defineLocale({
     deleting: '削除中...',
     createDesc: 'プロファイルは独立した Hermes 環境です：設定、スキル、SOUL.md が別々になります。',
     nameLabel: '名前',
+    namePlaceholder: 'my-profile',
     cloneFrom: '複製元',
     cloneFromNone: 'なし（空）',
     cloneFromDesc: '選択したプロファイルから設定、スキル、SOUL.md をコピーします。',
@@ -1598,6 +1614,7 @@ export const ja = defineLocale({
 
   composer: {
     message: 'メッセージ',
+    addContext: 'コンテキストを追加',
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',

@@ -19,7 +19,7 @@ import {
   toggleSkill,
   toggleToolset
 } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { compactNumber } from '@/lib/format'
 import { queryClient, writeCache } from '@/lib/query-client'
@@ -102,9 +102,13 @@ const usageOf = (skill: SkillInfo): number => (typeof skill.usage === 'number' ?
 
 const categoryFor = (skill: SkillInfo): string => asText(skill.category) || 'general'
 
+function localizedCategory(category: string, t: Translations): string {
+  return t.skills.categoryLabels?.[category.trim().toLowerCase()] ?? prettyName(category)
+}
+
 // Row subtitle: category, with non-default origins badged.
-function skillSubtitle(skill: SkillInfo): React.ReactNode {
-  const category = prettyName(categoryFor(skill))
+function skillSubtitle(skill: SkillInfo, t: Translations): React.ReactNode {
+  const category = localizedCategory(categoryFor(skill), t)
   const provenance = skill.provenance
 
   return (
@@ -112,12 +116,12 @@ function skillSubtitle(skill: SkillInfo): React.ReactNode {
       <span className="truncate">{category}</span>
       {provenance === 'agent' && (
         <Badge className="shrink-0 normal-case" variant="default">
-          learned
+          {t.skills.provenance.agent}
         </Badge>
       )}
       {provenance === 'hub' && (
         <Badge className="shrink-0 normal-case" variant="muted">
-          hub
+          {t.skills.provenance.hub}
         </Badge>
       )}
     </>
@@ -139,11 +143,20 @@ function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): Skil
 const toolsetCalls = (toolset: ToolsetInfo, toolCalls: Record<string, number>): number =>
   toolNames(toolset).reduce((sum, name) => sum + (toolCalls[name] ?? 0), 0)
 
+function localizedToolsetName(toolset: ToolsetInfo, t: Translations): string {
+  return t.skills.toolsetNames[toolset.name] ?? toolsetDisplayLabel(toolset)
+}
+
+function localizedToolsetDescription(toolset: ToolsetInfo, t: Translations): string {
+  return t.skills.toolsetDescriptions[toolset.name] ?? asText(toolset.description)
+}
+
 function filteredToolsets(
   toolsets: ToolsetInfo[],
   query: string,
   toolCalls: Record<string, number>,
-  desc: boolean
+  desc: boolean,
+  t: Translations
 ): ToolsetInfo[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
@@ -161,14 +174,16 @@ function filteredToolsets(
       return (
         includesQuery(toolset.name, q) ||
         includesQuery(toolsetDisplayLabel(toolset), q) ||
+        includesQuery(localizedToolsetName(toolset, t), q) ||
         includesQuery(toolset.description, q) ||
+        includesQuery(localizedToolsetDescription(toolset, t), q) ||
         toolNames(toolset).some(name => includesQuery(name, q))
       )
     })
     .sort(
       (a, b) =>
         sign * (toolsetCalls(b, toolCalls) - toolsetCalls(a, toolCalls)) ||
-        toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b))
+        localizedToolsetName(a, t).localeCompare(localizedToolsetName(b, t))
     )
 }
 
@@ -276,8 +291,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   )
 
   const visibleToolsets = useMemo(
-    () => (toolsets ? filteredToolsets(toolsets, query, toolCalls ?? {}, toolsetsSortDesc) : []),
-    [query, toolCalls, toolsets, toolsetsSortDesc]
+    () => (toolsets ? filteredToolsets(toolsets, query, toolCalls ?? {}, toolsetsSortDesc, t) : []),
+    [query, t, toolCalls, toolsets, toolsetsSortDesc]
   )
 
   // Bulk actions ("All" master switch, "Disable unused") and the master-switch
@@ -300,7 +315,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       return [...counts.entries()]
         .sort(([, a], [, b]) => b - a)
         .slice(0, 5)
-        .map(([category]) => t.common.tryHint(category.toLowerCase()))
+        .map(([category]) => t.common.tryHint(localizedCategory(category, t)))
     }
 
     if (mode === 'toolsets' && toolsets?.length) {
@@ -355,7 +370,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
           current?.map(row => (row.name === toolset.name ? { ...row, enabled: !enabled, available: !enabled } : row)) ??
           current
       )
-      notifyError(err, t.skills.failedToUpdate(toolsetDisplayLabel(toolset)))
+      notifyError(err, t.skills.failedToUpdate(localizedToolsetName(toolset, t)))
     }
   }
 
@@ -600,7 +615,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
                   onSelect={() => setSelectedSkill(skill.name)}
                   onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                  subtitle={skillSubtitle(skill)}
+                  subtitle={skillSubtitle(skill, t)}
                   title={skill.name}
                   toggleLabel={skill.name}
                 />
@@ -630,7 +645,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
             }
           >
             {visibleToolsets.map(toolset => {
-              const label = toolsetDisplayLabel(toolset)
+              const label = localizedToolsetName(toolset, t)
               const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
 
               return (
@@ -645,12 +660,12 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                     ) : calls > 0 ? (
                       `×${compactNumber(calls)}`
                     ) : (
-                      `${toolNames(toolset).length} tools`
+                      t.skills.toolCount(toolNames(toolset).length)
                     )
                   }
                   onSelect={() => setSelectedToolset(toolset.name)}
                   onToggle={checked => void handleToggleToolset(toolset, checked)}
-                  subtitle={asText(toolset.description)}
+                  subtitle={localizedToolsetDescription(toolset, t)}
                   title={label}
                   toggleLabel={t.skills.toggleToolset(label)}
                 />
@@ -725,7 +740,7 @@ function SkillDetail({ onArchive, onEdit, skill }: { onArchive: () => void; onEd
         description={asText(skill.description) || t.skills.noDescription}
         pills={
           <>
-            <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
+            <PanelPill>{localizedCategory(categoryFor(skill), t)}</PanelPill>
             {skill.provenance && skill.provenance !== 'bundled' && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
                 {t.skills.provenance[skill.provenance]}
@@ -760,13 +775,13 @@ function ToolsetDetail({
 }) {
   const { t } = useI18n()
   const tools = toolNames(toolset)
-  const label = toolsetDisplayLabel(toolset)
+  const label = localizedToolsetName(toolset, t)
 
   return (
     <>
       {/* "Configured" as a resting state is noise — only the warn state earns a pill. */}
       <DetailHeader
-        description={asText(toolset.description) || t.skills.noDescription}
+        description={localizedToolsetDescription(toolset, t) || t.skills.noDescription}
         pills={!toolset.configured && <PanelPill tone="warn">{t.skills.needsKeys}</PanelPill>}
         title={label}
       />

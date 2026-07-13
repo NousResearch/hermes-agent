@@ -765,6 +765,11 @@ function SkillRow({
           checked={skill.enabled}
           onCheckedChange={onToggle}
           disabled={toggling}
+          aria-label={(
+            skill.enabled
+              ? (t.skills.disableSkill ?? "Disable {name}")
+              : (t.skills.enableSkill ?? "Enable {name}")
+          ).replace("{name}", skill.name)}
         />
       </div>
       <div className="flex-1 min-w-0">

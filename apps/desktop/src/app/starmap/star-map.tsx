@@ -3,6 +3,7 @@ import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
+import { useI18n } from '@/i18n'
 import { createDoubleTapDetector, isSmartZoomWheel } from '@/lib/trackpad-gestures'
 import type { StarmapGraph } from '@/types/hermes'
 
@@ -59,13 +60,21 @@ function invCineEase(y: number): number {
   return (lo + hi) / 2
 }
 
-function revealText(axis: TimeAxis, reveal: number): string {
+function revealText(axis: TimeAxis, reveal: number, locale: string): string {
   const date = dateAtReveal(axis, reveal)
 
-  return date !== null ? formatDate(date) : `${Math.round(reveal * axis.size)} / ${axis.size}`
+  return date !== null ? formatDate(date, locale) : `${Math.round(reveal * axis.size)} / ${axis.size}`
 }
 
-function RevealLabel({ axis, revealStore }: { axis: TimeAxis; revealStore: WritableAtom<number> }) {
+function RevealLabel({
+  axis,
+  locale,
+  revealStore
+}: {
+  axis: TimeAxis
+  locale: string
+  revealStore: WritableAtom<number>
+}) {
   const labelRef = useRef<HTMLSpanElement | null>(null)
 
   const sync = useCallback(
@@ -73,10 +82,10 @@ function RevealLabel({ axis, revealStore }: { axis: TimeAxis; revealStore: Writa
       const el = labelRef.current
 
       if (el) {
-        el.textContent = revealText(axis, reveal)
+        el.textContent = revealText(axis, reveal, locale)
       }
     },
-    [axis]
+    [axis, locale]
   )
 
   useEffect(() => revealStore.subscribe(sync), [revealStore, sync])
@@ -87,7 +96,7 @@ function RevealLabel({ axis, revealStore }: { axis: TimeAxis; revealStore: Writa
 
   return (
     <span className="tabular-nums text-foreground/75" ref={labelRef}>
-      {revealText(axis, revealStore.get())}
+      {revealText(axis, revealStore.get(), locale)}
     </span>
   )
 }
@@ -106,6 +115,11 @@ export function StarMap({
   onImport?: (graph: StarmapGraph) => void
   onResetMap?: () => void
 }) {
+  const { locale, t } = useI18n()
+  const localeRef = useRef(locale)
+  const translationsRef = useRef(t)
+  localeRef.current = locale
+  translationsRef.current = t
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
 
@@ -271,7 +285,7 @@ export function StarMap({
       return
     }
 
-    const { byId, links, nodes, rings, sim } = buildSimulation(graph, invalidate)
+    const { byId, links, nodes, rings, sim } = buildSimulation(graph, invalidate, locale)
     simRef.current = sim
     nodesRef.current = nodes
     linksRef.current = links
@@ -297,7 +311,7 @@ export function StarMap({
         simRef.current = null
       }
     }
-  }, [graph, invalidate, resetFades, size])
+  }, [graph, invalidate, locale, resetFades, size])
 
   useEffect(() => {
     adjacencyRef.current = adjacency
@@ -575,6 +589,7 @@ export function StarMap({
           hoverLink: hoveredLinkRef.current,
           hoverRing: hoveredRingRef.current,
           links: linksRef.current,
+          locale: localeRef.current,
           memById: memByIdRef.current,
           nodes: nodesRef.current,
           palette,
@@ -583,6 +598,7 @@ export function StarMap({
           selectedRing: selectedRingRef.current,
           size: sizeRef.current,
           snapMotion: snapMotionRef.current,
+          translations: translationsRef.current,
           vp: viewportRef.current
         })
 
@@ -959,13 +975,13 @@ export function StarMap({
       {/* Legend — bottom-left, one entry per line like a conventional key. */}
       <div className="pointer-events-none absolute bottom-2 left-2 flex flex-col gap-1 text-[0.62rem] text-muted-foreground">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block size-2 rounded-full bg-[var(--theme-primary)]/80" /> skill
+          <span className="inline-block size-2 rounded-full bg-[var(--theme-primary)]/80" /> {t.starmap.skill}
         </span>
         <span className="flex items-center gap-1.5">
           <span className="inline-block size-2 rotate-45" style={{ backgroundColor: memoryColor }} /> memory
         </span>
-        <span className="text-[0.58rem] text-muted-foreground/65">core = oldest · outer = newer</span>
-        <RevealLabel axis={timeAxis} revealStore={revealStore} />
+        <span className="text-[0.58rem] text-muted-foreground/65">{t.starmap.coreAge}</span>
+        <RevealLabel axis={timeAxis} locale={locale} revealStore={revealStore} />
       </div>
     </div>
   )

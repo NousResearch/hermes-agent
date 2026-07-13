@@ -3,6 +3,7 @@ import { type FC } from 'react'
 
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { LinkifiedText } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
@@ -10,6 +11,7 @@ const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
 const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
 
 export const SystemMessage: FC = () => {
+  const { t } = useI18n()
   const text = useAuiState(s => messageContentText(s.message.content))
 
   if (!text) {
@@ -26,7 +28,7 @@ export const SystemMessage: FC = () => {
         data-slot="aui_system-message-root"
       >
         <Codicon className="text-muted-foreground/55" name="compass" size="0.75rem" />
-        <span className="text-muted-foreground/55">steered</span>
+        <span className="text-muted-foreground/55">{t.assistant.thread.steered}</span>
         <span className="text-muted-foreground/35">·</span>
         <span className="whitespace-pre-wrap">{steerNote.groups.text.trim()}</span>
       </MessagePrimitive.Root>

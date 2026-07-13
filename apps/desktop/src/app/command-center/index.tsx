@@ -25,7 +25,6 @@ import {
   Wrench
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
-import { fmtDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -57,7 +56,11 @@ interface CommandCenterViewProps {
   onOpenSession: (sessionId: string) => void
 }
 
-function formatTimestamp(value?: number | null): string {
+function localeTag(locale: string): string {
+  return locale === 'ar' ? 'ar-EG' : locale
+}
+
+function formatTimestamp(value: null | number | undefined, locale: string): string {
   if (!value) {
     return ''
   }
@@ -68,7 +71,7 @@ function formatTimestamp(value?: number | null): string {
     return ''
   }
 
-  return fmtDateTime.format(date)
+  return new Intl.DateTimeFormat(localeTag(locale), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -127,7 +130,7 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
 }
 
 export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const cc = t.commandCenter
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
@@ -365,7 +368,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                             {sessionTitle(session)}
                           </div>
                           <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                            {formatTimestamp(session.last_active || session.started_at)}
+                            {formatTimestamp(session.last_active || session.started_at, locale)}
                           </div>
                         </button>
                         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
@@ -501,23 +504,23 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   )
 }
 
-function formatTokens(value: null | number | undefined): string {
+function formatTokens(value: null | number | undefined, locale: string): string {
   const num = Number(value || 0)
+  const number = new Intl.NumberFormat(localeTag(locale), { maximumFractionDigits: 1 })
 
   if (num >= 1_000_000) {
-    return `${(num / 1_000_000).toFixed(1)}M`
+    return locale === 'ar' ? `${number.format(num / 1_000_000)} مليون` : `${number.format(num / 1_000_000)}M`
   }
 
   if (num >= 1_000) {
-    return `${(num / 1_000).toFixed(1)}K`
+    return locale === 'ar' ? `${number.format(num / 1_000)} ألف` : `${number.format(num / 1_000)}K`
   }
 
-  // Locale pinned so digits stay western regardless of system locale (file convention).
-  return num.toLocaleString('en-US')
+  return num.toLocaleString(localeTag(locale))
 }
 
-function formatInteger(value: null | number | undefined): string {
-  return Number(value ?? 0).toLocaleString('en-US')
+function formatInteger(value: null | number | undefined, locale: string): string {
+  return Number(value ?? 0).toLocaleString(localeTag(locale))
 }
 
 interface UsagePanelProps {
@@ -529,7 +532,7 @@ interface UsagePanelProps {
 }
 
 function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const cc = t.commandCenter
   const daily = useMemo(() => usage?.daily ?? [], [usage])
   const totals = usage?.totals
@@ -613,8 +616,8 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                     key={entry.day}
                     title={cc.dayUsageTooltip(
                       entry.day,
-                      formatTokens(entry.input_tokens),
-                      formatTokens(entry.output_tokens)
+                      formatTokens(entry.input_tokens, locale),
+                      formatTokens(entry.output_tokens, locale)
                     )}
                   >
                     <div
@@ -652,7 +655,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={topSkills.slice(0, 6).map(entry => ({
             key: entry.skill,
             label: entry.skill,
-            value: cc.actions(formatInteger(entry.total_count))
+            value: cc.actions(formatInteger(entry.total_count, locale))
           }))}
           title={cc.topSkills}
         />

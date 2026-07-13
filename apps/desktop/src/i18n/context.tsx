@@ -1,3 +1,4 @@
+import { Direction } from 'radix-ui'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
@@ -97,6 +98,8 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       document.documentElement.lang = locale
       document.documentElement.dir = localeDirection(locale)
     }
+
+    window.hermesDesktop?.setApplicationLocale?.(locale)
   }, [locale])
 
   useEffect(() => {
@@ -180,7 +183,11 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     [configLoadError, isLoadingConfig, isSavingLocale, locale, saveError, setLocale]
   )
 
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
+  return (
+    <Direction.Provider dir={localeDirection(locale)}>
+      <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
+    </Direction.Provider>
+  )
 }
 
 export function useI18n(): I18nContextValue {

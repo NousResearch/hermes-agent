@@ -76,7 +76,14 @@ export function AboutSettings() {
   let statusTone: 'idle' | 'available' | 'error' = 'idle'
 
   if (!supported) {
-    statusLine = status?.message ?? a.cantUpdate
+    const sourceInstallMatch = status?.message?.match(
+      /^(.*) isn't a git checkout — desktop self-update only runs against a source install\.$/
+    )
+
+    statusLine =
+      sourceInstallMatch && a.sourceInstallOnly
+        ? a.sourceInstallOnly(sourceInstallMatch[1])
+        : (status?.message ?? a.cantUpdate)
     statusTone = 'error'
   } else if (status?.error) {
     statusLine = a.cantReach
@@ -172,7 +179,7 @@ export function AboutSettings() {
 
         <ListRow
           description={a.automaticUpdatesDesc}
-          hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          hint={a.branchCommit(status?.branch ?? a.unknown, status?.currentSha?.slice(0, 7) ?? a.unknown)}
           title={a.automaticUpdates}
         />
 

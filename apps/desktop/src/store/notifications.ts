@@ -72,6 +72,15 @@ function cleanErrorText(value: string) {
 
 const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string) => string }[] = [
   {
+    test: msg => /timed out connecting to hermes backend after \d+ms/i.test(msg),
+    summarize: msg => {
+      const milliseconds = Number(msg.match(/after (\d+)ms/i)?.[1] ?? 0)
+      const seconds = milliseconds > 0 ? String(Math.round(milliseconds / 1000)) : ''
+
+      return translateNow('notifications.errors.backendTimeout', seconds)
+    }
+  },
+  {
     test: msg => /incorrect api key provided/i.test(msg) || /['"]code['"]\s*:\s*['"]invalid_api_key['"]/i.test(msg),
     summarize: msg => {
       const status = msg.match(/(?:error code|status(?:Code)?)[^\d]*(\d{3})/i)?.[1]
@@ -118,8 +127,9 @@ function readableError(error: unknown, fallback: string): { message: string; det
   const cleaned = cleanErrorText(unwrapped)
   const detail = cleaned.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] ?? cleaned
   const summary = summarizeErrorMessage(detail, fallback)
+  const hideRedundantTechnicalDetail = /timed out connecting to hermes backend after \d+ms/i.test(detail)
 
-  return { message: summary, detail: detail === summary ? undefined : detail }
+  return { message: summary, detail: detail === summary || hideRedundantTechnicalDetail ? undefined : detail }
 }
 
 export function notify(input: NotificationInput): string {

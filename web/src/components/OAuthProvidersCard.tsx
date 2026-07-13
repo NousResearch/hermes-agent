@@ -127,7 +127,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
       onSuccess?.(
         (t.oauth.disconnectedToast ?? en.oauth.disconnectedToast!).replace(
           "{name}",
-          provider.name,
+          t.oauth.providerNames?.[provider.id] ?? provider.name,
         ),
       );
       refresh();
@@ -184,6 +184,8 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         )}
         <div className="flex flex-col divide-y divide-border">
           {providers?.map((p) => {
+            const providerName =
+              t.oauth.providerNames?.[p.id] ?? p.name;
             const expiresLabel = formatExpiresAt(
               p.status.expires_at,
               t.oauth.expiresIn,
@@ -210,7 +212,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   )}
                   <div className="flex flex-col min-w-0 gap-0.5">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-sm">{p.name}</span>
+                      <span className="font-medium text-sm">{providerName}</span>
                       <Badge
                         tone="outline"
                         className="text-xs tracking-wide"
@@ -277,20 +279,23 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
 
                 <div className="flex items-center gap-1.5 shrink-0">
                   {p.docs_url && (
-                    <a
-                      href={p.docs_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex"
+                    <Button
+                      ghost
+                      size="icon"
+                      onClick={() =>
+                        window.open(p.docs_url, "_blank", "noopener,noreferrer")
+                      }
                       title={(
                         t.oauth.openProviderDocs ??
                         en.oauth.openProviderDocs!
-                      ).replace("{name}", p.name)}
+                      ).replace("{name}", providerName)}
+                      aria-label={(
+                        t.oauth.openProviderDocs ??
+                        en.oauth.openProviderDocs!
+                      ).replace("{name}", providerName)}
                     >
-                      <Button ghost size="icon">
-                        <ExternalLink />
-                      </Button>
-                    </a>
+                      <ExternalLink />
+                    </Button>
                   )}
                   {!p.status.logged_in && p.flow !== "external" && (
                     <Button
@@ -327,7 +332,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
       </CardContent>
       {loginFor && (
         <OAuthLoginModal
-          provider={loginFor}
+          provider={{
+            ...loginFor,
+            name: t.oauth.providerNames?.[loginFor.id] ?? loginFor.name,
+          }}
           onClose={() => {
             setLoginFor(null);
             refresh();
@@ -345,14 +353,22 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         title={(
           t.oauth.disconnectTitle ??
           en.oauth.disconnectTitle!
-        ).replace("{name}", disconnectTarget?.name ?? "")}
+        ).replace(
+          "{name}",
+          disconnectTarget
+            ? (t.oauth.providerNames?.[disconnectTarget.id] ??
+              disconnectTarget.name)
+            : "",
+        )}
         description={(
           t.oauth.disconnectDescription ??
           en.oauth.disconnectDescription!
         ).replace(
           "{name}",
-          disconnectTarget?.name ??
-            (t.oauth.thisProvider ?? en.oauth.thisProvider!),
+          disconnectTarget
+            ? (t.oauth.providerNames?.[disconnectTarget.id] ??
+              disconnectTarget.name)
+            : (t.oauth.thisProvider ?? en.oauth.thisProvider!),
         )}
         destructive
         confirmLabel={t.oauth.disconnect}

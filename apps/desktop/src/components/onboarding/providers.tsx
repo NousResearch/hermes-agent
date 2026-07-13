@@ -17,7 +17,8 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
+export const providerTitle = (p: OAuthProvider, localizedNames?: Record<string, string>) =>
+  localizedNames?.[p.id] ?? PROVIDER_DISPLAY[p.id]?.title ?? p.name
 const orderOf = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.order ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
@@ -44,7 +45,7 @@ export function FeaturedProviderRow({
         <div className="flex items-center gap-2">
           <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {providerTitle(provider)}
+            {providerTitle(provider, t.onboarding.providerNames)}
           </span>
           {loggedIn ? (
             <ConnectedTag />
@@ -117,7 +118,7 @@ export function ProviderRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {providerTitle(provider)}
+            {providerTitle(provider, t.onboarding.providerNames)}
           </span>
           {loggedIn ? <ConnectedTag /> : null}
         </div>

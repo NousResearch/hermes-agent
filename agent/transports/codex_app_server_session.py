@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
@@ -71,6 +72,10 @@ class TurnResult:
     error: Optional[str] = None  # Set if turn ended in a non-recoverable error
     turn_id: Optional[str] = None
     thread_id: Optional[str] = None
+    token_usage_last: Optional[dict[str, Any]] = None
+    token_usage_total: Optional[dict[str, Any]] = None
+    model_context_window: Optional[int] = None
+    compacted: bool = False
     # Hint to the caller that the underlying codex subprocess is likely
     # wedged (turn-level timeout fired, post-tool watchdog tripped, or
     # token-refresh failure killed the child). The caller should retire
@@ -85,6 +90,39 @@ class TurnResult:
 # items when an interrupt or upstream error tears the turn down before the
 # normal completion path fires. Mirrors openclaw beta.8 fix.
 _TURN_ABORTED_MARKERS = ("<turn_aborted>", "<turn_aborted/>")
+
+
+def _coerce_turn_input_text(user_input: Any) -> str:
+    """Collapse Hermes/OpenAI rich content into app-server text input.
+
+    The current `turn/start` path sends text items only. TUI image attachment
+    can hand us OpenAI-style content parts, so keep the text/path hints and
+    replace opaque image payloads with a small marker instead of putting a
+    Python list into the `text` field.
+    """
+    if isinstance(user_input, str):
+        return user_input
+    if isinstance(user_input, list):
+        parts: list[str] = []
+        for item in user_input:
+            if isinstance(item, str):
+                if item.strip():
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                if item is not None:
+                    parts.append(str(item))
+                continue
+            item_type = item.get("type")
+            if item_type in {"text", "input_text"}:
+                text = item.get("text") or item.get("content") or ""
+                if text:
+                    parts.append(str(text))
+            elif item_type in {"image", "image_url", "input_image"}:
+                parts.append("[image attached]")
+        text = "\n\n".join(p for p in parts if p).strip()
+        return text or "What do you see in this image?"
+    return "" if user_input is None else str(user_input)
 
 
 # Substrings in codex stderr / JSON-RPC error messages that signal the
@@ -327,7 +365,7 @@ class CodexAppServerSession:
 
     def run_turn(
         self,
-        user_input: str,
+        user_input: Any,
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
@@ -365,6 +403,8 @@ class CodexAppServerSession:
         self._interrupt_event.clear()
         projector = CodexEventProjector()
 
+        user_input_text = _coerce_turn_input_text(user_input)
+
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
         try:
@@ -372,7 +412,7 @@ class CodexAppServerSession:
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input}],
+                    "input": [{"type": "text", "text": user_input_text}],
                 },
                 timeout=10,
             )
@@ -465,6 +505,8 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    _apply_token_usage_notification(result, pending)
+                    _apply_compaction_notification(result, pending)
                     self._track_pending_file_change(pending)
                     proj = projector.project(pending)
                     if proj.messages:
@@ -499,6 +541,9 @@ class CodexAppServerSession:
                     self._on_event(note)
                 except Exception:  # pragma: no cover - display callback
                     logger.debug("on_event callback raised", exc_info=True)
+
+            _apply_token_usage_notification(result, note)
+            _apply_compaction_notification(result, note)
 
             # Track in-progress fileChange items so the approval bridge
             # can surface a real change summary when codex requests
@@ -546,7 +591,7 @@ class CodexAppServerSession:
                         (note.get("params") or {}).get("turn") or {}
                     ).get("error")
                     if err_obj:
-                        err_msg = err_obj.get("message") or str(err_obj)
+                        err_msg = _format_responses_error(err_obj, str(turn_status))
                         # If the turn failed for an auth/refresh reason,
                         # rewrite the error into a re-auth hint AND mark
                         # the session for retirement.
@@ -562,6 +607,19 @@ class CodexAppServerSession:
                                 f"turn ended status={turn_status}", err_msg
                             )
 
+        if (
+            not turn_complete
+            and not result.interrupted
+            and result.final_text
+            and result.error is None
+        ):
+            logger.warning(
+                "codex app-server turn reached deadline after a completed "
+                "assistant message but before turn/completed; accepting "
+                "the assistant text as the terminal response"
+            )
+            turn_complete = True
+
         if not turn_complete and not result.interrupted:
             # Hit the deadline. Issue interrupt to stop wasted compute, and
             # tell the caller to retire the session — a turn that never
@@ -572,6 +630,154 @@ class CodexAppServerSession:
             if not result.error:
                 result.error = self._format_error_with_stderr(
                     f"turn timed out after {turn_timeout}s"
+                )
+            result.should_retire = True
+
+        return result
+
+    def compact_thread(
+        self,
+        *,
+        turn_timeout: float = 600.0,
+        notification_poll_timeout: float = 0.25,
+    ) -> TurnResult:
+        """Trigger Codex-native history compaction for the current thread.
+
+        `thread/compact/start` returns immediately; the actual compaction
+        progress streams through the same turn/item notifications as a normal
+        turn. We wait for the matching `turn/completed` so callers can treat a
+        successful return as a completed compaction boundary.
+        """
+        result = TurnResult()
+        try:
+            self.ensure_started()
+        except (CodexAppServerError, TimeoutError) as exc:
+            result.error = self._format_error_with_stderr(
+                "codex app-server startup failed", exc
+            )
+            result.should_retire = True
+            return result
+
+        assert self._client is not None and self._thread_id is not None
+        result.thread_id = self._thread_id
+        self._interrupt_event.clear()
+        projector = CodexEventProjector()
+
+        try:
+            self._client.request(
+                "thread/compact/start",
+                {"threadId": self._thread_id},
+                timeout=10,
+            )
+        except CodexAppServerError as exc:
+            stderr_blob = "\n".join(self._client.stderr_tail(40))
+            hint = _classify_oauth_failure(exc.message, stderr_blob)
+            if hint is not None:
+                result.error = hint
+                result.should_retire = True
+            else:
+                result.error = self._format_error_with_stderr(
+                    "thread/compact/start failed", exc
+                )
+            return result
+        except TimeoutError as exc:
+            stderr_blob = "\n".join(self._client.stderr_tail(40))
+            hint = _classify_oauth_failure(stderr_blob)
+            result.error = hint or self._format_error_with_stderr(
+                "thread/compact/start timed out", exc
+            )
+            result.should_retire = True
+            return result
+
+        deadline = time.monotonic() + turn_timeout
+        turn_complete = False
+
+        while time.monotonic() < deadline and not turn_complete:
+            if self._interrupt_event.is_set():
+                self._issue_interrupt(result.turn_id)
+                result.interrupted = True
+                break
+
+            if not self._client.is_alive():
+                stderr_blob = "\n".join(self._client.stderr_tail(60))
+                hint = _classify_oauth_failure(stderr_blob)
+                if hint is not None:
+                    result.error = hint
+                else:
+                    result.error = self._format_error_with_stderr(
+                        "codex app-server subprocess exited unexpectedly",
+                        tail_lines=20,
+                    )
+                result.should_retire = True
+                break
+
+            sreq = self._client.take_server_request(timeout=0)
+            if sreq is not None:
+                self._handle_server_request(sreq)
+                continue
+
+            note = self._client.take_notification(
+                timeout=notification_poll_timeout
+            )
+            if note is None:
+                continue
+
+            method = note.get("method", "")
+            if self._on_event is not None:
+                try:
+                    self._on_event(note)
+                except Exception:  # pragma: no cover - display callback
+                    logger.debug("on_event callback raised", exc_info=True)
+
+            _apply_token_usage_notification(result, note)
+            _apply_compaction_notification(result, note)
+            self._track_pending_file_change(note)
+
+            projection = projector.project(note)
+            if projection.messages:
+                result.projected_messages.extend(projection.messages)
+            if projection.is_tool_iteration:
+                result.tool_iterations += 1
+            if projection.final_text is not None:
+                result.final_text = projection.final_text
+                if _has_turn_aborted_marker(projection.final_text):
+                    turn_complete = True
+                    result.interrupted = True
+                    result.error = (
+                        result.error or "codex reported turn_aborted"
+                    )
+
+            if method == "turn/started":
+                turn_obj = (note.get("params") or {}).get("turn") or {}
+                result.turn_id = turn_obj.get("id") or result.turn_id
+            elif method == "turn/completed":
+                turn_complete = True
+                turn_obj = (note.get("params") or {}).get("turn") or {}
+                result.turn_id = turn_obj.get("id") or result.turn_id
+                turn_status = turn_obj.get("status")
+                if turn_status == "interrupted":
+                    result.interrupted = True
+                    result.error = result.error or "compact turn interrupted"
+                elif turn_status and turn_status != "completed":
+                    err_obj = turn_obj.get("error")
+                    err_msg = _format_responses_error(err_obj, str(turn_status))
+                    stderr_blob = "\n".join(self._client.stderr_tail(40))
+                    hint = _classify_oauth_failure(err_msg, stderr_blob)
+                    if hint is not None:
+                        result.error = hint
+                        result.should_retire = True
+                    else:
+                        result.error = self._format_error_with_stderr(
+                            f"compact turn ended status={turn_status}",
+                            err_msg,
+                        )
+
+        if not turn_complete and not result.interrupted:
+            self._issue_interrupt(result.turn_id)
+            result.interrupted = True
+            if not result.error:
+                result.error = self._format_error_with_stderr(
+                    f"compact turn timed out after {turn_timeout}s"
                 )
             result.should_retire = True
 
@@ -764,6 +970,62 @@ class CodexAppServerSession:
         if not cached:
             return None
         return cached
+
+
+def _apply_token_usage_notification(result: TurnResult, note: dict) -> None:
+    """Capture Codex app-server token usage updates for caller accounting.
+
+    Codex does not put token usage on turn/completed. It emits a separate
+    thread/tokenUsage/updated notification containing cumulative totals and
+    the latest turn breakdown.
+    """
+    if not isinstance(note, dict) or note.get("method") != "thread/tokenUsage/updated":
+        return
+    params = note.get("params") or {}
+    token_usage = params.get("tokenUsage") or {}
+    if not isinstance(token_usage, dict):
+        return
+    last = token_usage.get("last")
+    total = token_usage.get("total")
+    if isinstance(last, dict):
+        result.token_usage_last = dict(last)
+    if isinstance(total, dict):
+        result.token_usage_total = dict(total)
+    window = token_usage.get("modelContextWindow")
+    if isinstance(window, int) and window > 0:
+        result.model_context_window = window
+
+
+def _apply_compaction_notification(result: TurnResult, note: dict) -> None:
+    """Capture Codex-native context compaction boundaries.
+
+    Recent app-server builds expose compaction as a ContextCompaction item.
+    Older builds also emit the deprecated thread/compacted notification. Both
+    mean the underlying Codex thread history has been compacted.
+    """
+    if not isinstance(note, dict):
+        return
+    method = note.get("method") or ""
+    params = note.get("params") or {}
+    if not isinstance(params, dict):
+        return
+
+    if method == "thread/compacted":
+        result.compacted = True
+        result.thread_id = params.get("threadId") or result.thread_id
+        result.turn_id = params.get("turnId") or result.turn_id
+        return
+
+    if method not in {"item/started", "item/completed"}:
+        return
+
+    item = params.get("item") or {}
+    if not isinstance(item, dict) or item.get("type") != "contextCompaction":
+        return
+
+    result.compacted = True
+    result.thread_id = params.get("threadId") or result.thread_id
+    result.turn_id = params.get("turnId") or result.turn_id
 
 
 def _approval_choice_to_codex_decision(choice: str) -> str:

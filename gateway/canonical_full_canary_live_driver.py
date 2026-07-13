@@ -189,9 +189,7 @@ def _strict_json(raw: bytes, code: str) -> Mapping[str, Any]:
         value = json.loads(
             raw.decode("utf-8", errors="strict"),
             object_pairs_hook=reject_duplicates,
-            parse_constant=lambda _token: (_ for _ in ()).throw(
-                ValueError("constant")
-            ),
+            parse_constant=lambda _token: (_ for _ in ()).throw(ValueError("constant")),
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise LiveCanaryError(code) from exc
@@ -270,9 +268,7 @@ def _stable_read(
         and stat.S_IMODE(before.st_mode) != expected_mode
     ):
         _fail("trusted_file_identity_invalid")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
-        os, "O_NOFOLLOW", 0
-    )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -363,7 +359,10 @@ def _atomic_write_root(
         os.fchmod(descriptor, mode)
         offset = 0
         while offset < len(payload):
-            offset += os.write(descriptor, payload[offset:])
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                _fail("root_artifact_write_stalled")
+            offset += written
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1
@@ -403,9 +402,7 @@ def _read_staged_writer_config(
         _fail("staged_writer_config_identity_invalid")
     descriptor = os.open(
         path,
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     chunks: list[bytes] = []
     total = 0
@@ -517,10 +514,8 @@ def _reconcile_existing_staged_writer_config(
         or not isinstance(scope, Mapping)
     ):
         _fail("staged_writer_config_unreconciled")
-    prior_receipt_generation = (
-        observe_canary_preclaim_reconciliation_generation(
-            DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH
-        )
+    prior_receipt_generation = observe_canary_preclaim_reconciliation_generation(
+        DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH
     )
     try:
         reconciler()
@@ -631,7 +626,10 @@ def _atomic_stage_writer_config(
             os.fchmod(descriptor, mode)
             offset = 0
             while offset < len(payload):
-                offset += os.write(descriptor, payload[offset:])
+                written = os.write(descriptor, payload[offset:])
+                if written <= 0:
+                    _fail("staged_writer_config_write_stalled")
+                offset += written
             os.fsync(descriptor)
             os.close(descriptor)
             descriptor = -1
@@ -863,12 +861,11 @@ def wait_for_fresh_owner_approval(
     path: Path = DEFAULT_APPROVAL_PATH,
     timeout_seconds: float = 900.0,
     poll_seconds: float = 0.1,
-    loader: Callable[[Path], FullCanaryOwnerApproval] = (
-        load_full_canary_approval
-    ),
+    loader: Callable[[Path], FullCanaryOwnerApproval] = (load_full_canary_approval),
     monotonic: Callable[[], float] = time.monotonic,
     now: Callable[[], float] = time.time,
     sleeper: Callable[[float], None] = time.sleep,
+    ready_callback: Callable[[], None] | None = None,
     process_guard: Callable[[], None] = _require_root_linux,
 ) -> FullCanaryOwnerApproval:
     """Wait boundedly for a newly published approval for this exact plan.
@@ -888,6 +885,8 @@ def wait_for_fresh_owner_approval(
         or isinstance(poll_seconds, bool)
         or not isinstance(poll_seconds, (int, float))
         or not 0.01 <= poll_seconds <= 1.0
+        or ready_callback is not None
+        and not callable(ready_callback)
     ):
         _fail("owner_approval_wait_bounds_invalid")
 
@@ -922,6 +921,11 @@ def wait_for_fresh_owner_approval(
     baseline = identity()
     wait_started_unix = int(now())
     deadline = monotonic() + float(timeout_seconds)
+    if ready_callback is not None:
+        # The exact pre-existing approval identity is captured before the
+        # coordinator tells the owner which plan digest is awaiting approval.
+        # This closes the publication race without persisting any secret.
+        ready_callback()
     while monotonic() <= deadline:
         observed = identity()
         if observed is not None and observed != baseline:
@@ -1068,9 +1072,7 @@ def _logical_journal_snapshot(
             rows = connection.execute(
                 f"SELECT {order} FROM {table} ORDER BY {order}"  # noqa: S608
             ).fetchall()
-            projection[table] = [
-                {name: row[name] for name in columns} for row in rows
-            ]
+            projection[table] = [{name: row[name] for name in columns} for row in rows]
         connection.execute("COMMIT")
     except sqlite3.Error as exc:
         raise LiveCanaryError("edge_journal_snapshot_failed") from exc
@@ -1160,7 +1162,9 @@ def _read_edge_routeback(
     receipt_raw = row["receipt_json"].encode("utf-8", errors="strict")
     request = _strict_json(request_raw, "edge_routeback_request_invalid")
     receipt = _strict_json(receipt_raw, "edge_routeback_receipt_invalid")
-    if request_raw != _canonical_bytes(request) or receipt_raw != _canonical_bytes(receipt):
+    if request_raw != _canonical_bytes(request) or receipt_raw != _canonical_bytes(
+        receipt
+    ):
         _fail("edge_routeback_not_canonical")
     return {
         "provenance": "live_discord_edge_signed_receipt",
@@ -1172,24 +1176,22 @@ def _read_edge_routeback(
 class RootEvidenceCollector:
     """Authenticated in-process root collector for one sealed canary run."""
 
-    _FRAME_FIELDS = frozenset(
-        {
-            "schema",
-            "sequence",
-            "event",
-            "release_sha",
-            "release_sha256",
-            "canary_run_id",
-            "case_id",
-            "fixture_sha256",
-            "collector_service_identity_sha256",
-            "discord_edge_service_identity_sha256",
-            "session_id",
-            "turn_id",
-            "observed_at_unix_ms",
-            "payload",
-        }
-    )
+    _FRAME_FIELDS = frozenset({
+        "schema",
+        "sequence",
+        "event",
+        "release_sha",
+        "release_sha256",
+        "canary_run_id",
+        "case_id",
+        "fixture_sha256",
+        "collector_service_identity_sha256",
+        "discord_edge_service_identity_sha256",
+        "session_id",
+        "turn_id",
+        "observed_at_unix_ms",
+        "payload",
+    })
 
     def __init__(
         self,
@@ -1332,8 +1334,7 @@ class RootEvidenceCollector:
                 )
                 value = _strict_json(raw, "edge_readiness_invalid")
                 if (
-                    value.get("version")
-                    == "muncho-discord-edge-readiness-v1"
+                    value.get("version") == "muncho-discord-edge-readiness-v1"
                     and value.get("config_sha256")
                     == self.plan.artifacts["edge_config"].sha256
                     and type(value.get("edge_pid")) is int
@@ -1372,9 +1373,7 @@ class RootEvidenceCollector:
             "full_canary_plan_sha256": self.plan.sha256,
             "canary_run_id": self.fixture["canary_run_id"],
             "edge_pid": edge_readiness["edge_pid"],
-            "edge_service_identity_sha256": readiness_receipt_sha256(
-                edge_readiness
-            ),
+            "edge_service_identity_sha256": readiness_receipt_sha256(edge_readiness),
             "collector_socket": {
                 "path": str(DEFAULT_COLLECTOR_SOCKET),
                 "device": socket_item.st_dev,
@@ -1447,12 +1446,10 @@ class RootEvidenceCollector:
             or frame.get("schema") != PLUGIN_FRAME_SCHEMA
             or frame.get("sequence") != expected_sequence
             or frame.get("release_sha") != self.plan.revision
-            or frame.get("release_sha256")
-            != self.plan.release["artifact_sha256"]
+            or frame.get("release_sha256") != self.plan.release["artifact_sha256"]
             or frame.get("canary_run_id") != self.fixture["canary_run_id"]
             or frame.get("case_id") != self.fixture["case_id"]
-            or frame.get("fixture_sha256")
-            != self.plan.artifacts["e2e_fixture"].sha256
+            or frame.get("fixture_sha256") != self.plan.artifacts["e2e_fixture"].sha256
             or frame.get("collector_service_identity_sha256")
             != readiness.get("service_identity_sha256")
             or frame.get("discord_edge_service_identity_sha256")
@@ -1497,9 +1494,7 @@ class RootEvidenceCollector:
             "schema": PLUGIN_READINESS_SCHEMA,
             "full_canary_plan_sha256": self.plan.sha256,
             "canary_run_id": self.fixture["canary_run_id"],
-            "collector_readiness_file_sha256": (
-                self._collector_readiness_file_sha256
-            ),
+            "collector_readiness_file_sha256": (self._collector_readiness_file_sha256),
             "gateway_peer": {
                 "pid": peer.pid,
                 "start_time_ticks": peer.start_time_ticks,
@@ -1768,7 +1763,9 @@ class LoopbackCanaryClient:
             _fail("api_session_create_invalid")
 
     @staticmethod
-    def _parse_sse(response: http.client.HTTPResponse) -> list[tuple[str, Mapping[str, Any]]]:
+    def _parse_sse(
+        response: http.client.HTTPResponse,
+    ) -> list[tuple[str, Mapping[str, Any]]]:
         events: list[tuple[str, Mapping[str, Any]]] = []
         total = 0
         event_name: str | None = None
@@ -1862,7 +1859,9 @@ class LoopbackCanaryClient:
         if len(run_ids) != 1 or len(session_ids) != 1 or session_ids != {session}:
             _fail("api_sse_correlation_invalid")
         run_id = _safe_id(next(iter(run_ids)), "api_sse_correlation_invalid")
-        assistant = next(payload for name, payload in events if name == "assistant.completed")
+        assistant = next(
+            payload for name, payload in events if name == "assistant.completed"
+        )
         terminal = next(payload for name, payload in events if name == "run.completed")
         started = next(payload for name, payload in events if name == "run.started")
         message_id = _safe_id(
@@ -1876,8 +1875,7 @@ class LoopbackCanaryClient:
             or terminal.get("interrupted") is not False
             or terminal.get("failed") is not False
             or terminal.get("status") != "completed"
-            or terminal.get("turn_exit_reason")
-            != "text_response(finish_reason=stop)"
+            or terminal.get("turn_exit_reason") != "text_response(finish_reason=stop)"
             or assistant.get("status") != "completed"
         ):
             _fail("api_sse_completion_not_honest")
@@ -1944,7 +1942,9 @@ def _verify_listener_binding(
     if not isinstance(identities, Mapping) or not isinstance(expected, Mapping):
         _fail("api_listener_receipt_missing")
     gateway = identities.get("gateway")
-    if not isinstance(gateway, Mapping) or not isinstance(gateway.get("receipt"), Mapping):
+    if not isinstance(gateway, Mapping) or not isinstance(
+        gateway.get("receipt"), Mapping
+    ):
         _fail("api_listener_receipt_missing")
     pid = gateway["receipt"].get("gateway_pid")
     if type(pid) is not int or pid <= 1 or dict(checker(pid)) != dict(expected):
@@ -1963,7 +1963,9 @@ def _read_projection_events(plan: FullCanaryPlan) -> list[Mapping[str, Any]]:
     )
     value = _strict_json(raw, "projection_export_invalid")
     events = value.get("events")
-    if not isinstance(events, list) or any(not isinstance(item, Mapping) for item in events):
+    if not isinstance(events, list) or any(
+        not isinstance(item, Mapping) for item in events
+    ):
         _fail("projection_export_invalid")
     if len(events) != len({str(item.get("event_id")) for item in events}):
         _fail("projection_export_duplicate_event")
@@ -2026,21 +2028,19 @@ def _projection_case_events(
     return events
 
 
-_READBACK_FIELDS = frozenset(
-    {
-        "request_id",
-        "status",
-        "events",
-        "support_events",
-        "view",
-        "bounded",
-        "event_count",
-        "truncated",
-        "candidate_cases_truncated",
-        "support_incomplete_reasons",
-        "missing_verification_event_ids",
-    }
-)
+_READBACK_FIELDS = frozenset({
+    "request_id",
+    "status",
+    "events",
+    "support_events",
+    "view",
+    "bounded",
+    "event_count",
+    "truncated",
+    "candidate_cases_truncated",
+    "support_incomplete_reasons",
+    "missing_verification_event_ids",
+})
 
 
 def _validate_live_readback(
@@ -2139,20 +2139,18 @@ def _normalize_scope_events(
             scope["session_tombstone_recorded"] = safety.get(
                 "session_tombstone_recorded"
             )
-        normalized.append(
-            {
-                "event_id": raw.get("event_id"),
-                "event_type": event_type,
-                "case_id": raw.get("case_id"),
-                "occurred_at_unix_ms": _utc_ms(
-                    raw.get("occurred_at"),
-                    "canonical_scope_time_invalid",
-                ),
-                "readback_verified": True,
-                "canonical_content_sha256": _event_digest(raw),
-                "scope": scope,
-            }
-        )
+        normalized.append({
+            "event_id": raw.get("event_id"),
+            "event_type": event_type,
+            "case_id": raw.get("case_id"),
+            "occurred_at_unix_ms": _utc_ms(
+                raw.get("occurred_at"),
+                "canonical_scope_time_invalid",
+            ),
+            "readback_verified": True,
+            "canonical_content_sha256": _event_digest(raw),
+            "scope": scope,
+        })
     revoked = normalized[-1]
     revoked_scope = revoked["scope"]
     retirement = {
@@ -2172,7 +2170,9 @@ def _normalize_scope_events(
 def _normalize_plan_events(
     events: Sequence[Mapping[str, Any]],
 ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
-    plan_rows = [value for value in events if value.get("event_type") == "task.plan.updated"]
+    plan_rows = [
+        value for value in events if value.get("event_type") == "task.plan.updated"
+    ]
     if not plan_rows:
         _fail("canonical_plan_projection_missing")
     try:
@@ -2198,13 +2198,11 @@ def _normalize_plan_events(
         for step in steps_raw:
             if not isinstance(step, Mapping):
                 _fail("canonical_plan_projection_invalid")
-            steps.append(
-                {
-                    "id": step.get("id"),
-                    "status": step.get("status"),
-                    "depends_on": copy.deepcopy(list(step.get("depends_on") or [])),
-                }
-            )
+            steps.append({
+                "id": step.get("id"),
+                "status": step.get("status"),
+                "depends_on": copy.deepcopy(list(step.get("depends_on") or [])),
+            })
         criterion_ids = [
             criterion.get("id") if isinstance(criterion, Mapping) else None
             for criterion in criteria_raw
@@ -2228,16 +2226,14 @@ def _normalize_plan_events(
             "criterion_ids": criterion_ids,
             "verification_event_ids": verification_ids,
         }
-        normalized.append(
-            {
-                "event_id": raw.get("event_id"),
-                "event_type": "task.plan.updated",
-                "case_id": raw.get("case_id"),
-                "readback_verified": True,
-                "canonical_content_sha256": _event_digest(raw),
-                "plan": projected_plan,
-            }
-        )
+        normalized.append({
+            "event_id": raw.get("event_id"),
+            "event_type": "task.plan.updated",
+            "case_id": raw.get("case_id"),
+            "readback_verified": True,
+            "canonical_content_sha256": _event_digest(raw),
+            "plan": projected_plan,
+        })
         status = {str(step["id"]): str(step["status"]) for step in steps}
         if previous is not None:
             newly_completed = [
@@ -2248,13 +2244,11 @@ def _normalize_plan_events(
             ]
             if newly_completed != [previous_current]:
                 _fail("canonical_plan_completion_transition_invalid")
-            completion_receipts.append(
-                {
-                    "step_id": newly_completed[0],
-                    "completion_ordinal": len(completion_receipts) + 1,
-                    "tool_receipt_sha256": _event_digest(raw),
-                }
-            )
+            completion_receipts.append({
+                "step_id": newly_completed[0],
+                "completion_ordinal": len(completion_receipts) + 1,
+                "tool_receipt_sha256": _event_digest(raw),
+            })
         previous = status
         previous_current = current
     return normalized, completion_receipts
@@ -2283,26 +2277,24 @@ def _normalize_verification_events(
             "kind": kind,
             "sha256": _sha256_json(raw_receipt),
         }
-        normalized.append(
-            {
-                "event_id": raw.get("event_id"),
-                "event_type": "task.verification.recorded",
-                "case_id": raw.get("case_id"),
-                "readback_verified": True,
-                "canonical_content_sha256": _event_digest(raw),
-                "verification": {
-                    name: verification.get(name)
-                    for name in (
-                        "verification_id",
-                        "plan_id",
-                        "plan_revision",
-                        "criterion_ids",
-                        "outcome",
-                        "receipt",
-                    )
-                },
-            }
-        )
+        normalized.append({
+            "event_id": raw.get("event_id"),
+            "event_type": "task.verification.recorded",
+            "case_id": raw.get("case_id"),
+            "readback_verified": True,
+            "canonical_content_sha256": _event_digest(raw),
+            "verification": {
+                name: verification.get(name)
+                for name in (
+                    "verification_id",
+                    "plan_id",
+                    "plan_revision",
+                    "criterion_ids",
+                    "outcome",
+                    "receipt",
+                )
+            },
+        })
     return normalized
 
 
@@ -2311,7 +2303,9 @@ def _normalize_routeback_event(
     fixture: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     sent = [value for value in events if value.get("event_type") == "route_back.sent"]
-    blocked = [value for value in events if value.get("event_type") == "route_back.blocked"]
+    blocked = [
+        value for value in events if value.get("event_type") == "route_back.blocked"
+    ]
     if len(sent) != 1 or blocked:
         _fail("canonical_routeback_terminal_invalid")
     raw = sent[0]
@@ -2380,33 +2374,29 @@ def _normalize_model_calls(
             or post.get("turn_id") != turn_id
         ):
             _fail("model_call_evidence_invalid")
-        result.append(
-            {
-                "schema": MODEL_CALL_RECEIPT_SCHEMA,
-                "provenance": "live_gateway_model_adapter",
-                "release_sha": fixture["release_sha"],
-                "canary_run_id": fixture["canary_run_id"],
-                "session_id": session_id,
-                "turn_id": turn_id,
-                "request_ordinal": expected_ordinal,
-                "provider": payload.get("provider"),
-                "api_mode": payload.get("api_mode"),
-                "base_url": payload.get("base_url"),
-                "model": payload.get("model"),
-                "reasoning_effort": payload.get("reasoning_effort"),
-                "api_request_sha256": payload.get("api_request_sha256"),
-                "response_payload_sha256": post_payload.get(
-                    "response_payload_sha256"
-                ),
-                "response_model": post_payload.get("response_model"),
-                "response_observed_at_unix_ms": post_payload.get(
-                    "response_observed_at_unix_ms"
-                ),
-                "assistant_tool_call_ids": copy.deepcopy(
-                    list(post_payload.get("assistant_tool_call_ids") or [])
-                ),
-            }
-        )
+        result.append({
+            "schema": MODEL_CALL_RECEIPT_SCHEMA,
+            "provenance": "live_gateway_model_adapter",
+            "release_sha": fixture["release_sha"],
+            "canary_run_id": fixture["canary_run_id"],
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "request_ordinal": expected_ordinal,
+            "provider": payload.get("provider"),
+            "api_mode": payload.get("api_mode"),
+            "base_url": payload.get("base_url"),
+            "model": payload.get("model"),
+            "reasoning_effort": payload.get("reasoning_effort"),
+            "api_request_sha256": payload.get("api_request_sha256"),
+            "response_payload_sha256": post_payload.get("response_payload_sha256"),
+            "response_model": post_payload.get("response_model"),
+            "response_observed_at_unix_ms": post_payload.get(
+                "response_observed_at_unix_ms"
+            ),
+            "assistant_tool_call_ids": copy.deepcopy(
+                list(post_payload.get("assistant_tool_call_ids") or [])
+            ),
+        })
     return result
 
 
@@ -2447,9 +2437,7 @@ def _normalize_reasoning_directive(
         "reasoning_control": copy.deepcopy(
             dict(payload.get("reasoning_control") or {})
         ),
-        "produced_by_model_call_ordinal": payload.get(
-            "produced_by_model_call_ordinal"
-        ),
+        "produced_by_model_call_ordinal": payload.get("produced_by_model_call_ordinal"),
         "applied_before_model_call_ordinal": 2,
         "todo_result_sha256": payload.get("result_sha256"),
     }
@@ -2482,16 +2470,14 @@ def assemble_live_evidence(
     for item in frames:
         if item.sha256 != _sha256_json(item.value):
             _fail("collector_frame_digest_invalid")
-        chain_head = _sha256_json(
-            {
-                "schema": COLLECTOR_CHAIN_SCHEMA,
-                "previous_sha256": chain_head,
-                "sequence": item.value["sequence"],
-                "frame_sha256": item.sha256,
-                "peer_pid": item.peer.pid,
-                "peer_start_time_ticks": item.peer.start_time_ticks,
-            }
-        )
+        chain_head = _sha256_json({
+            "schema": COLLECTOR_CHAIN_SCHEMA,
+            "previous_sha256": chain_head,
+            "sequence": item.value["sequence"],
+            "frame_sha256": item.sha256,
+            "peer_pid": item.peer.pid,
+            "peer_start_time_ticks": item.peer.start_time_ticks,
+        })
         if item.chain_head_sha256 != chain_head:
             _fail("collector_hash_chain_invalid")
     startup = [item.value.get("event") for item in frames[:4]]
@@ -2514,9 +2500,10 @@ def assemble_live_evidence(
     if conversation.session_id != session_id:
         _fail("api_plugin_session_mismatch")
     for frame in frames[4:]:
-        if frame.value.get("session_id") != session_id or frame.value.get(
-            "turn_id"
-        ) != turn_id:
+        if (
+            frame.value.get("session_id") != session_id
+            or frame.value.get("turn_id") != turn_id
+        ):
             _fail("collector_turn_binding_invalid")
     session_end = _one_frame(frames, "session_end")
     session_payload = session_end.get("payload")
@@ -2531,10 +2518,9 @@ def assemble_live_evidence(
     if not isinstance(readback_payload, Mapping):
         _fail("canonical_live_readback_invalid")
     readback = readback_payload.get("readback")
-    if (
-        not isinstance(readback, Mapping)
-        or _sha256_json(readback) != readback_payload.get("readback_sha256")
-    ):
+    if not isinstance(readback, Mapping) or _sha256_json(
+        readback
+    ) != readback_payload.get("readback_sha256"):
         _fail("canonical_live_readback_invalid")
 
     case_events = _projection_case_events(projection_events, fixture["case_id"])
@@ -2601,7 +2587,11 @@ def assemble_live_evidence(
     private_result = frames[3].value.get("payload")
     if not isinstance(private_result, Mapping) or private_before != private_after:
         _fail("private_probe_evidence_invalid")
-    now_ms = int(time.time() * 1000) if collected_at_unix_ms is None else collected_at_unix_ms
+    now_ms = (
+        int(time.time() * 1000)
+        if collected_at_unix_ms is None
+        else collected_at_unix_ms
+    )
     if not fixture["valid_from_unix_ms"] <= now_ms <= fixture["valid_until_unix_ms"]:
         _fail("evidence_collection_outside_fixture_window")
     retirement = {**dict(retirement), "observed_at_unix_ms": now_ms}
@@ -2644,9 +2634,7 @@ def assemble_live_evidence(
             "api_run_id": conversation.api_run_id,
             "api_message_id": conversation.api_message_id,
             "loopback_peer_verified": True,
-            "credential_provenance_receipt_sha256": (
-                credential_provenance_sha256
-            ),
+            "credential_provenance_receipt_sha256": (credential_provenance_sha256),
             "session_key_sha256": claim.get("session_key_sha256"),
             "capability_epoch_sha256": claim.get("capability_epoch_sha256"),
             "message_content_sha256": fixture["task_policy"]["prompt_sha256"],
@@ -2659,9 +2647,7 @@ def assemble_live_evidence(
             "provenance": "canonical_writer_live_readback",
             "release_sha": fixture["release_sha"],
             "canary_run_id": fixture["canary_run_id"],
-            "writer_query_request_id": readback_payload.get(
-                "writer_request_id"
-            ),
+            "writer_query_request_id": readback_payload.get("writer_request_id"),
             "observed_at_unix_ms": now_ms,
             "query_status": "CANONICAL_BRAIN_QUERY_PASS",
             "query_view": "resume_bundle",
@@ -2688,20 +2674,14 @@ def assemble_live_evidence(
             "discord_edge_service_identity_sha256": private_result.get(
                 "discord_edge_service_identity_sha256"
             ),
-            "socket_identity_sha256": private_result.get(
-                "socket_identity_sha256"
-            ),
+            "socket_identity_sha256": private_result.get("socket_identity_sha256"),
             "attempt_frame_sha256": private_result.get("attempt_frame_sha256"),
             "attempted_operation": private_result.get("attempted_operation"),
-            "attempted_target_type": private_result.get(
-                "attempted_target_type"
-            ),
+            "attempted_target_type": private_result.get("attempted_target_type"),
             "connection_closed_without_response": private_result.get(
                 "connection_closed_without_response"
             ),
-            "signed_receipt_observed": private_result.get(
-                "signed_receipt_observed"
-            ),
+            "signed_receipt_observed": private_result.get("signed_receipt_observed"),
             "journal_snapshot_before": private_before.to_mapping(),
             "journal_snapshot_after": private_after.to_mapping(),
         },
@@ -2721,9 +2701,7 @@ def assemble_live_evidence(
             "partial": conversation.run_completed.get("partial"),
             "interrupted": conversation.run_completed.get("interrupted"),
             "failed": conversation.run_completed.get("failed"),
-            "turn_exit_reason": conversation.run_completed.get(
-                "turn_exit_reason"
-            ),
+            "turn_exit_reason": conversation.run_completed.get("turn_exit_reason"),
             "completed_at_unix_ms": conversation.completed_at_unix_ms,
             "completed_steps": completion_receipts,
             "model_call_count": len(model_calls),
@@ -2740,7 +2718,9 @@ def assemble_live_evidence(
     return evidence
 
 
-def _write_evidence(plan: FullCanaryPlan, evidence: Mapping[str, Any]) -> tuple[Path, str]:
+def _write_evidence(
+    plan: FullCanaryPlan, evidence: Mapping[str, Any]
+) -> tuple[Path, str]:
     path = expected_live_evidence_path(plan)
     parent = path.parent
     # The plan-addressed root may be absent on the first run.  Build only this
@@ -2901,8 +2881,7 @@ class HonestFullCanaryDriver:
         if (
             self.prepared.session_key_sha256
             != _sha256_bytes(session_key.encode("utf-8"))
-            or fixture["release_artifact_sha256"]
-            != plan.release["artifact_sha256"]
+            or fixture["release_artifact_sha256"] != plan.release["artifact_sha256"]
         ):
             _fail("prepared_plan_binding_invalid")
         lifecycle = self._lifecycle(plan)
@@ -2993,9 +2972,7 @@ class HonestFullCanaryDriver:
                 "evidence_path": str(evidence_path),
                 "evidence_sha256": evidence_sha256,
                 "offline_invariant_receipt": invariant,
-                "lifecycle_verification_receipt": copy.deepcopy(
-                    dict(verification)
-                ),
+                "lifecycle_verification_receipt": copy.deepcopy(dict(verification)),
                 "discord_ingress_claimed": False,
             }
         except BaseException as exc:

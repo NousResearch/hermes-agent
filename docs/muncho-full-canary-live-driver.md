@@ -35,9 +35,11 @@ instead runs this exact same-process callback flow as root:
    before replacement. `not_preapproved`, a stale receipt, active authority,
    or a replacement race remains blocked owner cleanup.
 5. Its approval-provider callback calls
-   `wait_for_fresh_owner_approval(plan)`. This waits at most 900 seconds for a
-   newly published root-owned `0400` approval at the fixed approval path. The
-   approval must name that exact plan digest and have a fresh bounded window.
+   `wait_for_fresh_owner_approval(plan)`. The generic helper has a 900-second
+   upper bound, but the packaged coordinator always supplies the shorter
+   request-bound remainder: at most 240 seconds, with owner input closing 30
+   seconds before the request deadline. It accepts only a newly published
+   root-owned `0400` approval at the fixed path for that exact plan digest.
 6. Only after that approval, the owner-operated coordinator opens one
    short-lived managed-administrator PostgreSQL connection, independently
    verifies its TLS peer, and wraps the already-open connection in

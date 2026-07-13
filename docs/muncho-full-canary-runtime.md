@@ -5,6 +5,11 @@ writer-only activation plan or infer a new owner approval from its success.
 The full plan binds the same sealed release, the stopped writer-only receipt,
 exact configuration artifacts, and exact disabled systemd unit bytes.
 
+This clean-room gate is deliberately narrower than the intended everyday
+Muncho runtime. A successful result must be followed by the separate
+[production-shaped capability canary](./muncho-production-capability-canary.md);
+the clean-room configuration is never copied directly to production.
+
 The one-shot database bootstrap and compensating retirement SQL are not
 discovered from the checkout or from a mutable operator path. The
 sealed-release builder copies their exact tracked-index bytes to
@@ -369,3 +374,81 @@ unless its owner-operated process supplies the already-open provisioner; it
 never reads an administrator secret itself. It never enables a unit. Receipt
 output includes the exact on-disk receipt SHA-256 so the live evidence can bind
 the file rather than a self-declared internal field.
+
+## Owner coordinator and crash recovery
+
+The packaged `gateway.canonical_full_canary_coordinator` is the only remote
+owner-control entry point. The local owner launcher remains a separately
+attested, source-only program; neither component is imported by the normal
+gateway/model loop.
+
+Every owner invocation first runs the read-only `preflight-recovery` command.
+An active run or recovery-worker journal is recovered in two distinct stages:
+
+1. The coordinator emits a no-secret takeover gate. The owner returns only the
+   exact `MRA1` acknowledgement. After exact predecessor termination, the
+   exclusive process lock and a full journal CAS, the worker durably advances
+   through `claimed_awaiting_admin` and
+   `admin_authority_may_be_in_use`.
+2. Only then does the worker emit a fresh nonce-bound secret gate. The owner
+   may send the recovery-only `MRC2` frame, whose header binds that exact gate
+   and nonce before any username or password byte is read. The normal-run
+   `MCA2` frame is never accepted on this recovery path.
+
+Successful cleanup first publishes
+`muncho-full-canary-recovery-worker-completion.v1` with
+`recovery_worker_exit_proven=false` and
+`safe_to_delete_temporary_admin=false`. The worker cannot attest its own exit.
+A separate no-secret `finalize-recovery` process proves the exact worker has
+exited (or terminates that exact PID through pidfd), reacquires the lock, and
+CAS-publishes `muncho-full-canary-recovery-receipt.v2`. Only that terminal v2
+receipt authorizes deletion of an administrator credential that may have been
+disclosed. A valid legacy v1 receipt is recognized only to return the explicit
+`legacy_recovery_receipt_reconciliation_required` blocker; it is never
+silently consumed, upgraded, or used to request a secret.
+
+Final runtime approval uses an independent request capped at 240 seconds, with
+an owner-input cutoff 30 seconds before its deadline. EOF before the first
+`MFA1` byte produces the zero-secret cancellation receipt v2. That receipt
+reports the exact active, expired, retired, superseded, or drifted state of the
+request, staged plan, and prior approval artifacts. Mixed or conflicting
+artifact states are `cancelled_no_secret_state_conflict`, never a fabricated
+clean cancellation. Partial `MFA1` is a hard ambiguous failure.
+
+### Temporary Cloud SQL authority
+
+Cloud SQL user mutations are asynchronous. The owner launcher sends each
+`CREATE_USER`, `UPDATE_USER`, or `DELETE_USER` request at most once and never
+turns a timeout, redirect, rate limit, HTTP 499, or server response into an
+implicit retry. Only a narrow, reviewed set of definite client rejections can
+prove that a create was not committed. Every other uncertain response enters
+reconciliation, and no `MCA2` or `MRC2` credential byte is sent from that run.
+
+Positive credential authority requires the exact response-known operation,
+expected operation type, owner identity, successful terminal outcome, exact
+temporary user presence, and unchanged complete paginated operation/user
+snapshots. The same live proof is repeated inside the local first-byte write
+guard, followed by owner-identity and expiry checks with a 30-second delivery
+margin. Any intervening user operation or evidence drift sends zero credential
+bytes. The Discord-token `DCT1` path uses the same first-byte expiry boundary.
+
+This proof assumes the isolated canary SQL instance has no concurrent user
+mutator after the final read. The canary must be stopped if that operational
+assumption cannot be guaranteed; API reads cannot provide a transactional lock
+against a mutation accepted after their final snapshot.
+
+Negative cleanup truth is deliberately separate from positive authority. An
+unknown-response run may prove the exact temporary user absent without ever
+claiming that a candidate operation belonged to it. It must observe complete,
+warning-free paginated operation and user snapshots for one continuous
+180-second quiet window, polling no faster than every five seconds and resetting
+the window on any operation identity, type, status, actor, outcome, user
+presence, or delete change. A late change can extend observation to the bounded
+360-second hard horizon; insufficient quiet remains `cleanup_blocked`.
+
+Cloud SQL publishes no visibility-latency guarantee that turns this operational
+horizon into a mathematical proof. Accordingly, a no-candidate result may only
+record bounded absence, zero secret disclosure, and a blocked run; a fresh
+invocation must start from a new preflight. Receipts keep preflight, recovery,
+and fresh-run evidence phase-bound and expose the response-known-candidate flag,
+post-baseline operation count, quiet window, and a secret-free evidence digest.

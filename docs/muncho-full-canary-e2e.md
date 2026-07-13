@@ -76,7 +76,9 @@ policy and nonsemantic correlation:
   `https://chatgpt.com/backend-api/codex`, `gpt-5.6-sol`;
 - initial `high` and model-requested `xhigh` effort;
 - a bounded exact prompt plus its digest and a minimum of three completed
-  steps, without supplying their meaning or IDs;
+  steps, without supplying their meaning or IDs. The reviewed live prompt must
+  describe a genuinely difficult multi-step objective, but must not tell the
+  model which reasoning effort to use or instruct it to call `todo.reasoning`;
 - the public Discord target and canonical route-back idempotency key;
 - the canary writer capability and edge receipt Ed25519 public keys.
 

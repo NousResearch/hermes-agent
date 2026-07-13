@@ -26,6 +26,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _PACKAGED_MODULES = {
     "gateway/canonical_canary_bootstrap.py",
+    "gateway/canonical_full_canary_coordinator.py",
     "gateway/canonical_full_canary_e2e.py",
     "gateway/canonical_full_canary_live_driver.py",
     "gateway/canonical_full_canary_runtime.py",
@@ -59,9 +60,7 @@ def _bytecode_snapshot(root: Path) -> dict[str, str | None]:
         if "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"}:
             continue
         snapshot[relative] = (
-            hashlib.sha256(path.read_bytes()).hexdigest()
-            if path.is_file()
-            else None
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
         )
     return snapshot
 
@@ -413,4 +412,28 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     assert planner_help_run.returncode == 0, planner_help_run.stderr
     assert "build-native-plan" in planner_help_run.stdout
     assert "build-final-plan" in planner_help_run.stdout
+    coordinator_help_run = subprocess.run(
+        [
+            str(interpreter),
+            "-B",
+            "-I",
+            "-m",
+            "gateway.canonical_full_canary_coordinator",
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert coordinator_help_run.returncode == 0, coordinator_help_run.stderr
+    assert "publish-coordinator-input" in coordinator_help_run.stdout
+    assert "preflight-owner-launch" in coordinator_help_run.stdout
+    assert "preflight-recovery" in coordinator_help_run.stdout
+    assert "recover" in coordinator_help_run.stdout
+    assert "finalize-recovery" in coordinator_help_run.stdout
+    assert "install-discord-token" in coordinator_help_run.stdout
+    assert "install-final-approval" in coordinator_help_run.stdout
+    assert "stop-and-retire-discord-token" in coordinator_help_run.stdout
     assert _bytecode_snapshot(site_packages_roots[0]) == bytecode_before

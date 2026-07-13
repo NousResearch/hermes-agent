@@ -289,3 +289,201 @@ runtime/module identity attestation succeed. Gateway readiness is emitted
 only after its in-process writer PING/readiness proof succeeds. A process that
 merely exists, or an external probe that only sees an open socket, cannot mark
 either unit ready.
+
+## Packaged full-canary coordinator and owner edge
+
+The full canary uses the packaged coordinator from the exact sealed release.
+There is no Cloud-side `python -c`, `tee`, heredoc, mutable checkout, or
+free-form remote command. Before the owner launcher is run, the separate root
+bootstrap invokes the coordinator's fixed, no-argument command:
+
+```text
+/usr/bin/sudo --non-interactive -- \
+  /opt/muncho-canary-releases/<release-sha>/venv/bin/python \
+  -B -I -m gateway.canonical_full_canary_coordinator \
+  publish-coordinator-input
+```
+
+`publish-coordinator-input` reads only the installed fixed-path writer plan and
+success receipt, staged writer/gateway/Discord-edge configs, fixture and host
+receipts, and sealed SQL/NSS facts. It accepts no stdin. It atomically creates
+root-owned `0400` files at
+`/etc/muncho/full-canary/coordinator-input.json` and
+`/etc/muncho/full-canary/coordinator-input-publication.json`; an identical retry
+is accepted and a conflicting replacement is rejected. Its terminal receipt
+schema is `muncho-full-canary-coordinator-input-publication.v1`.
+
+The local owner launcher is never started with ambient `python`, `-m`,
+`PYTHONPATH`, or site packages. From a clean checkout whose `HEAD` equals the
+exact release SHA, first publish the release-bound trusted runtime receipt with
+the fixed standalone interpreter and the launcher's absolute path:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --bootstrap-trusted-runtime \
+  --release-sha <exact-40-character-release-sha>
+```
+
+That secret-free, explicit bootstrap downloads only Google's versioned
+`google-cloud-cli-569.0.0-darwin-arm.tar.gz` archive, requiring exactly
+`60,511,521` bytes and SHA-256
+`2d4ab8eb0a9362a69feabade6df4163763cd989cb840dc3f7ced5ac24dde6e67`.
+Proxy use, redirects, unsafe tar paths, hard links, special files, escaping
+symlinks, `.pyc`, `.pyo`, and `__pycache__` are rejected. Files are extracted
+with exclusive creation into owner-only staging, every implicit parent is
+created privately, and all files and directories are synced. Before SDK
+publication, a version-and-archive-hash-specific canonical intent durably binds
+the release, launcher SHA-256, reviewed archive, destination, and deterministic
+complete extracted-tree fingerprint. Darwin `renamex_np(RENAME_EXCL)` publishes
+that intent, the SDK at `~/.hermes/trusted/google-cloud-sdk-569.0.0`, and the
+release receipt atomically without replacing a file, directory, or symlink.
+Reruns recover exact crashes after the intent, SDK, or receipt publication;
+destination state without the exact intent, or a mismatching tree, fails closed.
+The release-specific receipt binds the intent, current tracked launcher SHA-256,
+exact Python version `3.11.15`, the full SDK/Python trees, and the fixed macOS
+dependency set. An identical retry is accepted; conflicting state is preserved
+and rejected.
+
+After the bootstrap receipt succeeds, run the canary with the same exact
+interpreter, isolation flags, absolute tracked script, and release SHA, but
+without the bootstrap flag:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha>
+```
+
+Before git, auth, network access, or secret input, the launcher proves its
+interpreter path and all isolation flags, re-hashes the fixed Python/SDK trees
+and release receipt, and then binds its own tracked bytes to the exact commit.
+The pre-existing same-UID owner state and fixed uv Python are explicit initial
+trust anchors for this gate. These checks detect drift and other-admin/path
+injection; they do not claim independent authenticity against an already
+compromised owner UID or owner process.
+
+It invokes gcloud directly as fixed Python plus the attested `lib/gcloud.py`;
+the mutable shell wrapper and gcloud virtualenv are never executed. The active
+gcloud configuration is parsed without gcloud and may contain exactly one
+human account, project `adventico-ai-platform`, and zone `europe-west3-a`—no
+impersonation, credential override, proxy, endpoint, custom CA, or logging
+property. The closed subprocess environment disables HTTP/file logging, usage
+reporting, component update checks, prompts, ambient proxy/SSH-agent/askpass
+state, and is re-attested after every auth/IAP process and at launcher exit.
+
+The launcher pins the private key, public key, and
+`google_compute_known_hosts` inside the exact private owner SSH directory. A
+read-only preflight proves the exact OS Login identity
+`lomliev_adventico_com`, instance ID, `enable-oslogin=TRUE`, and that the pinned
+public key is already provisioned; complete project metadata, instance
+metadata, and OS Login profile snapshots must be unchanged after dry-run and
+after the terminal SSH exit. `gcloud compute ssh --plain` prevents gcloud from
+adding keys to OS Login or project/instance metadata. The only identity path is
+the explicit pinned SSH `-i`; `IdentitiesOnly=yes`, `IdentityAgent=none`,
+`CertificateFile=none`, public-key-only authentication, exact user known-hosts,
+disabled global/DNS/update host trust, ambient config, local commands,
+connection sharing, forwarding, and canonicalization close all other paths.
+Before every connection, a bounded real `--dry-run` is parsed exactly and must
+produce `/usr/bin/ssh` plus an IAP ProxyCommand containing only the fixed Python
+isolation flags and attested `lib/gcloud.py`. The remote command uses exact
+`/usr/bin/sudo` and the sealed interpreter. The launcher never accepts a secret
+through argv, environment, a shell expansion, a log, or Secret Manager.
+
+On an interactive terminal, the distinct canary Discord token is requested by
+a masked prompt. A non-interactive trusted secret source must provide exactly
+`MDO1 + u32be(length) + opaque token + EOF` on file descriptor 0; do not build
+that frame with a shell `echo` or command-line literal. The temporary Cloud SQL
+admin password is generated only in process memory, sent as the `MCA2` stdin
+frame, wiped, and deleted only after a validated terminal receipt makes deletion
+safe. An explicit create rejection never authorizes deletion of a concurrently
+created same-name account.
+
+The launcher emits the exact final-approval request as a canonical JSON line.
+The coordinator has already produced that request and the launcher has
+validated its bindings and stable owner identity before exposing it. The
+launcher then opens and validates the independent read-only remote install gate
+while the owner may decide; it does not read the local approval or disclose an
+`MFA1` byte until that gate exactly matches the published request. Transport
+setup therefore remains inside the bounded coordinator-authored window, and
+the cutoff is checked again after setup. The request binds every upstream
+expiry and defines
+`owner_input_cutoff_unix = approval_deadline_unix - 30`; an owner decision or
+local delivery after that cutoff is rejected before any `MFA1` byte is sent.
+The whole request window is capped at exactly 240 seconds.
+Only after the request is visible should the matching canonical approval be
+atomically installed at
+`~/.hermes/approvals/muncho-full-canary-final-approval.json`, owned by the local
+owner, regular/unlinked, and mode `0600`. The launcher verifies a stable file
+identity, consumes it once, sends it as `MFA1`, and accepts success only after
+the coordinator emits and closes on the exact terminal receipt. An approval
+that misses the request's cutoff or plan/owner/digest bindings is rejected.
+
+If the wait times out, a signal arrives, or another local failure occurs before
+the first `MFA1` byte is disclosed, the launcher closes that dedicated stdin
+without sending data. The coordinator must return the exact append-only
+`muncho-full-canary-final-approval-cancel-receipt.v2`, prove zero frame bytes,
+no new owner-approval installation, and no owner-approval artifact mutation,
+and terminate with status 2. The v2 receipt is bound to the request, staged
+plan, and prior owner-approval snapshots captured before the gate. A clean
+cancel requires either the matching request plus matching staged plan, or both
+artifacts retired; mixed, superseded, same-bytes/replaced-inode, or owner-path
+drift is reported as `cancelled_no_secret_state_conflict`. A partial `MFA1`
+disclosure is instead a hard ambiguous failure and is never reported as a clean
+cancellation. The broader coordinator terminal cleanup is still awaited for a
+bounded interval through the request deadline plus a 300-second cleanup grace,
+capped at 540 seconds total, so cleanup evidence is not abandoned merely
+because the shorter owner-input window closed.
+
+Every invocation begins with the read-only `preflight-recovery` command:
+
+- An active run lease or recovery-worker lease yields a stage-one takeover gate.
+  The launcher returns only the canonical no-secret `MRA1` acknowledgement.
+  The coordinator then terminates the exact predecessor through pidfd, acquires
+  the process lock, and replaces the full journal snapshot with durable worker
+  transition 1 (`claimed_awaiting_admin`). It durably CASes transition 2
+  (`admin_authority_may_be_in_use`) before emitting any secret gate.
+- Only the stage-one CAS winner receives the stage-two secret gate. The launcher
+  binds a fresh in-memory password to that gate and its unpredictable nonce in
+  `MRC2 + gate_sha256 + nonce_sha256 + username + password + EOF`. Legacy
+  `MCA2` is rejected after its four-byte magic, before credential bytes are
+  read. A contending loser returns an exact zero-secret claim-lost receipt and
+  never receives the stage-two gate.
+- Cleanup persists
+  `muncho-full-canary-recovery-worker-completion.v1` with the full original run
+  lease, zeroized frame, closed admin session, and cleanup receipts. Completion
+  explicitly sets worker-exit proof and safe-delete to false. The separate
+  no-secret `finalize-recovery` command proves exact worker exit, reacquires the
+  process lock, and CASes that exact completion to
+  `muncho-full-canary-recovery-receipt.v2`; only v2 may set worker-exit proof and
+  safe-delete true.
+- A strictly valid legacy `muncho-full-canary-recovery-receipt.v1` is detected
+  but is not consumed, upgraded, or treated as current terminal success. Every
+  operational entry point returns the explicit fail-closed
+  `legacy_recovery_receipt_reconciliation_required` blocker without opening a
+  credential path.
+- An exact persisted recovery receipt v2 is terminal truth. The launcher does
+  not repeat recovery and only finishes the receipt-authorized Cloud SQL
+  deletion.
+- The exact no-journal/fully-stopped receipt permits an idempotent absence proof
+  and deletion of only the approval-derived temporary username before a fresh
+  run.
+- Token residue with no process lease uses the separate causal `DRA1`
+  owner-acknowledged token-retirement path. This includes a durable
+  install-intent journal whose token device/inode pair is exactly null, and a
+  crash after `retirement_prepared`; the owner ACK mirrors the exact causal
+  digest and the same invocation continues through terminal retirement when
+  the bounded proof permits it.
+
+Success requires stopped and disabled services, an exact recovery v2 receipt,
+a closed admin session, disabled/removed bootstrap authority, removed Discord
+token and install receipt, proven recovery-worker exit, and a proven-absent
+temporary admin. A
+`cleanup_blocked` result is intentionally retryable: preserve the root journal
+and receipts and rerun this same approved launcher. Do not manually remove the
+journal, token files, receipts, or SQL user, because doing so destroys the
+causal evidence needed for safe reconciliation.

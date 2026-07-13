@@ -93,20 +93,18 @@ def _plan(tmp_path: Path, *, writer_digest: str = "e" * 64) -> FullCanaryPlan:
 
 def _approval(plan: FullCanaryPlan) -> FullCanaryOwnerApproval:
     now = int(time.time())
-    return FullCanaryOwnerApproval.from_mapping(
-        {
-            "schema": "muncho-full-canary-owner-approval.v1",
-            "scope": "full_canary_runtime_start",
-            "plan_sha256": plan.sha256,
-            "authority_kind": "trusted_root_bootstrap_out_of_band_owner",
-            "cryptographic_owner_proof": False,
-            "owner_subject_sha256": "1" * 64,
-            "approval_source_sha256": "2" * 64,
-            "nonce_sha256": "3" * 64,
-            "approved_at_unix": now - 1,
-            "expires_at_unix": now + 300,
-        }
-    )
+    return FullCanaryOwnerApproval.from_mapping({
+        "schema": "muncho-full-canary-owner-approval.v1",
+        "scope": "full_canary_runtime_start",
+        "plan_sha256": plan.sha256,
+        "authority_kind": "trusted_root_bootstrap_out_of_band_owner",
+        "cryptographic_owner_proof": False,
+        "owner_subject_sha256": "1" * 64,
+        "approval_source_sha256": "2" * 64,
+        "nonce_sha256": "3" * 64,
+        "approved_at_unix": now - 1,
+        "expires_at_unix": now + 300,
+    })
 
 
 def _fixture() -> dict[str, Any]:
@@ -161,10 +159,8 @@ def test_prepare_stages_session_digest_before_plan_and_approval(
                 "approved_by": "1279454038731264061",
                 "approval_source_sha256": "2" * 64,
                 "provisioning_receipt_sha256": "3" * 64,
-                "bootstrap_database_user": (
-                    "canonical_brain_canary_bootstrap_login"
-                ),
-            }
+                "bootstrap_database_user": ("canonical_brain_canary_bootstrap_login"),
+            },
         },
         fixture=_fixture(),
         writer_gid=_identities().writer_gid,
@@ -374,6 +370,67 @@ def test_posix_identity_helpers_fail_closed_when_unavailable(
         live._effective_uid()
     with pytest.raises(PermissionError, match="posix_gid"):
         live._effective_gid()
+
+
+def test_atomic_root_writer_rejects_zero_progress_and_cleans_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "artifact.json"
+    real_lstat = Path.lstat
+
+    def root_parent(path: Path):
+        item = real_lstat(path)
+        if path == tmp_path:
+            return SimpleNamespace(st_mode=item.st_mode, st_uid=0)
+        return item
+
+    monkeypatch.setattr(Path, "lstat", root_parent)
+    monkeypatch.setattr(live.os, "fchown", lambda _fd, _uid, _gid: None)
+    monkeypatch.setattr(live.os, "write", lambda _fd, _payload: 0)
+    with pytest.raises(live.LiveCanaryError, match="root_artifact_write_stalled"):
+        live._atomic_write_root(target, b"payload", mode=0o400)
+    assert not os.path.lexists(target)
+    assert not list(tmp_path.glob(".*.tmp.*"))
+
+
+def test_atomic_stage_replacement_rejects_zero_progress_and_cleans_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "writer.json"
+    target.write_bytes(b"old")
+    item = target.lstat()
+    real_lstat = Path.lstat
+
+    def root_parent(path: Path):
+        observed = real_lstat(path)
+        if path == tmp_path:
+            return SimpleNamespace(st_mode=observed.st_mode, st_uid=0)
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", root_parent)
+    monkeypatch.setattr(
+        live,
+        "_read_staged_writer_config",
+        lambda *_args, **_kwargs: (b"old", item),
+    )
+    monkeypatch.setattr(live.os, "fchown", lambda _fd, _uid, _gid: None)
+    monkeypatch.setattr(live.os, "write", lambda _fd, _payload: 0)
+    with pytest.raises(
+        live.LiveCanaryError,
+        match="staged_writer_config_write_stalled",
+    ):
+        live._atomic_stage_writer_config(
+            target,
+            b"new",
+            mode=0o440,
+            uid=0,
+            gid=2201,
+            expected_existing_sha256=hashlib.sha256(b"old").hexdigest(),
+        )
+    assert target.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".*.stage.*"))
 
 
 def test_loopback_client_idempotently_clears_both_raw_keys() -> None:
@@ -841,7 +898,9 @@ def _complete_readback(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def test_live_readback_is_derived_and_cross_checked_with_post_revoke_projection() -> None:
+def test_live_readback_is_derived_and_cross_checked_with_post_revoke_projection() -> (
+    None
+):
     event = _readback_event("event:before", "task.plan.updated")
     revoke = _readback_event("event:revoke", "canary.scope.revoked")
     readback = _complete_readback(event)
@@ -882,12 +941,8 @@ def test_incomplete_live_readback_cannot_be_relabelled_complete(
 
 def _create_edge_journal(path: Path) -> str:
     key = "canonical-routeback:" + "a" * 64
-    request = json.dumps(
-        {"request": "signed"}, sort_keys=True, separators=(",", ":")
-    )
-    receipt = json.dumps(
-        {"receipt": "signed"}, sort_keys=True, separators=(",", ":")
-    )
+    request = json.dumps({"request": "signed"}, sort_keys=True, separators=(",", ":"))
+    receipt = json.dumps({"receipt": "signed"}, sort_keys=True, separators=(",", ":"))
     connection = sqlite3.connect(path)
     connection.executescript(
         """
@@ -946,9 +1001,7 @@ def test_edge_journal_reads_bind_exact_owner_mode_and_signed_row(
     )
     assert routeback["discord_edge_receipt"] == {"receipt": "signed"}
     with pytest.raises(live.LiveCanaryError, match="edge_journal_identity_invalid"):
-        live._logical_journal_snapshot(
-            journal, expected_uid=uid + 1, expected_gid=gid
-        )
+        live._logical_journal_snapshot(journal, expected_uid=uid + 1, expected_gid=gid)
 
 
 def test_edge_journal_symlink_is_rejected(
@@ -977,16 +1030,14 @@ def test_edge_journal_replacement_during_read_is_rejected(
     monkeypatch.setattr(live, "DEFAULT_EDGE_JOURNAL", journal)
     journal_stat = journal.stat()
     uid, gid = journal_stat.st_uid, journal_stat.st_gid
-    real = live._edge_journal_identity(
-        journal, expected_uid=uid, expected_gid=gid
-    )
+    real = live._edge_journal_identity(journal, expected_uid=uid, expected_gid=gid)
     identities = iter((real, replace(real, inode=real.inode + 1)))
-    monkeypatch.setattr(live, "_edge_journal_identity", lambda *_a, **_k: next(identities))
+    monkeypatch.setattr(
+        live, "_edge_journal_identity", lambda *_a, **_k: next(identities)
+    )
     with pytest.raises(live.LiveCanaryError, match="edge_journal_replaced"):
         if reader == "snapshot":
-            live._logical_journal_snapshot(
-                journal, expected_uid=uid, expected_gid=gid
-            )
+            live._logical_journal_snapshot(journal, expected_uid=uid, expected_gid=gid)
         else:
             live._read_edge_routeback(
                 journal,
@@ -1056,7 +1107,9 @@ def test_collector_cleanup_never_unlinks_a_replacement(
     replacement = tmp_path / "replacement"
     replacement.write_text("not ours", encoding="utf-8")
     os.replace(replacement, paths[0])
-    with pytest.raises(live.LiveCanaryError, match="collector_runtime_artifact_replaced"):
+    with pytest.raises(
+        live.LiveCanaryError, match="collector_runtime_artifact_replaced"
+    ):
         collector.close()
     assert paths[0].read_text(encoding="utf-8") == "not ours"
 
@@ -1097,9 +1150,9 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
     case_id = fixture["case_id"]
 
     def iso(value: int) -> str:
-        return dt.datetime.fromtimestamp(
-            value / 1000, tz=dt.timezone.utc
-        ).isoformat(timespec="milliseconds")
+        return dt.datetime.fromtimestamp(value / 1000, tz=dt.timezone.utc).isoformat(
+            timespec="milliseconds"
+        )
 
     projection: list[dict[str, Any]] = []
     scope_keys = {
@@ -1112,20 +1165,18 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
         scope.pop("session_tombstone_recorded", None)
         if "expires_at_unix_ms" in scope:
             scope["expires_at"] = iso(scope.pop("expires_at_unix_ms"))
-        projection.append(
-            {
-                "event_id": event["event_id"],
-                "event_type": event["event_type"],
-                "case_id": case_id,
-                "occurred_at": iso(event["occurred_at_unix_ms"]),
-                "payload": {scope_keys[event["event_type"]]: scope},
-                "safety": (
-                    {"session_tombstone_recorded": True}
-                    if event["event_type"] == "canary.scope.revoked"
-                    else {}
-                ),
-            }
-        )
+        projection.append({
+            "event_id": event["event_id"],
+            "event_type": event["event_type"],
+            "case_id": case_id,
+            "occurred_at": iso(event["occurred_at_unix_ms"]),
+            "payload": {scope_keys[event["event_type"]]: scope},
+            "safety": (
+                {"session_tombstone_recorded": True}
+                if event["event_type"] == "canary.scope.revoked"
+                else {}
+            ),
+        })
     for event in truth["plan_events"]:
         plan_value = copy.deepcopy(event["plan"])
         criterion_ids = plan_value.pop("criterion_ids")
@@ -1134,51 +1185,43 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
             {"id": criterion_id, "content": "model-authored criterion"}
             for criterion_id in criterion_ids
         ]
-        projection.append(
-            {
-                "event_id": event["event_id"],
-                "event_type": "task.plan.updated",
-                "case_id": case_id,
-                "occurred_at": iso(
-                    fixture["valid_from_unix_ms"]
-                    + 100
-                    + event["plan"]["revision"]
-                ),
-                "payload": {"plan": plan_value},
-                "safety": {},
-            }
-        )
+        projection.append({
+            "event_id": event["event_id"],
+            "event_type": "task.plan.updated",
+            "case_id": case_id,
+            "occurred_at": iso(
+                fixture["valid_from_unix_ms"] + 100 + event["plan"]["revision"]
+            ),
+            "payload": {"plan": plan_value},
+            "safety": {},
+        })
     for event in truth["verification_events"]:
         verification = copy.deepcopy(event["verification"])
         verification["receipt"] = {
             "kind": verification["receipt"]["kind"],
             "live": True,
         }
-        projection.append(
-            {
-                "event_id": event["event_id"],
-                "event_type": "task.verification.recorded",
-                "case_id": case_id,
-                "occurred_at": iso(fixture["valid_from_unix_ms"] + 200),
-                "payload": {"verification": verification},
-                "safety": {},
-            }
-        )
-    routeback = truth["routeback_event"]
-    projection.append(
-        {
-            "event_id": routeback["event_id"],
-            "event_type": "route_back.sent",
+        projection.append({
+            "event_id": event["event_id"],
+            "event_type": "task.verification.recorded",
             "case_id": case_id,
-            "occurred_at": iso(fixture["valid_from_unix_ms"] + 300),
-            "payload": {
-                "authorization_id": routeback["authorization_id"],
-                "route_back": {"target_ref": routeback["target_ref"]},
-                "receipt": routeback["receipt"],
-            },
+            "occurred_at": iso(fixture["valid_from_unix_ms"] + 200),
+            "payload": {"verification": verification},
             "safety": {},
-        }
-    )
+        })
+    routeback = truth["routeback_event"]
+    projection.append({
+        "event_id": routeback["event_id"],
+        "event_type": "route_back.sent",
+        "case_id": case_id,
+        "occurred_at": iso(fixture["valid_from_unix_ms"] + 300),
+        "payload": {
+            "authorization_id": routeback["authorization_id"],
+            "route_back": {"target_ref": routeback["target_ref"]},
+            "receipt": routeback["receipt"],
+        },
+        "safety": {},
+    })
 
     readback_events = [
         copy.deepcopy(event)
@@ -1215,28 +1258,24 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
         turn: str | None = turn_id,
         observed: int | None = None,
     ) -> None:
-        raw_frames.append(
-            {
-                "schema": live.PLUGIN_FRAME_SCHEMA,
-                "sequence": len(raw_frames) + 1,
-                "event": event,
-                "release_sha": fixture["release_sha"],
-                "release_sha256": fixture["release_artifact_sha256"],
-                "canary_run_id": fixture["canary_run_id"],
-                "case_id": case_id,
-                "fixture_sha256": template["fixture_sha256"],
-                "collector_service_identity_sha256": collector_identity,
-                "discord_edge_service_identity_sha256": edge_identity,
-                "session_id": session,
-                "turn_id": turn,
-                "observed_at_unix_ms": (
-                    template["collected_at_unix_ms"]
-                    if observed is None
-                    else observed
-                ),
-                "payload": payload,
-            }
-        )
+        raw_frames.append({
+            "schema": live.PLUGIN_FRAME_SCHEMA,
+            "sequence": len(raw_frames) + 1,
+            "event": event,
+            "release_sha": fixture["release_sha"],
+            "release_sha256": fixture["release_artifact_sha256"],
+            "canary_run_id": fixture["canary_run_id"],
+            "case_id": case_id,
+            "fixture_sha256": template["fixture_sha256"],
+            "collector_service_identity_sha256": collector_identity,
+            "discord_edge_service_identity_sha256": edge_identity,
+            "session_id": session,
+            "turn_id": turn,
+            "observed_at_unix_ms": (
+                template["collected_at_unix_ms"] if observed is None else observed
+            ),
+            "payload": payload,
+        })
 
     add_frame("plugin_ready", {"gateway_pid": peer.pid}, session=None, turn=None)
     claim = copy.deepcopy(truth["scope_events"][1]["scope"])
@@ -1282,24 +1321,18 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
             {
                 "api_request_id": api_request_id,
                 "request_ordinal": model_call["request_ordinal"],
-                "response_payload_sha256": model_call[
-                    "response_payload_sha256"
-                ],
+                "response_payload_sha256": model_call["response_payload_sha256"],
                 "response_model": model_call["response_model"],
                 "response_observed_at_unix_ms": model_call[
                     "response_observed_at_unix_ms"
                 ],
-                "assistant_tool_call_ids": model_call[
-                    "assistant_tool_call_ids"
-                ],
+                "assistant_tool_call_ids": model_call["assistant_tool_call_ids"],
             },
         )
         for call_id in model_call["assistant_tool_call_ids"]:
             tool_payload = {
                 "api_request_id": api_request_id,
-                "produced_by_model_call_ordinal": model_call[
-                    "request_ordinal"
-                ],
+                "produced_by_model_call_ordinal": model_call["request_ordinal"],
                 "tool_call_id": call_id,
                 "tool_name": (
                     "todo" if call_id == "call:reasoning" else "canonical_brain_record"
@@ -1333,19 +1366,15 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
     chain_head = live.COLLECTOR_ZERO_CHAIN_SHA256
     for frame in raw_frames:
         frame_sha256 = live._sha256_json(frame)
-        chain_head = live._sha256_json(
-            {
-                "schema": live.COLLECTOR_CHAIN_SCHEMA,
-                "previous_sha256": chain_head,
-                "sequence": frame["sequence"],
-                "frame_sha256": frame_sha256,
-                "peer_pid": peer.pid,
-                "peer_start_time_ticks": peer.start_time_ticks,
-            }
-        )
-        frames.append(
-            live.CollectedFrame(frame, frame_sha256, chain_head, peer)
-        )
+        chain_head = live._sha256_json({
+            "schema": live.COLLECTOR_CHAIN_SCHEMA,
+            "previous_sha256": chain_head,
+            "sequence": frame["sequence"],
+            "frame_sha256": frame_sha256,
+            "peer_pid": peer.pid,
+            "peer_start_time_ticks": peer.start_time_ticks,
+        })
+        frames.append(live.CollectedFrame(frame, frame_sha256, chain_head, peer))
 
     plan = replace(
         _plan(tmp_path),
@@ -1379,9 +1408,7 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
             "edge": {"receipt": {}, "sha256": edge_identity},
         },
         "collector_readiness_receipt": {
-            "receipt_sha256": template["runtime_provenance"][
-                "collector_receipt_sha256"
-            ]
+            "receipt_sha256": template["runtime_provenance"]["collector_receipt_sha256"]
         },
     }
     outcome = template["task_outcome"]
@@ -1390,17 +1417,13 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
         session_create_request_id=template["source_receipt"][
             "session_create_request_id"
         ],
-        chat_stream_request_id=template["source_receipt"][
-            "chat_stream_request_id"
-        ],
+        chat_stream_request_id=template["source_receipt"]["chat_stream_request_id"],
         api_run_id=template["source_receipt"]["api_run_id"],
         api_message_id=template["source_receipt"]["api_message_id"],
         events=(),
         assistant_completed={"content": "done", "status": "completed"},
         run_completed=copy.deepcopy(outcome),
-        observed_at_unix_ms=template["source_receipt"][
-            "observed_at_unix_ms"
-        ],
+        observed_at_unix_ms=template["source_receipt"]["observed_at_unix_ms"],
         completed_at_unix_ms=outcome["completed_at_unix_ms"],
     )
     private_before = live.JournalSnapshot(

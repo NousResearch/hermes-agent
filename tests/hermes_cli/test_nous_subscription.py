@@ -23,14 +23,19 @@ def _account(*, logged_in: bool, paid: bool | None = None) -> NousPortalAccountI
     )
 
 
-def _pool_account() -> NousPortalAccountInfo:
+def _pool_account(
+    coverage: dict[str, bool] | None = None,
+) -> NousPortalAccountInfo:
     """A $0 subscriber with a live free tool pool (no paid access)."""
     return NousPortalAccountInfo(
         logged_in=True,
         source="jwt",
         fresh=False,
         paid_service_access=False,
-        tool_access=NousToolAccessInfo(enabled=True, coverage=_POOL_COVERAGE),
+        tool_access=NousToolAccessInfo(
+            enabled=True,
+            coverage=_POOL_COVERAGE if coverage is None else coverage,
+        ),
     )
 
 
@@ -261,7 +266,81 @@ def test_get_gateway_eligible_tools_ignores_quoted_false_opt_in(monkeypatch):
 
     assert "web" in has_direct
     assert "web" not in already_managed
-    assert set(unconfigured) == {"image_gen", "video_gen", "tts", "stt", "browser"}
+    assert set(unconfigured) == {
+        "image_gen",
+        "video_gen",
+        "tts",
+        "stt",
+        "browser",
+        "skyvern",
+    }
+
+
+def test_get_gateway_eligible_tools_checks_skyvern_coverage_category(monkeypatch):
+    account = _pool_account()
+    checked_categories = []
+    monkeypatch.setattr(
+        type(account),
+        "tool_gateway_entitled_for",
+        lambda self, category: checked_categories.append(category) or False,
+    )
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: account)
+    monkeypatch.setattr(ns, "_get_gateway_direct_credentials", lambda: {})
+
+    assert ns.get_gateway_eligible_tools({"model": {"provider": "nous"}}) == (
+        [],
+        [],
+        [],
+    )
+    assert "skyvern" in checked_categories
+
+
+def test_get_gateway_eligible_tools_paid_account_offers_skyvern(monkeypatch):
+    monkeypatch.setattr(
+        ns,
+        "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+    monkeypatch.setattr(ns, "_get_gateway_direct_credentials", lambda: {})
+
+    unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(
+        {"model": {"provider": "nous"}}
+    )
+
+    assert "skyvern" in unconfigured
+    assert "skyvern" not in has_direct
+    assert "skyvern" not in already_managed
+
+
+def test_get_gateway_eligible_tools_pool_without_skyvern_coverage_excludes_it(
+    monkeypatch,
+):
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _pool_account())
+    monkeypatch.setattr(ns, "_get_gateway_direct_credentials", lambda: {})
+
+    eligible = ns.get_gateway_eligible_tools({"model": {"provider": "nous"}})
+
+    assert all("skyvern" not in bucket for bucket in eligible)
+
+
+def test_get_gateway_eligible_tools_pool_with_skyvern_coverage_offers_it(
+    monkeypatch,
+):
+    coverage = {**_POOL_COVERAGE, "skyvern": True}
+    monkeypatch.setattr(
+        ns,
+        "get_nous_portal_account_info",
+        lambda **kw: _pool_account(coverage),
+    )
+    monkeypatch.setattr(ns, "_get_gateway_direct_credentials", lambda: {})
+
+    unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(
+        {"model": {"provider": "nous"}}
+    )
+
+    assert "skyvern" in unconfigured
+    assert "skyvern" not in has_direct
+    assert "skyvern" not in already_managed
 
 
 def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda=False):
@@ -389,6 +468,28 @@ def test_get_gateway_eligible_tools_pool_excludes_video(monkeypatch):
     assert "video_gen" not in unconfigured
     assert "video_gen" not in has_direct
     assert "video_gen" not in already_managed
+
+
+def test_apply_gateway_defaults_stores_managed_skyvern_mcp_intent():
+    config = {}
+
+    changed = ns.apply_gateway_defaults(config, ["skyvern"])
+
+    assert changed == {"skyvern"}
+    assert config["mcp_servers"]["skyvern"] == {"managed_gateway": "skyvern"}
+
+
+def test_apply_gateway_defaults_preserves_direct_skyvern_mcp_config():
+    direct_skyvern = {
+        "url": "https://api.skyvern.com/mcp/",
+        "headers": {"x-api-key": "${SKYVERN_API_KEY}"},
+    }
+    config = {"mcp_servers": {"skyvern": dict(direct_skyvern)}}
+
+    changed = ns.apply_gateway_defaults(config, ["skyvern"])
+
+    assert changed == set()
+    assert config["mcp_servers"]["skyvern"] == direct_skyvern
 
 
 def test_get_gateway_eligible_tools_empty_when_not_entitled(monkeypatch):

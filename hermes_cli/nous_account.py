@@ -26,6 +26,7 @@ TOOL_COVERAGE_CATEGORIES = (
     "openai-audio",
     "browser-use",
     "modal",
+    "skyvern",
 )
 
 _ACCOUNT_INFO_CACHE_TTL = 60

@@ -44,6 +44,7 @@ MANAGED_FEATURE_COVERAGE_CATEGORY: Dict[str, str] = {
     "stt": "openai-audio",
     "browser": "browser-use",
     "modal": "modal",
+    "skyvern": "skyvern",
 }
 
 
@@ -52,6 +53,28 @@ def _uses_gateway(section: object) -> bool:
     if not isinstance(section, dict):
         return False
     return is_truthy_value(section.get("use_gateway"), default=False)
+
+
+def _skyvern_mcp_config(config: Dict[str, object]) -> Dict[str, object]:
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return {}
+    skyvern_cfg = servers.get("skyvern")
+    return skyvern_cfg if isinstance(skyvern_cfg, dict) else {}
+
+
+def _is_managed_skyvern_mcp_config(config: Dict[str, object]) -> bool:
+    skyvern_cfg = _skyvern_mcp_config(config)
+    return str(skyvern_cfg.get("managed_gateway") or "").strip().lower() == "skyvern"
+
+
+def _has_direct_skyvern_mcp_config(config: Dict[str, object]) -> bool:
+    skyvern_cfg = _skyvern_mcp_config(config)
+    return bool(
+        skyvern_cfg
+        and not _is_managed_skyvern_mcp_config(config)
+        and (skyvern_cfg.get("url") or skyvern_cfg.get("command"))
+    )
 
 
 @dataclass(frozen=True)
@@ -860,6 +883,7 @@ _GATEWAY_TOOL_LABELS = {
     "tts": "Text-to-speech (OpenAI TTS)",
     "stt": "Speech-to-text (OpenAI Whisper)",
     "browser": "Browser automation (Browser Use)",
+    "skyvern": "Browser automation (Skyvern)",
 }
 
 
@@ -903,9 +927,18 @@ _GATEWAY_DIRECT_LABELS = {
     "tts": "OpenAI/ElevenLabs key",
     "stt": "OpenAI/Groq/Mistral key",
     "browser": "Browser Use/Browserbase key",
+    "skyvern": "direct Skyvern MCP config",
 }
 
-_ALL_GATEWAY_KEYS = ("web", "image_gen", "video_gen", "tts", "stt", "browser")
+_ALL_GATEWAY_KEYS = (
+    "web",
+    "image_gen",
+    "video_gen",
+    "tts",
+    "stt",
+    "browser",
+    "skyvern",
+)
 
 
 def get_gateway_eligible_tools(
@@ -940,7 +973,8 @@ def get_gateway_eligible_tools(
     if not isinstance(model_cfg, dict) or str(model_cfg.get("provider") or "").strip().lower() != "nous":
         return [], [], []
 
-    direct = _get_gateway_direct_credentials()
+    direct = dict(_get_gateway_direct_credentials())
+    direct["skyvern"] = _has_direct_skyvern_mcp_config(config)
 
     # Check which tools the user has explicitly opted into the gateway for.
     # This is distinct from managed_by_nous which fires implicitly when
@@ -953,6 +987,7 @@ def get_gateway_eligible_tools(
         "tts": _uses_gateway(config.get("tts")),
         "stt": _uses_gateway(config.get("stt")),
         "browser": _uses_gateway(config.get("browser")),
+        "skyvern": _is_managed_skyvern_mcp_config(config),
     }
 
     unconfigured: list[str] = []
@@ -1044,6 +1079,18 @@ def apply_gateway_defaults(
         video_cfg["provider"] = "fal"
         video_cfg["use_gateway"] = True
         changed.add("video_gen")
+
+    if "skyvern" in tool_keys:
+        servers = config.get("mcp_servers")
+        if not isinstance(servers, dict):
+            servers = {}
+            config["mcp_servers"] = servers
+
+        if not _has_direct_skyvern_mcp_config(
+            config
+        ) and not _is_managed_skyvern_mcp_config(config):
+            servers["skyvern"] = {"managed_gateway": "skyvern"}
+            changed.add("skyvern")
 
     return changed
 

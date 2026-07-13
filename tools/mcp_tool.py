@@ -105,7 +105,7 @@ import time
 from typing import Callable
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -3742,6 +3742,36 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return safe_servers
 
 
+def _resolve_managed_mcp_config(name: str, cfg: dict) -> Optional[dict]:
+    managed_vendor = cfg.get("managed_gateway")
+    if not isinstance(managed_vendor, str) or not managed_vendor.strip():
+        return cfg
+
+    if cfg.get("url") or cfg.get("command"):
+        return cfg
+
+    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+
+    gateway = resolve_managed_tool_gateway(managed_vendor.strip())
+    if gateway is None:
+        logger.warning(
+            "Skipping managed MCP server '%s': Tool Gateway auth is unavailable",
+            name,
+        )
+        return None
+
+    runtime_cfg = dict(cfg)
+    gateway_path = str(runtime_cfg.get("managed_gateway_path") or "mcp/").lstrip("/")
+    runtime_cfg["url"] = urljoin(
+        f"{gateway.gateway_origin.rstrip('/')}/",
+        gateway_path,
+    )
+    headers = dict(cfg.get("headers") or {})
+    headers["Authorization"] = f"Bearer {gateway.nous_user_token}"
+    runtime_cfg["headers"] = headers
+    return runtime_cfg
+
+
 def _load_mcp_config() -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
@@ -3773,7 +3803,9 @@ def _load_mcp_config() -> Dict[str, dict]:
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
-                safe_servers[name] = interpolated
+                resolved = _resolve_managed_mcp_config(name, interpolated)
+                if resolved is not None:
+                    safe_servers[name] = resolved
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)

@@ -3243,6 +3243,8 @@ class SlackAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
@@ -3263,10 +3265,42 @@ class SlackAdapter(BasePlatformAdapter):
             # instead of a flat truncation that overflows once the header +
             # reason are added.
             header = ":warning: *Command Approval Required*\n"
+            if smart_denied:
+                header += "*Smart DENY:* owner override applies to this one operation only.\n"
             reason = f"Reason: {description[:500]}"
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
+            actions = [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Allow Once"},
+                    "style": "primary",
+                    "action_id": "hermes_approve_once",
+                    "value": session_key,
+                },
+            ]
+            if not smart_denied:
+                actions.append({
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Allow Session"},
+                    "action_id": "hermes_approve_session",
+                    "value": session_key,
+                })
+                if allow_permanent:
+                    actions.append({
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Always Allow"},
+                        "action_id": "hermes_approve_always",
+                        "value": session_key,
+                    })
+            actions.append({
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Deny"},
+                "style": "danger",
+                "action_id": "hermes_deny",
+                "value": session_key,
+            })
             blocks = [
                 {
                     "type": "section",
@@ -3275,37 +3309,7 @@ class SlackAdapter(BasePlatformAdapter):
                         "text": f"{header}```{cmd_preview}```\n{reason}",
                     },
                 },
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Once"},
-                            "style": "primary",
-                            "action_id": "hermes_approve_once",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Session"},
-                            "action_id": "hermes_approve_session",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
-                            "action_id": "hermes_approve_always",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Deny"},
-                            "style": "danger",
-                            "action_id": "hermes_deny",
-                            "value": session_key,
-                        },
-                    ],
-                },
+                {"type": "actions", "elements": actions},
             ]
 
             kwargs: Dict[str, Any] = {

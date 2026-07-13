@@ -417,6 +417,49 @@ class TestLifecycle:
 # ---- turn loop ----
 
 class TestRunTurn:
+    @pytest.mark.parametrize(
+        "notification_thread_id,notification_turn_id",
+        [
+            ("foreign-thread", "turn-fake-001"),
+            ("thread-fake-001", "foreign-turn"),
+            ("", "turn-fake-001"),
+            ("thread-fake-001", ""),
+            (None, "turn-fake-001"),
+            ("thread-fake-001", None),
+        ],
+    )
+    def test_foreign_or_malformed_turn_completed_does_not_end_active_turn(
+        self, notification_thread_id, notification_turn_id
+    ):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId=notification_thread_id,
+            turn={
+                "id": notification_turn_id,
+                "status": "completed",
+                "error": None,
+            },
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m1", "text": "real result"},
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn("hi", turn_timeout=1.0)
+
+        assert result.final_text == "real result"
+        assert result.turn_id == "turn-fake-001"
+        assert result.interrupted is False
+        assert result.error is None
+
     def test_simple_text_turn_returns_final_message(self):
         client = FakeClient()
         client.queue_notification(
@@ -842,8 +885,8 @@ class TestRunTurn:
         client = FakeClient()
         client.queue_notification(
             "turn/completed",
-            threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         r = s.run_turn(
@@ -1045,8 +1088,8 @@ class TestRunTurn:
     def test_failed_turn_records_error_from_turn_completed(self):
         client = FakeClient()
         client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "failed",
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "failed",
                   "error": {"message": "model error"}},
         )
         s = make_session(client)
@@ -1666,9 +1709,9 @@ class TestSessionRetirement:
         triggers the re-auth hint + retirement."""
         client = FakeClient()
         client.queue_notification(
-            "turn/completed", threadId="t",
+            "turn/completed", threadId="thread-fake-001",
             turn={
-                "id": "tu1", "status": "failed",
+                "id": "turn-fake-001", "status": "failed",
                 "error": {"message": "401 Unauthorized: please reauthenticate"},
             },
         )
@@ -1684,9 +1727,9 @@ class TestSessionRetirement:
         re-auth hint. Conservative classifier."""
         client = FakeClient()
         client.queue_notification(
-            "turn/completed", threadId="t",
+            "turn/completed", threadId="thread-fake-001",
             turn={
-                "id": "tu1", "status": "failed",
+                "id": "turn-fake-001", "status": "failed",
                 "error": {"message": "rate limit exceeded"},
             },
         )

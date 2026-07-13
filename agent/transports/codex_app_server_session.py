@@ -750,6 +750,20 @@ class CodexAppServerSession:
                     )
 
             if method == "turn/completed":
+                if not self._matches_current_turn_notification(result, note):
+                    params = note.get("params")
+                    params = params if isinstance(params, dict) else {}
+                    turn_obj = params.get("turn")
+                    turn_obj = turn_obj if isinstance(turn_obj, dict) else {}
+                    logger.warning(
+                        "Ignoring unbound codex turn/completed notification "
+                        "(thread=%r turn=%r expected_thread=%r expected_turn=%r)",
+                        params.get("threadId"),
+                        turn_obj.get("id"),
+                        self._thread_id,
+                        result.turn_id,
+                    )
+                    continue
                 turn_complete = True
                 turn_status = (
                     (note.get("params") or {}).get("turn") or {}
@@ -955,6 +969,30 @@ class CodexAppServerSession:
 
     # ---------- internals ----------
 
+    def _matches_current_turn_notification(
+        self, result: TurnResult, note: dict
+    ) -> bool:
+        """Return whether a notification is bound to turn/start's identity."""
+        params = note.get("params")
+        if not isinstance(params, dict):
+            return False
+        turn_obj = params.get("turn")
+        notification_turn_id = (
+            turn_obj.get("id") if isinstance(turn_obj, dict) else None
+        )
+        notification_thread_id = params.get("threadId")
+        expected_turn_id = result.turn_id
+        return bool(
+            isinstance(notification_thread_id, str)
+            and notification_thread_id.strip()
+            and notification_thread_id == self._thread_id
+            and isinstance(expected_turn_id, str)
+            and expected_turn_id.strip()
+            and isinstance(notification_turn_id, str)
+            and notification_turn_id.strip()
+            and notification_turn_id == expected_turn_id
+        )
+
     def _bind_turn_started_notification(
         self, result: TurnResult, note: dict
     ) -> None:
@@ -965,32 +1003,21 @@ class CodexAppServerSession:
         from an earlier turn share the same thread and may arrive while a new
         stateful dynamic-tool request is pending.
         """
-        params = note.get("params")
-        if not isinstance(params, dict):
-            return
-        turn_obj = params.get("turn")
-        notification_turn_id = (
-            turn_obj.get("id") if isinstance(turn_obj, dict) else None
-        )
-        expected_turn_id = result.turn_id
-        if (
-            params.get("threadId") != self._thread_id
-            or not isinstance(expected_turn_id, str)
-            or not expected_turn_id.strip()
-            or not isinstance(notification_turn_id, str)
-            or not notification_turn_id.strip()
-            or notification_turn_id != expected_turn_id
-        ):
+        if not self._matches_current_turn_notification(result, note):
+            params = note.get("params")
+            params = params if isinstance(params, dict) else {}
+            turn_obj = params.get("turn")
+            turn_obj = turn_obj if isinstance(turn_obj, dict) else {}
             logger.warning(
                 "Ignoring unbound codex turn/started notification "
                 "(thread=%r turn=%r expected_thread=%r expected_turn=%r)",
                 params.get("threadId"),
-                notification_turn_id,
+                turn_obj.get("id"),
                 self._thread_id,
-                expected_turn_id,
+                result.turn_id,
             )
             return
-        self._active_turn_id = expected_turn_id
+        self._active_turn_id = result.turn_id
 
     def _issue_interrupt(self, turn_id: Optional[str]) -> None:
         if self._client is None or self._thread_id is None or turn_id is None:

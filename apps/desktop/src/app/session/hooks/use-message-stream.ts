@@ -53,7 +53,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
-import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { clearSessionSubagents, pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
@@ -857,7 +857,7 @@ export function useMessageStream({
         }
 
         flushQueuedDeltas(sessionId)
-        clearSessionSubagents(sessionId)
+        pruneFinishedSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)

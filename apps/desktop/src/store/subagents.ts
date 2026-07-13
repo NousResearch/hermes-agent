@@ -192,6 +192,35 @@ export function clearSessionSubagents(sid: string) {
   $subagentsBySession.set(rest)
 }
 
+/**
+ * Prune terminal-status subagent rows for a session, leaving running/queued
+ * entries untouched. Used at the `message.start` boundary in the desktop
+ * message-stream hook so that the *previous* turn's finished rows get flushed
+ * from the display while background subagents that outlived the spawning turn
+ * remain visible (and still accept late progress/complete events).
+ *
+ * Distinct from `clearSessionSubagents` (used by the Stop action, which
+ * genuinely cancels running subagents and so should drop them all) and from
+ * `pruneDelegateFallbackSubagents` (which filters by id prefix to remove
+ * placeholder rows once the real native event arrives).
+ */
+export function pruneFinishedSessionSubagents(sid: string) {
+  const map = $subagentsBySession.get()
+  const list = map[sid]
+
+  if (!list?.length) {
+    return
+  }
+
+  const next = list.filter(item => item.status === 'running' || item.status === 'queued')
+
+  if (next.length === list.length) {
+    return
+  }
+
+  $subagentsBySession.set({ ...map, [sid]: next })
+}
+
 export function pruneDelegateFallbackSubagents(sid: string) {
   const map = $subagentsBySession.get()
   const list = map[sid]

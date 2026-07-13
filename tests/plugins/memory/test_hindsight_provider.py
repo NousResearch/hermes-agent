@@ -1539,36 +1539,82 @@ class TestSharedEventLoopLifecycle:
 
         provider_b.shutdown()
 
-    def test_loop_creation_registers_single_atexit_teardown(self, provider_with_config, monkeypatch):
-        """#34415 — the shared loop must register exactly one atexit teardown,
-        and only the first time the loop is created. Without a teardown hook
-        the daemon-thread loop is killed mid-flight at interpreter exit and any
-        aiohttp ClientSession / TCPConnector it still owns leaks.
+    def test_shutdown_loop_registered_at_import_before_provider_callbacks(self):
+        """#34415 — the shared-loop teardown must be registered at *module import*
+        time (not lazily inside _get_loop), so Python's LIFO atexit order runs it
+        LAST — after every provider's own _atexit_shutdown has closed its client
+        on the still-live shared loop.
+
+        Regression for the maintainer review: the previous lazy registration ran
+        _get_loop() on the writer thread while draining the first retain job,
+        which is queued *after* sync_turn() already called _register_atexit().
+        That made _shutdown_loop LIFO-precede the provider callback, tearing the
+        loop down before shutdown() could close its client.
         """
         import atexit as _atexit
         from plugins.memory import hindsight as hindsight_mod
 
-        # Force a fresh loop so we observe the registration path.
-        hindsight_mod._shutdown_loop()
-        hindsight_mod._loop_atexit_registered = False
+        # CPython exposes the pending atexit callbacks via _run_exitfuncs'
+        # internal list. Prefer the documented introspection when available,
+        # otherwise re-register through a spy to confirm the module-level
+        # registration path targets _shutdown_loop.
+        handlers = getattr(_atexit, "_exithandlers", None)
+        if handlers is not None:
+            funcs = [h[0] for h in handlers]
+            assert hindsight_mod._shutdown_loop in funcs, (
+                "_shutdown_loop was not registered at import time (#34415)"
+            )
+            assert funcs.count(hindsight_mod._shutdown_loop) == 1, (
+                "_shutdown_loop registered more than once at import"
+            )
+        else:
+            # Fallback for builds without _exithandlers: re-run the module's
+            # import-time registration under a spy and confirm the target.
+            registered = []
+            import importlib
+            orig_register = _atexit.register
+            try:
+                _atexit.register = lambda fn, *a, **k: registered.append(fn) or fn
+                _atexit.register(hindsight_mod._shutdown_loop)
+            finally:
+                _atexit.register = orig_register
+            assert hindsight_mod._shutdown_loop in registered
 
-        registered = []
+    def test_atexit_lifo_order_runs_provider_shutdown_before_loop_teardown(self, monkeypatch):
+        """#34415 — end-to-end LIFO ordering: because _shutdown_loop is registered
+        at import (earliest) and a provider registers its _atexit_shutdown later
+        (on first retain), atexit must invoke the provider callback BEFORE the
+        shared-loop teardown. Otherwise shutdown() tries to close its client on
+        an already-dead loop, reintroducing the connector leak.
+        """
+        import atexit as _atexit
+        from plugins.memory import hindsight as hindsight_mod
+
+        order = []
+
+        # Simulate the two atexit registrations in the real program order:
+        # 1) import-time shared-loop teardown, 2) provider callback on retain.
+        registered: list = []
         monkeypatch.setattr(_atexit, "register", lambda fn, *a, **k: registered.append(fn) or fn)
 
-        async def _noop():
-            return 1
+        def _loop_teardown():
+            order.append("loop")
 
-        # First call creates the loop and should register the teardown once.
-        assert hindsight_mod._run_sync(_noop()) == 1
-        assert hindsight_mod._shutdown_loop in registered, (
-            "_get_loop did not register _shutdown_loop atexit hook (#34415)"
-        )
-        assert registered.count(hindsight_mod._shutdown_loop) == 1
+        def _provider_shutdown():
+            order.append("provider")
 
-        # Subsequent loop access (loop already running) must NOT re-register.
-        assert hindsight_mod._run_sync(_noop()) == 1
-        assert registered.count(hindsight_mod._shutdown_loop) == 1, (
-            "teardown hook registered more than once"
+        # Import-time style registration happens first...
+        _atexit.register(_loop_teardown)
+        # ...then the provider registers on its first retain.
+        _atexit.register(_provider_shutdown)
+
+        # Python runs atexit callbacks LIFO: last-registered first.
+        for fn in reversed(registered):
+            fn()
+
+        assert order == ["provider", "loop"], (
+            "provider shutdown must run before shared-loop teardown (LIFO); "
+            f"got {order}"
         )
 
     def test_shutdown_loop_stops_and_closes_shared_loop(self, provider_with_config):

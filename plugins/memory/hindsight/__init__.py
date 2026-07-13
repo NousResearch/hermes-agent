@@ -196,7 +196,6 @@ def _check_api_supports_update_mode_append(api_url: str,
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 _loop_lock = threading.Lock()
-_loop_atexit_registered = False
 
 # Sentinel pushed to the per-provider retain queue to wake the writer for a
 # clean exit. A unique object so it can never collide with a real job.
@@ -205,7 +204,7 @@ _WRITER_SENTINEL = object()
 
 def _get_loop() -> asyncio.AbstractEventLoop:
     """Return a long-lived event loop running on a background thread."""
-    global _loop, _loop_thread, _loop_atexit_registered
+    global _loop, _loop_thread
     with _loop_lock:
         if _loop is not None and _loop.is_running():
             return _loop
@@ -218,19 +217,6 @@ def _get_loop() -> asyncio.AbstractEventLoop:
         _loop_thread = threading.Thread(target=_run, daemon=True, name="hindsight-loop")
         _loop_thread.start()
 
-        # Register the loop teardown exactly once, the first time the loop is
-        # created. atexit runs in LIFO order, so registering here -- before any
-        # HindsightMemoryProvider has registered its own per-instance
-        # _atexit_shutdown (those happen later, on initialize()) -- guarantees
-        # _shutdown_loop() runs AFTER every provider has closed its client.
-        # Without this, the shared daemon-thread loop is torn down by the
-        # interpreter mid-flight and any aiohttp ClientSession / TCPConnector
-        # still owned by the loop is reclaimed by GC during teardown, surfacing
-        # as the "Unclosed client session" / "Unclosed connector" warnings
-        # from #10865 / #11923 / #34415.
-        if not _loop_atexit_registered:
-            _loop_atexit_registered = True
-            atexit.register(_shutdown_loop)
         return _loop
 
 
@@ -284,6 +270,26 @@ def _shutdown_loop(timeout: float = 5.0) -> None:
                 loop.close()
         except Exception:
             pass
+
+
+# Register the shared-loop teardown at *module import* time -- deliberately
+# before any HindsightMemoryProvider instance registers its per-instance
+# _atexit_shutdown (that happens later, on the first sync_turn()/retain).
+# Python runs atexit callbacks in LIFO order, so registering _shutdown_loop
+# first guarantees it runs LAST -- after every provider callback has already
+# invoked shutdown() and closed its client on the still-live shared loop.
+#
+# The earlier lazy registration inside _get_loop() was ordered backwards:
+# _get_loop() first runs on the writer thread while draining the initial
+# retain job, which is queued *after* sync_turn() has already called
+# _register_atexit(). That made _shutdown_loop LIFO-precede the provider
+# callback, so the loop was torn down before shutdown() could close its
+# client -- reintroducing the "Unclosed client session" / "Unclosed
+# connector" GC-at-exit warnings from #10865 / #11923 / #34415.
+#
+# _shutdown_loop is a no-op when no loop was ever created, so registering it
+# unconditionally at import costs nothing for providers that never retain.
+atexit.register(_shutdown_loop)
 
 
 def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):

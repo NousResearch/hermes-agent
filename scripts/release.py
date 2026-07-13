@@ -45,13 +45,16 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approvals.timeout in gateway waits)
     "luigi@users.noreply.github.com": "Tortugasaur",  # PR #43205 salvage (desktop: profile-aware three-way approval mode statusbar control)
+    "kavi@local.hermes": "kavioavio",  # Issue #46544 / PR #47705 evolution (smart DENY exact-operation owner override)
     "135129512+ansel-f@users.noreply.github.com": "ansel-f",  # PR #62388 salvage (approval: allow exact verifier temp cleanup without broadening rm safety boundary)
     "robert@modern-minds.ai": "Hopfensaft",  # PR #31933 salvage (dashboard: align approvals.mode dropdown with canonical engine values)
     "palmer@dugoutfantasy.com": "professorpalmer",  # PR #48591 salvage (sessions: CLI workspace filter + restore-cwd-on-resume)
     "true@supersynergy.de": "Supersynergy",  # PR #59241 salvage (desktop: workspace path status-bar action)
+    "me@roryford.com": "roryford",  # PR #63132 salvage (compression: fail closed for errors from a resolved lock API, preserving lineage)
     "esthon@gmail.com": "esthonjr",  # PR #61950 salvage (desktop: legacy non-git workspace grouping + Windows path identity)
     "iganapolsky@gmail.com": "IgorGanapolsky",  # PR #62125 salvage (compaction anti-thrash threshold verification)
     "tturney1@gmail.com": "TheTom",  # PR #62696 salvage (gateway: expand @ context references under runtime/session model resolution)
@@ -321,6 +324,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "johnmlussier@gmail.com": "John-Lussier",
     "chenkun_lws@126.com": "bytesnail",  # PR #60360 salvage (--yolo startup ordering; #60328)
     "iamgexin@qq.com": "nullptr0807",  # PR #60956 salvage (gateway hygiene in-place compaction; #60947)
     "embwl0x@users.noreply.github.com": "embwl0x",  # PR #60810 salvage (channel directory offload)

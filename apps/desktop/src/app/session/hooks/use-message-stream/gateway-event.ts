@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -9,7 +9,7 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
+import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -95,16 +95,27 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     upsertToolCall
   } = deps
 
+  const unscopedStreamSessionIdRef = useRef<string | null>(null)
+
   return useCallback(
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
 
-      if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
+      const route = resolveGatewayEventSessionId({
+        activeSessionId: activeSessionIdRef.current,
+        eventType: event.type,
+        explicitSessionId: explicitSid,
+        unscopedStreamSessionId: unscopedStreamSessionIdRef.current
+      })
+
+      unscopedStreamSessionIdRef.current = route.nextUnscopedStreamSessionId
+
+      if (route.drop) {
         return
       }
 
-      const sessionId = explicitSid || activeSessionIdRef.current
+      const sessionId = route.sessionId
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       if (event.type === 'gateway.ready') {
@@ -489,9 +500,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setApprovalRequest({
           // false only when a tirith warning forbids it; backend omits the field otherwise.
           allowPermanent: payload?.allow_permanent !== false,
+          choices: Array.isArray(payload?.choices) ? payload.choices.filter(choice => typeof choice === 'string') : undefined,
           command,
           description,
-          sessionId: sessionId ?? null
+          sessionId: sessionId ?? null,
+          smartDenied: payload?.smart_denied === true
         })
 
         if (sessionId) {

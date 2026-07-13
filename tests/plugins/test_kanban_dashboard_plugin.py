@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -70,7 +71,8 @@ def test_board_empty(client):
     data = r.json()
     # All canonical columns present (triage + the rest), each empty.
     names = [c["name"] for c in data["columns"]]
-    for expected in ("triage", "todo", "ready", "running", "blocked", "done"):
+    assert set(names) == kb.VALID_STATUSES - {"archived"}
+    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
@@ -113,6 +115,127 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_board_list_recommends_persistent_workspace_for_configured_workdir(
+    client, tmp_path
+):
+    """Board metadata should tell the UI which safe task default to use."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    plain_dir = tmp_path / "notes"
+    plain_dir.mkdir()
+    kb.create_board("notes", default_workdir=str(plain_dir))
+    kb.create_board("disposable")
+
+    response = client.get("/api/plugins/kanban/boards")
+
+    assert response.status_code == 200
+    boards = {board["slug"]: board for board in response.json()["boards"]}
+    assert boards["default"]["default_workspace_kind"] == "worktree"
+    assert boards["notes"]["default_workspace_kind"] == "dir"
+    assert boards["disposable"]["default_workspace_kind"] == "scratch"
+
+
+def test_create_board_persists_project_directory(client, tmp_path):
+    """The dashboard board form should anchor future tasks to its project."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={
+            "slug": "project-board",
+            "name": "Project Board",
+            "default_workdir": str(project_dir),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    board = response.json()["board"]
+    assert board["default_workdir"] == str(project_dir.resolve())
+    assert board["default_workspace_kind"] == "dir"
+    assert kb.read_board_metadata("project-board")["default_workdir"] == str(
+        project_dir.resolve()
+    )
+
+
+@pytest.mark.parametrize("path", ["relative/project", "~/missing-project"])
+def test_create_board_rejects_invalid_project_directory(client, path):
+    """A board must not persist a path that cannot anchor worker output."""
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={"slug": "invalid-project", "default_workdir": path},
+    )
+
+    assert response.status_code == 400
+    assert "project directory" in response.json()["detail"].lower()
+
+
+def test_new_board_dialog_collects_project_directory():
+    """Board creation should expose the setting that controls safe task defaults."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'const [projectDirectory, setProjectDirectory] = useState("");' in bundle
+    assert "Project directory" in bundle
+    assert "Absolute path to the project folder" in bundle
+    assert "default_workdir: projectDirectory.trim() || undefined" in bundle
+
+
+def test_dashboard_workspace_picker_explains_persistence_contract():
+    """Task creation must make scratch deletion visible without a hover."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "Temporary — deleted on completion" in bundle
+    assert "Git worktree — preserved" in bundle
+    assert "Directory — preserved" in bundle
+    assert "defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || \"\"" in bundle
+    assert (
+        "This workspace and any files left in it are deleted when the task completes."
+        in bundle
+    )
+
+
+def test_scheduled_tasks_have_their_own_column_not_todo(client):
+    """Scheduled/time-delay tasks must not be silently bucketed into todo."""
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "wait for indexed data", "assignee": "ops"},
+    ).json()["task"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'scheduled' WHERE id = ?",
+                (task["id"],),
+            )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    columns = {c["name"]: c["tasks"] for c in r.json()["columns"]}
+    assert any(t["id"] == task["id"] for t in columns["scheduled"])
+    assert not any(t["id"] == task["id"] for t in columns["todo"])
+
+
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})
@@ -125,6 +248,113 @@ def test_tenant_filter(client):
     r = client.get("/api/plugins/kanban/board?tenant=t2")
     total = sum(len(c["tasks"]) for c in r.json()["columns"])
     assert total == 1
+
+
+def test_board_query_param_default_overrides_current_board_pointer(client):
+    """Dashboard ``?board=default`` must win even if the CLI's current-board
+    pointer targets a non-default board.
+
+    Regression: selecting the Default board in the dashboard must not fall
+    through to whichever board ``hermes kanban boards switch`` last pinned.
+    """
+    default_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "default-only"},
+    ).json()["task"]
+
+    kb.create_board("other")
+    other_conn = kb.connect(board="other")
+    try:
+        kb.create_task(other_conn, title="other-only")
+    finally:
+        other_conn.close()
+
+    kb.set_current_board("other")
+
+    current_board = client.get("/api/plugins/kanban/board").json()
+    current_ids = {
+        task["id"]
+        for column in current_board["columns"]
+        for task in column["tasks"]
+    }
+    assert default_task["id"] not in current_ids
+
+    pinned_default = client.get("/api/plugins/kanban/board?board=default").json()
+    pinned_ids = {
+        task["id"]
+        for column in pinned_default["columns"]
+        for task in column["tasks"]
+    }
+    assert pinned_ids == {default_task["id"]}
+
+
+def test_dashboard_select_filters_use_sdk_value_change_handler():
+    """Tenant/assignee filters must work with the dashboard SDK Select API.
+
+    The dashboard Select component is shadcn-like and calls
+    ``onValueChange(value)`` instead of native ``onChange(event)``. A native-only
+    handler leaves the tenant dropdown visually selectable but never updates the
+    filtered board query.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function selectChangeHandler(setter)" in js
+    assert "onValueChange: function (v)" in js
+    assert "onChange: function (e)" in js
+    assert "selectChangeHandler(props.setTenantFilter)" in js
+    assert "selectChangeHandler(props.setAssigneeFilter)" in js
+
+
+def test_dashboard_client_side_filtering_includes_tenant_filter():
+    """The rendered board must also filter by tenant.
+
+    The API request includes ``?tenant=...``, but the dashboard also filters the
+    locally cached board for search/assignee changes. Without checking
+    ``tenantFilter`` here, switching tenants can leave stale cards visible until a
+    full reload finishes.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
+    assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+
+
+def test_dashboard_initial_board_uses_backend_current_when_unpinned():
+    """Fresh browsers should open the backend current board, not default.
+
+    Explicit dashboard selections are stored in localStorage and should still
+    win, but an empty localStorage state must adopt the API's ``current`` board
+    so multi-board installs do not look empty on first load.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert 'useState(() => readSelectedBoard() || null)' in js
+    assert "const storedBoard = readSelectedBoard();" in js
+    assert "if (!storedBoard && !board && data && data.current)" in js
+    assert "setBoard(data.current);" in js
+    assert 'readSelectedBoard() || "default"' not in js
+
+
+def test_dashboard_markdown_html_is_sanitized_before_render():
+    """Markdown rendering must sanitize HTML before dangerouslySetInnerHTML."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function sanitizeMarkdownHtml(html)" in js
+    assert "MARKDOWN_ALLOWED_TAGS" in js
+    assert "sanitizeMarkdownHtml(renderMarkdown(props.source || \"\"))" in js
+    assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +431,28 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_patch_schedule_then_unblock(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "scheduled", "block_reason": "run tomorrow"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "scheduled"
+
+    columns = client.get("/api/plugins/kanban/board").json()["columns"]
+    assert "scheduled" in [c["name"] for c in columns]
+    scheduled = next(c for c in columns if c["name"] == "scheduled")
+    assert any(x["id"] == t["id"] for x in scheduled["tasks"])
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "ready"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+
 def test_patch_drag_drop_move_todo_to_ready(client):
     """Direct status write: the drag-drop path for statuses without a
     dedicated verb (e.g. manually promoting todo -> ready).
@@ -221,6 +473,18 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     )
     assert r.status_code == 409
 
+    # The 409 detail must name the blocking parent so the dashboard can
+    # render an actionable toast instead of a silent no-op (#26744).
+    detail = r.json()["detail"]
+    assert "Cannot move to 'ready'" in detail
+    assert parent["id"] in detail
+    assert "'p'" in detail
+    assert "status=" in detail
+    # Whatever non-``done`` status the parent currently has must show up
+    # so the operator knows what to fix.
+    assert f"status={parent['status']}" in detail
+    assert parent["status"] != "done"
+
     # Complete the parent.
     r = client.patch(
         f"/api/plugins/kanban/tasks/{parent['id']}",
@@ -231,6 +495,43 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     # Now child auto-promoted by recompute_ready — already ready.
     child_after = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
     assert child_after["status"] == "ready"
+
+
+def test_reopening_parent_demotes_ready_child(client):
+    """Reopening a completed parent must invalidate ready children immediately.
+
+    The dispatcher re-checks parent completion on claim, but the dashboard
+    should not keep showing a stale child as ready after an operator drags
+    its parent back out of done for more work.
+    """
+    parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "c", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "todo"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
+    assert r.status_code == 200
+
+    child_after_done = client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()["task"]
+    assert child_after_done["status"] == "ready"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "todo"},
+    )
+    assert r.status_code == 200
+
+    child_after_reopen = client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()["task"]
+    assert child_after_reopen["status"] == "todo"
 
 
 def test_patch_reassign(client):
@@ -292,6 +593,33 @@ def test_patch_status_running_rejected(client):
         for tt in col["tasks"]
     }
     assert statuses.get(t["id"]) != "running"
+
+
+# ---------------------------------------------------------------------------
+# DELETE /tasks/:id
+# ---------------------------------------------------------------------------
+
+def test_delete_task(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "to-delete"}).json()["task"]
+    r = client.delete(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+    assert r.json()["task_id"] == t["id"]
+
+    # Gone from board
+    board = client.get("/api/plugins/kanban/board").json()
+    all_ids = [tt["id"] for col in board["columns"] for tt in col["tasks"]]
+    assert t["id"] not in all_ids
+
+    # Gone from detail
+    r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 404
+
+
+def test_delete_task_not_found(client):
+    r = client.delete("/api/plugins/kanban/tasks/t_nonexistent")
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +825,9 @@ def test_board_auto_initializes_missing_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Deliberately DO NOT call kb.init_db().
 
@@ -514,18 +845,29 @@ def test_board_auto_initializes_missing_db(tmp_path, monkeypatch):
 
 
 def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
-    """When _SESSION_TOKEN is set (normal dashboard context), a missing or
-    wrong ?token= query param must be rejected with policy-violation."""
+    """Loopback mode: a missing or wrong ?token= must be rejected with
+    policy-violation; the correct token is accepted. The kanban WS now
+    delegates to web_server._ws_auth_ok, so we stub that with the real
+    loopback-token semantics (auth_required False → constant-time token
+    compare)."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
 
-    # Stub web_server so _check_ws_token has a token to compare against.
+    # Stub web_server with a loopback-mode _ws_auth_ok (auth_required False →
+    # accept only the correct ?token=). Mirrors the real gate's loopback path.
     import hermes_cli
     import types
-    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+
+    def _fake_ws_auth_ok(ws):
+        return ws.query_params.get("token", "") == "secret-xyz"
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=_fake_ws_auth_ok,
+    )
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
     monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
@@ -551,6 +893,163 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         "/api/plugins/kanban/events?token=secret-xyz"
     ) as ws:
         assert ws is not None  # handshake succeeded
+
+
+def test_ws_events_accepts_gated_ticket(tmp_path, monkeypatch):
+    """Gated OAuth mode: the WS must accept a single-use ?ticket= (and reject
+    a bare ?token=, even one matching _SESSION_TOKEN). This is the regression
+    for the hosted-dashboard bug where the kanban live-events WS 1008'd on
+    every gated deployment because its bespoke check only knew _SESSION_TOKEN.
+    We stub _ws_auth_ok with the real gated semantics (ticket-only)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import hermes_cli
+    import types
+
+    def _fake_ws_auth_ok(ws):
+        # Gated mode: only a known ticket is accepted; token path rejected.
+        return ws.query_params.get("ticket", "") == "good-ticket"
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=_fake_ws_auth_ok,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    from starlette.websockets import WebSocketDisconnect
+
+    # Legacy token is rejected in gated mode, even if it's the real one.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect("/api/plugins/kanban/events?token=secret-xyz"):
+            pass
+    assert exc.value.code == 1008
+
+    # A valid ticket is accepted.
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?ticket=good-ticket"
+    ) as ws:
+        assert ws is not None
+
+
+def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp_path, monkeypatch):
+    """The event stream must honor ``board=default`` even when the global
+    current-board pointer targets a different board.
+
+    This is the live-update half of the dashboard regression: after the UI
+    selects Default, the websocket must not subscribe to the CLI's current
+    non-default board.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    default_conn = kb.connect()
+    try:
+        default_task = kb.create_task(default_conn, title="default-live")
+    finally:
+        default_conn.close()
+
+    kb.create_board("other")
+    other_conn = kb.connect(board="other")
+    try:
+        other_task = kb.create_task(other_conn, title="other-live")
+    finally:
+        other_conn.close()
+
+    kb.set_current_board("other")
+
+    import hermes_cli
+    import types
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?token=secret-xyz&board=default&since=0"
+    ) as ws:
+        payload = ws.receive_json()
+
+    task_ids = {event["task_id"] for event in payload["events"]}
+    assert default_task in task_ids
+    assert other_task not in task_ids
+
+
+def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
+    """``asyncio.CancelledError`` while sleeping in the poll loop is the
+    normal uvicorn-shutdown path (``BaseException``, so the bare
+    ``except Exception:`` does NOT catch it). Without the explicit
+    clause the cancellation surfaces as an application traceback.
+
+    Regression test for #20790 (fix in #20938). Drives the coroutine
+    directly (rather than through FastAPI TestClient) so we can observe
+    the cancellation outcome deterministically.
+    """
+    import asyncio
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    # Short-circuit the auth check — this test is about the cancellation
+    # path, not auth.
+    import plugins.kanban.dashboard.plugin_api as pa
+    monkeypatch.setattr(pa, "_ws_upgrade_authorized", lambda ws: True)
+
+    class _FakeWS:
+        def __init__(self):
+            self.query_params = {"token": "x", "since": "0"}
+            self.accepted = False
+            self.closed = False
+
+        async def accept(self):
+            self.accepted = True
+
+        async def send_json(self, data):
+            pass
+
+        async def close(self, code=None):
+            self.closed = True
+
+    async def _run():
+        ws = _FakeWS()
+        task = asyncio.create_task(pa.stream_events(ws))
+        # Give the handler a tick to accept + start polling.
+        await asyncio.sleep(0.05)
+        assert ws.accepted is True
+        task.cancel()
+        # stream_events should swallow CancelledError and return cleanly.
+        # If it doesn't, this await re-raises the CancelledError.
+        result = await task
+        return result, ws
+
+    result, ws = asyncio.run(_run())
+    assert result is None, (
+        f"stream_events should return cleanly after cancellation, got {result!r}"
+    )
+    # The bug symptom was a traceback; we don't assert on stderr because
+    # capturing asyncio's internal "exception was never retrieved" logging
+    # is flaky. The assertion that matters is: no CancelledError escaped.
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +1108,31 @@ def test_bulk_status_done_forwards_completion_summary(client):
         conn.close()
 
 
+def test_bulk_status_running_rejected(client):
+    """Bulk updates must match single-task PATCH: direct 'running' is invalid."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [t["id"]], "status": "running"},
+    )
+
+    assert r.status_code == 200
+    results = r.json()["results"]
+    assert len(results) == 1
+    assert results[0]["id"] == t["id"]
+    assert results[0]["ok"] is False
+    assert "running" in results[0]["error"]
+
+    board = client.get("/api/plugins/kanban/board").json()
+    statuses = {
+        tt["id"]: col["name"]
+        for col in board["columns"]
+        for tt in col["tasks"]
+    }
+    assert statuses.get(t["id"]) != "running"
+
+
 def test_dashboard_done_actions_prompt_for_completion_summary():
     repo_root = Path(__file__).resolve().parents[2]
     bundle = (
@@ -620,6 +1144,34 @@ def test_dashboard_done_actions_prompt_for_completion_summary():
     assert "result: summary" in bundle
     assert "body: JSON.stringify(patch)" in bundle
     assert "body: JSON.stringify(finalPatch)" in bundle
+
+
+def test_dashboard_surfaces_ready_blocked_error_inline():
+    """Regression for #26744: failed status transitions must be surfaced
+    inline, not swallowed.  The drag/drop banner and the drawer's action
+    row each render the parsed API ``detail`` so operators see *why*
+    their click did nothing.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Helper that strips ``"409: {\"detail\":\"…\"}"`` down to the
+    # human-readable message before it lands in any banner.
+    assert "function parseApiErrorMessage(err)" in bundle
+    assert "parsed.detail" in bundle
+
+    # Drag/drop banner now uses the parsed message instead of raw
+    # ``err.message`` so it no longer leaks HTTP plumbing.
+    assert "setError(tx(t, \"moveFailed\", \"Move failed: \") + parseApiErrorMessage(err))" in bundle
+
+    # Drawer action row has its own visible error surface and clears it
+    # on success/refresh so stale failures don't follow the operator
+    # around.
+    assert "const [patchErr, setPatchErr] = useState(null);" in bundle
+    assert "setPatchErr(parseApiErrorMessage(e))" in bundle
+    assert "setPatchErr(null)" in bundle
 
 
 def test_dashboard_dependency_selects_use_value_change_handler():
@@ -938,6 +1490,20 @@ def test_create_task_without_skills_defaults_to_empty_list(client):
     assert task.get("skills") in (None, [])
 
 
+def test_create_task_with_toolset_name_in_skills_is_rejected(client):
+    """POST /tasks fails fast when callers confuse toolsets with skills."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "bad skills payload",
+            "assignee": "linguist",
+            "skills": ["web"],
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "toolset name" in r.json()["detail"]
+
+
 
 # ---------------------------------------------------------------------------
 # Dispatcher-presence warning in POST /tasks response
@@ -988,6 +1554,87 @@ def test_create_task_no_warning_on_triage(client, monkeypatch):
     )
     assert r.status_code == 200
     assert "warning" not in r.json() or not r.json()["warning"]
+
+
+# ---------------------------------------------------------------------------
+# _task_dict — outer try/except fallback when task_age raises
+#
+# Background: kanban_db.task_age was hardened in 061a1830 to return None for
+# corrupt timestamp values via _safe_int. The companion fix added a belt-and-
+# suspenders try/except in plugin_api._task_dict so that *any future* exception
+# from task_age (not just ValueError on '%s') still yields a usable dict
+# instead of 500'ing GET /board for the entire org.
+#
+# kanban_db._safe_int / task_age corruption paths are covered in
+# tests/hermes_cli/test_kanban_db.py. The OUTER fallback here is not, which
+# means a refactor that drops the try/except would not be caught by CI. The
+# tests below pin that contract.
+# ---------------------------------------------------------------------------
+
+
+_FALLBACK_AGE = {
+    "created_age_seconds": None,
+    "started_age_seconds": None,
+    "time_to_complete_seconds": None,
+}
+
+
+def test_board_endpoint_survives_task_age_exception(client, monkeypatch):
+    """If task_age raises for any reason, GET /board must NOT 500.
+
+    Pre-fix behavior (without the try/except in _task_dict): a single corrupt
+    row turned the entire board response into a 500. The fallback dict lets
+    the dashboard render every other card normally.
+    """
+    create = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "doomed", "assignee": "alice"},
+    )
+    assert create.status_code == 200, create.text
+
+    # Force task_age to raise an exception type _safe_int does NOT handle —
+    # simulates a future regression where someone re-introduces an unguarded
+    # operation in task_age. ValueError on '%s' would be absorbed by _safe_int
+    # and never reach the outer try/except, so it would not exercise the
+    # contract this test pins.
+    def _boom(_task):
+        raise RuntimeError("simulated future task_age bug")
+    monkeypatch.setattr("hermes_cli.kanban_db.task_age", _boom)
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+
+    payload = r.json()
+    # /board returns columns as a list of {name, tasks} — not a dict — so
+    # flatten across all columns to find our seeded task.
+    tasks = [t for col in payload["columns"] for t in col["tasks"]]
+    assert len(tasks) == 1, f"expected exactly the seeded task, got {tasks!r}"
+    # Strict equality: the literal fallback dict from plugin_api._task_dict
+    # is the published contract the dashboard UI relies on. Key renames or
+    # silent additions should fail this test on purpose.
+    assert tasks[0]["age"] == _FALLBACK_AGE
+
+
+def test_single_task_endpoint_survives_task_age_exception(client, monkeypatch):
+    """GET /tasks/:id also calls _task_dict — same fallback should kick in.
+
+    This is the "drawer view" path: the user clicks one card and we serialize
+    just that task. A corrupt timestamp on a single task should not block the
+    user from opening its drawer.
+    """
+    create = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "drawer-target", "assignee": "bob"},
+    )
+    task_id = create.json()["task"]["id"]
+
+    def _boom(_task):
+        raise RuntimeError("simulated future task_age bug")
+    monkeypatch.setattr("hermes_cli.kanban_db.task_age", _boom)
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["age"] == _FALLBACK_AGE
 
 
 def test_create_task_probe_error_does_not_break_create(client, monkeypatch):
@@ -1069,6 +1716,7 @@ def test_home_subscribe_creates_notify_sub_row(client, with_home_channels):
     assert subs[0]["platform"] == "telegram"
     assert subs[0]["chat_id"] == "1234567"
     assert subs[0]["thread_id"] == "42"
+    assert subs[0]["notifier_profile"] == "default"
 
 
 def test_home_subscribe_flips_subscribed_flag_in_subsequent_get(client, with_home_channels):
@@ -1094,6 +1742,36 @@ def test_home_subscribe_is_idempotent(client, with_home_channels):
         assert len(kb.list_notify_subs(conn, t["id"])) == 1
     finally:
         conn.close()
+
+
+def test_home_subscribe_backfills_owner_on_legacy_row(client, with_home_channels):
+    """Re-subscribing should backfill notifier ownership on ownerless rows."""
+    from hermes_cli import kanban_db as kb
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=t["id"],
+            platform="telegram",
+            chat_id="1234567",
+            thread_id="42",
+        )
+    finally:
+        conn.close()
+
+    r = client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    assert r.status_code == 200
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, t["id"])
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "default"
 
 
 def test_home_subscribe_unknown_platform_returns_404(client, with_home_channels):
@@ -1428,7 +2106,8 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
 
 
 def test_diagnostics_endpoint_severity_filter(client):
-    """Warning-severity filter excludes error-severity entries."""
+    """Severity filter is at-or-above: warning includes warning+error+critical,
+    error includes error+critical, critical is exact (no higher level)."""
     conn = kb.connect()
     try:
         # A warning-severity diagnostic (prose phantom) on one task.
@@ -1436,22 +2115,26 @@ def test_diagnostics_endpoint_severity_filter(client):
         # requires ``t_[a-f0-9]{8,}``.
         p1 = kb.create_task(conn, title="prose", assignee="a")
         kb.complete_task(conn, p1, summary="mentioned t_deadbeef1234")
-        # An error-severity diagnostic (spawn failures) on another
+        # An error-severity diagnostic (spawn failures) on another.
+        # Keep this below critical severity (failure_threshold * 2).
         p2 = kb.create_task(conn, title="spawn", assignee="b")
         conn.execute(
-            "UPDATE tasks SET consecutive_failures=5, last_failure_error='x' WHERE id=?",
+            "UPDATE tasks SET consecutive_failures=2, last_failure_error='x' WHERE id=?",
             (p2,),
         )
         conn.commit()
     finally:
         conn.close()
 
+    # warning filter is at-or-above → both the warning AND the error pass.
     r = client.get("/api/plugins/kanban/diagnostics?severity=warning")
     assert r.status_code == 200
     data = r.json()
-    assert data["count"] == 1
-    assert data["diagnostics"][0]["task_id"] == p1
+    assert data["count"] == 2
+    task_ids = {row["task_id"] for row in data["diagnostics"]}
+    assert task_ids == {p1, p2}
 
+    # error filter is at-or-above → only the error passes (warning is below).
     r = client.get("/api/plugins/kanban/diagnostics?severity=error")
     data = r.json()
     assert data["count"] == 1
@@ -1484,3 +2167,198 @@ def test_board_exposes_diagnostics_list_and_summary(client):
     assert task_dict["warnings"] is not None
     assert task_dict["warnings"]["highest_severity"] == "error"
     assert task_dict["diagnostics"][0]["kind"] == "repeated_crashes"
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/:id/specify — triage specifier endpoint
+# ---------------------------------------------------------------------------
+
+
+def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
+    """Helper: install a fake auxiliary client so the specifier endpoint
+    can run without hitting any real provider."""
+    from unittest.mock import MagicMock
+
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = content
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, model),
+    )
+    return fake_client
+
+
+def test_specify_happy_path(client, monkeypatch):
+    import json as jsonlib
+
+    # Create a triage task.
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "one-liner", "triage": True},
+    ).json()["task"]
+    assert t["status"] == "triage"
+
+    _patch_specifier_response(
+        monkeypatch,
+        content=jsonlib.dumps(
+            {"title": "Polished", "body": "**Goal**\nDo the thing."}
+        ),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={"author": "ui-tester"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["task_id"] == t["id"]
+    assert body["new_title"] == "Polished"
+
+    # Task should have moved off the triage column.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] in {"todo", "ready"}
+    assert detail["title"] == "Polished"
+    assert "**Goal**" in (detail["body"] or "")
+
+
+def test_specify_non_triage_returns_ok_false_not_http_error(client, monkeypatch):
+    """The endpoint intentionally returns ``{ok: false, reason: ...}`` for
+    "task not in triage" rather than a 4xx — the dashboard renders the
+    reason inline so the user can fix it without a page reload."""
+    # Create a normal (ready) task — not in triage.
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    _patch_specifier_response(monkeypatch, content="unused")
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "not in triage" in body["reason"]
+
+
+def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough", "triage": True},
+    ).json()["task"]
+
+    # Simulate "no auxiliary client configured".
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (None, ""),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "auxiliary client" in body["reason"]
+
+    # Task must stay in triage — nothing was touched.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] == "triage"
+
+
+def test_board_endpoint_accepts_explicit_board_default_param(client):
+    """GET /board?board=default must not fall through to env/current-file resolution.
+
+    The dashboard always sends ``?board=<slug>`` (including ``board=default``)
+    so that the server-side ``current`` file can never override the dashboard's
+    selected board.  This test asserts the endpoint accepts the parameter and
+    returns the default board without falling back to environment variable or
+    current-file resolution.
+    Regression: #21819.
+    """
+    # Create a task on the default board.
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "on-default-board"},
+    ).json()["task"]
+    assert t["status"] == "ready"
+
+    # Request with explicit board=default — must succeed and include the task.
+    r = client.get("/api/plugins/kanban/board?board=default")
+    assert r.status_code == 200
+    data = r.json()
+    ready = next((c for c in data["columns"] if c["name"] == "ready"), None)
+    assert ready is not None, "no 'ready' column in default board response"
+    task_ids = [task["id"] for task in ready["tasks"]]
+    assert t["id"] in task_ids, (
+        f"task {t['id']} not found in ready column of default board "
+        f"(got tasks: {task_ids}). The board=default param was likely ignored."
+    )
+
+
+def test_dashboard_requests_default_board_explicitly():
+    """Dashboard REST calls must include board=default instead of relying on server current board."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "SDK.fetchJSON(withBoard(`${API}/config`, board))" in dist
+    assert "SDK.fetchJSON(withBoard(`${API}/boards`, board))" in dist
+    assert "}, [loadBoardList, switchBoard, board]);" in dist
+
+
+def test_dashboard_search_includes_body_and_result():
+    """Client-side search must match body, result, latest_summary, and summary
+    so full card contents are findable."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "t.body || \"\"" in dist
+    assert "t.result || \"\"" in dist
+    assert "t.latest_summary || \"\"" in dist
+
+
+def test_dashboard_bulk_actions_include_reclaim_first():
+    """Bulk action bar must expose reclaim_first checkbox and expanded status buttons."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "reclaim_first: reclaimFirst" in dist
+    assert "hermes-kanban-bulk-reclaim-first" in dist
+    assert '"→ todo"' in dist
+    assert '"Block"' in dist
+    assert '"Unblock"' in dist
+
+
+def test_dashboard_shift_click_range_selection_exists():
+    """Shift-click must trigger range selection via toggleRange."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "function toggleRange" in dist or "const toggleRange =" in dist
+    assert "props.toggleRange(t.id)" in dist or "props.toggleRange" in dist
+    assert "e.shiftKey" in dist
+
+
+def test_dashboard_multi_move_bulk_exists():
+    """Dragging a selected card with other selections must use /tasks/bulk."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "onMoveSelected" in dist
+    assert "props.onMoveSelected" in dist
+    assert "`${API}/tasks/bulk`" in dist
+
+
+def test_dashboard_failed_card_highlight_class_exists():
+    """Partial bulk failures must highlight failing cards."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "hermes-kanban-card--failed" in js
+    assert "hermes-kanban-card--failed" in css
+    assert "failedIds" in js

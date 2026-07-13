@@ -1,7 +1,6 @@
 """Test that AuthError triggers fallback provider resolution (#7230)."""
 
-import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -27,8 +26,11 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
 
         def _mock_resolve(**kwargs):
             call_count["n"] += 1
-            requested = kwargs.get("requested", "")
-            if requested and "codex" in str(requested).lower():
+            # First call = primary path (gateway reads model.provider from
+            # config.yaml internally; we simulate the auth failure here).
+            # Second call = fallback path with explicit_api_key + explicit_base_url
+            # supplied by gateway from fallback_model config.
+            if call_count["n"] == 1:
                 raise AuthError("Codex token refresh failed with status 401")
             return {
                 "api_key": "fallback-key",
@@ -39,8 +41,6 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
                 "args": None,
                 "credential_pool": None,
             }
-
-        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openai-codex")
 
         with patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -62,7 +62,6 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         config_path.write_text("model:\n  provider: openai-codex\n")
 
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openai-codex")
 
         with patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -72,9 +71,52 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             with pytest.raises(RuntimeError):
                 _resolve_runtime_agent_kwargs()
 
+    def test_legacy_fallback_is_appended_after_fallback_providers(self, tmp_path, monkeypatch):
+        """When both keys exist, the legacy entry still participates in resolution."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: anthropic/claude-sonnet-4.6\n"
+            "fallback_model:\n"
+            "  provider: nous\n"
+            "  model: Hermes-4\n"
+        )
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        calls = []
+
+        def _mock_resolve(**kwargs):
+            requested = kwargs.get("requested")
+            calls.append(requested)
+            if requested == "openrouter":
+                raise RuntimeError("openrouter unavailable")
+            return {
+                "api_key": "nous-key",
+                "base_url": "https://portal.nousresearch.com/v1",
+                "provider": "nous",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _try_resolve_fallback_provider
+
+            result = _try_resolve_fallback_provider()
+
+        assert calls == ["openrouter", "nous"]
+        assert result["provider"] == "nous"
+        assert result["model"] == "Hermes-4"
+
 
 class TestGatewayFallbackEnvExpansion:
-    def test_load_fallback_model_expands_env_api_key(self, tmp_path, monkeypatch):
+    def test_load_fallback_model_expands_legacy_env_api_key(self, tmp_path, monkeypatch):
         """Gateway fallback loader should expand ${VAR} refs in legacy fallback_model."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
@@ -91,7 +133,7 @@ class TestGatewayFallbackEnvExpansion:
 
         fb = GatewayRunner._load_fallback_model()
 
-        assert fb["api_key"] == "secret-123"
+        assert fb[0]["api_key"] == "secret-123"
 
     def test_try_resolve_fallback_provider_expands_env_api_key(self, tmp_path, monkeypatch):
         """Gateway runtime fallback resolution should expand ${VAR} refs before provider lookup."""
@@ -113,18 +155,69 @@ class TestGatewayFallbackEnvExpansion:
             seen["explicit_api_key"] = kwargs.get("explicit_api_key")
             return {
                 "api_key": kwargs.get("explicit_api_key"),
-                "base_url": kwargs.get("base_url"),
-                "provider": kwargs.get("provider"),
+                "base_url": kwargs.get("explicit_base_url"),
+                "provider": kwargs.get("requested"),
                 "api_mode": "chat_completions",
                 "command": None,
                 "args": [],
                 "credential_pool": None,
             }
 
-        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_mock_resolve):
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
             from gateway.run import _try_resolve_fallback_provider
 
             fb = _try_resolve_fallback_provider()
 
         assert seen["explicit_api_key"] == "secret-456"
         assert fb["api_key"] == "secret-456"
+
+    def test_refresh_fallback_model_expands_legacy_env_api_key(self, tmp_path, monkeypatch):
+        """Gateway refresh path should expand ${VAR} refs in legacy fallback_model."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_model:\n"
+            "  provider: custom\n"
+            "  model: deepseek-chat\n"
+            "  api_key: ${HERMES_TEST_FB_KEY}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_TEST_FB_KEY", "secret-refresh-legacy")
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._fallback_model = None
+
+        fb = runner._refresh_fallback_model()
+
+        assert fb[0]["api_key"] == "secret-refresh-legacy"
+        assert runner._fallback_model == fb
+
+    def test_refresh_fallback_model_expands_list_env_api_key(self, tmp_path, monkeypatch):
+        """Gateway refresh path should expand ${VAR} refs in fallback_providers."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: deepseek-chat\n"
+            "    base_url: https://example.invalid/v1\n"
+            "    api_key: ${HERMES_TEST_FB_KEY}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_TEST_FB_KEY", "secret-refresh-list")
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._fallback_model = None
+
+        fb = runner._refresh_fallback_model()
+
+        assert fb[0]["api_key"] == "secret-refresh-list"
+        assert fb[0]["base_url"] == "https://example.invalid/v1"
+        assert runner._fallback_model == fb

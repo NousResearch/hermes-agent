@@ -99,7 +99,13 @@ class ComputerUseBackend(ABC):
 
     # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult: ...
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult: ...
 
     # ── Pointer actions ─────────────────────────────────────────────
     @abstractmethod
@@ -150,6 +156,14 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def list_apps(self) -> List[Dict[str, Any]]:
         """Return running apps with bundle IDs, PIDs, window counts."""
+
+    def list_windows(self) -> List[Dict[str, Any]]:
+        """Return visible native windows with PID and window identifiers.
+
+        Optional compatibility hook: backends that predate window discovery
+        remain instantiable and simply report no windows.
+        """
+        return []
 
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:

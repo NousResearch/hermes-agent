@@ -843,6 +843,46 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         assert ws is not None  # handshake succeeded
 
 
+def test_ws_events_rejects_missing_board_without_recreating_it(tmp_path, monkeypatch):
+    """A stale dashboard tab must not resurrect an archived board.
+
+    The HTTP endpoints validate explicit board slugs before opening SQLite, but
+    the websocket used to connect directly.  Its reconnect loop therefore
+    recreated ``boards/<archived-slug>/kanban.db`` after the directory moved.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import hermes_cli
+    import types
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    from starlette.websockets import WebSocketDisconnect
+
+    ghost_dir = home / "kanban" / "boards" / "archived-board"
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect(
+            "/api/plugins/kanban/events?token=secret-xyz&board=archived-board"
+        ):
+            pass
+
+    assert exc.value.code == 1008
+    assert not ghost_dir.exists()
+
+
 def test_ws_events_accepts_gated_ticket(tmp_path, monkeypatch):
     """Gated OAuth mode: the WS must accept a single-use ?ticket= (and reject
     a bare ?token=, even one matching _SESSION_TOKEN). This is the regression

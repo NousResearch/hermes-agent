@@ -106,10 +106,6 @@ def test_coding_done_waits_for_delivery_gates_and_notification_ack(kanban_home):
             workspace_kind="worktree",
             delivery_required=True,
         )
-        kb.add_notify_sub(
-            conn, task_id=task_id, platform="slack", chat_id="C0BGA1TAYRY",
-            notifier_profile="developer",
-        )
         claimed = kb.claim_task(conn, task_id, claimer="coder")
         assert claimed is not None
 
@@ -133,6 +129,10 @@ def test_coding_done_waits_for_delivery_gates_and_notification_ack(kanban_home):
         pending = kb.get_task(conn, task_id)
         assert pending.status == "review"
         assert pending.pending_completion_event_id is not None
+        kb.add_notify_sub(
+            conn, task_id=task_id, platform="slack", chat_id="C0BGA1TAYRY",
+            notifier_profile="developer",
+        )
 
         assert not kb.ack_completion_notification(
             conn,

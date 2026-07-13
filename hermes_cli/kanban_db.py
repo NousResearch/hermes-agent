@@ -4142,11 +4142,6 @@ def _missing_delivery_gates(
     ):
         missing.append("e2e")
 
-    route_count = conn.execute(
-        "SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (task.id,)
-    ).fetchone()[0]
-    if int(route_count) != 1:
-        missing.append("notification")
     return missing
 
 
@@ -4294,6 +4289,9 @@ def _prepare_coding_completion(
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
+        # Replace creator/progress subscriptions with the single route that
+        # the durable projection outbox installs after observing this event.
+        conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
         ev_summary = ((summary if summary is not None else result) or "").strip()
         _append_event(
             conn,

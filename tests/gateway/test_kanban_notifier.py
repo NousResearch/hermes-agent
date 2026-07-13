@@ -120,11 +120,11 @@ def test_coding_completion_reaches_done_only_after_receipt(tmp_path, monkeypatch
             workspace_path=str(tmp_path / "worktree"),
             delivery_required=True,
         )
+        assert kb.complete_task(conn, tid, summary="merged production verified", metadata=metadata)
         kb.add_notify_sub(
             conn, task_id=tid, platform="slack", chat_id="C0BGA1TAYRY",
             notifier_profile="developer",
         )
-        assert kb.complete_task(conn, tid, summary="merged production verified", metadata=metadata)
         pending = kb.get_task(conn, tid)
         assert pending is not None and pending.status == "review"
 
@@ -153,11 +153,11 @@ def test_notifier_recovers_post_send_crash_without_duplicate(tmp_path, monkeypat
             workspace_path=str(tmp_path / "worktree"),
             delivery_required=True,
         )
+        assert kb.complete_task(conn, tid, summary="verified", metadata=metadata)
         kb.add_notify_sub(
             conn, task_id=tid, platform="slack", chat_id="C0BGA1TAYRY",
             notifier_profile="developer",
         )
-        assert kb.complete_task(conn, tid, summary="verified", metadata=metadata)
         _, _, events = kb.claim_unseen_events_for_sub(
             conn,
             task_id=tid,

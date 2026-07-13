@@ -5854,6 +5854,141 @@ def schedule_task(
         return True
 
 
+def _reconcile_nonrunning_active_runs(conn: sqlite3.Connection) -> list[str]:
+    """Close stale active-run pointers on tasks that are no longer running.
+
+    Normal lifecycle transitions close ``tasks.current_run_id`` in the same
+    transaction that moves a task off ``running``. This pass is a dispatcher
+    backstop for corrupted or direct-write states where ``tasks.status`` is
+    already non-running but the active ``task_runs`` row still looks live.
+    """
+    now = int(time.time())
+    repaired: list[str] = []
+    with write_txn(conn):
+        rows = conn.execute(
+            """
+            SELECT
+                t.id,
+                t.status AS task_status,
+                t.result,
+                t.completed_at,
+                t.last_failure_error,
+                t.current_run_id,
+                r.id AS run_id,
+                r.ended_at AS run_ended_at
+            FROM tasks t
+            LEFT JOIN task_runs r ON r.id = t.current_run_id
+            WHERE t.status != 'running'
+              AND t.current_run_id IS NOT NULL
+            """
+        ).fetchall()
+        for row in rows:
+            task_id = row["id"]
+            task_status = row["task_status"]
+            run_id = row["run_id"]
+
+            if task_status == "done":
+                run_status = "done"
+                outcome = "completed"
+                summary = (
+                    row["result"]
+                    or "invariant recovery: task already done"
+                )
+                try:
+                    ended_at = (
+                        int(row["completed_at"])
+                        if row["completed_at"] is not None
+                        else now
+                    )
+                except (TypeError, ValueError):
+                    ended_at = now
+            elif task_status in {"blocked", "triage"}:
+                run_status = "blocked"
+                outcome = "blocked"
+                summary = (
+                    row["last_failure_error"]
+                    or f"invariant recovery: task already {task_status}"
+                )
+                ended_at = now
+            elif task_status == "scheduled":
+                run_status = "scheduled"
+                outcome = "scheduled"
+                summary = "invariant recovery: task already scheduled"
+                ended_at = now
+            else:
+                run_status = "reclaimed"
+                outcome = "reclaimed"
+                summary = (
+                    "invariant recovery: task status "
+                    f"{task_status} with stale active run"
+                )
+                ended_at = now
+
+            if run_id is not None and row["run_ended_at"] is None:
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                       SET status        = ?,
+                           outcome       = ?,
+                           summary       = COALESCE(summary, ?),
+                           error         = COALESCE(error, ?),
+                           ended_at      = ?,
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL
+                     WHERE id = ?
+                       AND ended_at IS NULL
+                    """,
+                    (
+                        run_status,
+                        outcome,
+                        summary,
+                        summary if outcome == "reclaimed" else None,
+                        ended_at,
+                        int(run_id),
+                    ),
+                )
+
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET current_run_id = NULL,
+                       claim_lock     = NULL,
+                       claim_expires  = NULL,
+                       worker_pid     = NULL,
+                       last_heartbeat_at = NULL,
+                       consecutive_failures = CASE
+                           WHEN status = 'done' THEN 0
+                           ELSE consecutive_failures
+                       END,
+                       last_failure_error = CASE
+                           WHEN status = 'done' THEN NULL
+                           ELSE last_failure_error
+                       END
+                 WHERE id = ?
+                   AND current_run_id IS ?
+                   AND status = ?
+                """,
+                (task_id, row["current_run_id"], task_status),
+            )
+            if cur.rowcount != 1:
+                continue
+            _append_event(
+                conn,
+                task_id,
+                "run_reconciled",
+                {
+                    "reason": "nonrunning_task_with_active_run",
+                    "status": task_status,
+                    "run_id": int(run_id) if run_id is not None else None,
+                    "outcome": outcome if run_id is not None else None,
+                },
+                run_id=(int(run_id) if run_id is not None else None),
+            )
+            repaired.append(task_id)
+    return repaired
+
+
 # Dispatcher (one-shot pass)
 # ---------------------------------------------------------------------------
 
@@ -7284,6 +7419,8 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    if not dry_run:
+        _reconcile_nonrunning_active_runs(conn)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,

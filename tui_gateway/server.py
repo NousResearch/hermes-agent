@@ -8985,6 +8985,48 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             streamer = make_stream_renderer(cols)
             prompt = text
 
+            # One-room NL→Kanban pre-dispatch (opt-in via config.yaml).
+            if isinstance(prompt, str) and prompt.strip() and not prompt.strip().startswith("/"):
+                try:
+                    from agent.one_room_control import handle_one_room_control
+
+                    def _tui_cancel(_t: str) -> None:
+                        if hasattr(agent, "interrupt"):
+                            try:
+                                agent.interrupt(_t)
+                            except Exception:
+                                pass
+
+                    def _tui_steer(msg: str) -> bool:
+                        steer = getattr(agent, "steer", None)
+                        if not callable(steer):
+                            return False
+                        try:
+                            return bool(steer(msg))
+                        except Exception:
+                            return False
+
+                    _or = handle_one_room_control(
+                        prompt,
+                        session_key=session.get("session_key") or sid,
+                        main_in_flight=bool(session.get("running")),
+                        cancel_callback=_tui_cancel if session.get("running") else None,
+                        steer_callback=_tui_steer if session.get("running") else None,
+                    )
+                except Exception as _or_exc:
+                    print(
+                        f"[tui_gateway] one_room predispatch failed: {_or_exc}",
+                        file=sys.stderr,
+                    )
+                    _or = None
+                if _or is not None:
+                    _emit(
+                        "message.complete",
+                        sid,
+                        {"content": _or.message, "role": "assistant"},
+                    )
+                    return
+
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
                 from agent.model_metadata import get_model_context_length

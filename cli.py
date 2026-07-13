@@ -13517,6 +13517,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
+                # One-room gate before busy queue/steer (STOP never queues as user text).
+                if (
+                    self._agent_running
+                    and isinstance(text, str)
+                    and text.strip()
+                    and not _looks_like_slash_command(text)
+                    and not images
+                ):
+                    try:
+                        from agent.one_room_control import handle_one_room_control
+
+                        def _cli_cancel(_t: str) -> None:
+                            if self.agent is not None and hasattr(self.agent, "interrupt"):
+                                try:
+                                    self.agent.interrupt(_t)
+                                except Exception:
+                                    pass
+
+                        def _cli_steer(msg: str) -> bool:
+                            if self.agent is None or not hasattr(self.agent, "steer"):
+                                return False
+                            try:
+                                return bool(self.agent.steer(msg))
+                            except Exception:
+                                return False
+
+                        _or = handle_one_room_control(
+                            text,
+                            owner=self,
+                            session_key=getattr(self, "session_id", None)
+                            or getattr(self, "session_key", None),
+                            main_in_flight=True,
+                            cancel_callback=_cli_cancel,
+                            steer_callback=_cli_steer,
+                        )
+                    except Exception as _or_exc:
+                        logging.getLogger(__name__).warning(
+                            "one_room CLI busy predispatch failed: %s", _or_exc, exc_info=True
+                        )
+                        _or = None
+                    if _or is not None:
+                        _cprint(_or.message)
+                        event.app.current_buffer.reset(append_to_history=True)
+                        return
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
                     _effective_mode = self.busy_input_mode
                     if _effective_mode == "steer":
@@ -15286,6 +15330,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if submit_images:
                         n = len(submit_images)
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+
+                    # One-room NL→Kanban gate (opt-in via orchestration.frontdesk_live_enabled)
+                    if isinstance(user_input, str) and not submit_images:
+                        try:
+                            from agent.one_room_control import handle_one_room_control
+
+                            _or = handle_one_room_control(
+                                user_input,
+                                owner=self,
+                                session_key=getattr(self, "session_id", None)
+                                or getattr(self, "session_key", None),
+                                main_in_flight=False,
+                            )
+                        except Exception as _or_exc:
+                            logging.getLogger(__name__).warning(
+                                "one_room CLI predispatch failed: %s", _or_exc, exc_info=True
+                            )
+                            _or = None
+                        if _or is not None:
+                            _cprint(_or.message)
+                            continue
 
                     # Regular chat - run agent
                     self._agent_running = True

@@ -10379,6 +10379,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "please resend shortly."
             )
 
+        # ── One-room control tower (idle / cold path) ─────────────────
+        # Opt-in NL gate: STATUS/STOP/NEW_TASK before claiming a session slot
+        # so control messages never become a model turn or block concurrency.
+        if not is_internal:
+            try:
+                one_room_reply = await self._try_one_room_control(
+                    event,
+                    _quick_key,
+                    main_in_flight=False,
+                )
+                if one_room_reply is not None:
+                    # Already delivered via adapter inside _try_one_room_control;
+                    # return empty so the platform layer does not double-send.
+                    return ""
+            except Exception:
+                logger.warning(
+                    "one-room control gate failed for idle session %s; falling through",
+                    _quick_key,
+                    exc_info=True,
+                )
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,

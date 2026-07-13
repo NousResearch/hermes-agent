@@ -328,6 +328,22 @@ class TestPeerLookupHelpers:
         user_peer.context.assert_called_once_with(target=session.user_peer_id)
         ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
 
+    def test_get_prefetch_context_summary_only_skips_peer_context(self):
+        """Shared venues must fetch only venue-scoped session summary, never peer-global context."""
+        mgr, session = self._make_cached_manager()
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=SimpleNamespace(content="Venue-local summary")
+        )
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+        mgr._fetch_peer_context = MagicMock()
+
+        result = mgr.get_prefetch_context(session.key, summary_only=True)
+
+        assert result == {"summary": "Venue-local summary"}
+        honcho_session.context.assert_called_once_with(summary=True)
+        mgr._fetch_peer_context.assert_not_called()
+
     def test_get_ai_representation_uses_peer_api(self):
         mgr, session = self._make_cached_manager()
         ai_peer = MagicMock()
@@ -986,6 +1002,40 @@ class TestBaseContextSummary:
         ctx = {"summary": "", "representation": "rep", "card": "card"}
         formatted = provider._format_first_turn_context(ctx)
         assert "Session Summary" not in formatted
+
+    def test_shared_venue_formats_only_session_summary(self):
+        """Non-DM gateway venues must not inject peer-global or AI context."""
+        provider = HonchoMemoryProvider()
+        provider._platform = "discord"
+        provider._chat_type = "thread"
+        formatted = provider._format_first_turn_context({
+            "summary": "Thread-local context",
+            "representation": "Global user representation",
+            "card": "Global user card",
+            "ai_representation": "Global AI representation",
+            "ai_card": "Global AI card",
+        })
+
+        assert formatted == "## Session Summary\nThread-local context"
+        assert provider._base_context_fetch_kwargs() == {"summary_only": True}
+
+    def test_dm_keeps_rich_auto_injection(self):
+        """Direct messages keep the existing rich peer and AI context behavior."""
+        provider = HonchoMemoryProvider()
+        provider._platform = "discord"
+        provider._chat_type = "dm"
+
+        formatted = provider._format_first_turn_context({
+            "summary": "DM context",
+            "representation": "User representation",
+            "card": "User card",
+            "ai_representation": "AI representation",
+            "ai_card": "AI card",
+        })
+
+        assert "User representation" in formatted
+        assert "AI representation" in formatted
+        assert provider._base_context_fetch_kwargs() == {}
 
 
 class TestDialecticDepth:

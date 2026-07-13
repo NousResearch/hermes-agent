@@ -301,6 +301,8 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
+            self._platform = platform
+            self._chat_type = kwargs.get("chat_type") or ""
             if agent_context in {"cron", "flush"} or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
@@ -478,9 +480,17 @@ class HonchoMemoryProvider(MemoryProvider):
         # consumes the result directly.
         if self._recall_mode in {"context", "hybrid"}:
             try:
-                self._manager.prefetch_context(self._session_key)
+                self._manager.prefetch_context(
+                    self._session_key,
+                    **self._base_context_fetch_kwargs(),
+                )
             except Exception as e:
                 logger.debug("Honcho context prewarm failed: %s", e)
+
+            if self._summary_only_auto_injection():
+                logger.debug("Honcho dialectic prewarm skipped for shared venue: %s", self._session_key)
+                self._session_initialized = True
+                return
 
             _prewarm_query = (
                 "Summarize what you know about this user. "
@@ -559,8 +569,29 @@ class HonchoMemoryProvider(MemoryProvider):
             return True
         return not (self._init_thread and self._init_thread.is_alive())
 
+    def _summary_only_auto_injection(self) -> bool:
+        """Whether a shared gateway venue may receive only venue-local summary context."""
+        if getattr(self, "_platform", "cli") in {"cli", "local", "cron", ""}:
+            return False
+        chat_type = getattr(self, "_chat_type", "")
+        return bool(chat_type) and chat_type != "dm"
+
+    def _base_context_fetch_kwargs(self) -> dict[str, bool]:
+        """Return the narrowest context fetch allowed for the current venue."""
+        return {"summary_only": True} if self._summary_only_auto_injection() else {}
+
+    def _filter_auto_injection_context(self, ctx: dict[str, str] | None) -> dict[str, str]:
+        """Defence in depth: never format peer-global context for shared venues."""
+        if not ctx:
+            return {}
+        if not self._summary_only_auto_injection():
+            return dict(ctx)
+        summary = ctx.get("summary", "")
+        return {"summary": summary} if summary else {}
+
     def _format_first_turn_context(self, ctx: dict) -> str:
         """Format the prefetch context dict into a readable system prompt block."""
+        ctx = self._filter_auto_injection_context(ctx)
         parts = []
 
         # Session summary — session-scoped context, placed first for relevance
@@ -674,14 +705,20 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._base_context_cache = ""
                 self._last_context_turn = self._turn_count
                 try:
-                    self._manager.prefetch_context(self._session_key, query or None)
+                    self._manager.prefetch_context(
+                        self._session_key,
+                        query or None,
+                        **self._base_context_fetch_kwargs(),
+                    )
                 except Exception as e:
                     logger.debug("Honcho base context prefetch failed: %s", e)
             base_context = self._base_context_cache
 
         # Check if background context prefetch has a fresher result
         if self._manager:
-            fresh_ctx = self._manager.pop_context_result(self._session_key)
+            fresh_ctx = self._filter_auto_injection_context(
+                self._manager.pop_context_result(self._session_key)
+            )
             if fresh_ctx:
                 formatted = self._format_first_turn_context(fresh_ctx)
                 if formatted:
@@ -691,6 +728,9 @@ class HonchoMemoryProvider(MemoryProvider):
 
         if base_context:
             parts.append(base_context)
+
+        if self._summary_only_auto_injection():
+            return self._truncate_to_budget("\n\n".join(parts)) if parts else ""
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
@@ -816,9 +856,17 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._context_cadence <= 1 or (self._turn_count - self._last_context_turn) >= self._context_cadence:
             self._last_context_turn = self._turn_count
             try:
-                self._manager.prefetch_context(self._session_key, query)
+                self._manager.prefetch_context(
+                    self._session_key,
+                    query,
+                    **self._base_context_fetch_kwargs(),
+                )
             except Exception as e:
                 logger.debug("Honcho context prefetch failed: %s", e)
+
+        if self._summary_only_auto_injection():
+            logger.debug("Honcho dialectic prefetch skipped for shared venue: %s", self._session_key)
+            return
 
         # ----- Dialectic prefetch (supplement layer) -----
         # Thread-alive guard with stale-thread recovery: a hung Honcho call

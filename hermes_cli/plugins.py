@@ -1850,6 +1850,23 @@ class PluginManager:
         key = manifest.key or manifest.name
         slug = key.replace("/", "__").replace("-", "_")
         module_name = f"{_NS_PARENT}.{slug}"
+
+        # Evict any stale sys.modules entries for this slug before
+        # (re-)importing. A same-slug module may already be cached here
+        # from a different Hermes home (profile switch reusing a slug
+        # like "hermes-lcm") or from an earlier force=True reload in the
+        # same home. Replacing only sys.modules[module_name] below is not
+        # enough: the plugin's own relative imports (`from . import foo`)
+        # are cached separately under "module_name + '.' + submodule",
+        # and Python's import system resolves those from sys.modules
+        # first — so a stale submodule would silently keep serving the
+        # previous load's code/state instead of the fresh one we're
+        # about to exec. Evict the package and everything nested under
+        # it so this import starts clean.
+        stale_prefix = f"{module_name}."
+        for name in [n for n in sys.modules if n == module_name or n.startswith(stale_prefix)]:
+            del sys.modules[name]
+
         spec = importlib.util.spec_from_file_location(
             module_name,
             init_file,
@@ -1862,7 +1879,16 @@ class PluginManager:
         module.__package__ = module_name
         module.__path__ = [str(plugin_dir)]  # type: ignore[attr-defined]
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            # Don't leave a half-initialized module (or the partially
+            # imported relative submodules it pulled in before failing)
+            # cached in sys.modules — a retry or a same-slug plugin in a
+            # different profile would otherwise inherit broken state.
+            for name in [n for n in sys.modules if n == module_name or n.startswith(stale_prefix)]:
+                del sys.modules[name]
+            raise
         return module
 
     def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType:
@@ -2024,15 +2050,121 @@ class PluginManager:
 # Module-level singleton & convenience functions
 # ---------------------------------------------------------------------------
 
+# Legacy single-slot singleton. Kept as the storage for the "current"
+# manager so existing test code that does
+# ``monkeypatch.setattr(plugins_mod, "_plugin_manager", some_manager)``
+# keeps working — ``get_plugin_manager()`` still reads/writes this name.
 _plugin_manager: Optional[PluginManager] = None
+
+# Keyed cache: resolved Hermes home -> PluginManager. Hermes supports
+# multiple profiles via different HERMES_HOME directories, and a single
+# long-lived process (gateway multiplexer, test session, embedder) can
+# switch between them via ``set_hermes_home_override()`` — which is a
+# ContextVar and deliberately does NOT touch os.environ (see
+# hermes_constants.set_hermes_home_override). A process-wide single-slot
+# cache leaks one profile's plugin/context-engine state into another. We
+# key the cache by the *resolved* home path so re-entering a previously
+# seen profile reuses its manager (and picks up any modules it already
+# imported) instead of rebuilding from scratch every switch.
+_plugin_managers_by_home: Dict[Path, PluginManager] = {}
+
+
+def _plugin_home_key() -> Path:
+    """Return the profile/home key for process-global plugin state.
+
+    Plugins are discovered from ``get_hermes_home() / "plugins"`` and some
+    plugins (notably context engines such as hermes-lcm) capture that home
+    at registration time for profile-scoped storage. A long-lived process
+    can temporarily switch Hermes home (env var *or* the context-local
+    ``set_hermes_home_override()``) while serving another profile, so the
+    plugin manager must be scoped to the active Hermes home instead of
+    being one process-wide singleton.
+    """
+    try:
+        return get_hermes_home().expanduser().resolve()
+    except Exception:
+        return get_hermes_home().expanduser()
+
+
+def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
+    """Purge ``sys.modules`` entries for directory-loaded plugins.
+
+    ``PluginManager._load_directory_module`` imports each plugin as
+    ``hermes_plugins.<slug>`` and registers that top-level module in
+    ``sys.modules``. Anything the plugin's ``__init__.py`` imports with a
+    *relative* import (``from . import foo``, ``from .sub import bar``)
+    ends up cached in ``sys.modules`` too, under
+    ``hermes_plugins.<slug>.<submodule>``. When we swap in a fresh manager
+    for a new home, replacing only the parent module leaves those
+    submodules behind: if a same-named plugin in the new profile does a
+    relative import, Python resolves it from ``sys.modules`` first and
+    silently reuses the *previous* profile's already-imported submodule
+    (and any module-level state it captured), instead of re-executing the
+    new profile's code. We must evict the package itself and every module
+    whose name is prefixed with ``"<module_name>."`` before (or when)
+    discarding a manager, not just drop our reference to it.
+    """
+    if manager is None:
+        return
+    for loaded in getattr(manager, "_plugins", {}).values():
+        module = getattr(loaded, "module", None)
+        module_name = getattr(module, "__name__", None)
+        if not module_name or not module_name.startswith(f"{_NS_PARENT}."):
+            continue
+        prefix = f"{module_name}."
+        for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
+            del sys.modules[name]
 
 
 def get_plugin_manager() -> PluginManager:
-    """Return (and lazily create) the global PluginManager singleton."""
+    """Return the plugin manager for the active Hermes profile/home.
+
+    Managers are cached per resolved home so repeated calls within the
+    same profile reuse discovery state (normal performance), while a
+    profile switch — via ``HERMES_HOME`` or the context-local
+    ``set_hermes_home_override()`` — gets its own manager with its own
+    plugin submodules, instead of silently inheriting another profile's
+    context engine or stale relative-import state.
+    """
     global _plugin_manager
-    if _plugin_manager is None:
-        _plugin_manager = PluginManager()
-    return _plugin_manager
+    current_home = _plugin_home_key()
+
+    # Tests and embedders historically monkeypatch ``_plugin_manager``
+    # directly (``monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)``).
+    # Detect that specifically by checking whether the single-slot pointer
+    # references a manager our keyed cache doesn't know about *at all*
+    # (i.e. it isn't the value cached for *any* home) — that can only
+    # happen via a direct assignment bypassing this function, not via a
+    # legitimate home switch (which always leaves ``_plugin_manager``
+    # pointing at a manager already stored in the cache). Comparing against
+    # only ``current_home``'s slot is wrong: it also matches an ordinary
+    # switch to a *new* home that simply hasn't been cached yet, which
+    # would incorrectly resurrect the previous home's manager here.
+    if _plugin_manager is not None and _plugin_manager not in _plugin_managers_by_home.values():
+        _plugin_managers_by_home[current_home] = _plugin_manager
+        return _plugin_manager
+
+    manager = _plugin_managers_by_home.get(current_home)
+    if manager is None:
+        manager = PluginManager()
+        _plugin_managers_by_home[current_home] = manager
+
+    _plugin_manager = manager
+    return manager
+
+
+def _reset_plugin_managers_for_tests() -> None:
+    """Test-only helper: drop every cached manager and its submodules.
+
+    Not used by production code paths — tests that want a fully clean
+    slate (rather than adopting/injecting a specific manager) can call
+    this instead of reaching into the module's private dict directly.
+    """
+    global _plugin_manager
+    for manager in _plugin_managers_by_home.values():
+        _clear_plugin_submodules(manager)
+    _plugin_managers_by_home.clear()
+    _plugin_manager = None
 
 
 def discover_plugins(force: bool = False) -> None:

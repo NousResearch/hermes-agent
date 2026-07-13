@@ -386,6 +386,13 @@ def _hermetic_environment(tmp_path, monkeypatch):
     try:
         import hermes_cli.plugins as _plugins_mod
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+        # Also clear the keyed per-home manager cache (and any plugin
+        # submodules it left in sys.modules) so a manager built for a
+        # previous test's tmp_path HERMES_HOME can't leak forward. Paths
+        # are unique per test, so collisions are unlikely, but a full
+        # reset keeps this fixture the single source of plugin-state
+        # hygiene rather than relying on path uniqueness.
+        _plugins_mod._reset_plugin_managers_for_tests()
     except Exception:
         pass
     # Explicitly clear provider-specific base URL overrides that don't match

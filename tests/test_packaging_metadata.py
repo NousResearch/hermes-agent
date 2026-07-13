@@ -468,3 +468,41 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+def _data_files_targets():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return data["tool"]["setuptools"]["data-files"]
+
+
+def test_every_optional_mcp_manifest_has_a_data_files_target():
+    """Every ``optional-mcps/<name>/manifest.yaml`` needs its OWN data-files target.
+
+    ``[tool.setuptools.data-files]`` is what ships the bare (non-package) MCP
+    catalog into the wheel; ``graft optional-mcps`` in MANIFEST.in only covers
+    the sdist. A catalog entry added on disk without a matching data-files
+    target is invisible to ``hermes mcp catalog`` and the dashboard on packaged
+    installs, even though the manifest is in the repo (regression seen when
+    ``delx`` and ``unreal-engine`` were added without a target). data-files
+    flattens globs into a single dir, so the target must be per-entry — a shared
+    ``optional-mcps/*/*`` glob would collapse every manifest into one colliding
+    file — hence one ``"optional-mcps/<name>"`` key per catalog directory.
+    """
+    targets = _data_files_targets()
+    on_disk = sorted(
+        p.parent.name
+        for p in (REPO_ROOT / "optional-mcps").glob("*/manifest.yaml")
+    )
+    assert on_disk, "expected at least one optional-mcps/<name>/manifest.yaml on disk"
+
+    missing = []
+    for name in on_disk:
+        key = f"optional-mcps/{name}"
+        expected = [f"optional-mcps/{name}/manifest.yaml"]
+        if targets.get(key) != expected:
+            missing.append(f"{key} -> {targets.get(key)!r} (expected {expected!r})")
+    assert not missing, (
+        "optional-mcps catalog entries are missing a per-entry "
+        "[tool.setuptools.data-files] target, so they will not reach wheel "
+        "installs:\n  " + "\n  ".join(missing)
+    )

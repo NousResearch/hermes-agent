@@ -11812,12 +11812,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Suppressing text response after successful voice reply: platform=%s chat=%s",
                             _platform_name, source.chat_id or "unknown",
                         )
+                        response = ""
                     else:
                         logger.warning(
-                            "Suppressing text response because voice-only reply was requested but voice delivery failed: platform=%s chat=%s",
+                            "Voice-only reply requested but voice delivery failed - sending operational failure notice instead of dropping silently: platform=%s chat=%s",
                             _platform_name, source.chat_id or "unknown",
                         )
-                    response = ""
+                        response = "[Voice reply failed to generate - nothing was sent. Try again in a bit.]"
             elif (
                 response
                 and not response.startswith("Error:")

@@ -27,7 +27,7 @@ except ImportError:
 
 # บัญชีโปรแกรมที่อนุญาตให้ adapter เรียกได้ (กันไฟล์ตั้งค่าใน worktree ถูกแก้ให้รันคำสั่งอันตราย)
 # เพิ่มชั่วคราวได้ทาง env RELAY_EXTRA_BINS=ชื่อ:ชื่อ (ตั้งโดยคนคุมเครื่อง ไม่ใช่ไฟล์ใน worktree)
-ALLOWED_BINS = {"grok", "gemini", "ollama", "codex", "claude"}
+ALLOWED_BINS = {"grok", "gemini", "ollama", "codex", "claude", "relay-portal"}
 def allowed_bins():
     extra = os.environ.get("RELAY_EXTRA_BINS", "")
     return ALLOWED_BINS | {b for b in extra.split(":") if b}
@@ -37,12 +37,12 @@ def allowed_bins():
 
 # ---- ค่าปริยาย (ใช้เมื่อไม่มีไฟล์ตั้งค่า) ----
 DEFAULT_ADAPTERS = {
-    "grok":   {"cmd": ["grok","-p","{prompt}","--cwd","{cwd}","--output-format","json","--always-approve"]},
+    "grok":   {"cmd": ["relay-portal","grok","--prompt","{prompt}"]},
     "gemini": {"cmd": ["gemini","-p","{prompt}","-m","gemini-2.5-flash","--skip-trust","--approval-mode","yolo","--output-format","text"], "run_in_cwd": True},
     "ollama": {"cmd": ["ollama","run","{model}","{prompt}"], "run_in_cwd": True},
-    "codex":  {"cmd": ["codex","exec","--sandbox","workspace-write","--skip-git-repo-check","--color","never","{prompt}"], "run_in_cwd": True},
+    "codex":  {"cmd": ["relay-portal","codex","--prompt","{prompt}"], "run_in_cwd": True},
     # สมองหลัก (brain) · คิด/วิเคราะห์/วางแผน/ตรวจ/ตัดสิน · Opus 4.8 ตัวเดียว (Fable ถอดออกแล้ว)
-    "opus":   {"cmd": ["claude","--model","claude-opus-4-8","-p","{prompt}"], "run_in_cwd": True, "brain": True},
+    "opus":   {"cmd": ["relay-portal","claude","--model","claude-opus-4-8","--prompt","{prompt}"], "run_in_cwd": True, "brain": True},
 }
 DEFAULT_ACCOUNTS = {
     "fallback": {"code_writing": ["grok","codex","gemini","ollama"],
@@ -339,6 +339,20 @@ def resolve_codex_bin():
     fb = Path.home()/".codex"/"bin"/"codex"
     return str(fb) if fb.exists() else "codex"
 
+def prefer_portal_adapters(adapters):
+    # Employee machines should use AI Portal by default. Old per-project
+    # adapters.yaml files may still call local claude/grok/codex and then fail
+    # with "Not logged in". Allow local CLI only when explicitly requested.
+    if os.environ.get("AI_RELAY_ALLOW_LOCAL_CLI") == "1":
+        return adapters
+    for tool in ("opus", "codex", "grok"):
+        spec = adapters.get(tool) or {}
+        cmd = spec.get("cmd") or []
+        bin_name = Path(str(cmd[0])).name if cmd else ""
+        if bin_name in {"claude", "codex", "grok"}:
+            adapters[tool] = dict(DEFAULT_ADAPTERS[tool])
+    return adapters
+
 def relay_now(action, tool="", task="", phase=""):
     sh = SCRIPT_DIR/"relay-now.sh"
     if not sh.exists(): return
@@ -606,6 +620,7 @@ def main():
     load_relay_env(cwd)
     prompt = Path(a.prompt_file).read_text(encoding="utf-8") if Path(a.prompt_file).exists() else a.prompt_file
     adapters = {**DEFAULT_ADAPTERS, **(load_yaml(cfg_dir(cwd)/"adapters.yaml").get("tools") or {})}
+    adapters = prefer_portal_adapters(adapters)
     # ทำให้ codex พกพาข้ามเครื่อง: ถ้า adapter เรียกชื่อ "codex" ลอย ๆ แปลงเป็น path จริงที่หาเจอ
     if "codex" in adapters:
         ccmd = list(adapters["codex"].get("cmd", []))
@@ -702,16 +717,8 @@ def main():
                 "reason_human":REASON["ok"],"output_ref":str(ofile),"ledger_written":True,"calls_used":calls,
                 "rounds_used":rounds,"tried":tried}, 0)
 
-        # ไม่ ok → เก็บ output ดิบตอนพังไว้วินิจฉัย (เคสจริง: auth ปลอม 4 ครั้งแต่ไม่มีหลักฐานให้ดูย้อน)
-        # แล้วจดความพยายามลง ledger (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) ค่อยตัดสินว่าสลับหรือหยุด
-        fail_ref = ""
-        try:
-            ffile = cfg_dir(cwd)/f"fail-{re.sub(r'[^A-Za-z0-9]', '_', a.task_id)}-{tool}.txt"
-            ffile.write_text(redact(f"status={st} exit={code}\n--- stdout (ท้าย 4000) ---\n{out[-4000:]}\n--- stderr (ท้าย 4000) ---\n{err[-4000:]}"), encoding="utf-8")
-            fail_ref = str(ffile)
-        except Exception:
-            pass  # เก็บหลักฐานไม่ได้ ไม่ควรทำให้ตัวสายพานพัง
-        attempt_row(tool, st, rotated_from, fail_ref)
+        # ไม่ ok → จดความพยายามลง ledger ก่อน (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) แล้วค่อยตัดสินว่าสลับหรือหยุด
+        attempt_row(tool, st, rotated_from)
         if st in ("quota", "crash", "timeout"):
             # timeout = ค้าง/หมดเวลา · นับเป็นพังเข้า cooldown + สลับตัวถัดไปเหมือน crash
             record_fail(cwd, tool, cd_cfg, time.time())  # พังซ้ำครบเกณฑ์ = พักตัวนี้ชั่วคราว
@@ -722,9 +729,14 @@ def main():
             if is_brain and tool != chain[-1]:
                 rotated_from = tool
                 continue
+            auth_hint = (
+                "ให้แอดมินตรวจ AI Portal token ใน ~/.hermes/.env"
+                if Path(str((adapters[tool].get("cmd") or [""])[0])).name == "relay-portal"
+                else f"ล็อกอินใหม่: {tool} login"
+            )
             relay_now("clear")
             emit({"status":"auth","tool":tool,"reason_human":REASON["auth"],
-                "hint":f"ล็อกอินใหม่: {tool} login","tried":tried,"ledger_written":True}, 20)
+                "hint":auth_hint,"tried":tried,"ledger_written":True}, 20)
         if st == "not_found":
             rotated_from = tool
             continue   # ไม่มีตัวนี้ → ลองตัวถัดไป

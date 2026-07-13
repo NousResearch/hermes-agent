@@ -5,26 +5,20 @@
 tools:
   grok:
     cmd:
+      - relay-portal
       - grok
-      - -p
+      - --prompt
       - "{prompt}"
-      - --cwd
-      - "{cwd}"
-      - --output-format
-      - json
-      - --always-approve
-    note: "Grok ทำงานแบบไม่เปิดหน้าจอ ใช้บัญชีที่พนักงาน login ไว้ในเครื่องของตัวเอง"
+    note: "Grok วิ่งผ่าน AI Portal token ของพนักงาน ไม่ต้อง login Grok local"
 
   codex:
     cmd:
+      - relay-portal
       - codex
-      - exec
-      - --skip-git-repo-check
-      - --color
-      - never
+      - --prompt
       - "{prompt}"
     run_in_cwd: true
-    note: "ใช้ Codex เป็นตัวสำรองเมื่อ Grok ใช้ไม่ได้"
+    note: "Codex วิ่งผ่าน AI Portal token ของพนักงาน ไม่ต้อง login Codex local"
 
   gemini:
     cmd:
@@ -53,11 +47,12 @@ tools:
   # Fable ถอดออกแล้ว (เจ้าของสั่ง 2026-07-06 · ประหยัดโควต้า) · สมองหลัก = Opus 4.8 ตัวเดียว
   opus:
     cmd:
+      - relay-portal
       - claude
       - --model
       - claude-opus-4-8
-      - -p
+      - --prompt
       - "{prompt}"
     run_in_cwd: true
     brain: true
-    note: "สมองหลัก · คิด/วิเคราะห์/วางแผน/ตรวจ/ตัดสิน · ทำงานร่วมกับ coder (grok/codex/gemini) ได้เหมือนเดิม"
+    note: "สมองหลักผ่าน AI Portal · ไม่ต้อง login Claude Code local"

@@ -1,11 +1,53 @@
 #!/usr/bin/env bash
 # relay-doctor — ตรวจว่าเครื่องนี้พร้อมใช้ AI Relay กับ Grok ไหม
-# อ่านอย่างเดียว ไม่ส่ง prompt ให้ AI และไม่พิมพ์รหัสลับ
-# ใช้: relay-doctor
+# ค่าเริ่มต้นไม่เรียก Grok CLI ที่อาจเปิด OAuth/device URL เอง
+# ใช้: relay-doctor          ตรวจติดตั้งแบบไม่เปิดเว็บ
+#      relay-doctor --probe  ตรวจ login จริงหลังตั้งใจ probe แล้ว
 set -u
+
+probe_login=0
+for arg in "$@"; do
+  case "$arg" in
+    --probe) probe_login=1 ;;
+    -h|--help)
+      echo "ใช้: relay-doctor [--probe]"
+      echo "  relay-doctor          ตรวจติดตั้ง/config แบบไม่เปิด OAuth URL"
+      echo "  relay-doctor --probe  เรียก grok models เพื่อตรวจ login จริง"
+      exit 0
+      ;;
+  esac
+done
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RELAY_DIR="${ROOT}/.hermes/ai-relay"
+
+load_env_file() {
+  local env_file="$1"
+  [ -f "$env_file" ] || return 0
+  local line key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    case "$line" in *=*) ;; *) continue ;; esac
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    case "$key" in
+      ''|*[!A-Za-z0-9_]*|[0-9]*) continue ;;
+    esac
+    [ -n "${!key:-}" ] && continue
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    value="${value%\"}"; value="${value#\"}"
+    value="${value%\'}"; value="${value#\'}"
+    export "$key=$value"
+  done < "$env_file"
+}
+
+load_env_file "$HOME/.hermes/.env"
+load_env_file "$ROOT/.hermes/.env"
 
 if [ ! -f "${RELAY_DIR}/adapters.yaml" ] || [ ! -f "${RELAY_DIR}/accounts.yaml" ]; then
   relay_add_grok_bin="$(command -v relay-add-grok 2>/dev/null || true)"
@@ -54,6 +96,11 @@ find_relay_call() {
   [ -x "${ROOT}/scripts/ai-relay/relay-call.py" ] && echo "${ROOT}/scripts/ai-relay/relay-call.py"
 }
 
+find_relay_portal() {
+  command -v relay-portal 2>/dev/null && return
+  [ -x "${ROOT}/scripts/ai-relay/relay-portal.py" ] && echo "${ROOT}/scripts/ai-relay/relay-portal.py"
+}
+
 find_gate_run() {
   command -v gate-run 2>/dev/null && return
   [ -x "${ROOT}/scripts/ai-relay/gate-run.py" ] && echo "${ROOT}/scripts/ai-relay/gate-run.py"
@@ -65,22 +112,53 @@ codex_bin="$(find_codex || true)"
 gemini_bin="$(command -v gemini 2>/dev/null || true)"
 ollama_bin="$(command -v ollama 2>/dev/null || true)"
 relay_call_bin="$(find_relay_call || true)"
+relay_portal_bin="$(find_relay_portal || true)"
 gate_run_bin="$(find_gate_run || true)"
 
 claude_bin="$(command -v claude 2>/dev/null || true)"
-[ -n "$claude_bin" ] && mark_ok "claude พบที่ ${claude_bin} (สมองหลัก Opus 4.8)" || mark_warn "claude ไม่พบบนเครื่องนี้ เรียกสมองหลัก (Opus 4.8) ไม่ได้"
-[ -n "$grok_bin" ] && mark_ok "grok พบที่ ${grok_bin}" || mark_fail "grok ไม่พบบนเครื่องนี้"
-[ -n "$codex_bin" ] && mark_ok "codex พบที่ ${codex_bin}" || mark_warn "codex ไม่พบบนเครื่องนี้ ใช้เป็นตัวสำรองไม่ได้"
+[ -n "$claude_bin" ] && mark_warn "พบ claude local ที่ ${claude_bin} แต่ AI Relay จะใช้ AI Portal แทน ไม่ต้อง login Claude local" || mark_ok "ไม่ต้องมี claude local เพราะสมองหลักวิ่งผ่าน AI Portal"
+[ -n "$grok_bin" ] && mark_warn "พบ grok local ที่ ${grok_bin} แต่ AI Relay จะใช้ AI Portal ก่อน" || mark_ok "ไม่ต้องมี grok local เพราะ Grok วิ่งผ่าน AI Portal"
+[ -n "$codex_bin" ] && mark_warn "พบ codex local ที่ ${codex_bin} แต่ AI Relay จะใช้ AI Portal ก่อน" || mark_ok "ไม่ต้องมี codex local เพราะ Codex วิ่งผ่าน AI Portal"
 [ -n "$gemini_bin" ] && mark_ok "gemini พบที่ ${gemini_bin}" || mark_warn "gemini ไม่พบบนเครื่องนี้ ใช้เป็นตัวสำรองไม่ได้"
 [ -n "$ollama_bin" ] && mark_ok "ollama พบที่ ${ollama_bin}" || mark_warn "ollama ไม่พบบนเครื่องนี้ ใช้เป็นตัวสำรองในเครื่องไม่ได้"
 [ -n "$relay_call_bin" ] && mark_ok "relay-call พบที่ ${relay_call_bin}" || mark_fail "relay-call ไม่พบ ให้รัน bash scripts/ai-relay/install-local.sh"
+[ -n "$relay_portal_bin" ] && mark_ok "relay-portal พบที่ ${relay_portal_bin}" || mark_fail "relay-portal ไม่พบ ให้รัน relay-setup ใหม่"
 [ -n "$gate_run_bin" ] && mark_ok "gate-run พบที่ ${gate_run_bin}" || mark_fail "gate-run ไม่พบ ให้รัน bash scripts/ai-relay/install-local.sh"
 echo
 
-echo "[2/4 สถานะ Login]"
+echo "[2/4 สถานะ AI Portal token]"
+if [ -n "${AI_PORTAL_URL:-}" ] || [ -n "${AI_PORTAL_BASE_URL:-}" ]; then
+  mark_ok "พบ AI_PORTAL_URL/AI_PORTAL_BASE_URL"
+else
+  mark_fail "ยังไม่มี AI_PORTAL_URL ใน ~/.hermes/.env"
+fi
+if [ -n "${AI_PORTAL_CLAUDE_TOKEN:-}" ] || [ -n "${AI_RELAY_CLAUDE_TOKEN:-}" ] || [ -n "${AI_PORTAL_TOKEN:-}" ]; then
+  mark_ok "พบ Claude Portal token"
+else
+  mark_fail "ยังไม่มี AI_PORTAL_CLAUDE_TOKEN ใน ~/.hermes/.env"
+fi
+if [ -n "${AI_PORTAL_CODEX_TOKEN:-}" ] || [ -n "${AI_RELAY_CODEX_TOKEN:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
+  mark_ok "พบ Codex Portal token"
+else
+  mark_fail "ยังไม่มี AI_PORTAL_CODEX_TOKEN ใน ~/.hermes/.env"
+fi
+if [ -n "${AI_PORTAL_GROK_TOKEN:-}" ] || [ -n "${AI_RELAY_GROK_TOKEN:-}" ] || [ -n "${GROK_API_KEY:-}" ]; then
+  mark_ok "พบ Grok Portal token"
+else
+  mark_fail "ยังไม่มี AI_PORTAL_GROK_TOKEN ใน ~/.hermes/.env"
+fi
+
+echo
+echo "[2b/4 สถานะ Login local เฉพาะตัวสำรอง]"
 grok_logged_in=0
 if [ -z "$grok_bin" ]; then
-  mark_fail "ตรวจ Grok login ไม่ได้ เพราะยังไม่มีคำสั่ง grok"
+  mark_ok "ข้าม Grok local login เพราะใช้ AI Portal token"
+elif [ "$probe_login" -ne 1 ]; then
+  if [ -f "$HOME/.grok/models_cache.json" ] || [ -f "$HOME/.grok/config.toml" ]; then
+    mark_warn "ข้ามการ probe Grok เพื่อไม่ให้เปิด OAuth ซ้ำ พบไฟล์ Grok local แล้ว ถ้าต้องยืนยัน login จริงให้รัน relay-doctor --probe"
+  else
+    mark_warn "ข้ามการ probe Grok เพื่อไม่ให้เปิด OAuth ซ้ำ ถ้ายังไม่เคย login ให้รัน grok login --oauth แค่ครั้งเดียว"
+  fi
 else
   grok_models_output="$(grok models 2>&1 || true)"
   if printf "%s" "$grok_models_output" | grep -qiE "you are not authenticated|not authenticated|not logged|logged out"; then
@@ -126,10 +204,16 @@ echo
 echo "[4/4 สรุป]"
 echo "ผ่าน: ${ok} · เตือน: ${warn} · ไม่ผ่าน: ${fail}"
 
-if [ "$fail" -eq 0 ] && [ "$grok_logged_in" -eq 1 ]; then
-  echo "พร้อมใช้ AI Relay กับ Grok 100% บนเครื่องนี้"
+if [ "$fail" -eq 0 ] && [ "$probe_login" -ne 1 ]; then
+  echo "พร้อมระดับติดตั้งแล้ว (ยังไม่ได้ probe login จริงเพื่อเลี่ยง OAuth popup ซ้ำ)"
+  echo "Claude/Codex/Grok ใช้ AI Portal token ไม่ต้อง login local"
   exit 0
 fi
 
-echo "ยังไม่พร้อมใช้ Grok ผ่าน AI Relay 100% ให้แก้รายการ ❌ ก่อน"
+if [ "$fail" -eq 0 ] && [ "$grok_logged_in" -eq 1 ]; then
+  echo "พร้อมใช้ AI Relay 100% บนเครื่องนี้"
+  exit 0
+fi
+
+echo "ยังไม่พร้อมใช้ AI Relay 100% ให้แก้รายการ ❌ ก่อน"
 exit 1

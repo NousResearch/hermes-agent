@@ -63,13 +63,15 @@ fi
 cat <<MSG
 
 ══ เสร็จแล้ว ══ ขั้นต่อไป (ทำครั้งเดียว):
-  1) ล็อกอิน AI ที่จะใช้เขียนโค้ด (เลือกเท่าที่ใช้):
-       codex login
-      grok login --oauth
+  1) วางไฟล์ token ที่แอดมินส่งให้:
+       ~/.hermes/.env
+     ต้องมี AI_PORTAL_URL, AI_PORTAL_CLAUDE_TOKEN, AI_PORTAL_CODEX_TOKEN, AI_PORTAL_GROK_TOKEN
+     หมายเหตุ: Claude/Codex/Grok ผ่าน AI Portal ไม่ต้อง login local
+  2) ถ้าจะใช้ Gemini local ค่อยล็อกอินเพิ่ม:
        gemini auth login
-  2) เช็คว่าตอนนี้ตัวไหนพร้อมจริง:
-       relay-status --probe --cwd "$TARGET_DIR"
-  3) ถามว่างานแบบนี้ควรใช้ AI ตัวไหน:
+  3) เช็คว่าตอนนี้ตัวไหนพร้อมจริง:
+       relay-doctor
+  4) ถามว่างานแบบนี้ควรใช้ AI ตัวไหน:
        relay-suggest --task-type backend --cwd "$TARGET_DIR"
 
 คราวหน้าจะอัปเดต = รันคำสั่ง curl relay-setup.sh ซ้ำได้เลย

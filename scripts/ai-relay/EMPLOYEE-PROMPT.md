@@ -16,15 +16,25 @@ relay-doctor
 ```
 
 - `install-local.sh` = ติดตั้งคำสั่ง relay (`relay-call` `gate-run` `relay-report` `relay-doctor` ฯลฯ) เข้า `~/.local/bin`
-- `relay-doctor` = ตรวจว่าเครื่องพร้อมไหม · จะบอกเป็นรายการ ✅/❌ ว่าขาด AI ตัวไหน ยังไม่ล็อกอินตัวไหน
+- `relay-doctor` = ตรวจว่าเครื่องพร้อมไหมแบบไม่เปิดหน้า login ซ้ำ
+- `relay-doctor --probe` = ตรวจ login จริงหลังจากตั้งใจ login แล้วเท่านั้น
 - ถ้า shell หา `relay-doctor` ไม่เจอ → เพิ่ม `~/.local/bin` เข้า PATH ก่อน
 
-### ล็อกอิน AI (งานที่พนักงานต้องทำเอง · ผมทำแทนไม่ได้)
+### ตั้งค่า AI Portal token (แอดมินส่งให้รายคน)
 
-- **Grok** (คนเขียนโค้ดเร็ว): `grok login --oauth` → เลือก Continue with Google ในเบราว์เซอร์
-- **Codex** (คนเขียนโค้ดหลังบ้าน/ตรวจ): `codex login`
-- **Gemini** (งานไฟล์เยอะ): `gemini auth login` หรือใส่ `GEMINI_API_KEY` ใน `.hermes/.env`
-- **Claude/Opus** (สมองหลัก): ล็อกอินผ่าน Claude Code ตามปกติ
+สร้างไฟล์ `~/.hermes/.env` แล้ววางค่าที่แอดมินส่งให้เท่านั้น:
+
+```bash
+AI_PORTAL_URL=http://103.142.150.185:3012
+AI_PORTAL_CLAUDE_TOKEN=...
+AI_PORTAL_CODEX_TOKEN=...
+AI_PORTAL_GROK_TOKEN=...
+```
+
+- **Claude/Opus**: ใช้ AI Portal ไม่ต้อง login Claude Code local
+- **Codex**: ใช้ AI Portal ไม่ต้อง `codex login`
+- **Grok**: ใช้ AI Portal ไม่ต้อง `grok login --oauth`
+- **Gemini**: ถ้าแอดมินยังไม่เปิด token ผ่าน Portal และต้องใช้ local ค่อย `gemini auth login`
 
 ---
 
@@ -40,14 +50,14 @@ Use AI Relay (ฉบับพนักงาน · สมองหลัก = Op
 คุณห้าม: ยิงคำสั่ง AI เอง · รัน test เองแล้วกรอกผลเอง — เรียกตัวโค้ด แล้วอ่านผลที่มันคืนเท่านั้น
 
 [สมองหลัก = Opus 4.8 ตัวเดียว]
-- ทุกงานคิด/วิเคราะห์/วางแผน/ตรวจ/ตัดสิน ใช้ Opus 4.8 (ตัวคุณเอง หรือ relay-call --tool opus)
+- ทุกงานคิด/วิเคราะห์/วางแผน/ตรวจ/ตัดสิน ใช้ Opus 4.8 ผ่าน AI Portal (`relay-call --tool opus`)
 - ไม่มี Fable แล้ว (เจ้าของถอดออกเพื่อประหยัดโควต้า) · ห้ามพยายามเรียก Fable
 - งานยากจริง = คุณ (Opus) คิด แล้วขอ Grok/Codex ช่วยตรวจแผนคนละมุม (cross-check) ก่อนสรุป
 
 [คนเขียนโค้ด] คุณเลือกตามงาน แล้วเรียก:
   relay-call --tool <coder> --task-id <P#-I#> --prompt-file <brief> --cwd <repo>
 - Codex = หลังบ้าน/logic ยาก/ความปลอดภัย · Grok = เร็ว/งานซ้ำเยอะ · Gemini = ไฟล์เยอะ · Ollama = สำรองฟรีในเครื่อง
-- อ่านแค่ช่อง status ที่มันคืน: ok=ไปตรวจ · not_found=ตัวนี้ยังไม่ติดตั้ง เสนอสลับ · auth=โชว์คำสั่งล็อกอินให้เจ้าของ · quota=มันสลับให้แล้ว · limit_exceeded=หยุด รายงาน
+- อ่านแค่ช่อง status ที่มันคืน: ok=ไปตรวจ · not_found=ตัวนี้ยังไม่ติดตั้ง เสนอสลับ · auth=แจ้งแอดมินตรวจ token Portal · quota=มันสลับให้แล้ว · limit_exceeded=หยุด รายงาน
 
 [คนตรวจ] ต้องคนละค่ายกับคนเขียนเสมอ (Codex เขียน → Grok ตรวจ · Grok เขียน → Codex ตรวจ)
 

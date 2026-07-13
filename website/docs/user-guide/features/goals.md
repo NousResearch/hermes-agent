@@ -51,6 +51,8 @@ What you'll see:
 
 Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
 
+If `goals.model_tool_enabled` is enabled, an explicit natural-language request for durable autonomous work can start the same goal loop through the `goal_control` tool. Ordinary one-turn requests still stay one turn, and an existing active or paused goal is preserved rather than silently replaced.
+
 ## Completion contracts
 
 A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, and when to stop**. Hermes adapts this as an optional **completion contract** layered on top of the existing goal loop.
@@ -181,6 +183,9 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+  # Optional: expose goal_control so the model can translate explicit
+  # natural-language autonomy requests into a persistent completion contract.
+  model_tool_enabled: false
 ```
 
 ### Choosing the judge model

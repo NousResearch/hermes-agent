@@ -2282,6 +2282,10 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+        # Expose goal_control to the model so explicit natural-language requests
+        # can start the same durable loop as /goal. Opt-in keeps normal tool
+        # schemas small; the slash command remains available when this is false.
+        "model_tool_enabled": False,
     },
 
     # Mixture of Agents — named presets used by /moa. A preset is an execution

@@ -846,9 +846,10 @@ When a standing goal is active, Hermes judges whether each assistant response sa
 ```yaml
 goals:
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+  model_tool_enabled: false  # Let explicit natural-language requests start a goal (opt-in)
 ```
 
-`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](/user-guide/features/goals) for the full feature.
+`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. `model_tool_enabled` exposes the service-gated `goal_control` tool so requests such as “keep improving this until the tests pass” can create the same persistent goal and completion contract without requiring slash-command syntax. It is disabled by default to keep ordinary tool schemas small. See [Goals](/user-guide/features/goals) for the full feature.
 
 ### API Timeouts
 

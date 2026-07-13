@@ -10,6 +10,8 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     agent_browser_runnable,
+    display_hermes_home,
+    display_hermes_root,
     find_hermes_node_executable,
     find_node_executable,
     find_node_executable_on_path,
@@ -99,6 +101,26 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
 
         assert get_default_hermes_root() == home / "AppData" / "Local" / "hermes"
+
+
+class TestDisplayHermesRoot:
+    def test_home_relative_root_uses_shorthand(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        assert display_hermes_root() == "~/.hermes"
+
+    def test_custom_profile_displays_custom_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", "/opt/hermes/profiles/coder")
+
+        assert display_hermes_root() == "/opt/hermes"
+
+    def test_display_hermes_home_still_uses_shorthand(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        assert display_hermes_home() == "~/.hermes"
 
 
 class TestGetHermesHome:

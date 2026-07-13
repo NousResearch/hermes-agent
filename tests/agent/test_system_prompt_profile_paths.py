@@ -97,3 +97,17 @@ def test_default_profile_without_override_preserves_home_shorthand(tmp_path, mon
     line = _active_profile_line(stable)
     assert "Active Hermes profile: default." in line
     assert "under ~/.hermes/profiles/<name>/." in line
+
+
+def test_profile_root_resolution_failure_does_not_block_prompt(monkeypatch):
+    system_prompt = _stub_prompt_runtime(monkeypatch)
+
+    def _raise_resolution_error():
+        raise OSError("unresolvable Hermes root")
+
+    monkeypatch.setattr(system_prompt, "display_hermes_root", _raise_resolution_error)
+
+    stable = system_prompt.build_system_prompt_parts(_minimal_agent())["stable"]
+
+    line = _active_profile_line(stable)
+    assert "under ~/.hermes/profiles/<name>/." in line

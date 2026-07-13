@@ -392,7 +392,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
-    hermes_root = display_hermes_root()
+    try:
+        hermes_root = display_hermes_root()
+    except Exception:
+        hermes_root = "~/.hermes"
     if active_profile == "default":
         stable_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "

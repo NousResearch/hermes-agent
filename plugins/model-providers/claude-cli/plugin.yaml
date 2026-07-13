@@ -1,0 +1,5 @@
+name: claude-cli-provider
+kind: model-provider
+version: 1.0.0
+description: Claude via local `claude -p` (Claude Code CLI subprocess, subscription usage, no API key)
+author: local

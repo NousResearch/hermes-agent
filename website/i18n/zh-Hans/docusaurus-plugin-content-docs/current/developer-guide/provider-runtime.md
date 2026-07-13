@@ -42,13 +42,12 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 
 当前 provider 系列包括（完整内置集合见 `plugins/model-providers/`）：
 
-- AI Gateway（Vercel）
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
 - Copilot / Copilot ACP
 - Anthropic（原生）
-- Google / Gemini（`gemini`、`google-gemini-cli`）
+- Google / Gemini（`gemini`）
 - Alibaba / DashScope（`alibaba`、`alibaba-coding-plan`）
 - DeepSeek
 - Z.AI
@@ -93,18 +92,13 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 - ACP 编辑器会话
 - 辅助模型任务
 
-## AI Gateway
+## OpenRouter 与自定义 OpenAI 兼容 base URL
 
-在 `~/.hermes/.env` 中设置 `AI_GATEWAY_API_KEY`，并使用 `--provider ai-gateway` 运行。Hermes 从 gateway 的 `/models` 端点获取可用模型，筛选出支持工具调用的语言模型。
-
-## OpenRouter、AI Gateway 与自定义 OpenAI 兼容 base URL
-
-Hermes 包含相关逻辑，以避免在存在多个 provider 密钥时（例如同时存在 `OPENROUTER_API_KEY`、`AI_GATEWAY_API_KEY` 和 `OPENAI_API_KEY`）将错误的 API key 泄露给自定义端点。
+Hermes 包含相关逻辑，以避免在存在多个 provider 密钥时（例如同时存在 `OPENROUTER_API_KEY` 和 `OPENAI_API_KEY`）将错误的 API key 泄露给自定义端点。
 
 每个 provider 的 API key 仅作用于其自身的 base URL：
 
 - `OPENROUTER_API_KEY` 仅发送至 `openrouter.ai` 端点
-- `AI_GATEWAY_API_KEY` 仅发送至 `ai-gateway.vercel.sh` 端点
 - `OPENAI_API_KEY` 用于自定义端点及作为回退
 
 Hermes 还区分以下两种情况：
@@ -115,7 +109,7 @@ Hermes 还区分以下两种情况：
 这种区分对以下场景尤为重要：
 
 - 本地模型服务器
-- 非 OpenRouter/非 AI Gateway 的 OpenAI 兼容 API
+- 非 OpenRouter 的 OpenAI 兼容 API
 - 无需重新运行 setup 即可切换 provider
 - 通过 config 保存的自定义端点，即使当前 shell 中未导出 `OPENAI_BASE_URL` 也应正常工作
 

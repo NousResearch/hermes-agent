@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]eenmalig  |  [s]sessie  |  [d]weier"
   prompt_long:     "      Keuse [o/s/a/D]: "
   prompt_short:    "      Keuse [o/s/D]: "
+  choose_smart_deny: "      [o]eenmalig  |  [d]weier"
+  prompt_smart_deny: "      Keuse [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Tyd verstreke - opdrag word geweier"
   allowed_once:    "      ✓ Eenmalig toegelaat"
   allowed_session: "      ✓ Vir hierdie sessie toegelaat"
@@ -88,6 +92,7 @@ gateway:
     not_enough:            "Nie genoeg gesprek om saam te pers nie (ten minste 4 boodskappe nodig)."
     no_provider:           "Geen verskaffer opgestel nie -- kan nie saampers nie."
     nothing_to_do:         "Niks om saam te pers nie (die transkripsie is steeds heeltemal beskermde konteks)."
+    aggressive_unsupported: "--aggressive word nie ondersteun nie; gebruik '/compress here [N]' om net onlangse uitruilings te behou, of /undo om beurte te verwyder."
     focus_line:            "Fokus: \"{topic}\""
     summary_failed:        "⚠️ Opsomming kon nie gegenereer word nie ({error}). {count} historiese boodskap(pe) is verwyder en met 'n plekhouer vervang; vroeëre konteks kan nie meer herstel word nie. Oorweeg om jou auxiliary.compression-modelopstelling na te gaan."
     aborted:               "⚠️ Kompressie gestaak ({error}). Geen boodskappe is laat val nie — die gesprek is onveranderd. Voer /compress uit om weer te probeer, /reset vir 'n skoon sessie, of kyk na jou auxiliary.compression-modelkonfigurasie."
@@ -106,6 +111,8 @@ gateway:
     no_pending:            "Geen hangende opdrag om te weier nie."
     denied_singular:       "❌ Opdrag geweier."
     denied_plural:         "❌ Opdragte geweier ({count} opdragte)."
+    denied_reason_singular: "❌ Opdrag geweier. Rede aan die agent oorgedra: \"{reason}\""
+    denied_reason_plural:  "❌ Opdragte geweier ({count} opdragte). Rede aan die agent oorgedra: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast is slegs beskikbaar vir OpenAI-modelle wat Priority Processing ondersteun."
@@ -149,6 +156,15 @@ gateway:
     subscribed_suffix:     "(ingeteken — jy sal in kennis gestel word wanneer {task_id} voltooi of vasval)"
     truncated_suffix:      "… (afgekap; gebruik `hermes kanban …` in jou terminale vir volle uitvoer)"
     no_output:             "(geen uitvoer)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "Geen persoonlikhede opgestel in `{path}/config.yaml` nie"
@@ -219,6 +235,15 @@ gateway:
 
   resume:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Geen benoemde sessies gevind nie.\nGebruik `/title My Sessie` om jou huidige sessie 'n naam te gee, en dan `/resume My Sessie` om later daarheen terug te keer."
     list_header:           "📋 **Benoemde Sessies**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,11 +276,21 @@ gateway:
 
   status:
     header:                "📊 **Hermes Gateway Status**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**Sessie-ID:** `{session_id}`"
     title:                 "**Titel:** {title}"
     created:               "**Geskep:** {timestamp}"
     last_activity:         "**Laaste aktiwiteit:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
+    tokens:                "**Kumulatiewe API-tokens (elke oproep weer gestuur):** {tokens}"
     agent_running:         "**Agent loop:** {state}"
     state_yes:             "Ja ⚡"
     state_no:              "Nee"
@@ -290,7 +325,8 @@ gateway:
 
   undo:
     nothing:               "Niks om ongedaan te maak nie."
-    removed:               "↩️ {count} boodskap(pe) ongedaan gemaak.\nVerwyder: \"{preview}\""
+    removed:               "↩️ {turns} beurt(e) ongedaan gemaak ({count} boodskap(pe)).\nGerugsteun na: \"{preview}\"\nKopieer/wysig die teks hierbo en stuur dit om van hier af weer te vra."
+    invalid_count:         "Ongeldige getal \"{arg}\" — gebruik /undo of /undo N."
 
   update:
     platform_not_messaging:  "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `hermes update` vanaf die terminale uit."
@@ -313,11 +349,24 @@ gateway:
     label_cost_included:      "Koste: ingesluit"
     label_context:            "Konteks: {used} / {total} ({pct}%)"
     label_compressions:       "Saamperserings: {count}"
+    breakdown_header: "🧩 **Konteksverdeling** _(geskat)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Stelselopdrag"
+    breakdown_cat_tool_definitions: "Nutsmiddeldefinisies"
+    breakdown_cat_rules: "Reëls"
+    breakdown_cat_skills: "Vaardighede"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Subagent-definisies"
+    breakdown_cat_memory: "Geheue"
+    breakdown_cat_conversation: "Gesprek"
     header_session_info:      "📊 **Sessie-inligting**"
     label_messages:           "Boodskappe: {count}"
     label_estimated_context:  "Geskatte konteks: ~{count} tokens"
     detailed_after_first:     "_(Gedetailleerde gebruik beskikbaar na die eerste agent-antwoord)_"
     no_data:                  "Geen gebruiksdata beskikbaar vir hierdie sessie nie."
+
+  credits:
+    not_logged_in:            "Nie by Nous Portal aangemeld nie. Meld aan om jou kredietsaldo te sien en op te laai."
 
   verbose:
     not_enabled:           "Die `/verbose`-opdrag is nie vir boodskapplatforms geaktiveer nie.\n\nAktiveer dit in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -325,6 +374,7 @@ gateway:
     mode_new:              "⚙️ Gereedskap-vordering: **NUUT** — vertoon wanneer gereedskap verander (voorskoulengte: `display.tool_preview_length`, verstek 40)."
     mode_all:              "⚙️ Gereedskap-vordering: **ALMAL** — elke gereedskaps-oproep vertoon (voorskoulengte: `display.tool_preview_length`, verstek 40)."
     mode_verbose:          "⚙️ Gereedskap-vordering: **OMSLAGTIG** — elke gereedskaps-oproep met volle argumente."
+    mode_log:              "⚙️ Gereedskap-vordering: **LOG** — stil in die klets; gereedskaps-oproepe word na ~/.hermes/logs/tool_calls.log geskryf."
     saved_suffix:          "_(gestoor vir **{platform}** — neem effek by die volgende boodskap)_"
     save_failed:           "_(kon nie in konfigurasie stoor nie: {error})_"
 
@@ -342,6 +392,8 @@ gateway:
     label_off:             "Af (slegs teks)"
     label_voice_only:      "Aan (stemantwoord op stemboodskappe)"
     label_all:             "TTS (stemantwoord op alle boodskappe)"
+    help:                  "{toggle}\n\n**Hoe /voice werk**\n• `/voice on` — stemantwoord wanneer jy 'n stemboodskap stuur\n• `/voice tts` — stemantwoord op *elke* boodskap\n• `/voice off` — terug na slegs-teks antwoorde\n• `/voice status` — wys die huidige modus\n• `/voice` (geen argument) — wissel vinnig tussen aan en af{channels}"
+    help_channels:         "\n\n**Lewendige stemkanale (Discord)**\n• Sluit eers by 'n stemkanaal aan, dan `/voice channel` — ek sluit aan, luister en praat my antwoorde\n• `/voice leave` — ontkoppel van die stemkanaal"
 
   yolo:
     disabled:                   "⚠️ YOLO-modus **AF** vir hierdie sessie — gevaarlike opdragte sal goedkeuring vereis."

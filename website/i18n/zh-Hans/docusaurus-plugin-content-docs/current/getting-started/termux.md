@@ -46,7 +46,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 Hermes 现已内置 Termux 感知的安装路径：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 在 Termux 上，安装程序会自动：
@@ -80,14 +80,8 @@ pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgr
 ### 2. 克隆 Hermes
 
 ```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-```
-
-如果你已经克隆但未包含子模块：
-
-```bash
-git submodule update --init --recursive
 ```
 
 ### 3. 创建虚拟环境

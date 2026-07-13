@@ -158,7 +158,6 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "alibaba": "alibaba",
     "qwen-oauth": "alibaba",
     "copilot": "github-copilot",
-    "ai-gateway": "vercel",
     "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
     "kilocode": "kilo",

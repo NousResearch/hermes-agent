@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
 from hermes_cli.config import cfg_get
 
 
@@ -36,19 +36,25 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if not default_block and not has_key:
         return False
 
-    new_host = f"{HOST}.{profile_name}"
+    new_host = profile_host_key(profile_name)
     if new_host in hosts:
         return False  # already exists
 
-    # Clone settings from default block, override identity fields
+    # Clone settings from default block, override identity fields.
+    # Identity-mapping keys (pinUserPeer, userPeerAliases, runtimePeerPrefix)
+    # carry the operator's runtime-to-peer routing intent from #27371.
     new_block = {}
     for key in ("recallMode", "writeFrequency", "sessionStrategy",
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
                 "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
-                "dialecticMaxInputChars", "saveMessages", "observation"):
+                "dialecticMaxInputChars", "saveMessages", "observation",
+                "pinUserPeer", "userPeerAliases", "runtimePeerPrefix"):
         val = default_block.get(key)
         if val is not None:
             new_block[key] = val
+    # Carry a legacy default-block pinPeerName forward under the canonical key.
+    if "pinUserPeer" not in new_block and default_block.get("pinPeerName") is not None:
+        new_block["pinUserPeer"] = default_block["pinPeerName"]
 
     # Inherit peer name from default
     peer_name = default_block.get("peerName") or cfg.get("peerName")
@@ -184,7 +190,7 @@ def cmd_sync(args) -> None:
         if p.name == "default":
             continue
         if clone_honcho_for_profile(p.name):
-            print(f"  + {p.name} -> hermes.{p.name}")
+            print(f"  + {p.name} -> {profile_host_key(p.name)}")
             created += 1
         else:
             skipped += 1
@@ -235,7 +241,7 @@ def _host_key() -> str:
     if _profile_override:
         if _profile_override in {"default", "custom"}:
             return HOST
-        return f"{HOST}.{_profile_override}"
+        return profile_host_key(_profile_override)
     return resolve_active_host()
 
 
@@ -267,10 +273,8 @@ def _read_config() -> dict:
 def _write_config(cfg: dict, path: Path | None = None) -> None:
     path = path or _local_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    from utils import atomic_json_write
+    atomic_json_write(path, cfg, mode=0o600)
 
 
 def _resolve_api_key(cfg: dict) -> str:
@@ -284,7 +288,7 @@ def _resolve_api_key(cfg: dict) -> str:
     config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
     will reject them itself with a clearer error than ours.
     """
-    host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
+    host_key = _host_block(cfg, _host_key()).get("apiKey")
     key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
     if not key:
         base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
@@ -306,6 +310,179 @@ def _resolve_api_key(cfg: dict) -> str:
             ) and not base_url.isdigit():
                 return "local"
     return key
+
+
+_IDENTITY_MAPPING_KEYS = (
+    "pinPeerName",
+    "pinUserPeer",
+    "userPeerAliases",
+    "runtimePeerPrefix",
+)
+
+
+def _resolve_effective_identity_mapping(
+    cfg: dict, hermes_host: dict
+) -> tuple[bool, dict, str, bool, bool]:
+    """Resolve the effective identity-mapping state for the active host.
+
+    Matches the precedence used by ``HonchoClientConfig.from_global_config``
+    so the wizard reads the same shape the gateway will actually run with.
+    Without this, root-level overrides and ``pinUserPeer`` (which wins over
+    ``pinPeerName`` at the same level) are invisible to detection, letting
+    setup mis-classify the current shape and silently change effective
+    routing on the next save.
+
+    Returns ``(pin, aliases, prefix, aliases_from_root, prefix_from_root)``.
+    The ``*_from_root`` flags let the write step skip touching host keys
+    whose value is actually inherited.
+    """
+    pin = False
+    for val in (
+        hermes_host.get("pinUserPeer"),
+        hermes_host.get("pinPeerName"),
+        cfg.get("pinUserPeer"),
+        cfg.get("pinPeerName"),
+    ):
+        if val is not None:
+            pin = bool(val)
+            break
+
+    if "userPeerAliases" in hermes_host:
+        aliases_src = hermes_host.get("userPeerAliases")
+        aliases_from_root = False
+    else:
+        aliases_src = cfg.get("userPeerAliases")
+        aliases_from_root = aliases_src is not None
+    aliases = aliases_src if isinstance(aliases_src, dict) else {}
+
+    if "runtimePeerPrefix" in hermes_host:
+        prefix_src = hermes_host.get("runtimePeerPrefix")
+        prefix_from_root = False
+    else:
+        prefix_src = cfg.get("runtimePeerPrefix")
+        prefix_from_root = prefix_src is not None
+    prefix = str(prefix_src or "")
+
+    return pin, aliases, prefix, aliases_from_root, prefix_from_root
+
+
+def _scrub_identity_mapping(hermes_host: dict) -> None:
+    """Drop every peer-mapping key from the host block.
+
+    Called before the wizard writes a chosen shape so a stale alias, prefix,
+    or pin from an earlier run can't bleed into the new mapping.
+    """
+    for key in _IDENTITY_MAPPING_KEYS:
+        hermes_host.pop(key, None)
+
+
+def _migrate_pin_key(block: dict) -> bool:
+    """Rewrite a legacy ``pinPeerName`` to canonical ``pinUserPeer`` in place.
+
+    ``pinUserPeer`` wins over ``pinPeerName`` in the resolver, so setup writes
+    only the canonical form and migrates on touch to stop configs carrying
+    both.  Returns True if the block changed.
+    """
+    if "pinPeerName" not in block:
+        return False
+    legacy = block.pop("pinPeerName")
+    if "pinUserPeer" not in block:
+        block["pinUserPeer"] = legacy
+    return True
+
+
+def _gateway_platforms() -> list[str] | None:
+    """Connected gateway platforms, or None if undetectable.
+
+    Identity mapping only affects gateway runtime users, so setup gates the
+    whole step on this.  Best-effort and dependency-free: the memory plugin
+    must not hard-depend on the gateway package, so the import is lazy and
+    guarded (matching the idiom hermes_cli already uses for gateway refs).
+    """
+    try:
+        from gateway.config import load_gateway_config
+        return [p.value for p in load_gateway_config().get_connected_platforms()]
+    except Exception:
+        return None
+
+
+def _collect_operator_aliases(existing: dict, peer_target: str) -> dict:
+    """Prompt for the operator's per-platform runtime IDs, aliasing each to
+    ``peer_target``.  Existing entries are preserved."""
+    aliases = dict(existing)
+    print(f"\n  Add runtime IDs that should alias to peer '{peer_target}'.")
+    print("  Leave blank to skip a platform.  Existing aliases are preserved.")
+    for platform_label, alias_hint in (
+        ("Telegram UID", "e.g. 7654321"),
+        ("Discord snowflake", "e.g. 491827364"),
+        ("Slack user ID", "e.g. U04ABCDEF"),
+        ("Matrix MXID", "e.g. @you:matrix.org"),
+    ):
+        entered = _prompt(f"  {platform_label} ({alias_hint})", default="").strip()
+        if entered:
+            aliases[entered] = peer_target
+    return aliases
+
+
+def _apply_runtime_prefix(
+    hermes_host: dict, current_prefix: str, prefix_from_root: bool, label: str
+) -> None:
+    """Write a host-level runtimePeerPrefix only when it diverges from an
+    inherited root value; otherwise let the root cascade stand."""
+    new_prefix = _prompt(label, default=current_prefix or "").strip()
+    if new_prefix and not (prefix_from_root and new_prefix == current_prefix):
+        hermes_host["runtimePeerPrefix"] = new_prefix
+
+
+def _echo_identity_mapping(hermes_host: dict) -> None:
+    """Show the resulting keys so the operator can verify what was written."""
+    aliases = hermes_host.get("userPeerAliases")
+    prefix = hermes_host.get("runtimePeerPrefix")
+    print("  resolved →")
+    print(f"    pinUserPeer       = {bool(hermes_host.get('pinUserPeer'))}")
+    print(f"    userPeerAliases   = {aliases if aliases else '{}'}")
+    print(f"    runtimePeerPrefix = {prefix if prefix else '(none)'}")
+
+
+def _configure_raw_identity_mapping(
+    hermes_host: dict,
+    current_pin: bool,
+    current_aliases: dict,
+    current_prefix: str,
+    aliases_from_root: bool,
+    prefix_from_root: bool,
+) -> None:
+    """Power-user escape hatch: set the three resolver knobs directly."""
+    print("\n  Raw identity-mapping keys (resolver tries them top-down):")
+    pin_in = _prompt(
+        "pinUserPeer — pin all gateway users to your peer? (true/false)",
+        default=str(bool(current_pin)).lower(),
+    ).strip().lower()
+    pin = pin_in in {"true", "t", "yes", "y", "1"}
+    _scrub_identity_mapping(hermes_host)
+    hermes_host["pinUserPeer"] = pin
+    if pin:
+        return
+    aliases = (
+        dict(current_aliases)
+        if isinstance(current_aliases, dict) and not aliases_from_root
+        else {}
+    )
+    print("  userPeerAliases — 'runtime_id=peer' pairs (blank line to finish):")
+    while True:
+        entry = _prompt("    alias", default="").strip()
+        if not entry:
+            break
+        if "=" in entry:
+            rid, peer = (p.strip() for p in entry.split("=", 1))
+            if rid and peer:
+                aliases[rid] = peer
+    if aliases:
+        hermes_host["userPeerAliases"] = aliases
+    _apply_runtime_prefix(
+        hermes_host, current_prefix, prefix_from_root,
+        "runtimePeerPrefix — namespace for unknown IDs (blank for none)",
+    )
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
@@ -338,19 +515,16 @@ def _ensure_sdk_installed() -> bool:
         print("  Skipping install. Run: pip install 'honcho-ai>=2.0.1'\n")
         return False
 
-    import subprocess
     print("  Installing honcho-ai...", flush=True)
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "honcho-ai>=2.0.1"],
-        capture_output=True,
-        text=True,
-    )
+    from hermes_cli.tools_config import _pip_install
+
+    result = _pip_install(["honcho-ai>=2.0.1"])
     if result.returncode == 0:
         print("  Installed.\n")
         return True
     else:
-        print(f"  Install failed:\n{result.stderr.strip()}")
-        print("  Run manually: pip install 'honcho-ai>=2.0.1'\n")
+        print(f"  Install failed:\n{(result.stderr or '').strip()}")
+        print("  Run manually: uv pip install 'honcho-ai>=2.0.1'\n")
         return False
 
 
@@ -373,6 +547,10 @@ def cmd_setup(args) -> None:
     hosts = cfg.setdefault("hosts", {})
     hermes_host = hosts.setdefault(_host_key(), {})
 
+    # Canonicalize any legacy pinPeerName before detection/writes.
+    _migrate_pin_key(cfg)
+    _migrate_pin_key(hermes_host)
+
     # --- 1. Cloud or local? ---
     print("  Deployment:")
     print("    cloud -- Honcho cloud (api.honcho.dev)")
@@ -388,36 +566,119 @@ def cmd_setup(args) -> None:
     cfg.pop("base_url", None)
 
     if is_local:
-        # --- Local: ask for base URL, skip or clear API key ---
+        # --- Local: ask for base URL, optionally accept a JWT for auth ---
         current_url = cfg.get("baseUrl") or ""
         new_url = _prompt("Base URL", default=current_url or "http://localhost:8000")
         if new_url:
             cfg["baseUrl"] = new_url
 
-        # For local no-auth, the SDK must not send an API key.
-        # We keep the key in config (for cloud switching later) but
-        # the client should skip auth when baseUrl is local.
-        current_key = cfg.get("apiKey", "")
-        if current_key:
-            print(f"\n  API key present in config (kept for cloud/hybrid use).")
-            print("  Local connections will skip auth automatically.")
+        # Self-hosted Honcho can run with AUTH_USE_AUTH=true and an
+        # AUTH_JWT_SECRET on the server side. In that case clients must
+        # send a JWT signed with that secret as the bearer token (the
+        # Honcho SDK takes it via ``api_key=``). Cloud users got prompted
+        # for a key already; the local path historically skipped this and
+        # forced users to disable auth on the server. Offer the prompt
+        # here too. We store it under the host block (not the top-level
+        # apiKey) so ``get_honcho_client`` recognises it as an explicit
+        # local auth opt-in (see ``_host_has_key`` in client.py) and
+        # cloud/hybrid switching is unaffected.
+        current_host_key = hermes_host.get("apiKey", "")
+        masked = (
+            f"...{current_host_key[-8:]}"
+            if len(current_host_key) > 8
+            else ("set" if current_host_key else "not set")
+        )
+        print(
+            "\n  Local Honcho auth (JWT signed with the server's "
+            "AUTH_JWT_SECRET)."
+        )
+        print(
+            "  Leave blank if your server runs with AUTH_USE_AUTH=false. "
+            f"Current: {masked}"
+        )
+        new_local_key = _prompt(
+            "Local JWT / bearer token (blank to skip / keep current)",
+            secret=True,
+        )
+        if new_local_key:
+            hermes_host["apiKey"] = new_local_key
+        elif current_host_key:
+            print("  Keeping existing local JWT.")
         else:
-            print("\n  No API key set. Local no-auth ready.")
-    else:
-        # --- Cloud: set default base URL, require API key ---
+            # Surface the top-level key situation for transparency.
+            top_key = cfg.get("apiKey", "")
+            if top_key:
+                print(
+                    "\n  Top-level API key present in config (kept for "
+                    "cloud/hybrid use)."
+                )
+                print(
+                    "  Local connections will skip auth automatically "
+                    "until a local JWT is set above."
+                )
+            else:
+                print("\n  No local JWT set. Local no-auth ready.")
+    use_oauth = False
+    if not is_local:
+        # --- Cloud: OAuth (browser) or API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default
 
-        current_key = cfg.get("apiKey", "")
-        masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
-        print(f"\n  Current API key: {masked}")
-        new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
-        if new_key:
-            cfg["apiKey"] = new_key
+        # Detect an existing OAuth grant so re-running setup reflects it instead
+        # of looking like a fresh connect.
+        from plugins.memory.honcho.oauth import OAuthCredential
+        existing_oauth = OAuthCredential.from_host_block(hermes_host)
 
-        if not cfg.get("apiKey"):
-            print("\n  No API key configured. Get yours at https://app.honcho.dev")
-            print("  Run 'hermes honcho setup' again once you have a key.\n")
-            return
+        print("\n  Auth method:")
+        if existing_oauth is not None:
+            print(f"    (currently connected via OAuth — client {existing_oauth.client_id})")
+        print("    oauth  -- sign in via browser (recommended)")
+        print("    apikey -- paste an API key from https://app.honcho.dev")
+        method = _prompt("OAuth or API key?", default="oauth").strip().lower()
+        use_oauth = method in {"oauth", "o"}
+
+        if use_oauth:
+            # Sign in now, up front — the browser link is the whole point, so
+            # don't bury it behind the identity prompts. The grant's tokens are
+            # merged into the in-memory cfg so the wizard's final save preserves
+            # them; settings stay wizard-owned (apply_config=False).
+            from plugins.memory.honcho.oauth_flow import authorize_via_loopback
+
+            def _open(url: str) -> None:
+                print(f"\n  Open this link to authorize (waiting up to 5 minutes):\n\n    {url}\n")
+                import webbrowser
+
+                webbrowser.open(url)
+
+            print("\n  Starting browser sign-in…")
+            try:
+                cred = authorize_via_loopback(
+                    config_path=write_path,
+                    source="hermes-cli",
+                    apply_config=False,
+                    open_url=_open,
+                )
+            except Exception as e:
+                print(f"  OAuth sign-in failed: {e}")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            hermes_host["apiKey"] = cred.access_token
+            hermes_host["oauth"] = cred.oauth_block()
+            # Default the peer prompt to the name entered at consent.
+            if cred.consent_peer_name:
+                hermes_host["peerName"] = cred.consent_peer_name
+            print("  Authorized — token saved. Let's finish configuring.\n")
+        else:
+            current_key = cfg.get("apiKey", "")
+            masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
+            print(f"\n  Current API key: {masked}")
+            new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
+            if new_key:
+                cfg["apiKey"] = new_key
+
+            if not cfg.get("apiKey"):
+                print("\n  No API key configured. Get yours at https://app.honcho.dev")
+                print("  Run 'hermes honcho setup' again once you have a key.\n")
+                return
 
     # --- 3. Identity ---
     current_peer = hermes_host.get("peerName") or cfg.get("peerName", "")
@@ -435,11 +696,139 @@ def cmd_setup(args) -> None:
     if new_workspace:
         hermes_host["workspace"] = new_workspace
 
+    # --- 3b. Gateway identity mapping ---
+    # These keys only affect the Hermes GATEWAY (Telegram/Discord/Slack/...),
+    # the one entrypoint that supplies a runtime user ID.  CLI/TUI/desktop/ACP
+    # sessions have no runtime ID and fall through to peerName, so the step is
+    # moot off-gateway — gate it behind detection.
+    #
+    # Detection mirrors the gateway resolver: root-level config and the
+    # canonical ``pinUserPeer`` both affect routing, so host-only reads would
+    # mis-classify a profile that inherits its mapping from root.
+    (
+        current_pin,
+        current_aliases,
+        current_prefix,
+        aliases_from_root,
+        prefix_from_root,
+    ) = _resolve_effective_identity_mapping(cfg, hermes_host)
+
+    if current_pin:
+        current_shape = "single"
+    elif current_aliases:
+        current_shape = "hybrid"
+    else:
+        current_shape = "multi"
+
+    gw_platforms = _gateway_platforms()
+    if gw_platforms is None:
+        print("\n  Gateway identity mapping routes platform users to memory peers.")
+        run_mapping = _prompt(
+            "Running the Hermes gateway (Telegram/Discord/etc.)? (y/N)",
+            default="n",
+        ).strip().lower() in {"y", "yes"}
+    elif not gw_platforms:
+        print("\n  No gateway platforms connected — identity mapping only affects")
+        print("  gateway users, so this step doesn't apply here.")
+        run_mapping = _prompt(
+            "Configure gateway mapping anyway? (y/N)", default="n",
+        ).strip().lower() in {"y", "yes"}
+    else:
+        print(f"\n  Gateway platforms detected: {', '.join(gw_platforms)}")
+        run_mapping = True
+
+    if run_mapping:
+        peer_target = hermes_host.get("peerName") or current_peer or "user"
+        default_choice = {"single": "1", "hybrid": "2", "multi": "3"}.get(current_shape, "3")
+        print("\n  How should gateway users map to memory peers?")
+        print("    [1] just me — every non-agent user collapses to your peer")
+        print("    [2] me + other people — keep mine pooled, others separate")
+        print("    [3] only other people — everyone gets their own peer")
+        print("    [s] skip (leave untouched)   [e] edit raw keys")
+        choice = _prompt("Choice", default=default_choice).strip().lower()
+
+        if choice in {"2", "me+others", "both"}:
+            pooled = _prompt(
+                "  Keep my own memory pooled across platforms? (Y/n)", default="y",
+            ).strip().lower()
+            shape = "hybrid" if pooled in {"y", "yes", ""} else "multi"
+        elif choice in {"1", "me", "just-me"}:
+            shape = "single"
+        elif choice in {"3", "others"}:
+            shape = "multi"
+        elif choice in {"e", "edit", "raw"}:
+            shape = "raw"
+        else:
+            shape = "skip"
+
+        # Un-pinning a currently-pinned profile without aliasing strands the
+        # pooled peerName history; steer the operator toward pooling instead.
+        if current_pin and shape == "multi":
+            print(
+                f"\n  ⚠ Un-pinning will orphan memory accumulated under peer\n"
+                f"    '{peer_target}'.  Existing gateway users resolve to fresh,\n"
+                f"    empty peers."
+            )
+            confirm = _prompt(
+                "  Pool my own memory instead (alias my IDs to peerName)? (Y/n)",
+                default="y",
+            ).strip().lower()
+            if confirm in {"y", "yes", ""}:
+                shape = "hybrid"
+
+        # Each branch scrubs every peer-mapping key first so a stale alias,
+        # prefix, or pin from an earlier run starts clean.
+        if shape == "single":
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = True
+            print(f"  All non-agent gateway users route to '{peer_target}' (pin overrides aliases).")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "multi":
+            # Preserve operator-curated host-level aliases across multi → multi
+            # re-runs.  Root-sourced aliases cascade naturally and are NOT
+            # copied down — an empty host map would mask a root baseline.
+            prior_aliases = (
+                dict(current_aliases)
+                if isinstance(current_aliases, dict) and not aliases_from_root
+                else {}
+            )
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = False
+            if prior_aliases:
+                hermes_host["userPeerAliases"] = prior_aliases
+            _apply_runtime_prefix(
+                hermes_host, current_prefix, prefix_from_root,
+                "Runtime peer prefix (e.g. 'telegram_', blank for none)",
+            )
+            print("  Each gateway user → own peer.")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "hybrid":
+            existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = False
+            merged = _collect_operator_aliases(existing_aliases, peer_target)
+            if merged:
+                hermes_host["userPeerAliases"] = merged
+            _apply_runtime_prefix(
+                hermes_host, current_prefix, prefix_from_root,
+                "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
+            )
+            print(f"  Your runtime IDs → '{peer_target}', others → own peer.")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "raw":
+            _configure_raw_identity_mapping(
+                hermes_host, current_pin, current_aliases, current_prefix,
+                aliases_from_root, prefix_from_root,
+            )
+            _echo_identity_mapping(hermes_host)
+        else:  # skip
+            print("  Identity mapping left untouched.")
+
     # --- 4. Observation mode ---
     current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")
     print("\n  Observation mode:")
     print("    directional  -- all observations on, each AI peer builds its own view (default)")
-    print("    unified      -- shared pool, user observes self, AI observes others only")
+    print("    unified      -- user observes self, AI observes others only")
     new_obs = _prompt("Observation mode", default=current_obs)
     if new_obs in {"unified", "directional"}:
         hermes_host["observationMode"] = new_obs
@@ -644,9 +1033,21 @@ def cmd_status(args) -> None:
     write_path = _local_config_path()
 
     if not cfg:
-        print(f"  No Honcho config found at {active_path}")
-        print("  Run 'hermes honcho setup' to configure.\n")
-        return
+        # Config file missing — try env var fallback before giving up.
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig
+            _env_cfg = HonchoClientConfig.from_global_config(host=_host_key())
+            if _env_cfg.api_key or _env_cfg.base_url:
+                # Env var fallback worked — use that config instead.
+                cfg = {"apiKey": _env_cfg.api_key, "enabled": _env_cfg.enabled}
+            else:
+                print(f"  No Honcho config found at {active_path}")
+                print("  Run 'hermes honcho setup' to configure.\n")
+                return
+        except Exception:
+            print(f"  No Honcho config found at {active_path}")
+            print("  Run 'hermes honcho setup' to configure.\n")
+            return
 
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
@@ -658,6 +1059,12 @@ def cmd_status(args) -> None:
     api_key = hcfg.api_key or ""
     masked = f"...{api_key[-8:]}" if len(api_key) > 8 else ("set" if api_key else "not set")
 
+    # Auth line distinguishes an OAuth grant (refreshable) from a static API key
+    # — the OAuth access token is also stored under apiKey, so masking alone hides it.
+    from plugins.memory.honcho.oauth import OAuthCredential
+    host_block = (getattr(hcfg, "raw", None) or {}).get("hosts", {}).get(hcfg.host) or {}
+    cred = OAuthCredential.from_host_block(host_block)
+
     profile = _active_profile_name()
     profile_label = f" [{hcfg.host}]" if profile != "default" else ""
 
@@ -666,7 +1073,13 @@ def cmd_status(args) -> None:
         print(f"  Profile:        {profile}")
     print(f"  Host:           {hcfg.host}")
     print(f"  Enabled:        {hcfg.enabled}")
-    print(f"  API key:        {masked}")
+    if cred is not None:
+        import time as _time
+        remaining = int(cred.expires_at - _time.time())
+        token_state = f"valid {remaining // 60}m" if remaining > 0 else "expired — refreshes on next use"
+        print(f"  Auth:           OAuth ({cred.client_id}, token {token_state})")
+    else:
+        print(f"  Auth:           API key ({masked})")
     print(f"  Workspace:      {hcfg.workspace_id}")
 
     # Config paths — show where config was read from and where writes go
@@ -675,7 +1088,7 @@ def cmd_status(args) -> None:
     if write_path != active_path:
         print(f"  Write to:       {write_path}  (profile-local)")
     if active_path == global_path:
-        print(f"  Fallback:       (none — using global ~/.honcho/config.json)")
+        print("  Fallback:       (none — using global ~/.honcho/config.json)")
     elif global_path.exists():
         print(f"  Fallback:       {global_path}  (exists, cross-app interop)")
 
@@ -735,7 +1148,7 @@ def _show_peer_cards(hcfg, client) -> None:
         if ai_text:
             # Truncate to first 200 chars
             display = ai_text[:200] + ("..." if len(ai_text) > 200 else "")
-            print(f"\n  AI peer representation:")
+            print("\n  AI peer representation:")
             print(f"    {display}")
 
         if not card and not ai_text:
@@ -769,7 +1182,7 @@ def _cmd_status_all() -> None:
         marker = " *" if name == active else ""
         print(f"  {name + marker:<14} {host:<22} {enabled_str:<9} {recall:<9} {write}")
 
-    print(f"\n  * active profile\n")
+    print("\n  * active profile\n")
 
 
 def cmd_peers(args) -> None:
@@ -909,7 +1322,7 @@ def cmd_mode(args) -> None:
         for m, desc in MODES.items():
             marker = " <-" if m == current else ""
             print(f"  {m:<10}  {desc}{marker}")
-        print(f"\n  Set with: hermes honcho mode [hybrid|context|tools]\n")
+        print("\n  Set with: hermes honcho mode [hybrid|context|tools]\n")
         return
 
     if mode_arg not in MODES:
@@ -944,7 +1357,7 @@ def cmd_strategy(args) -> None:
         for s, desc in STRATEGIES.items():
             marker = " <-" if s == current else ""
             print(f"  {s:<15}  {desc}{marker}")
-        print(f"\n  Set with: hermes honcho strategy [per-session|per-directory|per-repo|global]\n")
+        print("\n  Set with: hermes honcho strategy [per-session|per-directory|per-repo|global]\n")
         return
 
     if strat_arg not in STRATEGIES:

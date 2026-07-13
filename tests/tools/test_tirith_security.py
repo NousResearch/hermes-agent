@@ -1,8 +1,10 @@
 """Tests for the tirith security scanning subprocess wrapper."""
 
+import io
 import json
 import os
 import subprocess
+import tarfile
 import time
 from unittest.mock import MagicMock, patch
 
@@ -15,17 +17,20 @@ from tools.tirith_security import check_command_security, ensure_installed
 @pytest.fixture(autouse=True)
 def _reset_resolved_path():
     """Pre-set cached path to skip auto-install in scan tests.
-
     Tests that specifically test ensure_installed / resolve behavior
     reset this to None themselves.
     """
     _tirith_mod._resolved_path = "tirith"
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
+    _tirith_mod._crash_count = 0
+    _tirith_mod._circuit_open = False
     yield
     _tirith_mod._resolved_path = None
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
+    _tirith_mod._crash_count = 0
+    _tirith_mod._circuit_open = False
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +721,89 @@ class TestCosignVerification:
         assert mock_cosign.called  # cosign was invoked
 
 
+class TestInstallArchiveMemberValidation:
+    def _write_archive(self, tmp_path, member: tarfile.TarInfo, data: bytes | None = None):
+        archive = tmp_path / "tirith-aarch64-apple-darwin.tar.gz"
+        checksums = tmp_path / "checksums.txt"
+        with tarfile.open(archive, "w:gz") as tar:
+            if data is None:
+                tar.addfile(member)
+            else:
+                tar.addfile(member, io.BytesIO(data))
+        checksums.write_text(
+            "ignored  tirith-aarch64-apple-darwin.tar.gz\n",
+            encoding="utf-8",
+        )
+        return archive, checksums
+
+    def _download_side_effect(self, archive, checksums):
+        def _download(url, dest, timeout=10):
+            del timeout
+            if url.endswith(".tar.gz"):
+                with open(archive, "rb") as src, open(dest, "wb") as dst:
+                    dst.write(src.read())
+                return
+            if url.endswith("checksums.txt"):
+                with open(checksums, "rb") as src, open(dest, "wb") as dst:
+                    dst.write(src.read())
+                return
+            raise AssertionError(f"unexpected download URL: {url}")
+
+        return _download
+
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
+    def test_install_extracts_regular_tirith_member(self, mock_target, mock_which,
+                                                    mock_checksum, tmp_path, monkeypatch):
+        """A valid regular-file tirith member is installed as a plain file."""
+        del mock_target, mock_which, mock_checksum
+        from tools.tirith_security import _install_tirith
+
+        payload = b"#!/bin/sh\nexit 0\n"
+        member = tarfile.TarInfo("bin/tirith")
+        member.mode = 0o755
+        member.size = len(payload)
+        archive, checksums = self._write_archive(tmp_path, member, payload)
+
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with patch("tools.tirith_security._download_file",
+                   side_effect=self._download_side_effect(archive, checksums)):
+            path, reason = _install_tirith(log_failures=False)
+
+        assert reason == ""
+        assert path == str(hermes_home / "bin" / "tirith")
+        assert os.path.isfile(path)
+        assert not os.path.islink(path)
+        with open(path, "rb") as f:
+            assert f.read() == payload
+
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
+    def test_install_rejects_non_regular_tirith_member(self, mock_target, mock_which,
+                                                       mock_checksum, tmp_path, monkeypatch):
+        """Symlink or hardlink tar members must not be installed as tirith."""
+        del mock_target, mock_which, mock_checksum
+        from tools.tirith_security import _install_tirith
+
+        member = tarfile.TarInfo("bin/tirith")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "/bin/sh"
+        archive, checksums = self._write_archive(tmp_path, member)
+
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with patch("tools.tirith_security._download_file",
+                   side_effect=self._download_side_effect(archive, checksums)):
+            path, reason = _install_tirith(log_failures=False)
+
+        assert path is None
+        assert reason == "binary_not_regular_file"
+        assert not os.path.lexists(hermes_home / "bin" / "tirith")
+
+
 # ---------------------------------------------------------------------------
 # Background install / non-blocking startup (P2)
 # ---------------------------------------------------------------------------
@@ -963,7 +1051,7 @@ class TestDiskFailureMarker:
 
     def test_cosign_missing_disk_marker_allows_retry(self):
         """Disk marker with cosign_missing reason allows retry when cosign appears."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
+        from tools.tirith_security import _resolve_tirith_path
         _tirith_mod._resolved_path = None
 
         # _is_install_failed_on_disk sees "cosign_missing" + cosign on PATH → returns False
@@ -1131,12 +1219,17 @@ class TestSpawnWarningDedup:
         _tirith_mod._reset_spawn_warning_state()
 
         with caplog.at_level("WARNING", logger="tools.tirith_security"):
-            for _ in range(15):
+            for i in range(15):
                 result = check_command_security("echo hi")
                 # Behavior must remain the same on every call —
                 # fail-open allow, with the exception captured in summary.
                 assert result["action"] == "allow"
-                assert "unavailable" in result["summary"]
+                if i < _tirith_mod._CRASH_LIMIT:
+                    # Before circuit breaker opens, summary has the exception
+                    assert "unavailable" in result["summary"]
+                else:
+                    # After circuit breaker opens, summary is generic
+                    assert "circuit breaker" in result["summary"]
 
         spawn_warnings = [
             rec for rec in caplog.records
@@ -1152,7 +1245,11 @@ class TestSpawnWarningDedup:
     def test_distinct_exception_types_each_log_once(self, mock_cfg, mock_run, caplog):
         """``FileNotFoundError`` and ``PermissionError`` are distinct
         failure modes and each deserves its own first-occurrence log
-        line; the dedupe key includes the exception class."""
+        line; the dedupe key includes the exception class.
+        
+        After _CRASH_LIMIT consecutive failures the circuit breaker opens
+        and subsequent calls short-circuit without spawning, so we only
+        see the warnings from the first batch."""
         mock_cfg.return_value = {
             "tirith_enabled": True, "tirith_path": "tirith",
             "tirith_timeout": 5, "tirith_fail_open": True,
@@ -1163,6 +1260,9 @@ class TestSpawnWarningDedup:
             mock_run.side_effect = FileNotFoundError("[WinError 2]")
             for _ in range(3):
                 check_command_security("a")
+            # Circuit breaker is now open — switching to PermissionError
+            # won't generate a new warning because the function returns
+            # before reaching subprocess.run.
             mock_run.side_effect = PermissionError("denied")
             for _ in range(3):
                 check_command_security("b")
@@ -1171,8 +1271,8 @@ class TestSpawnWarningDedup:
             rec for rec in caplog.records
             if "tirith spawn failed" in rec.message
         ]
-        assert len(spawn_warnings) == 2, (
-            f"expected 2 distinct first-occurrence warnings, "
+        assert len(spawn_warnings) == 1, (
+            f"expected 1 warning before circuit breaker opens, "
             f"got {len(spawn_warnings)}"
         )
 
@@ -1342,3 +1442,53 @@ class TestIsAppTldFinding:
 
     def test_case_insensitive_match(self):
         assert self.fn({"rule_id": "lookalike_tld", "value": ".APP"})
+
+
+# ---------------------------------------------------------------------------
+# mkdtemp OSError → no_space (disk-full leak prevention)
+# ---------------------------------------------------------------------------
+
+class TestMkdtempOSErrorNoSpace:
+    """When tempfile.mkdtemp raises OSError (e.g. disk full), _install_tirith
+    must return (None, "no_space") instead of propagating the exception.
+    This prevents the unbounded retry + temp-dir leak described in #51826.
+    """
+
+    def test_mkdtemp_oserror_returns_no_space(self):
+        from tools.tirith_security import _install_tirith
+
+        with patch("tools.tirith_security.tempfile.mkdtemp",
+                   side_effect=OSError(28, "No space left on device")):
+            result, reason = _install_tirith(log_failures=False)
+            assert result is None
+            assert reason == "no_space"
+
+    def test_mkdtemp_oserror_does_not_leak_tempdir(self):
+        """No temp directory should remain after a mkdtemp failure."""
+        import glob
+        from tools.tirith_security import _install_tirith
+
+        before = set(glob.glob("/tmp/tirith-install-*"))
+        with patch("tools.tirith_security.tempfile.mkdtemp",
+                   side_effect=OSError(28, "No space left on device")):
+            _install_tirith(log_failures=False)
+        after = set(glob.glob("/tmp/tirith-install-*"))
+        assert after - before == set()
+
+    def test_mkdtemp_oserror_propagates_to_ensure_installed(self):
+        """ensure_installed should cache the failure via _mark_install_failed."""
+        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
+
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.tempfile.mkdtemp",
+                   side_effect=OSError(28, "No space left on device")), \
+             patch("tools.tirith_security.shutil.which",
+                   return_value=None), \
+             patch("tools.tirith_security._hermes_bin_dir",
+                   return_value="/nonexistent"), \
+             patch("tools.tirith_security._is_install_failed_on_disk",
+                   return_value=False), \
+             patch("tools.tirith_security._mark_install_failed") as mock_mark:
+            result = _resolve_tirith_path("tirith")
+            assert _tirith_mod._resolved_path is _INSTALL_FAILED
+            mock_mark.assert_called_once_with("no_space")

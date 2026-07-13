@@ -1,7 +1,6 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
-import os
 import urllib.error
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,6 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
-    _build_schema,
     _channel_type_name,
     _detect_capabilities,
     _discord_request,
@@ -143,6 +141,41 @@ class TestDiscordRequest:
             _discord_request("GET", "/test", "tok")
         assert exc_info.value.status == 403
         assert "Missing Access" in exc_info.value.body
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_response_body_size_limit(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setattr("tools.discord_tool._DISCORD_RESPONSE_BODY_MAX_BYTES", 8)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b"x" * 9
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen_fn.return_value = mock_resp
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 502
+        assert "response body exceeded 8 bytes" in exc_info.value.body
+        mock_resp.read.assert_called_once_with(9)
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_http_error_body_size_limit(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setattr("tools.discord_tool._DISCORD_ERROR_BODY_MAX_BYTES", 8)
+        http_error = urllib.error.HTTPError(
+            url="https://discord.com/api/v10/test",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=BytesIO(b"x" * 9),
+        )
+        mock_urlopen_fn.side_effect = http_error
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 403
+        assert "error body exceeded 8 bytes" in exc_info.value.body
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +746,119 @@ class TestCapabilityDetection:
         _detect_capabilities("tok", force=True)
         assert mock_req.call_count == 2
 
+
+class TestNonBlockingCapabilityDetection:
+    """The schema-build path must never block on a discord.com HTTP call.
+
+    ``_detect_capabilities_nonblocking`` resolves memory cache → disk cache →
+    permissive default (+ background detect), keeping the ~2s blocking
+    detection off the first-token critical path (TTFT fix, July 2026).
+    """
+
+    def setup_method(self):
+        _reset_capability_cache()
+
+    def teardown_method(self):
+        _reset_capability_cache()
+
+    def test_memory_cache_hit_no_network(self):
+        from tools.discord_tool import _capability_cache, _detect_capabilities_nonblocking
+        caps_in = {"has_members_intent": False, "has_message_content": True, "detected": True}
+        _capability_cache["tok"] = caps_in
+        with patch("tools.discord_tool._discord_request") as mock_req:
+            caps = _detect_capabilities_nonblocking("tok")
+        assert caps == caps_in
+        mock_req.assert_not_called()
+
+    def test_cold_start_returns_permissive_default_immediately(self):
+        from tools.discord_tool import _detect_capabilities_nonblocking
+        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("tools.discord_tool.threading.Thread") as mock_thread:
+            caps = _detect_capabilities_nonblocking("tok")
+        assert caps["has_members_intent"] is True
+        assert caps["has_message_content"] is True
+        assert caps["detected"] is False
+        # Background detection was scheduled exactly once
+        assert mock_thread.call_count == 1
+
+    def test_cold_start_pins_default_for_process_schema_stability(self):
+        """Within one process the schema must not flip mid-conversation:
+        the permissive default is pinned in the memory cache so later
+        schema builds see the same caps even after bg detection lands
+        on disk."""
+        from tools.discord_tool import _capability_cache, _detect_capabilities_nonblocking
+        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("tools.discord_tool.threading.Thread"):
+            first = _detect_capabilities_nonblocking("tok")
+        # Even if the disk now has restrictive caps, the pinned entry wins.
+        with patch(
+            "tools.discord_tool._load_caps_from_disk",
+            return_value={"has_members_intent": False, "has_message_content": False, "detected": True},
+        ):
+            second = _detect_capabilities_nonblocking("tok")
+        assert first == second
+        assert _capability_cache["tok"] is first
+
+    def test_bg_detection_scheduled_once_per_token(self):
+        from tools.discord_tool import _detect_capabilities_nonblocking
+        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("tools.discord_tool.threading.Thread") as mock_thread:
+            _detect_capabilities_nonblocking("tok")
+            # Second cold call for the same token in the same process
+            from tools.discord_tool import _capability_cache
+            _capability_cache.pop("tok", None)  # simulate another cold path
+            _detect_capabilities_nonblocking("tok")
+        # bg started set persists → only one thread scheduled
+        assert mock_thread.call_count == 1
+
+    def test_disk_cache_round_trip(self, tmp_path, monkeypatch):
+        import tools.discord_tool as dt
+        monkeypatch.setattr(
+            dt, "_capability_disk_cache_path",
+            lambda: tmp_path / "discord_capabilities.json",
+        )
+        caps_in = {"has_members_intent": True, "has_message_content": False, "detected": True}
+        dt._save_caps_to_disk("tok", caps_in)
+        assert dt._load_caps_from_disk("tok") == caps_in
+        # Wrong token → miss
+        assert dt._load_caps_from_disk("other") is None
+
+    def test_disk_cache_expires(self, tmp_path, monkeypatch):
+        import time as _time
+
+        import tools.discord_tool as dt
+        monkeypatch.setattr(
+            dt, "_capability_disk_cache_path",
+            lambda: tmp_path / "discord_capabilities.json",
+        )
+        caps_in = {"has_members_intent": True, "has_message_content": True, "detected": True}
+        dt._save_caps_to_disk("tok", caps_in)
+        # Rewrite timestamp to be stale
+        import json as _json
+        p = tmp_path / "discord_capabilities.json"
+        data = _json.loads(p.read_text())
+        for entry in data.values():
+            entry["ts"] = _time.time() - dt._CAPABILITY_DISK_TTL_SECONDS - 10
+        p.write_text(_json.dumps(data))
+        assert dt._load_caps_from_disk("tok") is None
+
+    def test_schema_build_uses_nonblocking_path(self, monkeypatch):
+        """get_dynamic_schema_core must not call the blocking detection."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("tools.discord_tool.threading.Thread"), \
+             patch("tools.discord_tool._discord_request") as mock_req:
+            schema = get_dynamic_schema_core()
+        # No blocking HTTP call happened on the schema-build path
+        mock_req.assert_not_called()
+        assert schema is not None
+        actions = set(schema["parameters"]["properties"]["action"]["enum"])
+        assert actions == set(_CORE_ACTIONS.keys())  # permissive default
+
     @patch("tools.discord_tool._discord_request")
     def test_cache_is_keyed_by_token(self, mock_req):
         """Regression: token A's capabilities must not leak to token B.
@@ -934,6 +1080,10 @@ class TestDynamicSchema:
             lambda: {"discord": {"server_actions": ""}},
         )
         mock_req.return_value = {"flags": 1 << 18}  # only MESSAGE_CONTENT
+        # Warm the capability cache — schema builds are non-blocking and use
+        # the permissive default until detection has completed (background
+        # thread + disk cache); filtering applies once caps are known.
+        _detect_capabilities("tok")
         schema = get_dynamic_schema_admin()
         actions = schema["parameters"]["properties"]["action"]["enum"]
         assert "member_info" not in actions
@@ -950,6 +1100,7 @@ class TestDynamicSchema:
             lambda: {"discord": {"server_actions": ""}},
         )
         mock_req.return_value = {"flags": 1 << 18}  # only MESSAGE_CONTENT
+        _detect_capabilities("tok")  # warm cache — schema builds are non-blocking
         schema = get_dynamic_schema_core()
         actions = schema["parameters"]["properties"]["action"]["enum"]
         assert "search_members" not in actions
@@ -962,6 +1113,7 @@ class TestDynamicSchema:
             lambda: {"discord": {"server_actions": ""}},
         )
         mock_req.return_value = {"flags": 1 << 14}  # only GUILD_MEMBERS
+        _detect_capabilities("tok")  # warm cache — schema builds are non-blocking
         schema = get_dynamic_schema_core()
         assert "MESSAGE_CONTENT" in schema["description"]
         # But fetch_messages is still available

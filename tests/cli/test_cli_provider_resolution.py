@@ -172,6 +172,53 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+@pytest.mark.parametrize(
+    ("tool_progress_mode", "streaming_enabled", "expects_callback"),
+    [
+        ("all", False, True),
+        ("off", False, False),
+        ("off", True, False),
+    ],
+)
+def test_tool_generation_callback_respects_progress_mode(
+    monkeypatch,
+    tool_progress_mode,
+    streaming_enabled,
+    expects_callback,
+):
+    cli = _import_cli()
+    captured = {}
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _runtime_resolve,
+    )
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.tool_progress_mode = tool_progress_mode
+    shell.streaming_enabled = streaming_enabled
+
+    assert shell._init_agent() is True
+    if expects_callback:
+        assert captured["tool_gen_callback"] == shell._on_tool_gen_start
+    else:
+        assert captured["tool_gen_callback"] is None
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 

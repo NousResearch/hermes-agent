@@ -701,12 +701,40 @@ def write_board_metadata(
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if board and str(board).strip() != DEFAULT_BOARD:
+        try:
+            _ensure_board_workspaces_root(board)
+        except FileExistsError:
+            # The workspace path exists but is not a directory (real conflict).
+            raise
+        except OSError:
+            # Any other OS-level failure is swallowed here — creation is
+            # best-effort and the lazy resolver still covers task startup.
+            pass
     path.write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
+
+
+def _ensure_board_workspaces_root(board: str) -> Path:
+    """Materialize a board's canonical ``workspaces/`` directory safely.
+
+    Idempotent.  Created with mode ``0700`` so only the owner can read/write.
+    If the directory already exists it is returned unchanged unless it is
+    not a directory, in which case :class:`FileExistsError` is raised.
+    """
+    wroot = workspaces_root(board)
+    if not wroot.exists():
+        wroot.mkdir(parents=True, exist_ok=True)
+        wroot.chmod(0o700)
+    elif not wroot.is_dir():
+        raise FileExistsError(
+            f"Board workspace path {wroot} is not a directory"
+        )
+    return wroot
 
 
 def create_board(
@@ -727,6 +755,16 @@ def create_board(
     normed = _normalize_board_slug(slug)
     if not normed:
         raise ValueError("board slug is required")
+    if normed != DEFAULT_BOARD:
+        # Materialize the board's canonical workspaces/ root so the
+        # dispatcher-backed worker env (HERMES_KANBAN_WORKSPACES_ROOT) never
+        # points at a missing directory.  Owner-only mode limits exposure.
+        try:
+            _ensure_board_workspaces_root(normed)
+        except FileExistsError:
+            raise
+        except OSError:
+            pass  # Best-effort; lazy creation still works if this fails.
     meta = write_board_metadata(
         normed,
         name=name,

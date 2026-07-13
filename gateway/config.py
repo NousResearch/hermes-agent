@@ -1727,6 +1727,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
+        email_session_routing = getenv("EMAIL_SESSION_ROUTING")
+        if email_session_routing:
+            config.platforms[Platform.EMAIL].extra["session_routing"] = email_session_routing
+        email_display_name = getenv("EMAIL_DISPLAY_NAME")
+        if email_display_name:
+            config.platforms[Platform.EMAIL].extra["display_name"] = email_display_name
     email_home = getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(

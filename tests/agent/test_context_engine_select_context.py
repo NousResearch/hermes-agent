@@ -192,6 +192,53 @@ def test_persisted_history_not_mutated():
     assert HISTORY == history_snapshot
 
 
+# -- cache-stability + downstream-sanitizer contract -----------------------
+
+def test_noop_preserves_request_byte_stable_for_cache():
+    """No-op default must leave the request byte-identical.
+
+    Prompt-cache stability is a host invariant (AGENTS.md): the hook runs
+    before cache-control, so a no-op engine must not perturb the list —
+    otherwise cache breakpoints would shift for every existing engine. The
+    host returns the *same object*, so cache-control sees identical input.
+    """
+    snapshot = [dict(m) for m in REQUEST]
+    agent = _agent_with(_MinimalEngine())  # default select_context -> None
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is REQUEST          # same object -> byte-stable for cache-control
+    assert REQUEST == snapshot     # unperturbed
+
+
+def test_role_unusual_replacement_passed_through_for_downstream_sanitizers():
+    """The hook does structural validation only; role/tool normalization is
+    deferred to the existing downstream sanitizers.
+
+    A `system -> user -> user` replacement (the exact shape flagged as a
+    role-alternation risk on sibling PRs) is well-formed structurally, so the
+    host returns it verbatim. Role-pairing/orphaned-tool cleanup runs *after*
+    this hook in the request pipeline (`_sanitize_api_messages`,
+    `_drop_thinking_only_and_merge_users`), so select_context cannot emit a
+    malformed request that bypasses validation.
+    """
+    role_unusual = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "a"},
+        {"role": "user", "content": "b"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return role_unusual
+
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is role_unusual  # accepted structurally; downstream sanitizers normalize
+
+
 # -- on_turn_complete (post-turn observation) ------------------------------
 
 def test_default_on_turn_complete_is_noop():

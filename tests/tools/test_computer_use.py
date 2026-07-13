@@ -945,6 +945,16 @@ class TestPromptGuidance:
         # Security callouts must remain
         assert "password" in COMPUTER_USE_GUIDANCE.lower()
 
+    def test_computer_use_guidance_can_omit_safety_section(self):
+        from agent.prompt_builder import computer_use_guidance
+
+        guidance = computer_use_guidance("darwin", include_safety=False)
+
+        assert "## Preferred workflow" in guidance
+        assert "## Safety" not in guidance
+        assert "password prompts" not in guidance
+        assert "prompt injection" not in guidance
+
 
 # ---------------------------------------------------------------------------
 # Run-agent multimodal helpers

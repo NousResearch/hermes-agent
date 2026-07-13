@@ -2721,10 +2721,14 @@ DEFAULT_CONFIG = {
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
-    # Pre-exec security scanning via tirith
+    # Pre-exec security scanning via tirith and model-facing privacy controls
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Inject computer-use safety instructions into the system prompt.
+        # Users running a trusted/local model can disable this without removing
+        # the operational computer-use workflow.
+        "computer_use_safety_guidance": True,
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -7390,13 +7394,19 @@ _SECURITY_COMMENT = """
 # Secret redaction is ON by default — strings that look like API keys,
 # tokens, and passwords are masked in tool output, logs, and chat
 # responses before the model or user ever sees them. Set redact_secrets
-# to false to disable (e.g. when developing the redactor itself).
+# to false to disable configurable redaction paths (e.g. for a trusted
+# local model or when developing the redactor itself). Explicitly forced
+# redaction boundaries remain active.
+# Computer-use safety guidance is also ON by default. Set
+# computer_use_safety_guidance to false to omit that section from the
+# model system prompt while keeping the operational workflow.
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
 #
 # security:
 #   redact_secrets: true
+#   computer_use_safety_guidance: true
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
@@ -7430,11 +7440,12 @@ _FALLBACK_COMMENT = """
 
 _COMMENTED_SECTIONS = """
 # ── Security ──────────────────────────────────────────────────────────
-# Secret redaction is ON by default. Set to false to pass tool output,
-# logs, and chat responses through unmodified (e.g. for redactor dev).
+# Secret redaction and computer-use safety guidance are ON by default.
+# Either model-facing control can be disabled independently.
 #
 # security:
 #   redact_secrets: true
+#   computer_use_safety_guidance: true
 
 # ── Fallback Model ────────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.

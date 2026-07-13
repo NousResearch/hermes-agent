@@ -198,6 +198,17 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
+# Security and model-facing privacy controls
+# =============================================================================
+# Both controls default to true. The Dashboard exposes them under Config > Security.
+# Disabling redaction requires a restart because the redactor snapshots its state.
+# Computer-use safety guidance applies to newly created agent sessions; tool-level
+# hard guards are not disabled by this setting.
+security:
+  redact_secrets: true
+  computer_use_safety_guidance: true
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.

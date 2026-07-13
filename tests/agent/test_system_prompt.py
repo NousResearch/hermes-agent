@@ -12,6 +12,7 @@ def _make_agent(**overrides):
         skip_context_files=False,
         valid_tool_names=[],
         _task_completion_guidance=False,
+        _computer_use_safety_guidance=True,
         _tool_use_enforcement=False,
         _environment_probe=False,
         _kanban_worker_guidance="",
@@ -68,6 +69,26 @@ def _stable_prompt(agent):
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
+
+
+class TestComputerUseSafetyGuidance:
+    def test_enabled_by_default_for_computer_use(self):
+        stable = _stable_prompt(_make_agent(valid_tool_names=["computer_use"]))
+
+        assert "## Safety" in stable
+        assert "password prompts" in stable
+
+    def test_can_be_disabled_without_removing_operational_guidance(self):
+        agent = _make_agent(
+            valid_tool_names=["computer_use"],
+            _computer_use_safety_guidance=False,
+        )
+
+        stable = _stable_prompt(agent)
+
+        assert "## Preferred workflow" in stable
+        assert "## Safety" not in stable
+        assert "password prompts" not in stable
 
 
 def _init_code_repo(path):

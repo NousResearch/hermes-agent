@@ -127,6 +127,34 @@ def test_persist_user_message_override_rewrites_text_turns(agent):
     assert messages == [{"role": "user", "content": "hello"}]
 
 
+def test_computer_use_safety_guidance_reads_security_config(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "security:\n  computer_use_safety_guidance: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("computer_use"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        configured_agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert getattr(configured_agent, "_computer_use_safety_guidance") is False
+
+
 def test_persist_user_message_override_preserves_multimodal_turns(agent):
     multimodal_content = [
         {"type": "text", "text": "What color is this?"},

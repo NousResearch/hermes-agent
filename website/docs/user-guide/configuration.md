@@ -1903,12 +1903,13 @@ discord:
 
 ## Security
 
-Pre-execution security scanning and secret redaction:
+Pre-execution security scanning, secret redaction, and model-facing safety guidance:
 
 ```yaml
 security:
-  redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
-  tirith_enabled: true           # Enable Tirith security scanning for terminal commands
+  redact_secrets: true                    # Redact API key patterns in tool output and logs
+  computer_use_safety_guidance: true      # Include computer-use safety text in the model prompt
+  tirith_enabled: true                    # Enable Tirith security scanning for terminal commands
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
   tirith_fail_open: true         # Allow command execution if tirith is unavailable
@@ -1918,7 +1919,8 @@ security:
     shared_files: []
 ```
 
-- `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development.
+- `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default.** Set to `false` if you need the agent to read and use credential values directly (e.g., from `.env` files). Requires a restart to take effect.
+- `computer_use_safety_guidance` — when `true` (default), includes Hermes' computer-use safety section in the model system prompt. Set to `false` to omit that text while retaining the operational computer-use workflow and tool-level hard guards. The change applies to newly created agent sessions so an existing conversation's cached system prompt remains byte-stable.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.

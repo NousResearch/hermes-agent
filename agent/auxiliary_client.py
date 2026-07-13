@@ -5025,13 +5025,26 @@ def resolve_provider_client(
                     "was provided or configured"
                 )
                 return None, None
-            from agent.claude_cli_client import ClaudeCLIClient
+            from agent.claude_live_client import live_mode_enabled
 
-            client = ClaudeCLIClient(
-                base_url=base_url,
-                command=command,
-                args=args,
-            )
+            if live_mode_enabled():
+                # Headless/auxiliary path has no live AIAgent, so the live
+                # client falls back to the registry dispatcher for tools.
+                from agent.claude_live_client import ClaudeLiveClient
+
+                client = ClaudeLiveClient(
+                    base_url=base_url,
+                    command=command,
+                    args=args,
+                )
+            else:
+                from agent.claude_cli_client import ClaudeCLIClient
+
+                client = ClaudeCLIClient(
+                    base_url=base_url,
+                    command=command,
+                    args=args,
+                )
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))

@@ -55,14 +55,18 @@ class ClaudeCLIProfile(ProviderProfile):
     def build_extra_body(
         self, *, session_id: str | None = None, **context: Any
     ) -> dict[str, Any]:
-        """Stash the live reasoning effort so the client can map it to --effort."""
+        """Stash the live reasoning effort (→ --effort) and the session id (→
+        live-session registry key, one warm `claude -p` child per conversation)."""
+        body: dict[str, Any] = {}
         reasoning_config = context.get("reasoning_config")
-        if not isinstance(reasoning_config, dict):
-            return {}
-        effort = reasoning_config.get("effort")
-        if not isinstance(effort, str) or not effort.strip():
-            return {}
-        return {"_hermes_claude_effort": effort.strip().lower()}
+        if isinstance(reasoning_config, dict):
+            effort = reasoning_config.get("effort")
+            if isinstance(effort, str) and effort.strip():
+                body["_hermes_claude_effort"] = effort.strip().lower()
+        session_id = context.get("session_id") or session_id
+        if isinstance(session_id, str) and session_id.strip():
+            body["_hermes_claude_session_id"] = session_id.strip()
+        return body
 
 
 claude_cli = ClaudeCLIProfile(

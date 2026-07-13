@@ -1703,6 +1703,30 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         )
         return client
     if agent.provider == "claude-cli" or str(client_kwargs.get("base_url", "")).startswith("acp://claude-cli"):
+        from agent.claude_live_client import live_mode_enabled
+
+        if live_mode_enabled():
+            # Live session mode (default): one persistent `claude -p` child per
+            # conversation with Hermes's real tools exposed via a local MCP
+            # bridge. Executor is agent._invoke_tool so tools run with their
+            # normal guardrails/state. Off-switch: HERMES_CLAUDE_CLI_LIVE=0.
+            from agent.claude_live_client import (
+                ClaudeLiveClient,
+                make_agent_tool_executor,
+            )
+
+            live_kwargs = dict(client_kwargs)
+            live_kwargs["tool_executor"] = make_agent_tool_executor(agent)
+            live_kwargs["session_key"] = getattr(agent, "session_id", None) or None
+            client = ClaudeLiveClient(**live_kwargs)
+            _ra().logger.info(
+                "Claude CLI LIVE client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                agent._client_log_context(),
+            )
+            return client
+
         from agent.claude_cli_client import ClaudeCLIClient
 
         client = ClaudeCLIClient(**client_kwargs)

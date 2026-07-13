@@ -17,6 +17,21 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
+def test_live_session_preview_strips_leading_workspace_context_metadata():
+    history = [
+        {
+            "role": "user",
+            "content": (
+                '<workspace_context active="true" name="Home" '
+                'path="/home/sean/hermes-work" />\n\n'
+                "New chats should show useful titles"
+            ),
+        }
+    ]
+
+    assert server._message_preview(history) == "New chats should show useful titles"
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

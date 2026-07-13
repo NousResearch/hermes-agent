@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
+from agent.session_display import session_preview
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
@@ -3434,7 +3435,7 @@ class SessionDB:
                 )
                 SELECT {_sel},
                     COALESCE(
-                        (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                        (SELECT SUBSTR(m.content, 1, 1024)
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
                          ORDER BY m.timestamp, m.id LIMIT 1),
@@ -3459,7 +3460,7 @@ class SessionDB:
             query = f"""
                 SELECT {_sel},
                     COALESCE(
-                        (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                        (SELECT SUBSTR(m.content, 1, 1024)
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
                          ORDER BY m.timestamp, m.id LIMIT 1),
@@ -3481,13 +3482,7 @@ class SessionDB:
         sessions = []
         for row in rows:
             s = dict(row)
-            # Build the preview from the raw substring
-            raw = s.pop("_preview_raw", "").strip()
-            if raw:
-                text = raw[:60]
-                s["preview"] = text + ("..." if len(raw) > 60 else "")
-            else:
-                s["preview"] = ""
+            s["preview"] = session_preview(s.pop("_preview_raw", ""))
             # Drop the internal ordering column so callers see a clean dict.
             s.pop("_effective_last_active", None)
             sessions.append(s)
@@ -3563,7 +3558,7 @@ class SessionDB:
         query = """
             SELECT s.*,
                 COALESCE(
-                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                    (SELECT SUBSTR(m.content, 1, 1024)
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
                      ORDER BY m.timestamp, m.id LIMIT 1),
@@ -3585,12 +3580,7 @@ class SessionDB:
         runs: List[Dict[str, Any]] = []
         for row in rows:
             s = dict(row)
-            raw = s.pop("_preview_raw", "").strip()
-            if raw:
-                text = raw[:60]
-                s["preview"] = text + ("..." if len(raw) > 60 else "")
-            else:
-                s["preview"] = ""
+            s["preview"] = session_preview(s.pop("_preview_raw", ""))
             runs.append(s)
         return runs
 
@@ -3606,7 +3596,7 @@ class SessionDB:
         query = f"""
             SELECT {_sel},
                 COALESCE(
-                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                    (SELECT SUBSTR(m.content, 1, 1024)
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
                      ORDER BY m.timestamp, m.id LIMIT 1),
@@ -3625,12 +3615,7 @@ class SessionDB:
         if not row:
             return None
         s = dict(row)
-        raw = s.pop("_preview_raw", "").strip()
-        if raw:
-            text = raw[:60]
-            s["preview"] = text + ("..." if len(raw) > 60 else "")
-        else:
-            s["preview"] = ""
+        s["preview"] = session_preview(s.pop("_preview_raw", ""))
         return s
 
     # =========================================================================
@@ -6366,7 +6351,7 @@ class SessionDB:
                     """
                     SELECT s.*,
                         COALESCE(
-                            (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                            (SELECT SUBSTR(m.content, 1, 1024)
                              FROM messages m
                              WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
                              ORDER BY m.timestamp, m.id LIMIT 1),
@@ -6395,7 +6380,7 @@ class SessionDB:
                     """
                     SELECT s.*,
                         COALESCE(
-                            (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                            (SELECT SUBSTR(m.content, 1, 1024)
                              FROM messages m
                              WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
                              ORDER BY m.timestamp, m.id LIMIT 1),
@@ -6417,8 +6402,7 @@ class SessionDB:
         sessions: List[Dict[str, Any]] = []
         for row in rows:
             session = dict(row)
-            raw = str(session.pop("_preview_raw", "") or "").strip()
-            session["preview"] = raw[:60] + ("..." if len(raw) > 60 else "") if raw else ""
+            session["preview"] = session_preview(session.pop("_preview_raw", ""))
             sessions.append(session)
         return sessions
 

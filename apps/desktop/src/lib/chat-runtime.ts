@@ -32,6 +32,8 @@ const THINKING_STATUS_PREFIX_RE =
 const EMPTY_THINKING_PLACEHOLDER_RE =
   /\b(?:current rewritten thinking|next thinking to process|provide the thinking content|don't see any .*thinking)\b/i
 
+const LEADING_WORKSPACE_CONTEXT_RE = /^\s*<workspace_context\b(?:"[^"]*"|'[^']*'|[^'">])*\/\s*>\s*/
+
 export function createClientSessionState(
   storedSessionId: string | null = null,
   messages: ChatMessage[] = []
@@ -60,7 +62,20 @@ export function createClientSessionState(
 }
 
 export function sessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  const title = session.title?.trim()
+  if (title) {
+    return title
+  }
+
+  let preview = session.preview?.trim() || ''
+  while (preview) {
+    const sanitized = preview.replace(LEADING_WORKSPACE_CONTEXT_RE, '')
+    if (sanitized === preview) {
+      break
+    }
+    preview = sanitized
+  }
+  return preview || 'Untitled session'
 }
 
 export function coerceGatewayText(value: unknown): string {

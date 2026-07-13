@@ -7,7 +7,8 @@ import {
   coerceThinkingText,
   optimisticAttachmentRef,
   parseCommandDispatch,
-  parseSlashCommand
+  parseSlashCommand,
+  sessionTitle
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
@@ -15,6 +16,18 @@ const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'kind'>): ComposerAttachment {
   return { id: 'a', label: 'file.png', ...overrides }
 }
+
+describe('sessionTitle', () => {
+  it('strips leading workspace metadata from the preview fallback', () => {
+    const session = {
+      preview:
+        '<workspace_context active="true" name="Home" path="/home/sean/hermes-work" />\n\n' +
+        'New chats should show useful titles'
+    }
+
+    expect(sessionTitle(session as never)).toBe('New chats should show useful titles')
+  })
+})
 
 describe('optimisticAttachmentRef', () => {
   it('renders an image from its in-hand base64 preview (no @image: path ref)', () => {

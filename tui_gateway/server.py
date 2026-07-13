@@ -23,6 +23,7 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
+from agent.session_display import strip_leading_workspace_context
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
@@ -5973,6 +5974,7 @@ def _session_live_status(sid: str, session: dict) -> str:
 def _message_preview(history: list) -> str:
     for msg in reversed(history or []):
         text = _content_display_text(msg.get("content", msg.get("text", ""))).strip()
+        text = strip_leading_workspace_context(text).strip()
         if text:
             return " ".join(text.split())[:160]
     return ""

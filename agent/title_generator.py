@@ -9,6 +9,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.session_display import strip_leading_workspace_context
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ def generate_title(
     of silently accumulating untitled sessions.
     """
     # Truncate long messages to keep the request small
-    user_snippet = user_message[:500] if user_message else ""
+    user_snippet = strip_leading_workspace_context(user_message)[:500]
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
     language = _title_language()

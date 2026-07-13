@@ -4124,6 +4124,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # Codex account usage is fetched off the prompt_toolkit render path.
+        # Keep the cache scoped to its provider so a fallback cannot display a
+        # stale quota badge for a different account.
+        self._account_limits_lock = threading.Lock()
+        self._account_limits_label: str | None = None
+        self._account_limits_style = "class:status-bar-good"
+        self._account_limits_provider: str | None = None
+        self._account_limits_checked_at = 0.0
+        self._account_limits_refreshing = False
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -4490,6 +4499,99 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "class:status-bar-warn"
         return "class:status-bar-dim"
 
+    @staticmethod
+    def _format_account_limits_badge(snapshot: Any) -> str:
+        """Format Codex session and weekly quota remaining for the status bar."""
+        parts: list[str] = []
+        for window in getattr(snapshot, "windows", ()) or ():
+            used = getattr(window, "used_percent", None)
+            if used is None:
+                continue
+            label = str(getattr(window, "label", "") or "").strip().lower()
+            if "week" in label:
+                prefix = "W"
+            elif "session" in label or "current" in label:
+                prefix = "S"
+            else:
+                continue
+            try:
+                remaining = max(0, min(100, round(100 - float(used))))
+            except (TypeError, ValueError):
+                continue
+            parts.append(f"{prefix}{remaining}%")
+        return f"Acct {' '.join(parts[:2])}" if parts else ""
+
+    @staticmethod
+    def _account_limits_badge_style(label: str) -> str:
+        """Mark an exhausted Codex session or weekly quota as critical."""
+        if re.search(r"(?<!\w)[SW]0%(?!\d)", label or ""):
+            return "class:status-bar-critical"
+        return "class:status-bar-good"
+
+    def _maybe_refresh_account_limits_badge(self, agent: Any) -> str:
+        """Return a cached Codex badge and refresh stale data asynchronously.
+
+        This method deliberately only schedules work; ``fetch_account_usage``
+        runs in the daemon worker, never while prompt_toolkit renders.
+        Successful values live for five minutes. Failed or unavailable requests
+        retain a same-provider value but are retried after thirty seconds.
+        """
+        provider = str(getattr(agent, "provider", None) or getattr(self, "provider", None) or "").strip().lower()
+        if not hasattr(self, "_account_limits_lock"):
+            return ""
+        if provider != "openai-codex":
+            # Do not let a model/provider fallback retain a Codex account badge.
+            with self._account_limits_lock:
+                self._account_limits_label = None
+                self._account_limits_style = "class:status-bar-good"
+                self._account_limits_provider = None
+                self._account_limits_checked_at = 0.0
+            return ""
+
+        now = time.monotonic()
+        with self._account_limits_lock:
+            cached = self._account_limits_label or ""
+            stale = self._account_limits_provider != provider or now - self._account_limits_checked_at > 300
+            if not stale or self._account_limits_refreshing:
+                return cached if self._account_limits_provider == provider else ""
+            self._account_limits_refreshing = True
+
+        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+
+        def _worker() -> None:
+            label = ""
+            try:
+                from agent.account_usage import fetch_account_usage
+
+                snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+                label = self._format_account_limits_badge(snapshot) if snapshot else ""
+            except Exception:
+                pass
+            finally:
+                with self._account_limits_lock:
+                    if label:
+                        self._account_limits_label = label
+                        self._account_limits_style = self._account_limits_badge_style(label)
+                        self._account_limits_provider = provider
+                        self._account_limits_checked_at = time.monotonic()
+                    elif self._account_limits_provider != provider:
+                        self._account_limits_label = None
+                        self._account_limits_style = "class:status-bar-good"
+                        self._account_limits_provider = provider
+                    if not label:
+                        # Retain a same-provider cache across transient failures,
+                        # but retry unavailable/error responses after 30 seconds.
+                        self._account_limits_checked_at = time.monotonic() - 270
+                    self._account_limits_refreshing = False
+                try:
+                    self._invalidate(min_interval=0.0)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, name="hermes-account-limits", daemon=True).start()
+        return cached if self._account_limits_provider == provider else ""
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -4588,6 +4690,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "account_limits": "",
+            "account_limits_style": "class:status-bar-good",
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -4630,6 +4734,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        account_limits = self._maybe_refresh_account_limits_badge(agent)
+        snapshot["account_limits"] = account_limits
+        if account_limits:
+            # Derive the style from this render's label so a freshly depleted
+            # cache entry cannot inherit the preceding green style for one tick.
+            snapshot["account_limits_style"] = self._account_limits_badge_style(account_limits)
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -5078,6 +5188,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                account_limits = snapshot.get("account_limits")
+                if account_limits:
+                    parts.append(account_limits)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5104,6 +5217,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            account_limits = snapshot.get("account_limits")
+            if account_limits:
+                parts.append(account_limits)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5167,6 +5283,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    account_limits = snapshot.get("account_limits")
+                    if account_limits:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append((snapshot.get("account_limits_style", "class:status-bar-good"), account_limits))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -5210,6 +5330,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    account_limits = snapshot.get("account_limits")
+                    if account_limits:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((snapshot.get("account_limits_style", "class:status-bar-good"), account_limits))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -5245,7 +5369,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if total_width > width:
                 plain_text = "".join(text for _, text in frags)
                 trimmed = self._trim_status_bar_text(plain_text, width)
-                return [("class:status-bar", trimmed)]
+                overflow_style = "class:status-bar"
+                if snapshot.get("account_limits") and snapshot.get("account_limits_style") == "class:status-bar-critical":
+                    # Preserve a depleted quota warning when styled fragments
+                    # must collapse into one narrow-terminal fragment.
+                    overflow_style = "class:status-bar-critical"
+                return [(overflow_style, trimmed)]
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]

@@ -99,3 +99,43 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestProfilePathDisplay:
+    """The stable prompt must show the correct profile path per platform."""
+
+    def _stable_with_profile(self, profile_name: str) -> str:
+        from unittest.mock import patch as mock_patch
+
+        with (
+            mock_patch("run_agent.load_soul_md", return_value=""),
+            mock_patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            mock_patch("run_agent.build_environment_hints", return_value=""),
+            mock_patch("run_agent.build_context_files_prompt", return_value=""),
+            mock_patch(
+                "agent.file_safety._resolve_active_profile_name",
+                return_value=profile_name,
+            ),
+        ):
+            return build_system_prompt_parts(_make_agent())["stable"]
+
+    def test_windows_profile_includes_localappdata(self, monkeypatch):
+        """On native Windows the prompt should reference LOCALAPPDATA."""
+        monkeypatch.setattr("agent._platform_paths.os.name", "nt")
+        stable = self._stable_with_profile("hades")
+        assert "%LOCALAPPDATA%" in stable
+        assert r"\hermes\profiles\hades" in stable
+        assert "~/.hermes" not in stable
+
+    def test_windows_default_profile_includes_localappdata(self, monkeypatch):
+        """Default profile hint should also be Windows-aware."""
+        monkeypatch.setattr("agent._platform_paths.os.name", "nt")
+        stable = self._stable_with_profile("default")
+        assert "%LOCALAPPDATA%" in stable
+
+    def test_posix_profile_uses_tilde(self, monkeypatch):
+        """On POSIX (WSL / Linux / macOS) the old ~/.hermes path is correct."""
+        monkeypatch.setattr("agent._platform_paths.os.name", "posix")
+        stable = self._stable_with_profile("hades")
+        assert "~/.hermes" in stable
+        assert "%LOCALAPPDATA%" not in stable

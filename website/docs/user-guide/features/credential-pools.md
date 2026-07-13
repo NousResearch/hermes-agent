@@ -134,6 +134,19 @@ credential_pool_strategies:
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
 
+## Exhausted cooldown
+
+When a key is marked exhausted and the provider did **not** supply a `reset_at`, Hermes waits before retrying that key. Defaults stay at **one hour** for rate-limit / billing-class failures (401 auth blips still use a short fixed five-minute window).
+
+Shorten or lengthen the shared base cooldown in `config.yaml` (minimum 60 seconds):
+
+```yaml
+credential_pool:
+  exhausted_cooldown_seconds: 120   # e.g. recovery after short burst limits
+```
+
+Provider-supplied `reset_at` timestamps always override this value.
+
 ## Error Recovery
 
 The pool handles different errors differently:

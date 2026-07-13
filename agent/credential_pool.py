@@ -108,11 +108,17 @@ SUPPORTED_POOL_STRATEGIES = {
 
 # Cooldown before retrying an exhausted credential.
 # Transient 401 auth failures cool down briefly so single-key setups can recover.
-# 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
-# Provider-supplied reset_at timestamps override these defaults.
+# 429 (rate-limited), 402 (billing/quota), and other failures share a longer
+# base cooldown (default 1 hour). Provider-supplied reset_at timestamps override
+# these defaults. Operators may shorten/lengthen the base cooldown via
+# ``credential_pool.exhausted_cooldown_seconds`` in config.yaml (minimum 60s).
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
-EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+_DEFAULT_EXHAUSTED_COOLDOWN_SECONDS = 60 * 60
+_MIN_EXHAUSTED_COOLDOWN_SECONDS = 60
+# Module-level defaults retained for import compatibility; runtime 429/default
+# cooldowns resolve through ``_resolved_exhausted_cooldown_seconds()``.
+EXHAUSTED_TTL_429_SECONDS = _DEFAULT_EXHAUSTED_COOLDOWN_SECONDS
+EXHAUSTED_TTL_DEFAULT_SECONDS = _DEFAULT_EXHAUSTED_COOLDOWN_SECONDS
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -264,13 +270,35 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
+def _resolved_exhausted_cooldown_seconds(config: Optional[dict] = None) -> int:
+    """Return base exhausted-cooldown seconds from config.yaml (re-read each call).
+
+    Reads ``credential_pool.exhausted_cooldown_seconds``. Invalid / missing
+    values fall back to the one-hour default. Values below 60s are clamped.
+    """
+    if config is None:
+        config = _load_config_safe()
+    raw: Any = None
+    if isinstance(config, dict):
+        section = config.get("credential_pool")
+        if isinstance(section, dict):
+            raw = section.get("exhausted_cooldown_seconds")
+    if raw is None or raw == "":
+        return _DEFAULT_EXHAUSTED_COOLDOWN_SECONDS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_EXHAUSTED_COOLDOWN_SECONDS
+    if value <= 0:
+        return _DEFAULT_EXHAUSTED_COOLDOWN_SECONDS
+    return max(_MIN_EXHAUSTED_COOLDOWN_SECONDS, value)
+
+
 def _exhausted_ttl(error_code: Optional[int]) -> int:
     """Return cooldown seconds based on the HTTP status that caused exhaustion."""
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
-    if error_code == 429:
-        return EXHAUSTED_TTL_429_SECONDS
-    return EXHAUSTED_TTL_DEFAULT_SECONDS
+    return _resolved_exhausted_cooldown_seconds()
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:

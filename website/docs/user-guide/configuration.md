@@ -904,6 +904,13 @@ credential_pool_strategies:
 
 Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/user-guide/features/credential-pools) for full documentation.
 
+To change how long exhausted keys wait before retry (when the provider did not supply `reset_at`):
+
+```yaml
+credential_pool:
+  exhausted_cooldown_seconds: 3600   # default 1h; minimum 60
+```
+
 ## Prompt caching
 
 Hermes turns on cross-session prompt caching automatically when the active provider supports it — no user config needed.

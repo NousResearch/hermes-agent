@@ -296,6 +296,78 @@ def test_exhausted_401_entry_resets_after_five_minutes(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_resolved_exhausted_cooldown_reads_config_yaml(monkeypatch):
+    monkeypatch.setattr(
+        "agent.credential_pool._load_config_safe",
+        lambda: {"credential_pool": {"exhausted_cooldown_seconds": 200}},
+    )
+    from agent.credential_pool import _resolved_exhausted_cooldown_seconds
+
+    assert _resolved_exhausted_cooldown_seconds() == 200
+
+
+def test_resolved_exhausted_cooldown_clamps_minimum(monkeypatch):
+    monkeypatch.setattr(
+        "agent.credential_pool._load_config_safe",
+        lambda: {"credential_pool": {"exhausted_cooldown_seconds": 30}},
+    )
+    from agent.credential_pool import _resolved_exhausted_cooldown_seconds
+
+    assert _resolved_exhausted_cooldown_seconds() == 60
+
+
+def test_resolved_exhausted_cooldown_ignores_invalid_values(monkeypatch):
+    monkeypatch.setattr(
+        "agent.credential_pool._load_config_safe",
+        lambda: {"credential_pool": {"exhausted_cooldown_seconds": "nope"}},
+    )
+    from agent.credential_pool import (
+        _DEFAULT_EXHAUSTED_COOLDOWN_SECONDS,
+        _resolved_exhausted_cooldown_seconds,
+    )
+
+    assert _resolved_exhausted_cooldown_seconds() == _DEFAULT_EXHAUSTED_COOLDOWN_SECONDS
+
+
+def test_config_short_cooldown_re_enables_exhausted_primary(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "hermes" / "config.yaml").write_text(
+        "credential_pool:\n  exhausted_cooldown_seconds: 120\n",
+        encoding="utf-8",
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "old",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 200.0,
+                        "last_error_code": 402,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent auto-seeding from Codex CLI tokens on the host

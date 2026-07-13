@@ -978,6 +978,12 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    # Behavioral knobs for multi-credential pools (auth.json holds the keys).
+    "credential_pool": {
+        # Cooldown before retrying a 429/default exhausted entry when the
+        # provider did not supply reset_at. Minimum 60 seconds.
+        "exhausted_cooldown_seconds": 3600,
+    },
     "toolsets": ["hermes-cli"],
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
@@ -5228,7 +5234,8 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "credential_pool_strategies", "credential_pool",
+    "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",

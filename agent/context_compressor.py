@@ -240,6 +240,41 @@ _SMALL_CTX_WINDOW_LIMIT = 512_000
 _SMALL_CTX_THRESHOLD_PERCENT = 0.75
 
 
+def _resolve_output_reservation(
+    agent_max_tokens: int | None, provider: str, model: str = "",
+) -> int | None:
+    """Return the output-token reservation the compressor should assume.
+
+    The provider carves ``max_tokens`` of output space out of the context
+    window, so the usable INPUT budget is ``context_length - max_tokens``.
+    The compressor must assume the SAME reservation the wire path sends, or
+    its threshold math disagrees with what the provider actually enforces
+    (#43547).
+
+    Priority: explicit ``agent.max_tokens`` > the provider profile's resolved
+    ``get_max_tokens(model)`` > ``None`` (no registered profile → no default,
+    which is exactly what the wire's legacy path sends for such providers).
+
+    This mirrors the wire path by construction: both call
+    ``providers.get_provider_profile(provider)`` with the same string and read
+    ``profile.get_max_tokens(model)`` (``agent/transports/chat_completions.py``).
+    Using ``get_max_tokens(model)`` — not ``default_max_tokens`` directly —
+    honors per-model overrides (e.g. opencode-go caps mimo-v2.5-pro at 131072).
+    """
+    if agent_max_tokens is not None:
+        return agent_max_tokens
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        # Mirror the wire path's defensive guard: a malformed user provider
+        # plugin can make discovery raise. Degrade to "no reservation".
+        return None
+    if profile is None:
+        return None
+    return profile.get_max_tokens(model)
+
+
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 
 # MEDIA delivery directives must not reach the summarizer — if one leaks into
@@ -893,6 +928,7 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
+        _old_provider = self.provider  # capture BEFORE overwrite (re-resolve gate)
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
@@ -911,11 +947,29 @@ class ContextCompressor(ContextEngine):
         self.threshold_percent = self._effective_threshold_percent(
             context_length, _configured_pct,
         )
-        # max_tokens=None here means "caller didn't specify" → keep the existing
-        # output reservation. A switch that genuinely changes the output budget
-        # passes the new value explicitly. (#43547)
+        # Output-token reservation across a model/provider switch (#43547):
+        #   1. An explicit max_tokens arg still wins and marks the reservation
+        #      user-explicit (preserves the historical contract for callers
+        #      that pass a value, and for the ctx-only sites that pass none).
+        #   2. Otherwise, if the PROVIDER genuinely changed and the current
+        #      reservation was auto-derived (not user config), re-resolve it for
+        #      the NEW provider — fallback, /model switch, and restore-primary
+        #      all land here, so a provider with a different default_max_tokens
+        #      no longer carries the old provider's reservation.
+        #   3. Otherwise (same provider, or user-explicit value) keep it.
+        # getattr guard: compressors constructed/unpickled before the flag
+        # existed treat it as "not explicit" and safely re-resolve.
         if max_tokens is not None:
             self.max_tokens = self._coerce_max_tokens(max_tokens)
+            self._max_tokens_is_explicit = True
+        elif (
+            provider
+            and provider != _old_provider
+            and not getattr(self, "_max_tokens_is_explicit", False)
+        ):
+            self.max_tokens = self._coerce_max_tokens(
+                _resolve_output_reservation(None, provider, model),
+            )
         self.threshold_tokens = self._compute_threshold_tokens(
             context_length, self.threshold_percent, self.max_tokens,
         )
@@ -1017,8 +1071,12 @@ class ContextCompressor(ContextEngine):
         budget is materially smaller than the raw window, and a threshold based
         on the full window lets the session hit a provider 400 before compaction
         fires (#43547). The percentage and the degenerate-window check below both
-        operate on the effective input budget. ``max_tokens=None`` (provider
-        default) conservatively assumes no reservation (full window).
+        operate on the effective input budget. ``max_tokens=None`` means "no
+        reservation known" (the provider has no registered profile / no default,
+        so the wire path likewise sends none) and falls back to the full window.
+        Callers resolve the provider default via ``_resolve_output_reservation``
+        before reaching here, so ``None`` is genuinely "no reservation," not
+        merely "unset."
         """
         effective_window = context_length - (max_tokens or 0)
         if effective_window <= 0:
@@ -1067,7 +1125,18 @@ class ContextCompressor(ContextEngine):
         # Coerce defensively: only a positive int is a real reservation; any
         # other value (None, non-numeric, <=0) means "no reservation" so the
         # threshold arithmetic never sees a non-int (e.g. a test MagicMock).
-        self.max_tokens = self._coerce_max_tokens(max_tokens)
+        #
+        # _max_tokens_is_explicit tracks USER intent (was max_tokens set in
+        # config?) BEFORE we resolve a provider default — so a later provider
+        # switch knows whether to preserve the value (user-explicit) or
+        # re-resolve it for the new provider (auto-derived). Must be computed
+        # from the raw argument, NOT the resolved value, or an auto-derived
+        # default would masquerade as explicit and get frozen across switches.
+        self._max_tokens_is_explicit = max_tokens is not None
+        _resolved_max_tokens = _resolve_output_reservation(
+            max_tokens, provider, model,
+        )
+        self.max_tokens = self._coerce_max_tokens(_resolved_max_tokens)
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
         # When False (default = historical behavior), insert a

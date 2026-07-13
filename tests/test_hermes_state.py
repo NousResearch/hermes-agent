@@ -2404,6 +2404,10 @@ class TestDeleteAndExport:
                 "user_id must be a string",
             ),
             (
+                {"id": "bad-time", "started_at": "Infinity", "messages": []},
+                "started_at must be a finite number",
+            ),
+            (
                 {"id": "missing-role", "messages": [{"content": "x"}]},
                 "messages[0].role must be a non-empty string",
             ),
@@ -2418,6 +2422,105 @@ class TestDeleteAndExport:
 
         assert result["ok"] is False
         assert result["errors"] == [{"index": 0, "session_id": payload["id"], "error": error}]
+        assert db.get_session(payload["id"]) is None
+
+    @pytest.mark.parametrize(
+        ("payload", "path"),
+        [
+            (
+                {
+                    "id": "infinite-message-time",
+                    "messages": [{"role": "user", "content": "x", "timestamp": float("-inf")}],
+                },
+                "session.messages[0].timestamp",
+            ),
+            (
+                {
+                    "id": "nested-nan",
+                    "messages": [{"role": "user", "content": {"value": float("nan")}}],
+                },
+                "session.messages[0].content.value",
+            ),
+        ],
+    )
+    def test_import_sessions_rejects_non_finite_numbers(self, db, payload, path):
+        result = db.import_sessions([payload])
+
+        assert result["ok"] is False
+        assert result["errors"] == [
+            {
+                "index": 0,
+                "session_id": payload["id"],
+                "error": f"non-finite number at {path}",
+            }
+        ]
+        assert db.get_session(payload["id"]) is None
+
+    @pytest.mark.parametrize(
+        "field",
+        ["reasoning_details", "codex_reasoning_items", "codex_message_items"],
+    )
+    def test_import_sessions_rejects_non_finite_reasoning_json(self, db, field):
+        session_id = f"infinite-{field}"
+        result = db.import_sessions(
+            [{"id": session_id, "messages": [{"role": "assistant", field: "[1e309]"}]}]
+        )
+
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == (
+            f"non-finite number at session.messages[0].{field}[0]"
+        )
+        assert db.get_session(session_id) is None
+
+    def test_import_sessions_rejects_timestamp_outside_utc_range(
+        self, db, monkeypatch
+    ):
+        import hermes_state
+
+        class LocalOnlyDatetime:
+            @staticmethod
+            def fromtimestamp(_value, tz=None):
+                if tz is not None:
+                    raise OverflowError("outside UTC datetime range")
+                return object()
+
+        monkeypatch.setattr(hermes_state, "datetime", LocalOnlyDatetime)
+
+        result = db.import_sessions(
+            [{"id": "utc-overflow", "started_at": 1, "messages": []}]
+        )
+
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == (
+            "started_at must be a supported Unix timestamp"
+        )
+        assert db.get_session("utc-overflow") is None
+
+    @pytest.mark.parametrize(
+        ("field", "payload"),
+        [
+            (
+                "token_count",
+                {
+                    "id": "huge-token-count",
+                    "messages": [
+                        {"role": "user", "content": "x", "token_count": 1 << 100}
+                    ],
+                },
+            ),
+            (
+                "input_tokens",
+                {"id": "huge-input-tokens", "input_tokens": 1 << 100, "messages": []},
+            ),
+        ],
+    )
+    def test_import_sessions_rejects_integer_outside_sqlite_range(self, db, field, payload):
+        result = db.import_sessions(
+            [payload]
+        )
+
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == f"{field} is outside SQLite's integer range"
         assert db.get_session(payload["id"]) is None
 
     def test_import_sessions_rejects_oversized_payloads_atomically(self, db):

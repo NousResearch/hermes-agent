@@ -1742,6 +1742,95 @@ class TestWebServerEndpoints:
         assert listed.status_code == 200
 
     @pytest.mark.parametrize(
+        ("content", "session_id", "error"),
+        [
+            (
+                b'{"sessions":[{"id":"infinite-time","started_at":1e309,'
+                b'"messages":[]}]}',
+                "infinite-time",
+                "non-finite number at session.started_at",
+            ),
+            (
+                b'{"sessions":[{"id":"infinite-model-config",'
+                b'"model_config":"{\\"temperature\\":1e309}","messages":[]}]}',
+                "infinite-model-config",
+                "non-finite number at session.model_config.temperature",
+            ),
+        ],
+    )
+    def test_import_sessions_endpoint_rejects_non_finite_numbers(
+        self, content, session_id, error
+    ):
+        response = self.client.post(
+            "/api/sessions/import",
+            content=content,
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["errors"] == [
+            {
+                "index": 0,
+                "session_id": session_id,
+                "error": error,
+            }
+        ]
+        assert self.client.get("/api/sessions").status_code == 200
+
+    def test_import_sessions_endpoint_escapes_reserved_content_prefix(self):
+        imported = self.client.post(
+            "/api/sessions/import",
+            content=(
+                b'{"sessions":[{"id":"reserved-content-prefix","messages":['
+                b'{"role":"user","content":"\\u0000json:[1e309]"}]}]}'
+            ),
+            headers={"content-type": "application/json"},
+        )
+
+        assert imported.status_code == 200
+        messages = self.client.get(
+            "/api/sessions/reserved-content-prefix/messages"
+        )
+        assert messages.status_code == 200
+        assert messages.json()["messages"][0]["content"] == "\x00json:[1e309]"
+
+    @pytest.mark.parametrize(
+        ("payload", "session_id", "error", "healthy_endpoint"),
+        [
+            (
+                {"messages": [{"role": "user", "content": 1 << 100}]},
+                "oversized-scalar-content",
+                "session.messages[0].content must be a string, list, object, or null",
+                "/api/sessions",
+            ),
+            (
+                {"started_at": 1e308},
+                "unsupported-time",
+                "started_at must be a supported Unix timestamp",
+                "/api/analytics/usage",
+            ),
+        ],
+    )
+    def test_import_sessions_endpoint_rejects_unsafe_finite_values(
+        self, payload, session_id, error, healthy_endpoint
+    ):
+        payload["id"] = session_id
+        response = self.client.post(
+            "/api/sessions/import",
+            json={"sessions": [payload]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["errors"] == [
+            {
+                "index": 0,
+                "session_id": session_id,
+                "error": error,
+            }
+        ]
+        assert self.client.get(healthy_endpoint).status_code == 200
+
+    @pytest.mark.parametrize(
         "message",
         [{"content": "missing role"}, {"role": None, "content": "null role"}],
     )

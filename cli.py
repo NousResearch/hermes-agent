@@ -12573,6 +12573,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             "base_url": self.base_url,
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
+                            "session_id": self.session_id,
                         },
                     )
                 except Exception:

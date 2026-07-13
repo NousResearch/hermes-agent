@@ -983,6 +983,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            parent_session_id=getattr(agent, "_parent_session_id", None),
+            persist_disabled=getattr(agent, "_persist_disabled", None),
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -1030,6 +1032,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
+        parent_session_id=getattr(agent, "_parent_session_id", None),
+        persist_disabled=getattr(agent, "_persist_disabled", None),
     )
 
 
@@ -1799,6 +1803,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if provider_profile is not None:
                     profile_extra_body = provider_profile.build_extra_body(
                         session_id=getattr(agent, "session_id", None),
+                        parent_session_id=getattr(agent, "_parent_session_id", None),
+                        persist_disabled=getattr(agent, "_persist_disabled", None),
                         provider_preferences=provider_preferences or None,
                         model=agent.model,
                         base_url=agent.base_url,

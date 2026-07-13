@@ -1624,6 +1624,9 @@ class HermesACPAgent(acp.Agent):
                     final_response,
                     state.history,
                     title_callback=_notify_title_update,
+                    main_runtime={
+                        "session_id": session_id,
+                    },
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)

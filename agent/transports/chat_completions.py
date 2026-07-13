@@ -493,6 +493,11 @@ class ChatCompletionsTransport(ProviderTransport):
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
 
+        # parent_session_id — sub-agent role detection (generic)
+        _psid = params.get("parent_session_id")
+        if _psid:
+            extra_body["parent_session_id"] = _psid
+
         # Merge any pre-built extra_body additions
         additions = params.get("extra_body_additions")
         if additions:
@@ -602,6 +607,8 @@ class ChatCompletionsTransport(ProviderTransport):
             base_url=params.get("base_url"),
             reasoning_config=reasoning_config,
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
+            parent_session_id=params.get("parent_session_id"),
+            persist_disabled=params.get("persist_disabled"),
         )
         if profile_body:
             extra_body.update(profile_body)

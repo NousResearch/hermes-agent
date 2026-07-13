@@ -81,6 +81,7 @@ def generate_title(
     try:
         response = call_llm(
             task="title_generation",
+            extra_body_additions={"persist_disabled": True},
             messages=messages,
             max_tokens=500,
             temperature=0.3,
@@ -145,8 +146,12 @@ def auto_title_session(
     except Exception:
         return
 
+    # Ensure session_id is in main_runtime so provider build_extra_body
+    # hooks (e.g. is_curator) can read it — generic, not provider-specific
+    _mr = dict(main_runtime or {})
+    _mr.setdefault("session_id", session_id)
     title = generate_title(
-        user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
+        user_message, assistant_response, failure_callback=failure_callback, main_runtime=_mr
     )
     if not title:
         return

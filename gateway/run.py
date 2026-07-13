@@ -19131,6 +19131,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "base_url": getattr(agent, "base_url", None),
                             "api_key": getattr(agent, "api_key", None),
                             "api_mode": getattr(agent, "api_mode", None),
+                            "session_id": effective_session_id,
                         } if agent else None,
                     }
                     if self._is_telegram_topic_lane(source):

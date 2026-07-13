@@ -5934,7 +5934,17 @@ def _resolve_task_provider_model(
         try:
             from hermes_cli.providers import get_provider
 
-            return get_provider(normalized) is not None
+            if get_provider(normalized) is not None:
+                return True
+            # Also check the plugin provider registry (model-provider plugins
+            # register via providers.get_provider_profile, not hermes_cli.providers)
+            try:
+                from providers import get_provider_profile
+                if get_provider_profile(normalized) is not None:
+                    return True
+            except Exception:
+                pass
+            return False
         except Exception:
             # Keep the high-risk provider-backed routes safe even if provider
             # catalog loading is unavailable during early import/test paths.
@@ -6403,6 +6413,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    extra_body_additions: dict = None,
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
@@ -6446,6 +6457,20 @@ def call_llm(
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
+    # Provider-specific extra_body enrichment (generic hook).
+    # Any provider profile can add fields; providers without a profile return {}
+    _eb_session_id = main_runtime.get("session_id") if main_runtime else None
+    try:
+        from providers import get_provider_profile
+        _eb_profile = get_provider_profile(resolved_provider)
+        if _eb_profile is not None and _eb_session_id:
+            _eb_additions = _eb_profile.build_extra_body(
+                session_id=_eb_session_id,
+                **(extra_body_additions or {}),
+            )
+            effective_extra_body.update(_eb_additions)
+    except Exception:
+        pass
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -7054,6 +7079,7 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    extra_body_additions: dict = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -7063,6 +7089,20 @@ async def async_call_llm(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
+    # Provider-specific extra_body enrichment (generic hook).
+    # Any provider profile can add fields; providers without a profile return {}
+    _eb_session_id = main_runtime.get("session_id") if main_runtime else None
+    try:
+        from providers import get_provider_profile
+        _eb_profile = get_provider_profile(resolved_provider)
+        if _eb_profile is not None and _eb_session_id:
+            _eb_additions = _eb_profile.build_extra_body(
+                session_id=_eb_session_id,
+                **(extra_body_additions or {}),
+            )
+            effective_extra_body.update(_eb_additions)
+    except Exception:
+        pass
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(

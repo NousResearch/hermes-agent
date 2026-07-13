@@ -1,0 +1,5 @@
+name: turbohaul-provider
+kind: model-provider
+version: "0.1.0"
+description: "Turbohaul Manager — first-class inference provider with per-role session-ID lineage injection for KV cache reuse"
+author: "Nous Research"

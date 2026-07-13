@@ -2503,6 +2503,13 @@ def delegate_task(
 
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
+    # Save parent HERMES_SESSION_ID before child construction mutates the env.
+    # Each child gets its own session ID (agent_init.py:1240/1297), but the
+    # process-level HERMES_SESSION_ID env var can leak the main session into
+    # the child, causing a stray is_main flash instead of is_sub_agent.
+    import os
+    _parent_session_id_env = os.environ.get("HERMES_SESSION_ID")
+
     # Build all child agents on the main thread (thread-safe construction)
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
@@ -2539,6 +2546,12 @@ def delegate_task(
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
+        # Restore parent HERMES_SESSION_ID so main agent turns after the wave
+        # correctly emit is_main (not is_sub_agent from a stale child env var)
+        if _parent_session_id_env is not None:
+            os.environ["HERMES_SESSION_ID"] = _parent_session_id_env
+        elif "HERMES_SESSION_ID" in os.environ:
+            del os.environ["HERMES_SESSION_ID"]
 
     def _execute_and_aggregate() -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
@@ -3007,14 +3020,42 @@ def _resolve_child_credential_pool(
         return None
 
     if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
+        # Don't share the parent's pool when the child's delegated endpoint
+        # differs from the pool's — the pool is seeded from the provider's
+        # credentials (which may carry a different base_url, e.g. the plugin
+        # profile default), so sharing it would overwrite the child's correct
+        # delegated base_url with the pool's endpoint (issue #7833, extended
+        # to all registered providers).
+        _norm = lambda u: (u or "").strip().rstrip("/").lower()
+        # Get the pool's effective base_url from its first entry
+        pool_entries = parent_pool.entries()
+        pool_base = None
+        if pool_entries:
+            pool_base = getattr(pool_entries[0], "runtime_base_url", None) or getattr(pool_entries[0], "base_url", None)
+        if effective_base_url is None or _norm(effective_base_url) == _norm(pool_base):
+            return parent_pool
+        # else fall through — child keeps its delegated base_url
 
     try:
         from agent.credential_pool import load_pool
 
         pool = load_pool(effective_provider)
         if pool is not None and pool.has_credentials():
-            return pool
+            # Same endpoint-identity guard as the parent-share branch: a registered
+            # provider's pool is seeded from its default credentials, whose base_url
+            # (e.g. a plugin profile's inference_base_url default) may differ from the
+            # child's *delegated* endpoint. Leasing it makes _swap_credential overwrite
+            # the child's correct delegated base_url. Only lease when the endpoints match;
+            # otherwise return None so the child keeps its fixed delegated credential
+            # (issue #7833, extended to the load_pool fall-through).
+            _norm = lambda u: (u or "").strip().rstrip("/").lower()
+            _pe = pool.entries()
+            _pb = None
+            if _pe:
+                _pb = getattr(_pe[0], "runtime_base_url", None) or getattr(_pe[0], "base_url", None)
+            if effective_base_url is None or _norm(effective_base_url) == _norm(_pb):
+                return pool
+            # else fall through to `return None` — keep the child's delegated base_url
     except Exception as exc:
         logger.debug(
             "Could not load credential pool for child provider '%s': %s",
@@ -3093,6 +3134,30 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
+
+        # If the user configured an explicit provider (e.g. via delegation.provider)
+        # and that provider is registered (either in hermes_cli.providers or the
+        # plugin registry), honour it instead of demoting to "custom". This ensures
+        # plugin-registered providers (model-provider plugins) keep their identity
+        # on the delegation path so build_extra_body fires with the right profile.
+        if configured_provider:
+            _cfg_prov_lower = configured_provider.strip().lower()
+            _cfg_prov_known = False
+            try:
+                from hermes_cli.providers import get_provider as _get_core_provider
+                if _get_core_provider(_cfg_prov_lower) is not None:
+                    _cfg_prov_known = True
+            except Exception:
+                pass
+            if not _cfg_prov_known:
+                try:
+                    from providers import get_provider_profile as _get_plugin_profile
+                    if _get_plugin_profile(_cfg_prov_lower) is not None:
+                        _cfg_prov_known = True
+                except Exception:
+                    pass
+            if _cfg_prov_known:
+                provider = configured_provider
 
         # Explicit delegation.api_mode in config always wins. Lets users force
         # a transport for non-standard endpoints the URL heuristic can't detect.

@@ -1998,6 +1998,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "base_url": self.base_url,
                     "api_key": self.api_key,
                     "api_mode": self.api_mode,
+                    "session_id": self._session_id,
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 # NO max_tokens: the output cap must never truncate a summary.
@@ -2010,6 +2011,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # summaries and compaction loops. Omitting lets the adapter
                 # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
+                "extra_body_additions": {"is_compression": True},
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model

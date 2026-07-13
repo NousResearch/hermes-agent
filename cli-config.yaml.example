@@ -864,6 +864,8 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   channel_reasoning_efforts:       # Per-channel/thread reasoning effort defaults
+#     "1234567890": xhigh           # exact channel/thread IDs win; threads fall back to parent
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

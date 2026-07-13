@@ -4895,13 +4895,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 value_tokens.append(token)
         return " ".join(value_tokens).strip().lower(), persist_global
 
+    @staticmethod
+    def _resolve_channel_reasoning_config(source: Optional[SessionSource]) -> dict | None:
+        """Resolve per-channel reasoning effort from platform config.
+
+        Config shape:
+            discord:
+              channel_reasoning_efforts:
+                "<channel-or-thread-id>": xhigh
+
+        Exact channel/thread matches win over parent-channel fallbacks so
+        individual threads can opt out of a stricter parent default.
+        """
+        if source is None:
+            return None
+
+        try:
+            platform_key = _platform_config_key(source.platform)
+        except Exception:
+            return None
+
+        cfg = _load_gateway_runtime_config()
+        platform_blocks: list[dict] = []
+        for block in (
+            cfg.get(platform_key) if isinstance(cfg, dict) else None,
+            cfg_get(cfg, "platforms", platform_key, default=None),
+            cfg_get(cfg, "gateway", "platforms", platform_key, default=None),
+        ):
+            if isinstance(block, dict):
+                platform_blocks.append(block)
+
+        candidate_ids: list[str] = []
+        for value in (
+            getattr(source, "chat_id", None),
+            getattr(source, "thread_id", None),
+            getattr(source, "parent_chat_id", None),
+        ):
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text and text not in candidate_ids:
+                candidate_ids.append(text)
+
+        if not candidate_ids:
+            return None
+
+        from hermes_constants import parse_reasoning_effort
+
+        for platform_block in platform_blocks:
+            efforts = platform_block.get("channel_reasoning_efforts") or {}
+            if not isinstance(efforts, dict):
+                continue
+            for channel_id in candidate_ids:
+                if channel_id not in efforts:
+                    continue
+                effort = str(efforts.get(channel_id) or "").strip()
+                parsed = parse_reasoning_effort(effort)
+                if parsed is not None:
+                    return parsed
+                if effort:
+                    logger.warning(
+                        "Unknown channel_reasoning_efforts value '%s' for %s channel %s; ignoring",
+                        effort,
+                        platform_key,
+                        channel_id,
+                    )
+        return None
+
     def _resolve_session_reasoning_config(
         self,
         *,
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
     ) -> dict | None:
-        """Resolve reasoning effort for a session, honoring session overrides."""
+        """Resolve reasoning effort, honoring session, channel, then global config."""
+
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
             try:
@@ -4912,6 +4980,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
+
+        channel_config = self._resolve_channel_reasoning_config(source)
+        if channel_config is not None:
+            return channel_config
         return self._load_reasoning_config()
 
     def _set_session_reasoning_override(

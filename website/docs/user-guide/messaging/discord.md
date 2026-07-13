@@ -324,6 +324,7 @@ discord:
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  channel_reasoning_efforts: {}   # Per-channel/thread reasoning effort defaults
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -450,6 +451,25 @@ Behavior:
 - Exact thread/channel ID matches win.
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+
+#### `discord.channel_reasoning_efforts`
+
+**Type:** mapping — **Default:** `{}`
+
+Per-channel or per-thread reasoning effort defaults for Discord sessions. Use this when some Discord surfaces should consistently spend more or less reasoning budget than the global `agent.reasoning_effort` default.
+
+```yaml
+discord:
+  channel_reasoning_efforts:
+    "1234567890": xhigh     # #research: deep reasoning by default
+    "9876543210": low       # #quick-asks: faster, cheaper replies
+```
+
+Behavior:
+- Values accept the same levels as `/reasoning`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- Exact thread/channel ID matches win.
+- If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
+- The mapping is a config default, not a hard policy: a session-scoped `/reasoning <level>` override still wins until `/reasoning reset` or session reset.
 
 #### `discord.history_backfill`
 

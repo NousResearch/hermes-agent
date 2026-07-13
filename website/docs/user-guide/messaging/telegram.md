@@ -787,7 +787,44 @@ Every topic gets its own conversation history, model state, tool execution, and 
 
 When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.
 
-To disable this and keep your manually-chosen topic names untouched, set:
+#### Optional compact topic titles
+
+By default, auto-renamed topics keep the full readable session title. You can opt
+into shorter, slug-style names without changing titles in the CLI, TUI, or other
+messaging platforms:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        dm_topic_titles:
+          style: compact       # readable (default) | compact
+          compact_max_words: 2 # 1..6; defaults to 2
+          # Optional localized/custom placeholders that should use first-message fallback:
+          generic_titles: ["נושא חדש"]
+```
+
+Compact mode keeps Unicode letters and digits in their original order, so it
+works consistently for English, Hebrew, Arabic, CJK, and mixed-language titles.
+For example, `Release planning dashboard` becomes `release-planning`. If the
+auto-title is empty or still a known placeholder (for example, `Hermes Agent`
+or `New Topic`), Hermes uses the first non-empty user message as the naming
+source. Add localized or deployment-specific placeholders through
+`generic_titles`; the title policy itself does not assume a particular language.
+
+Names are deduplicated per DM chat in stable Telegram thread order: repeated
+`daily-progress` topics become `daily-progress2`, `daily-progress3`, and so on.
+The same names are published as channel-directory aliases, so
+`send_message(target="telegram:daily-progress2", message="...")` resolves to
+the matching topic.
+Invalid settings fail safe to the backward-compatible `readable` style, and
+`compact_max_words` is clamped to `1..6`.
+
+This setting affects only user-created topics managed by `/topic`. Topics
+explicitly declared under `extra.dm_topics` keep their operator-chosen names.
+
+To disable auto-renaming entirely and keep your manually-chosen topic names untouched, set:
 
 ```yaml
 gateway:

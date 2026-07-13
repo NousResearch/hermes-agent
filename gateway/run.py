@@ -58,6 +58,12 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.telegram_topic_titles import (
+    TelegramTopicTitleOptions,
+    resolve_telegram_topic_title_contexts,
+    sanitize_telegram_topic_title as _sanitize_telegram_topic_title_policy,
+    telegram_topic_title_options,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -13670,16 +13676,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to send Telegram topic setup image", exc_info=True)
 
+    def _telegram_topic_title_options(self, source: SessionSource) -> TelegramTopicTitleOptions:
+        """Resolve topic-title presentation settings for this Telegram lane."""
+        platform_cfg = (
+            self.config.platforms.get(source.platform)
+            if getattr(self, "config", None) and getattr(self.config, "platforms", None)
+            else None
+        )
+        extra = getattr(platform_cfg, "extra", None) or {} if platform_cfg is not None else {}
+        return telegram_topic_title_options(extra)
+
     def _sanitize_telegram_topic_title(self, title: str) -> str:
-        """Return a Bot API-safe forum topic name from a generated session title."""
-        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
-        if not cleaned:
-            return "Hermes Chat"
-        # Telegram forum topic names are short (currently 1-128 chars). Keep
-        # extra room for multi-byte titles and avoid trailing ellipsis churn.
-        if len(cleaned) > 120:
-            cleaned = cleaned[:117].rstrip() + "..."
-        return cleaned
+        """Preserve the existing readable Bot API-safe title contract."""
+        return _sanitize_telegram_topic_title_policy(
+            title,
+            options=TelegramTopicTitleOptions(),
+        )
+
+    async def _resolved_telegram_topic_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> str:
+        """Resolve a configured title with stable per-chat compact deduplication."""
+        options = self._telegram_topic_title_options(source)
+        if options.style != "compact":
+            return _sanitize_telegram_topic_title_policy(title, options=options)
+
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None or not source.chat_id:
+            return _sanitize_telegram_topic_title_policy(title, options=options)
+
+        try:
+            contexts = await session_db.list_telegram_topic_title_context(
+                chat_id=str(source.chat_id)
+            )
+        except Exception:
+            logger.debug("Failed to load Telegram topic titles before rename", exc_info=True)
+            contexts = []
+
+        resolved_titles = resolve_telegram_topic_title_contexts(
+            contexts,
+            options=options,
+            title_overrides={str(session_id): title},
+        )
+        for context, resolved in zip(contexts, resolved_titles):
+            if str(context.get("session_id") or "") == str(session_id):
+                return resolved
+
+        return _sanitize_telegram_topic_title_policy(title, options=options)
 
     def _is_discord_auto_thread_lane(self, source: SessionSource) -> bool:
         """Return True only for Discord threads Hermes just auto-created."""
@@ -13819,7 +13865,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if adapter is None:
             return
-        topic_name = self._sanitize_telegram_topic_title(title)
+        topic_name = await self._resolved_telegram_topic_title(
+            source,
+            session_id,
+            title,
+        )
         try:
             rename_topic = getattr(adapter, "rename_dm_topic", None)
             if rename_topic is not None:

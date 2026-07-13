@@ -16,7 +16,9 @@ from gateway.channel_directory import (
     _apply_channel_aliases,
     _build_from_sessions,
     _build_slack,
+    _merge_telegram_topic_title_context,
 )
+from gateway.telegram_topic_titles import TelegramTopicTitleOptions
 
 
 import pytest
@@ -238,6 +240,57 @@ class TestResolveChannelName:
         with self._setup(tmp_path, platforms):
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == "-1001:17585"
 
+    def test_compact_topic_alias_resolves_to_composite_id(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {
+                    "id": "208214988:42",
+                    "name": "Ofir / daily-progress2",
+                    "type": "dm",
+                    "aliases": ["daily-progress2", "topic 42"],
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram", "daily-progress2") == "208214988:42"
+            assert resolve_channel_name("telegram", "daily-prog") == "208214988:42"
+
+    def test_primary_name_takes_precedence_over_same_alias(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {"id": "100", "name": "daily-progress", "type": "dm"},
+                {
+                    "id": "200:42",
+                    "name": "Bob / other-topic",
+                    "type": "dm",
+                    "aliases": ["daily-progress", "topic 42"],
+                },
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram", "daily-progress") == "100"
+            assert resolve_channel_name("telegram", "daily-prog") is None
+
+    def test_duplicate_compact_topic_alias_is_ambiguous(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {
+                    "id": "100:41",
+                    "name": "Alice / daily-progress",
+                    "type": "dm",
+                    "aliases": ["daily-progress", "topic 41"],
+                },
+                {
+                    "id": "200:42",
+                    "name": "Bob / daily-progress",
+                    "type": "dm",
+                    "aliases": ["daily-progress", "topic 42"],
+                },
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram", "daily-progress") is None
+
     def test_id_match_takes_precedence_over_name(self, tmp_path):
         """A raw channel ID resolves to itself, even when a different
         channel happens to be named the same string. Case-sensitive: Slack
@@ -359,6 +412,167 @@ class TestBuildFromSessions:
         assert "Coaching Chat" in names
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
+
+
+class TestTelegramTopicTitleContext:
+    def test_compact_labels_and_aliases_match_runtime_deduplication(self):
+        entries = [
+            {"id": "208214988", "name": "Ofir", "type": "dm", "thread_id": None},
+            {"id": "208214988:41", "name": "Ofir / topic 41", "type": "dm", "thread_id": "41"},
+            {"id": "208214988:42", "name": "Ofir / topic 42", "type": "dm", "thread_id": "42"},
+        ]
+        contexts = [
+            {
+                "chat_id": "208214988",
+                "thread_id": "41",
+                "session_id": "sess-a",
+                "title": "Daily Progress Checkin",
+                "first_user_message": "first",
+            },
+            {
+                "chat_id": "208214988",
+                "thread_id": "42",
+                "session_id": "sess-b",
+                "title": "Daily Progress Update",
+                "first_user_message": "second",
+            },
+        ]
+
+        _merge_telegram_topic_title_context(
+            entries,
+            contexts,
+            options=TelegramTopicTitleOptions(style="compact", compact_max_words=2),
+        )
+
+        by_id = {entry["id"]: entry for entry in entries}
+        assert by_id["208214988:41"]["name"] == "Ofir / daily-progress"
+        assert by_id["208214988:42"]["name"] == "Ofir / daily-progress2"
+        assert by_id["208214988:42"]["aliases"] == ["daily-progress2", "topic 42"]
+
+    def test_readable_labels_remain_backward_compatible(self):
+        entries = [
+            {"id": "208214988:42", "name": "Ofir / topic 42", "type": "dm", "thread_id": "42"}
+        ]
+        contexts = [
+            {
+                "chat_id": "208214988",
+                "thread_id": "42",
+                "session_id": "sess-a",
+                "title": "Daily Progress Checkin",
+                "first_user_message": "first",
+            }
+        ]
+
+        _merge_telegram_topic_title_context(
+            entries,
+            contexts,
+            options=TelegramTopicTitleOptions(),
+        )
+
+        assert entries[0]["name"] == "Ofir / Daily Progress Checkin"
+        assert entries[0]["aliases"] == ["Daily Progress Checkin", "topic 42"]
+
+    def test_real_config_and_state_db_build_compact_directory_entries(self, tmp_path):
+        from hermes_state import SessionDB
+
+        (tmp_path / "config.yaml").write_text(
+            """
+gateway:
+  platforms:
+    telegram:
+      extra:
+        dm_topic_titles:
+          style: compact
+          compact_max_words: 2
+""".lstrip(),
+            encoding="utf-8",
+        )
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.apply_telegram_topic_migration()
+        for session_id, thread_id, title in [
+            ("sess-a", "41", "Daily Progress Checkin"),
+            ("sess-b", "42", "Daily Progress Update"),
+        ]:
+            db.create_session(session_id, source="telegram", user_id="208214988")
+            db.set_session_title(session_id, title)
+            origin = {
+                "platform": "telegram",
+                "chat_id": "208214988",
+                "chat_name": "Ofir",
+                "thread_id": thread_id,
+            }
+            db.record_gateway_session_peer(
+                session_id,
+                source="telegram",
+                user_id="208214988",
+                session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+                chat_id="208214988",
+                chat_type="dm",
+                thread_id=thread_id,
+                display_name="Ofir",
+                origin_json=json.dumps(origin),
+            )
+            db.bind_telegram_topic(
+                chat_id="208214988",
+                thread_id=thread_id,
+                user_id="208214988",
+                session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+                session_id=session_id,
+            )
+        db.close()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("telegram")
+
+        by_id = {entry["id"]: entry for entry in entries}
+        assert by_id["208214988:41"]["name"] == "Ofir / daily-progress"
+        assert by_id["208214988:42"]["name"] == "Ofir / daily-progress2"
+        assert by_id["208214988:42"]["aliases"] == ["daily-progress2", "topic 42"]
+
+    def test_default_config_does_not_enrich_channel_directory(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.apply_telegram_topic_migration()
+        db.create_session("sess-a", source="telegram", user_id="208214988")
+        db.set_session_title("sess-a", "Daily Progress Checkin")
+        origin = {
+            "platform": "telegram",
+            "chat_id": "208214988",
+            "chat_name": "Ofir",
+            "thread_id": "41",
+        }
+        db.record_gateway_session_peer(
+            "sess-a",
+            source="telegram",
+            user_id="208214988",
+            session_key="agent:main:telegram:dm:208214988:41",
+            chat_id="208214988",
+            chat_type="dm",
+            thread_id="41",
+            display_name="Ofir",
+            origin_json=json.dumps(origin),
+        )
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="41",
+            user_id="208214988",
+            session_key="agent:main:telegram:dm:208214988:41",
+            session_id="sess-a",
+        )
+        db.close()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("telegram")
+
+        assert entries == [
+            {
+                "id": "208214988:41",
+                "name": "Ofir / topic 41",
+                "type": "dm",
+                "thread_id": "41",
+            }
+        ]
 
 
 class TestFormatDirectoryForDisplay:

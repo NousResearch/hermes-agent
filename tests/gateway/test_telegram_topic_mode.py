@@ -914,6 +914,108 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_compact_auto_title_rename_uses_configured_word_count_and_first_message(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.append_message("sess-topic", "user", "Compare keyboard switches for daily typing")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_titles"] = {
+        "style": "compact",
+        "compact_max_words": 3,
+    }
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Hermes Agent",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="compare-keyboard-switches",
+    )
+
+
+@pytest.mark.asyncio
+async def test_compact_auto_title_rename_dedupes_titles_per_chat(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    for session_id, thread_id, title in [
+        ("sess-a", "41", "Daily Progress Checkin"),
+        ("sess-b", "42", "Daily Progress Update"),
+    ]:
+        db.create_session(session_id, source="telegram", user_id="208214988")
+        db.set_session_title(session_id, title)
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id=thread_id,
+            user_id="208214988",
+            session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+            session_id=session_id,
+        )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_titles"] = {
+        "style": "compact",
+        "compact_max_words": 2,
+    }
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-b",
+        "Daily Progress Update",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="daily-progress2",
+    )
+
+
+@pytest.mark.asyncio
+async def test_invalid_compact_title_config_preserves_readable_auto_title(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_titles"] = {
+        "style": "semantic",
+        "compact_max_words": 2,
+    }
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Keep This Readable",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="Keep This Readable",
+    )
+
+
+@pytest.mark.asyncio
 async def test_auto_generated_title_does_not_rename_topic_bound_to_other_session(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.apply_telegram_topic_migration()
@@ -952,6 +1054,10 @@ async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
     )
     runner = _make_runner(session_db=db)
     runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_titles"] = {
+        "style": "compact",
+        "compact_max_words": 2,
+    }
 
     # Give the adapter a concrete class with _get_dm_topic_info so the
     # class-based lookup in _rename_telegram_topic_for_session_title
@@ -1388,6 +1494,66 @@ def test_list_telegram_topic_bindings_for_chat_no_table(tmp_path):
         ).fetchall()
     }
     assert tables == set()
+
+
+def test_list_telegram_topic_title_context_includes_title_and_first_user_message(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    for session_id, thread_id, title, first_message in [
+        ("sess-b", "43", None, "בדיקת פריסת מקלדת"),
+        ("sess-a", "42", "Release Planning", "Plan the July release"),
+    ]:
+        db.create_session(session_id, source="telegram", user_id="208214988")
+        if title:
+            db.set_session_title(session_id, title)
+        db.append_message(session_id, "assistant", "")
+        db.append_message(session_id, "user", first_message)
+        db.append_message(session_id, "user", "later message")
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id=thread_id,
+            user_id="208214988",
+            session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+            session_id=session_id,
+        )
+
+    rows = db.list_telegram_topic_title_context(chat_id="208214988")
+
+    assert [row["thread_id"] for row in rows] == ["42", "43"]
+    assert rows[0]["title"] == "Release Planning"
+    assert rows[0]["first_user_message"] == "Plan the July release"
+    assert rows[1]["title"] is None
+    assert rows[1]["first_user_message"] == "בדיקת פריסת מקלדת"
+
+
+def test_list_telegram_topic_title_context_without_migration_returns_empty(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+
+    assert db.list_telegram_topic_title_context(chat_id="208214988") == []
+
+
+def test_list_telegram_topic_title_context_can_list_all_chats(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    for chat_id, session_id, thread_id in [
+        ("100", "sess-a", "41"),
+        ("200", "sess-b", "42"),
+    ]:
+        db.create_session(session_id, source="telegram", user_id=chat_id)
+        db.bind_telegram_topic(
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=chat_id,
+            session_key=f"agent:main:telegram:dm:{chat_id}:{thread_id}",
+            session_id=session_id,
+        )
+
+    rows = db.list_telegram_topic_title_context()
+
+    assert [(row["chat_id"], row["thread_id"]) for row in rows] == [
+        ("100", "41"),
+        ("200", "42"),
+    ]
 
 
 # ---------------------------------------------------------------------------

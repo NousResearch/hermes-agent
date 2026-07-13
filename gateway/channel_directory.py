@@ -14,6 +14,11 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
+from gateway.telegram_topic_titles import (
+    TelegramTopicTitleOptions,
+    resolve_telegram_topic_title_contexts,
+    telegram_topic_title_options,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +108,62 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
 
     topic_label = origin.get("chat_topic") or f"topic {thread_id}"
     return f"{base_name} / {topic_label}"
+
+
+def _configured_telegram_topic_title_options() -> TelegramTopicTitleOptions:
+    """Load Telegram topic-title policy without exposing config to callers."""
+    try:
+        from gateway.config import Platform, load_gateway_config
+
+        config = load_gateway_config()
+        telegram = config.platforms.get(Platform.TELEGRAM)
+        return telegram_topic_title_options(getattr(telegram, "extra", None) or {})
+    except Exception:
+        return TelegramTopicTitleOptions()
+
+
+def _merge_telegram_topic_title_context(
+    entries: List[Dict[str, Any]],
+    contexts: List[Dict[str, Any]],
+    *,
+    options: TelegramTopicTitleOptions,
+) -> None:
+    """Apply bound session titles and stable aliases to Telegram topic entries."""
+    by_id = {str(entry.get("id") or ""): entry for entry in entries}
+    base_names: Dict[str, str] = {}
+    for entry in entries:
+        entry_id = str(entry.get("id") or "")
+        chat_id = entry_id.split(":", 1)[0]
+        name = str(entry.get("name") or "")
+        base_name = name.split(" / ", 1)[0].strip() or chat_id
+        if chat_id:
+            base_names.setdefault(chat_id, base_name)
+
+    resolved_titles = resolve_telegram_topic_title_contexts(
+        contexts,
+        options=options,
+    )
+    for context, resolved in zip(contexts, resolved_titles):
+        chat_id = str(context.get("chat_id") or "")
+        thread_id = str(context.get("thread_id") or "")
+        if not chat_id or not thread_id:
+            continue
+
+        entry_id = f"{chat_id}:{thread_id}"
+        base_name = base_names.get(chat_id, chat_id)
+        entry = by_id.get(entry_id)
+        if entry is None:
+            new_entry: Dict[str, Any] = {
+                "id": entry_id,
+                "type": "dm",
+                "thread_id": thread_id,
+            }
+            entries.append(new_entry)
+            by_id[entry_id] = new_entry
+            entry = new_entry
+        entry["name"] = f"{base_name} / {resolved}"
+        entry["topic_label"] = resolved
+        entry["aliases"] = [resolved, f"topic {thread_id}"]
 
 
 # ---------------------------------------------------------------------------
@@ -276,24 +337,47 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     return channels
 
 
-def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
+def _build_from_sessions(platform_name: str) -> List[Dict[str, Any]]:
     """Pull known channels/contacts from gateway session origin data.
 
     state.db is the primary source (#9006): gateway session rows persist
     origin_json.  Falls back to sessions.json for pre-migration databases.
     """
     entries = _build_from_sessions_db(platform_name)
-    if entries:
-        return entries
-    return _build_from_sessions_json(platform_name)
+    if not entries:
+        entries = _build_from_sessions_json(platform_name)
+
+    if platform_name == "telegram":
+        options = _configured_telegram_topic_title_options()
+        if options.style != "compact":
+            return entries
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB(db_path=get_hermes_home() / "state.db")
+            try:
+                contexts = db.list_telegram_topic_title_context()
+            finally:
+                db.close()
+            _merge_telegram_topic_title_context(
+                entries,
+                contexts,
+                options=options,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Channel directory: Telegram topic-title enrichment failed: %s",
+                exc,
+            )
+    return entries
 
 
 def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     """Pull channels/contacts from state.db gateway session rows."""
-    entries: List[Dict[str, str]] = []
+    entries: List[Dict[str, Any]] = []
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(db_path=get_hermes_home() / "state.db")
         try:
             lister = getattr(db, "list_gateway_sessions", None)
             if not callable(lister):
@@ -428,12 +512,29 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 
     query = _normalize_channel_query(name)
 
-    # 1. Exact name match, including the display labels shown by send_message(action="list")
+    # 1. Exact primary-name match, including display labels shown by
+    # send_message(action="list"). Preserve the established first-match
+    # behavior for primary names.
     for ch in channels:
-        if _normalize_channel_query(ch["name"]) == query:
+        if _normalize_channel_query(str(ch.get("name", ""))) == query:
             return ch["id"]
         if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
             return ch["id"]
+
+    # Aliases are generated independently per chat, so the same compact title
+    # can legitimately occur in more than one DM. Never choose one arbitrarily.
+    alias_matches = [
+        ch
+        for ch in channels
+        if any(
+            _normalize_channel_query(str(alias)) == query
+            for alias in (ch.get("aliases") or [])
+        )
+    ]
+    if len(alias_matches) == 1:
+        return alias_matches[0]["id"]
+    if len(alias_matches) > 1:
+        return None
 
     # 2. Guild-qualified match for Discord ("GuildName/channel")
     if "/" in query:
@@ -443,8 +544,15 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
             if guild == guild_part and _normalize_channel_query(ch["name"]) == ch_part:
                 return ch["id"]
 
-    # 3. Partial prefix match (only if unambiguous)
-    matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
+    # 3. Partial prefix match across names and aliases (only if unambiguous)
+    matches = []
+    for ch in channels:
+        candidates = [ch.get("name", ""), *(ch.get("aliases") or [])]
+        if any(
+            _normalize_channel_query(str(candidate)).startswith(query)
+            for candidate in candidates
+        ):
+            matches.append(ch)
     if len(matches) == 1:
         return matches[0]["id"]
 

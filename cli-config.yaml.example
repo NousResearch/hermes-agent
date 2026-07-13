@@ -837,6 +837,10 @@ platform_toolsets:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
+#       dm_topic_titles:
+#         style: readable             # readable (default) | compact
+#         compact_max_words: 2        # Compact titles keep 1..6 Unicode words
+#         # generic_titles: ["New Topic"]  # Optional localized/custom placeholders; falls back to the first user message
 #       command_menu:
 #         # Telegram allows up to 100 BotCommands; Hermes defaults to 60 so
 #         # all built-in commands plus common skill commands stay visible

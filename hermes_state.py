@@ -6592,6 +6592,52 @@ class SessionDB:
                 return []
         return [dict(row) for row in rows]
 
+    def list_telegram_topic_title_context(
+        self,
+        *,
+        chat_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return bound topic rows with title and first-message context.
+
+        This read model keeps Telegram's runtime rename and channel-directory
+        labels on the same deterministic source of truth. Rows use stable
+        numeric thread order so compact-title suffixes survive resets/rebinding.
+        Missing topic-mode tables return an empty list without migrating.
+        """
+        with self._lock:
+            if self._conn is None:
+                return []
+            where_clause = "WHERE b.chat_id = ?" if chat_id is not None else ""
+            params = (str(chat_id),) if chat_id is not None else ()
+            try:
+                rows = self._conn.execute(
+                    f"""
+                    SELECT
+                        b.*,
+                        s.title,
+                        (
+                            SELECT m.content
+                            FROM messages m
+                            WHERE m.session_id = b.session_id
+                              AND m.role = 'user'
+                              AND TRIM(COALESCE(m.content, '')) != ''
+                            ORDER BY m.id ASC
+                            LIMIT 1
+                        ) AS first_user_message
+                    FROM telegram_dm_topic_bindings b
+                    LEFT JOIN sessions s ON s.id = b.session_id
+                    {where_clause}
+                    ORDER BY
+                        b.chat_id ASC,
+                        CAST(b.thread_id AS INTEGER) ASC,
+                        b.thread_id ASC
+                    """,
+                    params,
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        return [dict(row) for row in rows]
+
     def get_telegram_topic_binding_by_session(
         self,
         *,

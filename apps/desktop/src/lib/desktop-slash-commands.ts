@@ -199,11 +199,14 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
   {
     name: '/pet',
+    description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)',
     surface: action('pet'),
     args: true
   },
   {
     name: '/hatch',
+    description: 'Generate a new pet (opens the pet generator)',
+    aliases: ['/generate-pet'],
     surface: action('hatch')
   },
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },

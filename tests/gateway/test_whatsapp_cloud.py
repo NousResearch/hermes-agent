@@ -110,6 +110,12 @@ def _make_adapter(**overrides):
     return adapter
 
 
+@pytest.fixture
+def authorized_interactive_env(monkeypatch):
+    """``dm_policy: open`` requires an explicit allow-all opt-in on main."""
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+
+
 def _mock_httpx_response(status_code: int, json_body: dict):
     """Build an httpx-Response-like mock the adapter's ``send`` will accept."""
     resp = MagicMock()
@@ -1790,6 +1796,7 @@ class TestSendSlashConfirmButtons:
         assert adapter._slash_confirm_state["cf-9"] == "sess-sc-1"
 
 
+@pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplyClarify:
     """Inbound side: button-tap → clarify resolver."""
 
@@ -1930,6 +1937,7 @@ class TestDispatchInteractiveReplyClarify:
         assert handled is False
 
 
+@pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplyApproval:
     """Inbound side: approval-tap → resolve_gateway_approval."""
 
@@ -1995,6 +2003,7 @@ class TestDispatchInteractiveReplyApproval:
         assert "Denied" in confirm_payload["text"]["body"]
 
 
+@pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplySlashConfirm:
     """Inbound side: slash-confirm-tap → tools.slash_confirm.resolve."""
 
@@ -2038,6 +2047,68 @@ class TestDispatchInteractiveReplySlashConfirm:
         assert "MCP reloaded" in reply_payload["text"]["body"]
 
 
+class TestDispatchInteractiveReplyAuthorization:
+    """Interactive taps must honor the same DM allowlist as text intake."""
+
+    @pytest.mark.asyncio
+    async def test_approval_tap_denied_when_sender_not_allowlisted(self, monkeypatch):
+        adapter = _make_adapter(
+            _dm_policy="allowlist",
+            _allow_from={"19998887777"},
+        )
+        adapter._exec_approval_state["app1"] = "sess-app-1"
+        calls = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+        )
+
+        raw = {
+            "from": "15551234567",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
+            },
+        }
+        handled = await adapter._dispatch_interactive_reply(raw, {})
+
+        assert handled is True
+        assert calls == []
+        assert adapter._exec_approval_state["app1"] == "sess-app-1"
+
+    @pytest.mark.asyncio
+    async def test_approval_tap_allowed_when_sender_allowlisted(self, monkeypatch):
+        adapter = _make_adapter(
+            _dm_policy="allowlist",
+            _allow_from={"15551234567"},
+        )
+        adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
+        )
+        calls = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+        )
+
+        raw = {
+            "from": "15551234567",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
+            },
+        }
+        handled = await adapter._dispatch_interactive_reply(raw, {})
+
+        assert handled is True
+        assert calls == [("sess-app-1", "approve")]
+
+
+@pytest.mark.usefixtures("authorized_interactive_env")
 class TestInteractiveReplyEndToEnd:
     """Integration: `_build_message_event_from_cloud` must SHORT-CIRCUIT
     on a recognized interactive reply and NOT also produce a fresh

@@ -387,6 +387,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True
         return super()._open_dm_opted_in()
 
+    def _is_interactive_sender_authorized(self, sender_id: str) -> bool:
+        """Authorize inbound button/list taps before running resolvers.
+
+        Interactive replies bypass the normal ``_build_message_event_from_cloud``
+        path (which calls ``_should_process_message``), so approval /
+        slash-confirm / clarify taps must re-check DM policy here. Uses the
+        strict ``_is_dm_allowed`` gate (not intake/pairing) so a stale prompt
+        cannot be answered after the sender is removed from the allowlist.
+        """
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
+        return self._is_dm_allowed(principal)
+
     # ------------------------------------------------------------------ lifecycle
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_whatsapp_cloud_requirements():
@@ -1634,6 +1648,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         button_id = str(inner.get("id") or "").strip()
         if not button_id:
             return False
+
+        sender_id = str(raw_message.get("from") or "").strip()
+        if not self._is_interactive_sender_authorized(sender_id):
+            logger.warning(
+                "[whatsapp_cloud] Rejected unauthorized interactive tap "
+                "from %s (button_id=%r)",
+                sender_id or "<unknown>",
+                button_id,
+            )
+            # Claim the webhook entry so the tap is not re-dispatched as
+            # plain text (which could re-enter the agent loop).
+            return True
 
         # Clarify: cl:<clarify_id>:<idx|other>
         if button_id.startswith("cl:"):

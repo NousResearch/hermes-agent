@@ -2138,6 +2138,13 @@ def _run_single_child(
             "summary": summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
+            # The child's RESOLVED toolsets (post parent-intersection and
+            # blocked-tool stripping) — not what the caller requested. Surfaced
+            # in the completion block so the parent can catch a goal/capability
+            # mismatch (e.g. "write a file" dispatched to a child that never
+            # had the file toolset), which a budget-tier child may otherwise
+            # report as completed with a fabricated verification (issue #63887).
+            "toolsets": sorted(child_toolsets),
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
             "tokens": {
@@ -2287,6 +2294,7 @@ def _run_single_child(
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
+            "toolsets": sorted(child_toolsets),
             "_child_role": getattr(child, "_delegate_role", None),
         }
 

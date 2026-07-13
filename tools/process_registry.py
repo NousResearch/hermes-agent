@@ -2074,6 +2074,14 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", {r['duration_seconds']}s"
             header += ") ---"
             lines.append(header)
+            # Resolved toolsets this subagent actually held (post parent
+            # intersection + blocked-tool stripping). Surfacing them lets the
+            # parent notice when a goal required a capability the child never
+            # had — a budget-tier child can otherwise report success with a
+            # fabricated verification narrative (issue #63887).
+            r_toolsets = r.get("toolsets")
+            if r_toolsets:
+                lines.append(f"Toolsets available: {', '.join(r_toolsets)}")
             if r_status in ("completed", "success") and r_summary:
                 lines.append(r_summary)
             elif r_summary:

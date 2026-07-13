@@ -2015,3 +2015,36 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+def test_async_batch_block_surfaces_resolved_child_toolsets():
+    """A batch completion block must render each subagent's RESOLVED toolsets so
+    the parent can catch a goal/capability mismatch — e.g. a "write a file" goal
+    dispatched to a child that never held the file toolset, which a budget-tier
+    child may report as completed with a fabricated verification (issue #63887).
+    """
+    from tools.process_registry import format_process_notification
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-abc",
+        "is_batch": True,
+        "goals": ["Write a bridge request file to ~/.hermes/bridge/requests/x.md"],
+        "results": [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Created the bridge request file and confirmed via cat.",
+                "toolsets": ["todo"],
+            },
+        ],
+        "role": "leaf",
+        "model": "deepseek-v4-flash",
+    }
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "Toolsets available: todo" in text
+    # The impossible capability (file) must be visibly absent from the child's
+    # resolved toolset list, exposing the mismatch to the parent.
+    toolset_line = text.split("Toolsets available:")[1].split("\n")[0]
+    assert "file" not in toolset_line

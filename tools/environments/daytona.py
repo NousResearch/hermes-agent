@@ -69,6 +69,7 @@ class DaytonaEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._SandboxState = SandboxState
+        self._CreateSandboxFromImageParams = CreateSandboxFromImageParams
         self._daytona = Daytona()
         self._sandbox = None
         self._lock = threading.Lock()
@@ -85,6 +86,13 @@ class DaytonaEnvironment(BaseEnvironment):
 
         labels = {"hermes_task_id": task_id}
         sandbox_name = f"hermes-{task_id}"
+
+        # Stashed for _recreate_sandbox() if the sandbox is later found gone
+        # (deleted out-of-band) rather than merely stopped/archived.
+        self._image = image
+        self._resources = resources
+        self._labels = labels
+        self._sandbox_name = sandbox_name
 
         if self._persistent:
             try:
@@ -204,16 +212,80 @@ class DaytonaEnvironment(BaseEnvironment):
     # ------------------------------------------------------------------
 
     def _ensure_sandbox_ready(self) -> None:
-        """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
+        """Restart sandbox if it was stopped (e.g., by a previous interrupt).
+
+        Must be called with ``self._lock`` held. Raises if ``refresh_data()``
+        fails — the sandbox may have been deleted out-of-band; the caller
+        (``_before_execute``) handles that by releasing the lock and calling
+        ``_recreate_sandbox()``.
+        """
         self._sandbox.refresh_data()
         if self._sandbox.state in {self._SandboxState.STOPPED, self._SandboxState.ARCHIVED}:
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 
+    def _recreate_sandbox(self) -> bool:
+        """Resume-or-create a replacement sandbox after the old one vanished.
+
+        Same resume-then-create fallback as __init__: try reattaching to a
+        sandbox with the same name first (another process may have already
+        recreated it), otherwise provision a fresh one. Must be called
+        *without* ``self._lock`` held — it calls ``init_session()``, and a
+        mid-recovery timeout's ``cancel_fn`` re-acquires that (non-reentrant)
+        lock via ``sandbox.stop()``. Returns True on success, False if
+        recreation fails (caller should surface the original error).
+        """
+        try:
+            self._sandbox = self._daytona.get(self._sandbox_name)
+            self._sandbox.start()
+            logger.info("Recovery: resumed sandbox %s", self._sandbox.id)
+        except Exception:
+            try:
+                self._sandbox = self._daytona.create(
+                    self._CreateSandboxFromImageParams(
+                        image=self._image,
+                        name=self._sandbox_name,
+                        labels=self._labels,
+                        auto_stop_interval=0,
+                        resources=self._resources,
+                    )
+                )
+                logger.info("Recovery: created fresh sandbox %s", self._sandbox.id)
+            except Exception as e:
+                logger.error("Recovery: failed to recreate Daytona sandbox: %s", e)
+                return False
+
+        try:
+            self._snapshot_ready = False
+            self.init_session()
+        except Exception as e:
+            logger.error("Recovery: init_session failed in recreated sandbox: %s", e)
+            return False
+
+        logger.info("Recovery successful — sandbox %s", self._sandbox.id)
+        return True
+
     def _before_execute(self) -> None:
-        """Ensure sandbox is ready, then sync files via FileSyncManager."""
+        """Ensure sandbox is ready, then sync files via FileSyncManager.
+
+        Recreation (sandbox deleted out-of-band, not just stopped) happens
+        after the lock is released — see ``_recreate_sandbox``.
+        """
+        sandbox_gone = False
         with self._lock:
-            self._ensure_sandbox_ready()
+            try:
+                self._ensure_sandbox_ready()
+            except Exception as e:
+                logger.warning(
+                    "Daytona: refresh_data failed for sandbox %s — it may "
+                    "have been deleted out-of-band: %s",
+                    getattr(self._sandbox, "id", "unknown"), e,
+                )
+                sandbox_gone = True
+        if sandbox_gone and not self._recreate_sandbox():
+            raise RuntimeError(
+                f"Daytona sandbox {self._sandbox_name} is unreachable and could not be recreated"
+            )
         self._sync_manager.sync()
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,

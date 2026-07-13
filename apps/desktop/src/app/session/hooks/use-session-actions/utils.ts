@@ -8,6 +8,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import {
   $currentCwd,
   $sessions,
+  sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -20,6 +21,10 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
+
+// Re-exported for the many session-actions/tile call sites that already import
+// it from here; the canonical definition lives in @/store/session.
+export { sessionMatchesStoredId }
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
 
@@ -181,10 +186,6 @@ export function patchSessionWorkspace(sessionId: string, cwd: string | undefined
   }
 
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
-}
-
-export function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
-  return session.id === storedSessionId || session._lineage_root_id === storedSessionId
 }
 
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {

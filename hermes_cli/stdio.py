@@ -212,33 +212,50 @@ def _augment_path_with_known_tools() -> None:
     and when the directories don't exist.  The User PATH broadcast still
     happens in the background for future shells; this just smooths over
     the first-launch gap.
+
+    The Hermes-owned tool dirs are resolved through ``get_hermes_home()`` —
+    the single source of truth ``scripts/install.ps1`` already mirrors
+    (``$HermesHome = $env:HERMES_HOME or %LOCALAPPDATA%\\hermes``) — so a
+    custom ``HERMES_HOME`` install (multi-profile / non-C-drive / redirected
+    AppData) is honored instead of being silently ignored.  WinGet drops its
+    shims under ``%LOCALAPPDATA%\\Microsoft\\WinGet\\Links`` regardless of
+    ``HERMES_HOME``, so that entry stays rooted at ``LOCALAPPDATA``.
     """
     if not is_windows():
         return
 
+    # Resolve Hermes-owned tool dirs via the single source of truth so a
+    # custom HERMES_HOME is honored — install.ps1 roots PortableGit/venv at
+    # $HermesHome = HERMES_HOME or %LOCALAPPDATA%\hermes, and this prefill
+    # must mirror that, not a hardcoded %LOCALAPPDATA%\hermes.  Local import:
+    # stdio.py is imported early in startup, so import hermes_constants lazily
+    # to avoid any circular-import risk.
+    from hermes_constants import get_hermes_home
 
+    hermes_home = str(get_hermes_home())
     local_appdata = os.environ.get("LOCALAPPDATA", "")
-    if not local_appdata:
-        return
 
     # Known tool dirs installed by scripts/install.ps1.  Kept in sync with
     # the PATH entries that installer adds to User scope — the two lists
     # should match so this prefill fully mirrors what a fresh shell would
     # see on next launch.
     candidate_dirs = [
-        os.path.join(local_appdata, "hermes", "git", "cmd"),
-        os.path.join(local_appdata, "hermes", "git", "bin"),
-        os.path.join(local_appdata, "hermes", "git", "usr", "bin"),
+        os.path.join(hermes_home, "git", "cmd"),
+        os.path.join(hermes_home, "git", "bin"),
+        os.path.join(hermes_home, "git", "usr", "bin"),
         # Hermes venv Scripts directory — host of the hermes.exe shim itself,
         # also where any pip-installed console scripts land.  Usually already
         # on PATH when the user invokes hermes, but harmless to include.
-        os.path.join(local_appdata, "hermes", "hermes-agent", "venv", "Scripts"),
-        # WinGet packages directory — where ``winget install`` drops CLI
-        # shims by default (ripgrep lands here as rg.exe).  Covers the case
-        # of a system-Git install + ripgrep-via-winget that isn't yet on
-        # the spawning shell's PATH.
-        os.path.join(local_appdata, "Microsoft", "WinGet", "Links"),
+        os.path.join(hermes_home, "hermes-agent", "venv", "Scripts"),
     ]
+    # WinGet packages directory — where ``winget install`` drops CLI shims by
+    # default (ripgrep lands here as rg.exe).  This is NOT under HERMES_HOME,
+    # so keep it rooted at LOCALAPPDATA.  Covers the case of a system-Git
+    # install + ripgrep-via-winget that isn't yet on the spawning shell's PATH.
+    if local_appdata:
+        candidate_dirs.append(
+            os.path.join(local_appdata, "Microsoft", "WinGet", "Links")
+        )
 
     existing = os.environ.get("PATH", "")
     existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}

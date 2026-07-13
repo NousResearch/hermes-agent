@@ -3071,7 +3071,10 @@ def run_conversation(
                     FailoverReason.payload_too_large,
                     FailoverReason.context_overflow,
                 }
-                _is_output_cap_error = is_output_cap_error(error_msg)
+                _is_output_cap_error = (
+                    is_output_cap_error(error_msg)
+                    or parse_available_output_tokens_from_error(error_msg) is not None
+                )
                 if (
                     classified.reason in _overflow_reasons
                     and not getattr(agent, "compression_enabled", True)

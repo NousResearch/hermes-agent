@@ -72,6 +72,7 @@ interface GatewayEventDeps {
   appendAssistantDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
   completeAssistantMessage: (sessionId: string, text: string) => void
+  finalizeInterimAssistantMessage: (sessionId: string, text: string) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
   queryClient: QueryClient
@@ -100,6 +101,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
     completeAssistantMessage,
+    finalizeInterimAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
     queryClient,
@@ -344,6 +346,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'message.delta') {
         if (sessionId) {
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
+        }
+      } else if (event.type === 'message.interim') {
+        if (sessionId) {
+          flushQueuedDeltas(sessionId)
+          finalizeInterimAssistantMessage(sessionId, coerceGatewayText(payload?.text))
         }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
@@ -750,6 +757,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       activeSessionIdRef,
       compactedTurnRef,
       completeAssistantMessage,
+      finalizeInterimAssistantMessage,
       failAssistantMessage,
       flushQueuedDeltas,
       lastCwdInfoSessionRef,

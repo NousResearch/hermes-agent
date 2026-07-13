@@ -24,6 +24,7 @@ export type ChatMessage = {
 export type GatewayEventPayload = {
   text?: string
   rendered?: string
+  already_streamed?: boolean
   status?: string
   message?: string
   id?: string

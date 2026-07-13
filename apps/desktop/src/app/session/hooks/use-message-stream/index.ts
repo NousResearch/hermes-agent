@@ -62,6 +62,8 @@ export function useMessageStream({
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
+  const streamSequenceRef = useRef(0)
+
   const sessionInterrupted = useCallback(
     (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.interrupted ?? false,
     [sessionStateByRuntimeIdRef]
@@ -88,7 +90,7 @@ export function useMessageStream({
             return state
           }
 
-          const streamId = state.streamId ?? `assistant-stream-${Date.now()}`
+          const streamId = state.streamId ?? `assistant-stream-${Date.now()}-${++streamSequenceRef.current}`
           const groupId = state.pendingBranchGroup ?? undefined
           const prev = state.messages
           let nextMessages: ChatMessage[]
@@ -282,6 +284,74 @@ export function useMessageStream({
       )
     },
     [flushQueuedDeltas, mutateStream, queueDelta]
+  )
+
+  const finalizeInterimAssistantMessage = useCallback(
+    (sessionId: string, text: string) => {
+      updateSessionState(sessionId, state => {
+        if (state.interrupted) {
+          return state
+        }
+
+        const authoritativeText = renderMediaTags(text).trim()
+
+        if (!authoritativeText) {
+          return state
+        }
+
+        const streamId = state.streamId
+        const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
+
+        const replaceTextPart = (parts: ChatMessagePart[]) => {
+          const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts)).trim()
+
+          const dedupeReference = normalize(visibleText)
+
+          const kept = parts.filter(part => {
+            if (part.type === 'text') {
+              return false
+            }
+
+            if (part.type !== 'reasoning' || !dedupeReference) {
+              return true
+            }
+
+            const reasoning = normalize(part.text)
+
+            return !(reasoning && (dedupeReference.startsWith(reasoning) || reasoning.startsWith(dedupeReference)))
+          })
+
+          return visibleText ? [...kept, assistantTextPart(visibleText)] : kept
+        }
+
+        let nextMessages = state.messages
+
+        if (streamId && nextMessages.some(message => message.id === streamId)) {
+          nextMessages = nextMessages.map(message =>
+            message.id === streamId ? { ...message, parts: replaceTextPart(message.parts), pending: false } : message
+          )
+        } else if (authoritativeText) {
+          nextMessages = [
+            ...nextMessages,
+            {
+              id: `assistant-interim-${Date.now()}-${++streamSequenceRef.current}`,
+              role: 'assistant',
+              parts: [assistantTextPart(authoritativeText)],
+              pending: false,
+              branchGroupId: state.pendingBranchGroup ?? undefined
+            }
+          ]
+        }
+
+        return {
+          ...state,
+          messages: nextMessages,
+          streamId: null,
+          sawAssistantPayload: state.sawAssistantPayload || Boolean(authoritativeText)
+        }
+      })
+    },
+    [updateSessionState]
   )
 
   const upsertToolCall = useCallback(
@@ -521,6 +591,7 @@ export function useMessageStream({
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
     completeAssistantMessage,
+    finalizeInterimAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
     queryClient,

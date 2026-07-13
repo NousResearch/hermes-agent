@@ -15,6 +15,16 @@ vi.mock('../lib/openExternalUrl.js', () => ({
   openExternalUrl: (url: string) => openExternalUrlMock(url)
 }))
 
+const { flashGoodVibesMock, flashPetMock } = vi.hoisted(() => ({
+  flashGoodVibesMock: vi.fn(),
+  flashPetMock: vi.fn()
+}))
+
+vi.mock('../app/petFlashStore.js', () => ({
+  flashGoodVibes: flashGoodVibesMock,
+  flashPet: flashPetMock
+}))
+
 const ref = <T>(current: T) => ({ current })
 
 const buildCtx = (appended: Msg[]) =>
@@ -547,6 +557,46 @@ describe('createGatewayEventHandler', () => {
 
     const assistant = appended.find(msg => msg.role === 'assistant')
     expect(assistant?.text).toBe('First. second.')
+  })
+
+  it('finalizes an interim assistant segment without settling the turn', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const bellWrite = vi.fn()
+    ctx.system.bellOnComplete = true
+    ctx.system.stdout = { isTTY: true, write: bellWrite }
+    const onEvent = createGatewayEventHandler(ctx)
+    flashPetMock.mockClear()
+
+    onEvent({ type: 'message.start' })
+    onEvent({ payload: { text: 'full attempted reply' }, type: 'message.delta' })
+    onEvent({
+      payload: { already_streamed: false, text: 'full attempted reply' },
+      type: 'message.interim'
+    })
+
+    expect(
+      getTurnState()
+        .streamSegments.filter(message => message.role === 'assistant')
+        .map(message => message.text)
+    ).toEqual(['full attempted reply'])
+    expect(turnController.bufRef).toBe('')
+    expect(getUiState().busy).toBe(true)
+    expect(appended).toEqual([])
+    expect(bellWrite).not.toHaveBeenCalled()
+    expect(flashPetMock).not.toHaveBeenCalled()
+
+    onEvent({ payload: { text: 'verified final reply' }, type: 'message.delta' })
+    onEvent({ payload: { text: 'verified final reply' }, type: 'message.complete' })
+
+    expect(appended.filter(message => message.role === 'assistant').map(message => message.text)).toEqual([
+      'full attempted reply',
+      'verified final reply'
+    ])
+    expect(getUiState().busy).toBe(false)
+    expect(bellWrite).toHaveBeenCalledTimes(1)
+    expect(bellWrite).toHaveBeenCalledWith('\x07')
+    expect(flashPetMock).toHaveBeenCalledTimes(1)
   })
 
   it('anchors inline_diff as its own segment where the edit happened', () => {

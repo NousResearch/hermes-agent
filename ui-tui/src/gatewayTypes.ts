@@ -841,6 +841,11 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
+      payload: { already_streamed: boolean; text: string }
+      session_id?: string
+      type: 'message.interim'
+    }
+  | {
       payload?: { reasoning?: string; rendered?: string; text?: string; usage?: Usage }
       session_id?: string
       type: 'message.complete'

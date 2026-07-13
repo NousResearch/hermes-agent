@@ -554,6 +554,24 @@ class TurnController {
     this.flushPendingNotice()
   }
 
+  recordInterimMessage(text: string) {
+    if (this.interrupted) {
+      return
+    }
+
+    const authoritativeText = text.trimStart()
+
+    if (!authoritativeText) {
+      return
+    }
+
+    if (this.bufRef.trimStart() !== authoritativeText) {
+      this.bufRef = authoritativeText
+    }
+
+    this.flushStreamingSegment()
+  }
+
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
     this.closeReasoningSegment()
 

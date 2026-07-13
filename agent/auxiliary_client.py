@@ -4020,6 +4020,17 @@ def resolve_provider_client(
     if provider == "custom":
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # anthropic_messages talks to the /anthropic surface directly; only
+            # the OpenAI-wire paths need the /v1 rewrite. Keep the raw /anthropic
+            # base for the Anthropic wrapper, while the plain OpenAI client (the
+            # OpenAI-wire fallback taken when the anthropic SDK is unavailable)
+            # still uses the rewritten base so it never lands on
+            # /anthropic/chat/completions. Mirrors the named-custom-provider
+            # branch below. See #16254.
+            if api_mode == "anthropic_messages":
+                wrap_base = (explicit_base_url or "").strip().rstrip("/")
+            else:
+                wrap_base = custom_base
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
@@ -4062,7 +4073,7 @@ def resolve_provider_client(
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
-            client = _wrap_if_needed(client, final_model, custom_base, custom_key)
+            client = _wrap_if_needed(client, final_model, wrap_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then API-key providers (Codex excluded here:

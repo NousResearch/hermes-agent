@@ -1,9 +1,13 @@
 """Tests for tool token estimation and curses_ui status_fn support."""
 
+import tomllib
+from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
-# tiktoken is not in core/[all] deps — skip estimation tests when unavailable
+# tiktoken is supplied by the CLI extra; keep runtime fallback tests for base installs.
 _has_tiktoken = True
 try:
     import tiktoken  # noqa: F401
@@ -11,6 +15,22 @@ except ImportError:
     _has_tiktoken = False
 
 _needs_tiktoken = pytest.mark.skipif(not _has_tiktoken, reason="tiktoken not installed")
+
+
+# ─── Packaging Metadata Tests ────────────────────────────────────────────────
+
+
+def test_cli_extra_declares_tiktoken_dependency():
+    """CLI installs should include tiktoken for tool token estimates."""
+    project_root = Path(__file__).resolve().parents[2]
+    pyproject = tomllib.loads((project_root / "pyproject.toml").read_text())
+
+    cli_extra = pyproject["project"]["optional-dependencies"]["cli"]
+
+    assert any(
+        canonicalize_name(Requirement(requirement).name) == "tiktoken"
+        for requirement in cli_extra
+    )
 
 
 # ─── Token Estimation Tests ──────────────────────────────────────────────────

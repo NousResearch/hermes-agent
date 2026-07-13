@@ -904,7 +904,6 @@ AUTHOR_MAP = {
     "zhuofengwang2003@gmail.com": "coekfung",
     "teknium@noreply.github.com": "teknium1",
     "2114364329@qq.com": "cuyua9",
-    "chris.eth@qq.com": "duyua9",
     "2557058999@qq.com": "Disaster-Terminator",
     "cine.dreamer.one@gmail.com": "LeonSGP43",
     "zyprothh@gmail.com": "Zyproth",

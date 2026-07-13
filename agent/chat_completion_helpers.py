@@ -1757,8 +1757,39 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             agent._resolve_lmstudio_summary_reasoning_effort()
             if _is_lmstudio_summary else None
         )
+        try:
+            from providers import get_provider_profile
+            _summary_profile = get_provider_profile(agent.provider)
+        except Exception:
+            _summary_profile = None
+        _profile_top_level: dict = {}
         if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
-            if agent.reasoning_config is not None:
+            if _summary_profile is not None:
+                # Delegate the reasoning wire shape to the provider profile —
+                # the same hook the main loop uses via
+                # ChatCompletionsTransport._build_kwargs_from_profile().
+                # Hand-building extra_body.reasoning here bypassed profile
+                # quirks: on OpenRouter, reasoning-mandatory Anthropic models
+                # (Claude 4.6+/fable) 400 on ANY reasoning field during
+                # tool-continuation turns, so the profile omits it and routes
+                # effort onto top-level `verbosity` instead (#42991).
+                from agent.transports.chat_completions import _reasoning_config_for_model
+                try:
+                    _profile_reasoning_body, _profile_top_level = (
+                        _summary_profile.build_api_kwargs_extras(
+                            reasoning_config=_reasoning_config_for_model(
+                                agent.model, agent.reasoning_config
+                            ),
+                            supports_reasoning=True,
+                            model=agent.model,
+                            base_url=agent.base_url,
+                            session_id=getattr(agent, "session_id", None),
+                        )
+                    )
+                    summary_extra_body.update(_profile_reasoning_body)
+                except Exception:
+                    pass  # best-effort: omit reasoning rather than fail the summary
+            elif agent.reasoning_config is not None:
                 summary_extra_body["reasoning"] = agent.reasoning_config
             else:
                 summary_extra_body["reasoning"] = {
@@ -1787,17 +1818,16 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
             if _lm_reasoning_effort is not None:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+            if _profile_top_level:
+                summary_kwargs.update(_profile_top_level)
 
             # Merge the profile's canonical body even when routing is unset:
             # profiles may always emit required metadata such as Portal tags.
             provider_preferences = _provider_preferences_for_agent(agent)
             profile_extra_body = {}
             try:
-                from providers import get_provider_profile
-
-                provider_profile = get_provider_profile(agent.provider)
-                if provider_profile is not None:
-                    profile_extra_body = provider_profile.build_extra_body(
+                if _summary_profile is not None:
+                    profile_extra_body = _summary_profile.build_extra_body(
                         session_id=getattr(agent, "session_id", None),
                         provider_preferences=provider_preferences or None,
                         model=agent.model,
@@ -1889,6 +1919,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
                 if _lm_reasoning_effort is not None:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+                if _profile_top_level:
+                    summary_kwargs.update(_profile_top_level)
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 

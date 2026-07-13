@@ -3678,6 +3678,46 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_summary_omits_reasoning_for_anthropic_mandatory_openrouter_model(self, agent):
+        """Regression: the summary call must go through the OpenRouter
+        profile's build_api_kwargs_extras(). Reasoning-mandatory Anthropic
+        models (Claude 4.6+/fable) 400 on any extra_body.reasoning during
+        tool-continuation turns (#42991); the profile omits it and routes
+        the effort onto top-level `verbosity` instead."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openrouter"
+        agent.model = "anthropic/claude-fable-5"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "reasoning" not in kwargs.get("extra_body", {})
+        assert kwargs.get("verbosity") == "high"
+
+    def test_summary_keeps_reasoning_for_reasoning_optional_openrouter_model(self, agent):
+        """Anthropic models that still accept a disable-thinking form keep the
+        extra_body.reasoning passthrough — the mandatory-model omission must
+        not overreach onto the legacy allowlist."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openrouter"
+        agent.model = "anthropic/claude-sonnet-4.5"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "high"}
+        assert "verbosity" not in kwargs
+
     def test_summary_request_removes_orphan_tool_result(self, agent):
         """Regression: max-iterations summary request must NOT contain
         orphan tool results (tool_call_id with no matching assistant tool_call)."""

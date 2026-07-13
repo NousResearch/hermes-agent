@@ -201,6 +201,10 @@ _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_ELICITATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
+# Whether ``mcp.types.EmbeddedResource`` (and friends) are importable. Gated
+# so a stripped SDK doesn't NameError when the generic MCP tool handler
+# iterates content blocks.
+_MCP_EMBEDDED_RESOURCE_TYPES = False
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
@@ -266,6 +270,20 @@ try:
         _MCP_NOTIFICATION_TYPES = True
     except ImportError:
         logger.debug("MCP notification types not available -- dynamic tool discovery disabled")
+    # EmbeddedResource is the block type QMD (and other document servers) use
+    # to ship a document's text back inside a CallToolResult. Older SDKs may
+    # not have the union narrowed — gated separately so a missing import
+    # degrades gracefully (we just skip embedded-resource extraction).
+    try:
+        from mcp.types import (
+            EmbeddedResource,
+            TextResourceContents,
+            BlobResourceContents,
+        )
+        _MCP_EMBEDDED_RESOURCE_TYPES = True
+    except ImportError:
+        _MCP_EMBEDDED_RESOURCE_TYPES = False
+        logger.debug("MCP embedded-resource types not available -- embedded resource extraction disabled")
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
@@ -712,6 +730,178 @@ def _cache_mcp_image_block(block) -> str:
         return ""
 
     return f"MEDIA:{image_path}"
+
+
+# ---------------------------------------------------------------------------
+# MCP EmbeddedResource block → Hermes result-text
+# ---------------------------------------------------------------------------
+
+
+_TEXTISH_MIME_PREFIXES = (
+    "text/",
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "application/x-yaml",
+    "application/yaml",
+    "application/toml",
+    "application/markdown",
+)
+_MAX_EMBEDDED_RESOURCE_DECODE_BYTES = 256 * 1024  # 256 KiB cap on decoded text
+
+
+def _looks_textish(mime_type: str) -> bool:
+    """True for MIME types we should attempt to decode as text."""
+    if not mime_type:
+        return False
+    normalized = mime_type.split(";", 1)[0].strip().lower()
+    return any(normalized.startswith(prefix) for prefix in _TEXTISH_MIME_PREFIXES)
+
+
+def _extract_embedded_resource_parts(block) -> List[str]:
+    """Convert an MCP ``EmbeddedResource`` content block into result-text parts.
+
+    MCP servers (notably QMD's ``mcp_qmd_get`` / ``mcp_qmd_multi_get``) return
+    the requested document's content as an ``EmbeddedResource`` block
+    (``type="resource"``) rather than a plain ``TextContent`` block. Before
+    this helper existed, ``_make_tool_handler`` iterated content blocks
+    looking only for ``block.text`` and silently dropped the embedded
+    resource, so the agent got back ``{"result":""}`` for a successful
+    lookup — see the QMD EmbeddedResource regression reported in
+    https://github.com/NousResearch/hermes-agent.
+
+    This helper extracts the resource text the same way the ACP adapter
+    does (see ``acp_adapter/server.py::_embedded_resource_to_parts``) but
+    with a smaller, more reviewable scope suited to the generic MCP tool
+    result path:
+
+    - ``TextResourceContents`` (what QMD uses) → returns the document text
+      unchanged, prefixed with a short ``# <uri>`` header so the agent can
+      tell multiple embedded resources apart.
+    - ``BlobResourceContents`` with an image MIME → routed through the
+      existing ``_cache_mcp_image_block`` helper so a ``MEDIA:<path>`` tag
+      flows through Hermes' image pipeline (preserves the image-content
+      contract from #17915 / #10848).
+    - ``BlobResourceContents`` with a text-ish MIME (json/xml/yaml/text/...)
+      → decoded from base64 conservatively, capped at
+      ``_MAX_EMBEDDED_RESOURCE_DECODE_BYTES``. Decode errors fall through
+      to a clear omitted marker rather than crashing the tool result.
+    - ``BlobResourceContents`` with a non-textish binary MIME → returned as
+      an ``[Embedded binary omitted: N bytes, mime=...]`` marker so the
+      agent can see the block existed and decide whether to fall back.
+    - Anything that doesn't quack like an embedded resource → returns an
+      empty list; the caller's loop moves on to the next handler.
+
+    Defensive throughout: malformed base64, oversized payloads, and
+    unexpected attribute shapes are logged and skipped. The agent's text
+    result for a malformed block may end up empty, but the tool call
+    itself never raises.
+    """
+    if not _MCP_EMBEDDED_RESOURCE_TYPES:
+        return []
+    # Resolve the block/resource classes via globals() so Pyright doesn't
+    # complain about possibly-unbound names — the imports are gated on
+    # ``_MCP_EMBEDDED_RESOURCE_TYPES`` above, and the missing-import path
+    # already short-circuits the rest of this function.
+    _er = globals().get("EmbeddedResource")
+    _text_res = globals().get("TextResourceContents")
+    _blob_res = globals().get("BlobResourceContents")
+    if _er is None or _text_res is None or _blob_res is None:
+        return []
+
+    if not isinstance(block, _er):
+        return []
+
+    resource = getattr(block, "resource", None)
+    if resource is None:
+        return []
+
+    uri = str(getattr(resource, "uri", "") or "").strip()
+    mime_type = (
+        str(getattr(resource, "mimeType", None)
+            or getattr(resource, "mime_type", None)
+            or "").strip() or None
+    )
+
+    # TextResourceContents: most common case for QMD get/multi_get.
+    if isinstance(resource, _text_res):
+        text = getattr(resource, "text", "") or ""
+        if not text:
+            return []
+        if uri:
+            return [f"# {uri}\n{text}"]
+        return [text]
+
+    # BlobResourceContents: base64-encoded bytes inside the resource payload.
+    if isinstance(resource, _blob_res):
+        blob = getattr(resource, "blob", "") or ""
+        if not blob:
+            return []
+
+        # Image blob: defer to the existing image cache + MEDIA: tag pipeline.
+        if mime_type and mime_type.lower().split(";", 1)[0].strip().startswith("image/"):
+            # Build a block-shaped SimpleNamespace so the existing helper
+            # (which reads .data and .mimeType) works without changes.
+            from types import SimpleNamespace
+            image_block = SimpleNamespace(data=blob, mimeType=mime_type)
+            tag = _cache_mcp_image_block(image_block)
+            if tag:
+                if uri:
+                    return [f"# {uri}", tag]
+                return [tag]
+            # Image cache rejected the payload; surface a clear marker
+            # rather than letting the block vanish.
+            return [f"[Embedded image omitted: uri={uri or 'unknown'}, mime={mime_type}]"]
+
+        # Text-ish blob: decode conservatively.
+        if _looks_textish(mime_type or ""):
+            import base64
+            try:
+                raw = base64.b64decode(blob, validate=True)
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "MCP embedded resource decode failed (uri=%s, mime=%s): %s",
+                    uri or "unknown", mime_type, exc,
+                )
+                return [f"[Embedded text resource omitted: uri={uri or 'unknown'}, decode failed]"]
+
+            if len(raw) > _MAX_EMBEDDED_RESOURCE_DECODE_BYTES:
+                raw = raw[:_MAX_EMBEDDED_RESOURCE_DECODE_BYTES]
+                truncated_note = f"\n\n[Truncated to {_MAX_EMBEDDED_RESOURCE_DECODE_BYTES} of {len(raw)} bytes]"
+            else:
+                truncated_note = ""
+
+            try:
+                text = raw.decode("utf-8", errors="replace")
+            except Exception as exc:  # pragma: no cover -- decode("replace") is total
+                logger.warning(
+                    "MCP embedded resource utf-8 decode failed (uri=%s): %s",
+                    uri or "unknown", exc,
+                )
+                return [f"[Embedded text resource omitted: uri={uri or 'unknown'}, decode failed]"]
+
+            if uri:
+                return [f"# {uri}\n{text}{truncated_note}"]
+            return [f"{text}{truncated_note}"]
+
+        # Non-textish binary blob: clear omitted marker.
+        # We log the size at debug only — the omitted marker already gives
+        # the agent enough context to decide whether to ask for a different
+        # tool.
+        logger.debug(
+            "MCP embedded resource is non-textish binary (uri=%s, mime=%s); emitting omitted marker",
+            uri or "unknown", mime_type,
+        )
+        size = len(blob)  # base64 length — close enough as a hint
+        return [f"[Embedded binary omitted: uri={uri or 'unknown'}, mime={mime_type or 'unknown'}, ~{size} base64 bytes]"]
+
+    # Unknown resource subclass with a .text attribute — best-effort.
+    text = getattr(resource, "text", None)
+    if text:
+        if uri:
+            return [f"# {uri}\n{text}"]
+        return [str(text)]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -3949,6 +4139,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 for block in (result.content or []):
                     if hasattr(block, "text"):
                         error_text += block.text
+                        continue
+                    # If a server reports an error via an EmbeddedResource
+                    # block (rare, but allowed by the spec), surface the
+                    # resource text in the error message so the model can
+                    # see the reason rather than getting a generic fallback.
+                    for part in _extract_embedded_resource_parts(block):
+                        error_text += part
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
@@ -3962,6 +4159,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # adapters that render images natively. Without this, image blocks
             # were silently dropped and the agent got an empty response.
             #
+            # We also extract EmbeddedResource blocks (type="resource"), which
+            # some MCP servers — notably QMD's mcp_qmd_get / mcp_qmd_multi_get
+            # — use to ship document content back inside a CallToolResult.
+            # Before this branch landed, embedded resources were silently
+            # dropped and the agent saw ``{"result":""}`` for a successful
+            # lookup. QMD's mcp_qmd_query returns plain text blocks so it
+            # worked; the document-fetch tools did not.
+            #
             # Distilled from #17915 (c3115644151) and #10848 (gnanirahulnutakki),
             # both too stale to cherry-pick. #10848's approach (integrate with
             # Hermes' MEDIA tag + cache_image_from_bytes) was the cleaner of
@@ -3970,6 +4175,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             for block in (result.content or []):
                 if hasattr(block, "text") and block.text:
                     parts.append(block.text)
+                    continue
+                # EmbeddedResource: QMD-style document payloads (text or
+                # image-or-binary blob). Helper is defensive — it returns
+                # a list of parts (may be empty if the block is malformed),
+                # or a single "omitted" marker for binary blobs we don't
+                # want to inline.
+                embedded_parts = _extract_embedded_resource_parts(block)
+                if embedded_parts:
+                    parts.extend(embedded_parts)
                     continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:

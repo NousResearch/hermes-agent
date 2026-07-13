@@ -357,6 +357,41 @@ def test_write_json_drops_detached_ws_frames(monkeypatch):
         server._sessions.pop("detached-sid", None)
 
 
+def test_status_update_emits_structured_token_usage(monkeypatch):
+    events = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
+
+    server._status_update(
+        "sid-1",
+        "token_usage",
+        json.dumps(
+            {
+                "context_length": 131_072,
+                "context_pct": 9.4,
+                "context_tokens": 12_345,
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+            }
+        ),
+    )
+
+    assert events == [
+        (
+            "token.usage",
+            "sid-1",
+            {
+                "context_length": 131_072,
+                "context_pct": 9.4,
+                "context_tokens": 12_345,
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+            },
+        )
+    ]
+
+
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
     redact_module = types.ModuleType("agent.redact")
 

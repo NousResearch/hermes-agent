@@ -161,6 +161,42 @@ def _ra():
     return run_agent
 
 
+def _emit_preflight_token_usage(agent: Any, request_tokens: int) -> None:
+    """Send the current request-size estimate through the live usage channel."""
+    if request_tokens <= 0:
+        return
+
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return
+
+    try:
+        previous = getattr(compressor, "last_prompt_tokens", 0) or 0
+        if request_tokens > previous:
+            compressor.last_prompt_tokens = request_tokens
+    except Exception:
+        logger.debug("could not update preflight context estimate", exc_info=True)
+
+    emit = getattr(agent, "_emit_token_usage", None)
+    if not callable(emit):
+        return
+
+    try:
+        emit(
+            input_tokens=getattr(agent, "session_input_tokens", 0)
+            or getattr(agent, "session_prompt_tokens", 0)
+            or 0,
+            output_tokens=getattr(agent, "session_output_tokens", 0)
+            or getattr(agent, "session_completion_tokens", 0)
+            or 0,
+            total_tokens=getattr(agent, "session_total_tokens", 0) or 0,
+            context_tokens=request_tokens,
+            context_length=getattr(compressor, "context_length", 0) or 0,
+        )
+    except Exception:
+        logger.debug("could not emit preflight token usage", exc_info=True)
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -967,6 +1003,7 @@ def run_conversation(
         request_pressure_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
+        _emit_preflight_token_usage(agent, request_pressure_tokens)
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, request_pressure_tokens
@@ -2152,6 +2189,22 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+                    agent._emit_token_usage(
+                        input_tokens=agent.session_input_tokens,
+                        output_tokens=agent.session_output_tokens,
+                        total_tokens=agent.session_total_tokens,
+                        context_tokens=getattr(
+                            agent.context_compressor, "last_prompt_tokens", 0
+                        )
+                        if agent.context_compressor
+                        else 0,
+                        context_length=getattr(
+                            agent.context_compressor, "context_length", 0
+                        )
+                        if agent.context_compressor
+                        else 0,
+                    )
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""

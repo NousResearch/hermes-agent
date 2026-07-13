@@ -932,6 +932,39 @@ class AIAgent:
             except Exception:
                 logger.debug("notice_clear_callback error in _emit_notice_clear", exc_info=True)
 
+    def _emit_token_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        context_tokens: int,
+        context_length: int,
+    ) -> None:
+        """Emit structured usage for live context meters.
+
+        The gateway forwards this as ``token.usage`` so desktop/TUI chrome can
+        update during a turn, before final message completion snapshots arrive.
+        """
+        if not self.status_callback:
+            return
+
+        payload = json.dumps(
+            {
+                "input_tokens": max(0, int(input_tokens or 0)),
+                "output_tokens": max(0, int(output_tokens or 0)),
+                "total_tokens": max(0, int(total_tokens or 0)),
+                "context_tokens": max(0, int(context_tokens or 0)),
+                "context_length": max(0, int(context_length or 0)),
+                "context_pct": round(context_tokens / context_length * 100, 1)
+                if context_length > 0
+                else 0,
+            }
+        )
+        try:
+            self.status_callback("token_usage", payload)
+        except Exception:
+            logger.debug("status_callback error in _emit_token_usage", exc_info=True)
+
     # ── Buffered retry/fallback status ────────────────────────────────────
     # Retry and fallback chains were flooding the CLI/gateway with status
     # noise that users found confusing: a single transient 429 could produce

@@ -3983,6 +3983,38 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_preflight_token_usage_emits_before_api_response(self, agent):
+        self._setup_agent(agent)
+        agent.context_compressor = SimpleNamespace(
+            context_length=131_072,
+            last_prompt_tokens=0,
+        )
+        events = []
+
+        def _status(kind, text=None):
+            if kind == "token_usage":
+                events.append(json.loads(text))
+
+        def _create(*_args, **_kwargs):
+            assert events
+            assert events[-1]["context_tokens"] == 12_345
+            assert events[-1]["context_length"] == 131_072
+            return _mock_response(content="Final answer", finish_reason="stop")
+
+        agent.status_callback = _status
+        agent.client.chat.completions.create.side_effect = _create
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=12_345),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Final answer"
+        assert agent.context_compressor.last_prompt_tokens == 12_345
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

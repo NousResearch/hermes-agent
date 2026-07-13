@@ -63,10 +63,11 @@ def cmd_list(args: argparse.Namespace) -> int:
     if not nodes:
         print("(no nodes registered — run `hermes mesh add <host> --role <role>` to provision one)")
         return 0
-    print(f"{'HOST':<20} {'ROLE':<12} {'USER':<14} CAPABILITIES")
+    print(f"{'HOST':<20} {'NAMESPACE':<16} {'ROLE':<12} {'USER':<14} CAPABILITIES")
     for n in nodes:
         caps = ",".join(n.get("capabilities") or []) or "-"
-        print(f"{n['host']:<20} {n.get('role','?'):<12} {n.get('user','?'):<14} {caps}")
+        ns = n.get("namespace", "?")
+        print(f"{n['host']:<20} {ns:<16} {n.get('role','?'):<12} {n.get('user','?'):<14} {caps}")
     return 0
 
 
@@ -88,9 +89,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_restart(args: argparse.Namespace) -> int:
     cfg = cfg_mod.load()
-    nodes = {n["host"]: n for n in registry.list_nodes()}
-    ssh_user = nodes.get(args.host, {}).get("user")
-    service = f"{cfg.namespace}-{args.host}.service"
+    all_nodes = registry.list_nodes()
+    matches = [n for n in all_nodes if n["host"] == args.host]
+    entry = next((n for n in matches if n.get("namespace") == cfg.namespace), matches[0] if matches else None)
+    ssh_user = entry.get("user") if entry else None
+    ns = entry.get("namespace", cfg.namespace) if entry else cfg.namespace
+    service = f"{ns}-{args.host}.service"
     provisioner.ssh_run(args.host, f"sudo -n systemctl restart {shlex.quote(service)}", user=ssh_user, timeout=30)
     print(f"✓ restarted {service}")
     return 0
@@ -98,10 +102,13 @@ def cmd_restart(args: argparse.Namespace) -> int:
 
 def cmd_logs(args: argparse.Namespace) -> int:
     cfg = cfg_mod.load()
-    nodes = {n["host"]: n for n in registry.list_nodes()}
-    ssh_user = nodes.get(args.host, {}).get("user")
+    all_nodes = registry.list_nodes()
+    matches = [n for n in all_nodes if n["host"] == args.host]
+    entry = next((n for n in matches if n.get("namespace") == cfg.namespace), matches[0] if matches else None)
+    ssh_user = entry.get("user") if entry else None
     target = f"{ssh_user}@{args.host}" if ssh_user else args.host
-    service = f"{cfg.namespace}-{args.host}.service"
+    ns = entry.get("namespace", cfg.namespace) if entry else cfg.namespace
+    service = f"{ns}-{args.host}.service"
     follow_flag = "-f" if args.follow else "--no-pager -n 200"
     # Stream directly to the terminal (don't capture).
     subprocess.run(

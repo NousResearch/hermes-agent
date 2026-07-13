@@ -83,7 +83,13 @@ def drift_check(cfg: "ControllerConfig") -> list[NodeStatus]:
     """
     from . import registry  # local import to avoid module-load cycle
 
-    registered_nodes = {n["host"]: n for n in registry.list_nodes()}
+    # Build (namespace, host) → entry so the same host in two namespaces
+    # doesn't collide. Falls back to cfg.namespace for legacy entries that
+    # pre-date the composite-key schema.
+    registered_nodes: dict[str, dict] = {}
+    for n in registry.list_nodes():
+        ns = n.get("namespace", cfg.namespace)
+        registered_nodes[f"{ns}:{n['host']}"] = n
 
     # Collect every namespace we need to scan: controller default + every per-node namespace.
     namespaces = {cfg.namespace} | {n.get("namespace", cfg.namespace) for n in registered_nodes.values()}
@@ -96,10 +102,17 @@ def drift_check(cfg: "ControllerConfig") -> list[NodeStatus]:
         )
         heartbeats.update(_collect_heartbeat_freshness(cfg, namespace=ns, timeout=3.0))
 
-    all_hosts = set(registered_nodes) | set(retained_manifests) | set(heartbeats)
+    # registered_nodes is keyed by "namespace:host"; retained_manifests and
+    # heartbeats are keyed by plain host. Normalize to plain host for the
+    # union, but remember which namespace each registered entry belongs to.
+    registered_by_host: dict[str, dict] = {}
+    for composite_key, entry in registered_nodes.items():
+        registered_by_host[entry["host"]] = entry
+
+    all_hosts = set(registered_by_host) | set(retained_manifests) | set(heartbeats)
     statuses: list[NodeStatus] = []
     for host in sorted(all_hosts):
-        is_registered = host in registered_nodes
+        is_registered = host in registered_by_host
         hb = heartbeats.get(host)  # (payload_str, publish_epoch) | (None, None) | absent
         if hb is None:
             # No retained alive topic at all.
@@ -136,7 +149,7 @@ def drift_check(cfg: "ControllerConfig") -> list[NodeStatus]:
         # Metadata mismatch: registered yaml entry vs retained manifest
         mismatch = False
         detail: str | None = None
-        yaml_entry = registered_nodes.get(host, {})
+        yaml_entry = registered_by_host.get(host, {})
         retained = retained_manifests.get(host)
         if retained:
             for field in ("role", "capabilities"):

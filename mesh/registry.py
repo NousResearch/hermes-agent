@@ -16,11 +16,20 @@ from typing import TYPE_CHECKING
 import paho.mqtt.client as mqtt
 import yaml
 
+from hermes_constants import get_hermes_home
+
 if TYPE_CHECKING:
     from .provisioner import ControllerConfig, NodeSpec
 
 
-NODES_YAML_PATH = Path.home() / ".hermes" / "mesh" / "nodes.yaml"
+def _nodes_yaml_path() -> Path:
+    """Profile-aware nodes.yaml path under HERMES_HOME."""
+    return get_hermes_home() / "mesh" / "nodes.yaml"
+
+
+# Kept for backwards compatibility with external callers. Resolves at call
+# time so profile overrides are honored.
+NODES_YAML_PATH = _nodes_yaml_path()
 
 
 def _mqtt_client(cfg: "ControllerConfig", client_id_suffix: str) -> mqtt.Client:
@@ -76,7 +85,7 @@ def unpublish_manifest(host: str, cfg: "ControllerConfig") -> None:
 
 
 def append_to_nodes_yaml(spec: "NodeSpec", cfg: "ControllerConfig", node_user: str | None = None) -> None:
-    """Append/update an entry in nodes.yaml. Idempotent (host = key).
+    """Append/update an entry in nodes.yaml. Idempotent ((namespace, host) = key).
 
     node_user: runtime user discovered via probe (ProbeResult.user). When None,
     falls back to spec.user (SSH login user). Threading the probed value
@@ -84,15 +93,20 @@ def append_to_nodes_yaml(spec: "NodeSpec", cfg: "ControllerConfig", node_user: s
     = "use current user"), `node_user` is ground truth from `id -un` on the
     remote.
     """
-    NODES_YAML_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if NODES_YAML_PATH.exists():
-        data = yaml.safe_load(NODES_YAML_PATH.read_text()) or {}
+    nodes_path = _nodes_yaml_path()
+    nodes_path.parent.mkdir(parents=True, exist_ok=True)
+    if nodes_path.exists():
+        data = yaml.safe_load(nodes_path.read_text()) or {}
     else:
         data = {}
     data.setdefault("namespace", spec.namespace)
     data.setdefault("broker", spec.broker)
     data.setdefault("nodes", {})
-    data["nodes"][spec.host] = {
+    # Key by (namespace, host) so the same host in two different namespaces
+    # doesn't overwrite each other. Within a single namespace, host alone
+    # remains unique (re-provisioning the same node updates in place).
+    node_key = f"{spec.namespace}:{spec.host}"
+    data["nodes"][node_key] = {
         "role": spec.role,
         "host": spec.host,
         "user": node_user if node_user is not None else spec.user,
@@ -100,26 +114,44 @@ def append_to_nodes_yaml(spec: "NodeSpec", cfg: "ControllerConfig", node_user: s
         "capabilities": spec.capabilities,
         "added": datetime.now(timezone.utc).date().isoformat(),
     }
-    NODES_YAML_PATH.write_text(yaml.safe_dump(data, sort_keys=False))
+    nodes_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
-def remove_from_nodes_yaml(host: str) -> None:
-    if not NODES_YAML_PATH.exists():
+def remove_from_nodes_yaml(host: str, namespace: str | None = None) -> None:
+    """Remove a node entry. If namespace is given, only removes the entry
+    for that namespace; otherwise removes ALL entries for the host across
+    every namespace (preserving prior single-arg behavior for the CLI).
+    """
+    nodes_path = _nodes_yaml_path()
+    if not nodes_path.exists():
         return
-    data = yaml.safe_load(NODES_YAML_PATH.read_text()) or {}
+    data = yaml.safe_load(nodes_path.read_text()) or {}
     nodes = data.get("nodes", {})
-    if host in nodes:
-        del nodes[host]
-        NODES_YAML_PATH.write_text(yaml.safe_dump(data, sort_keys=False))
+    if namespace is not None:
+        key = f"{namespace}:{host}"
+        removed = key in nodes
+        if removed:
+            del nodes[key]
+    else:
+        # Remove every entry whose host matches (cross-namespace).
+        to_del = [k for k, v in nodes.items() if v.get("host") == host]
+        for k in to_del:
+            del nodes[k]
+        removed = bool(to_del)
+    if removed:
+        nodes_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 def list_nodes() -> list[dict]:
     """Read nodes.yaml and return registered node entries."""
-    if not NODES_YAML_PATH.exists():
+    nodes_path = _nodes_yaml_path()
+    if not nodes_path.exists():
         return []
-    data = yaml.safe_load(NODES_YAML_PATH.read_text()) or {}
+    data = yaml.safe_load(nodes_path.read_text()) or {}
     nodes = data.get("nodes", {})
-    return [{"host": k, **v} for k, v in nodes.items()]
+    # Each value already carries its own "host" and "namespace" fields;
+    # the dict key is the composite "namespace:host" used for dedup.
+    return [{"key": k, **v} for k, v in nodes.items()]
 
 
 def query_retained_registry(cfg: "ControllerConfig", namespace: str | None = None, timeout: float = 3.0) -> dict[str, dict]:

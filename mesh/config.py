@@ -14,16 +14,30 @@ Schema:
 """
 from __future__ import annotations
 
+import getpass
 import os
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
+from hermes_constants import get_hermes_home
 from .provisioner import ControllerConfig, _Redacted
 
-CONFIG_DIR = Path.home() / ".hermes" / "mesh"
-CONFIG_PATH = CONFIG_DIR / "config.yaml"
+
+def _mesh_dir() -> Path:
+    """Profile-aware mesh config directory under HERMES_HOME."""
+    return get_hermes_home() / "mesh"
+
+
+def _config_path() -> Path:
+    return _mesh_dir() / "config.yaml"
+
+
+# Kept for backwards compatibility with any external callers that import the
+# constant directly. Resolves at call time so profile overrides are honored.
+CONFIG_DIR = _mesh_dir()
+CONFIG_PATH = _config_path()
 
 
 def _default_template_dirs() -> list[Path]:
@@ -34,11 +48,12 @@ def _default_template_dirs() -> list[Path]:
 
 
 def load() -> ControllerConfig:
-    if not CONFIG_PATH.exists():
+    cfg_path = _config_path()
+    if not cfg_path.exists():
         raise FileNotFoundError(
-            f"No controller config at {CONFIG_PATH}. Run `hermes mesh init` first."
+            f"No controller config at {cfg_path}. Run `hermes mesh init` first."
         )
-    raw = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    raw = yaml.safe_load(cfg_path.read_text()) or {}
     tdirs_raw = raw.get("template_dirs")
     if tdirs_raw:
         template_dirs = [Path(p).expanduser() for p in tdirs_raw]
@@ -56,7 +71,9 @@ def load() -> ControllerConfig:
 
 
 def save(cfg: ControllerConfig) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cfg_dir = _mesh_dir()
+    cfg_path = _config_path()
+    cfg_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = {
         "namespace": cfg.namespace,
         "broker": cfg.broker,
@@ -69,12 +86,12 @@ def save(cfg: ControllerConfig) -> None:
     if cfg.template_dirs and cfg.template_dirs != _default_template_dirs():
         payload["template_dirs"] = [str(p) for p in cfg.template_dirs]
     # Write with 0600 from creation so broker_password is never briefly
-    # world-readable under the umask-default mode. The trailing chmod only
+    # world readable under the umask-default mode. The trailing chmod only
     # matters when the file already existed with looser permissions.
-    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(yaml.safe_dump(payload, sort_keys=False))
-    os.chmod(CONFIG_PATH, 0o600)
+    os.chmod(cfg_path, 0o600)
 
 
 def init_interactive() -> ControllerConfig:
@@ -86,7 +103,7 @@ def init_interactive() -> ControllerConfig:
     if not broker:
         raise ValueError("Broker host required")
     broker_user = input(f"MQTT username (default: {namespace}): ").strip() or namespace
-    broker_password = input("MQTT password: ").strip()
+    broker_password = getpass.getpass("MQTT password: ").strip()
     if not broker_password:
         raise ValueError("Broker password required")
     ca_cert = input("CA cert path for TLS [skip = plain MQTT]: ").strip() or None
@@ -100,7 +117,7 @@ def init_interactive() -> ControllerConfig:
         template_dirs=_default_template_dirs(),
     )
     save(cfg)
-    print(f"\n✓ Wrote {CONFIG_PATH} (chmod 600)")
+    print(f"\n✓ Wrote {_config_path()} (chmod 600)")
     print(f"  namespace: {namespace}")
     print(f"  broker:    {broker}")
     print(f"  user:      {broker_user}")

@@ -399,11 +399,18 @@ def remove_node(host: str, cfg: ControllerConfig, purge: bool = False) -> None:
              Files stay on disk.
     --purge: also nuke script, service unit, .env, venv, marker.
     """
-    # Pull SSH user from nodes.yaml if registered.
-    nodes = {n["host"]: n for n in registry.list_nodes()}
-    entry = nodes.get(host)
+    # Pull SSH user from nodes.yaml if registered. A host can appear under
+    # multiple namespaces; prefer the controller's own namespace, then fall
+    # back to the first match.
+    all_nodes = registry.list_nodes()
+    matches = [n for n in all_nodes if n["host"] == host]
+    if not matches:
+        entry = None
+    else:
+        entry = next((n for n in matches if n.get("namespace") == cfg.namespace), matches[0])
     ssh_user = entry.get("user") if entry else None
-    service_name = f"{cfg.namespace}-{host}"
+    node_namespace = entry.get("namespace", cfg.namespace) if entry else cfg.namespace
+    service_name = f"{node_namespace}-{host}"
 
     # Determine the runtime user for path resolution. Probe is ground truth;
     # nodes.yaml entry is the fallback. We refuse to guess — silently targeting
@@ -446,7 +453,7 @@ def remove_node(host: str, cfg: ControllerConfig, purge: bool = False) -> None:
         print(f"  [warn] could not clear alive topic: {e}")
 
     # nodes.yaml entry.
-    registry.remove_from_nodes_yaml(host)
+    registry.remove_from_nodes_yaml(host, namespace=node_namespace)
 
     if purge:
         try:

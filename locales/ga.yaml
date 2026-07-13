@@ -51,9 +51,9 @@ gateway:
     active_agents:         "**Gníomhairí gníomhacha:** {count}"
     this_chat:             " · an comhrá seo"
     more:                  "... agus {count} eile"
-    running_processes:     "**Próisis chúlra ag rith:** {count}"
+    running_processes:     "**Próisis chúlra ar siúl:** {count}"
     async_jobs:            "**Tascanna asincrónacha gateway:** {count}"
-    none:                  "Níl aon ghníomhairí gníomhacha ná tascanna ag rith."
+    none:                  "Níl aon ghníomhairí gníomhacha ná tascanna ar siúl."
     state_starting:        "ag tosú"
     state_running:         "ar siúl"
 
@@ -92,8 +92,10 @@ gateway:
     not_enough:            "Níl go leor comhrá le comhbhrú (teastaíonn 4 theachtaireacht ar a laghad)."
     no_provider:           "Níl aon soláthraí cumraithe — ní féidir comhbhrú."
     nothing_to_do:         "Níl aon rud le comhbhrú fós (tá an traschríbhinn fós uile mar chomhthéacs cosanta)."
+    aggressive_unsupported: "Ní thacaítear le --aggressive; úsáid '/compress here [N]' chun na malartuithe is déanaí amháin a choinneáil, nó /undo chun sealanna a scriosadh."
     focus_line:            "Fócas: \"{topic}\""
     summary_failed:        "⚠️ Theip ar ghiniúint achoimre ({error}). Baineadh {count} teachtaireacht stairiúil agus cuireadh ionadaí ina n-áit; níl an comhthéacs roimhe seo in-aisghabhála a thuilleadh. Smaoinigh ar an gcumraíocht auxiliary.compression a sheiceáil."
+    aborted:               "⚠️ Cuireadh deireadh leis an gcomhbhrú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
     aux_failed:            "ℹ️ Theip ar an tsamhail chomhbhrúite chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
     failed:                "Theip ar chomhbhrú: {error}"
 
@@ -109,6 +111,8 @@ gateway:
     no_pending:            "Níl aon ordú ag fanacht le diúltú."
     denied_singular:       "❌ Ordú diúltaithe."
     denied_plural:         "❌ Orduithe diúltaithe ({count} ordú)."
+    denied_reason_singular: "❌ Ordú diúltaithe. Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
+    denied_reason_plural:  "❌ Orduithe diúltaithe ({count} ordú). Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
 
   fast:
     not_supported:         "⚡ Tá /fast ar fáil amháin do shamhlacha OpenAI a thacaíonn le Priority Processing."
@@ -152,6 +156,15 @@ gateway:
     subscribed_suffix:     "(síntiúsaithe — cuirfear in iúl duit nuair a chríochnóidh nó a stopfaidh {task_id})"
     truncated_suffix:      "… (giorraithe; úsáid `hermes kanban …` i do theirminéal le haghaidh aschur iomláin)"
     no_output:             "(gan aschur)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "Níl aon phearsantachtaí cumraithe in `{path}/config.yaml`"
@@ -222,12 +235,24 @@ gateway:
 
   resume:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
     list_header:           "📋 **Seisiúin Ainmnithe**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nÚsáid: `/resume <session name>`"
+    list_footer_numbered:  "\nÚsáid: `/resume <ainm seisiúin>` nó `/resume <uimhir>` (m.sh. `/resume 1` don cheann is déanaí)"
     list_failed:           "Níorbh fhéidir seisiúin a liostáil: {error}"
+    out_of_range:          "Tá an t-innéacs atosaithe {index} as raon.\nÚsáid `/resume` gan argóintí chun na seisiúin atá ar fáil a fheiceáil."
     not_found:             "Níor aimsíodh aon seisiún ag teacht le '**{name}**'.\nÚsáid `/resume` gan argóintí chun seisiúin atá ar fáil a fheiceáil."
     already_on:            "📌 Cheana ar an seisiún **{name}**."
     switch_failed:         "Theip ar athrú seisiúin."
@@ -251,12 +276,22 @@ gateway:
 
   status:
     header:                "📊 **Stádas Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID Seisiúin:** `{session_id}`"
     title:                 "**Teideal:** {title}"
     created:               "**Cruthaithe:** {timestamp}"
     last_activity:         "**Gníomhaíocht is déanaí:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Comharthaí:** {tokens}"
-    agent_running:         "**Gníomhaire ag rith:** {state}"
+    agent_running:         "**Gníomhaire ar siúl:** {state}"
     state_yes:             "Tá ⚡"
     state_no:              "Níl"
     queued:                "**Tascanna i scuaine:** {count}"
@@ -290,12 +325,13 @@ gateway:
 
   undo:
     nothing:               "Níl aon rud le cealú."
-    removed:               "↩️ Cealaíodh {count} teachtaireacht.\nBaineadh: \"{preview}\""
+    removed:               "↩️ Cealaíodh {turns} seal ({count} teachtaireacht).\nCúltacaíodh chuig: \"{preview}\"\nCóipeáil/cuir an téacs thuas in eagar agus seol é chun athleideadh ón áit seo."
+    invalid_count:         "Líon neamhbhailí \"{arg}\" — úsáid /undo nó /undo N."
 
   update:
     platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."
     not_git_repo:            "✗ Ní stór git é seo — ní féidir nuashonrú."
-    hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
+    hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ar siúl, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
     start_failed:            "✗ Theip ar nuashonrú a thosú: {error}"
     starting:                "⚕ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
 
@@ -313,11 +349,24 @@ gateway:
     label_cost_included:      "Costas: san áireamh"
     label_context:            "Comhthéacs: {used} / {total} ({pct}%)"
     label_compressions:       "Comhbhrúite: {count}"
+    breakdown_header: "🧩 **Miondealú comhthéacs** _(measta)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Leid an chórais"
+    breakdown_cat_tool_definitions: "Sainmhínithe uirlisí"
+    breakdown_cat_rules: "Rialacha"
+    breakdown_cat_skills: "Scileanna"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Sainmhínithe fo-ghníomhairí"
+    breakdown_cat_memory: "Cuimhne"
+    breakdown_cat_conversation: "Comhrá"
     header_session_info:      "📊 **Eolas Seisiúin**"
     label_messages:           "Teachtaireachtaí: {count}"
     label_estimated_context:  "Comhthéacs measta: ~{count} comhartha"
     detailed_after_first:     "_(Úsáid mhionsonraithe ar fáil tar éis chéad fhreagra an ghníomhaire)_"
     no_data:                  "Níl aon sonraí úsáide ar fáil don seisiún seo."
+
+  credits:
+    not_logged_in:            "Níl tú logáilte isteach i Nous Portal. Logáil isteach chun d'iarmhéid creidmheasa a fheiceáil agus breis a chur leis."
 
   verbose:
     not_enabled:           "Níl an t-ordú `/verbose` cumasaithe d'ardáin teachtaireachtaí.\n\nCumasaigh in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -325,6 +374,7 @@ gateway:
     mode_new:              "⚙️ Dul chun cinn uirlise: **NUA** — taispeánta nuair a athraíonn an uirlis (fad réamhamhairc: `display.tool_preview_length`, réamhshocrú 40)."
     mode_all:              "⚙️ Dul chun cinn uirlise: **GACH CEANN** — taispeántar gach glao uirlise (fad réamhamhairc: `display.tool_preview_length`, réamhshocrú 40)."
     mode_verbose:          "⚙️ Dul chun cinn uirlise: **BÉALSCAOILTE** — gach glao uirlise le hargóintí iomlána."
+    mode_log:              "⚙️ Dul chun cinn uirlise: **LOG** — ciúin sa chomhrá; scríobhtar glaonna uirlise chuig ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(sábháilte do **{platform}** — éifeachtach ón gcéad teachtaireacht eile)_"
     save_failed:           "_(níorbh fhéidir sábháil sa chumraíocht: {error})_"
 
@@ -342,6 +392,8 @@ gateway:
     label_off:             "As (téacs amháin)"
     label_voice_only:      "Ar (freagra gutha do theachtaireachtaí gutha)"
     label_all:             "TTS (freagra gutha do gach teachtaireacht)"
+    help:                  "{toggle}\n\n**Conas a oibríonn /voice**\n• `/voice on` — freagra gutha nuair a sheolann tú teachtaireacht gutha\n• `/voice tts` — freagra gutha do *gach* teachtaireacht\n• `/voice off` — ar ais go freagraí téacs amháin\n• `/voice status` — taispeáin an mód reatha\n• `/voice` (gan argóint) — scoránaigh go tapa idir air agus as{channels}"
+    help_channels:         "\n\n**Cainéil gutha bheo (Discord)**\n• Téigh isteach i gcainéal gutha ar dtús, ansin `/voice channel` — téim isteach, éistim agus labhraím mo fhreagraí\n• `/voice leave` — dícheangail ón gcainéal gutha"
 
   yolo:
     disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."

@@ -332,6 +332,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
+        # Delegation still needs the exact contract selected on the first turn.
+        # Recover it from the persisted prompt rather than rereading workspace
+        # files, which could select changed policy mid-conversation.
+        from agent.prompt_builder import extract_authority_contract
+
+        agent._workspace_authority_contract = extract_authority_contract(stored_prompt)
         return
     if stored_prompt:
         stored_state = "stale_runtime"

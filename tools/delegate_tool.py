@@ -662,6 +662,7 @@ def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
     *,
+    authority_contract: str = "",
     workspace_path: Optional[str] = None,
     role: str = "leaf",
     max_spawn_depth: int = 2,
@@ -682,6 +683,11 @@ def _build_child_system_prompt(
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    if authority_contract:
+        parts.append(
+            "\n## Inherited Workspace Authority Contract\n"
+            + authority_contract
+        )
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -1144,9 +1150,15 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    authority_contract = getattr(
+        parent_agent, "_workspace_authority_contract", ""
+    )
+    if not isinstance(authority_contract, str):
+        authority_contract = ""
     child_prompt = _build_child_system_prompt(
         goal,
         context,
+        authority_contract=authority_contract,
         workspace_path=workspace_hint,
         role=effective_role,
         max_spawn_depth=max_spawn,
@@ -1363,6 +1375,10 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
+    # Preserve the exact parent-selected section for this child's generic
+    # prompt deference and for any nested delegation. Never re-extract or reread.
+    child._workspace_authority_contract = authority_contract
+    child._inherited_workspace_authority_contract = authority_contract
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role

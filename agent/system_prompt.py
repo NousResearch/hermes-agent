@@ -42,7 +42,9 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    WORKSPACE_CONTRACT_DEFERENCE,
     drain_truncation_warnings,
+    extract_authority_contract,
 )
 from agent.runtime_cwd import resolve_context_cwd
 from utils import is_truthy_value
@@ -192,6 +194,25 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if not _soul_loaded:
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
+
+    # Select and render the workspace source once. Generic guidance below can
+    # now defer to it without a second filesystem read, and the exact Authority
+    # Contract section can be carried into delegated children later.
+    context_files_prompt = ""
+    if not agent.skip_context_files:
+        context_files_prompt = _r.build_context_files_prompt(
+            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+            context_length=_ctx_len)
+
+    inherited_authority = getattr(
+        agent, "_inherited_workspace_authority_contract", ""
+    )
+    if not isinstance(inherited_authority, str):
+        inherited_authority = ""
+    selected_authority = extract_authority_contract(context_files_prompt)
+    agent._workspace_authority_contract = selected_authority or inherited_authority
+    if context_files_prompt or inherited_authority:
+        stable_parts.append(WORKSPACE_CONTRACT_DEFERENCE)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
@@ -443,16 +464,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if system_message is not None:
         context_parts.append(system_message)
 
-    if not agent.skip_context_files:
-        # Prefer the configured TERMINAL_CWD (gateway mode). When unset (local
-        # CLI), None lets build_context_files_prompt fall back to the launch
-        # dir — the user's real cwd there, but the install dir for the gateway
-        # daemon, which is why the gateway sets TERMINAL_CWD.
-        context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len)
-        if context_files_prompt:
-            context_parts.append(context_files_prompt)
+    if context_files_prompt:
+        context_parts.append(context_files_prompt)
 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []

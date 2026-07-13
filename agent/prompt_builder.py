@@ -148,6 +148,13 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "of truth when the two differ."
 )
 
+WORKSPACE_CONTRACT_DEFERENCE = (
+    "An active workspace contract is loaded for this session. "
+    "Treat Hermes' generic identity, tool, memory, skill, and execution guidance "
+    "as defaults only; when they conflict with that workspace contract, the "
+    "workspace contract controls."
+)
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "
@@ -178,12 +185,9 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "After completing a complex task (5+ tool calls), fixing a tricky error, "
-    "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
-    "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "Use skill_manage to create or update a skill when the user asks, or after "
+    "the user accepts an offer to save a reusable workflow. Follow the active "
+    "workspace contract, when present, for skill ownership and allowed edit locations."
 )
 
 KANBAN_GUIDANCE = (
@@ -1667,32 +1671,21 @@ def build_skills_system_prompt(
                     index_lines.append(f"    - {name}")
 
         result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
+            "## Skills\n"
+            "Review the available skills below and load one with skill_view(name) when its "
+            "trigger matches the current task or the user explicitly names it. Follow the "
+            "instructions of any skill you load.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Proceed without loading a skill when none of their triggers match the task."
             + hidden_note
         )
 
@@ -1992,3 +1985,43 @@ def build_context_files_prompt(
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+def extract_authority_contract(context_prompt: str) -> str:
+    """Return the exact Authority Contract section from selected context.
+
+    ``build_context_files_prompt`` has already selected, scanned, and truncated
+    the winning workspace source. Extract from that rendered value so callers
+    never reread a context file or choose a different source. The section ends
+    at the next heading of the same Markdown level, preserving its bytes.
+    """
+    if not context_prompt:
+        return ""
+
+    lines = context_prompt.splitlines(keepends=True)
+    offset = 0
+    start = None
+    heading_index = 0
+    heading_level = 0
+    for index, line in enumerate(lines):
+        body = line.rstrip("\r\n")
+        level = len(body) - len(body.lstrip("#"))
+        title = body[level:].strip() if level else ""
+        if level and title.casefold() == "authority contract":
+            start = offset
+            heading_index = index
+            heading_level = level
+            break
+        offset += len(line)
+
+    if start is None:
+        return ""
+
+    offset = start + len(lines[heading_index])
+    for line in lines[heading_index + 1:]:
+        body = line.rstrip("\r\n")
+        level = len(body) - len(body.lstrip("#"))
+        if level == heading_level and body[level:].strip():
+            return context_prompt[start:offset]
+        offset += len(line)
+    return context_prompt[start:]

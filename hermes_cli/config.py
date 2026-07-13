@@ -911,6 +911,29 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
+def _memory_storage_enabled() -> bool:
+    """Return False only when both built-in memory surfaces are disabled.
+
+    Missing, partial, malformed, and managed configuration retain the normal
+    memory directory bootstrap. This narrow check lets profiles that explicitly
+    retired both MEMORY.md and USER.md keep ``memories/`` absent.
+    """
+    try:
+        with open(get_config_path(), encoding="utf-8") as config_file:
+            raw_config = fast_safe_load(config_file) or {}
+    except Exception:
+        return True
+    if not isinstance(raw_config, dict):
+        return True
+    memory = raw_config.get("memory")
+    if not isinstance(memory, dict):
+        return True
+    return not (
+        memory.get("memory_enabled") is False
+        and memory.get("user_profile_enabled") is False
+    )
+
+
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions.
 
@@ -937,10 +960,13 @@ def ensure_hermes_home():
     else:
         home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
-        for subdir in (
-            "cron", "sessions", "logs", "logs/curator", "memories",
-            "pairing", "hooks", "image_cache", "audio_cache", "skills",
-        ):
+        subdirs = [
+            "cron", "sessions", "logs", "logs/curator", "pairing", "hooks",
+            "image_cache", "audio_cache", "skills",
+        ]
+        if _memory_storage_enabled():
+            subdirs.append("memories")
+        for subdir in subdirs:
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)

@@ -1298,6 +1298,10 @@ def init_agent(
     
     # Cached system prompt -- built once per session, only rebuilt on compression
     agent._cached_system_prompt: Optional[str] = None
+    # Exact section extracted from the already-selected workspace context. A
+    # delegated child receives this value directly and never rereads policy.
+    agent._workspace_authority_contract = ""
+    agent._inherited_workspace_authority_contract = ""
     
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager

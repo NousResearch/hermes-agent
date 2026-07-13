@@ -2694,8 +2694,13 @@ def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch
 
 # ── OpenAI Codex OAuth cross-process sync tests ────────────────────────────
 
-def _codex_auth_store(access: str, refresh: str) -> dict:
-    return {
+def _codex_sync_auth_store(
+    access: str,
+    refresh: str,
+    *,
+    account_id: str | None = None,
+) -> dict:
+    payload = {
         "version": 1,
         "active_provider": "openai-codex",
         "providers": {
@@ -2710,12 +2715,15 @@ def _codex_auth_store(access: str, refresh: str) -> dict:
             }
         },
     }
+    if account_id is not None:
+        payload["providers"]["openai-codex"]["tokens"]["account_id"] = account_id
+    return payload
 
 
 def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypatch):
     """When auth.json has newer Codex tokens, the pool entry should adopt them."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+    _write_auth_store(tmp_path, _codex_sync_auth_store("access-OLD", "refresh-OLD"))
 
     from agent.credential_pool import load_pool
 
@@ -2726,7 +2734,7 @@ def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypa
     assert entry.refresh_token == "refresh-OLD"
 
     # Simulate `hermes auth openai-codex` replacing the token pair on disk.
-    _write_auth_store(tmp_path, _codex_auth_store("access-NEW", "refresh-NEW"))
+    _write_auth_store(tmp_path, _codex_sync_auth_store("access-NEW", "refresh-NEW"))
 
     synced = pool._sync_codex_entry_from_auth_store(entry)
     assert synced is not entry
@@ -2740,7 +2748,7 @@ def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypa
 def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
     """When auth.json has the same tokens, sync should be a no-op."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, _codex_auth_store("access-same", "refresh-same"))
+    _write_auth_store(tmp_path, _codex_sync_auth_store("access-same", "refresh-same"))
 
     from agent.credential_pool import load_pool
 
@@ -2750,6 +2758,191 @@ def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
 
     synced = pool._sync_codex_entry_from_auth_store(entry)
     assert synced is entry
+
+
+def test_sync_codex_entry_replaces_stale_account_id_from_new_token(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        _codex_sync_auth_store(
+            "access-OLD",
+            "refresh-OLD",
+            account_id="acct_old",
+        ),
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.account_id == "acct_old"
+
+    new_access = _jwt_with_claims(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_new",
+            }
+        }
+    )
+    _write_auth_store(
+        tmp_path,
+        _codex_sync_auth_store(
+            new_access,
+            "refresh-NEW",
+            account_id="acct_stale",
+        ),
+    )
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+
+    assert synced.access_token == new_access
+    assert synced.account_id == "acct_new"
+
+
+def test_load_pool_reseed_clears_stale_account_id_for_opaque_token(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        _codex_sync_auth_store(
+            "access-OLD",
+            "refresh-OLD",
+            account_id="acct_old",
+        ),
+    )
+
+    from agent.credential_pool import load_pool
+
+    initial = load_pool("openai-codex").select()
+    assert initial is not None
+    assert initial.account_id == "acct_old"
+
+    _write_auth_store(
+        tmp_path,
+        _codex_sync_auth_store("opaque-access-NEW", "refresh-NEW"),
+    )
+
+    reseeded = load_pool("openai-codex").select()
+
+    assert reseeded is not None
+    assert reseeded.access_token == "opaque-access-NEW"
+    assert reseeded.account_id is None
+
+
+def test_codex_pool_refresh_syncs_and_clears_account_id_across_reseed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    token_a = _jwt_with_claims(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_A",
+            }
+        }
+    )
+    _write_auth_store(
+        tmp_path,
+        _codex_sync_auth_store(
+            token_a,
+            "refresh-A",
+            account_id="acct_A",
+        ),
+    )
+
+    from agent import credential_pool
+
+    pool = credential_pool.load_pool("openai-codex")
+    entry = pool.entries()[0]
+    token_b = _jwt_with_claims(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_B",
+            }
+        }
+    )
+    responses = iter(
+        [
+            {
+                "access_token": token_b,
+                "refresh_token": "refresh-B",
+                "last_refresh": "2026-07-13T09:00:00Z",
+                "account_id": "acct_stale",
+            },
+            {
+                "access_token": "opaque-B",
+                "refresh_token": "refresh-B2",
+                "last_refresh": "2026-07-13T10:00:00Z",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        credential_pool.auth_mod,
+        "refresh_codex_oauth_pure",
+        lambda access_token, refresh_token: next(responses),
+    )
+
+    refreshed = pool._refresh_entry(entry, force=True)
+    assert refreshed is not None
+    assert refreshed.account_id == "acct_B"
+
+    auth_path = tmp_path / "hermes" / "auth.json"
+    stored_tokens = json.loads(auth_path.read_text())["providers"]["openai-codex"]["tokens"]
+    assert stored_tokens["account_id"] == "acct_B"
+
+    opaque = pool._refresh_entry(refreshed, force=True)
+    assert opaque is not None
+    assert opaque.access_token == "opaque-B"
+    assert opaque.account_id is None
+
+    stored_tokens = json.loads(auth_path.read_text())["providers"]["openai-codex"]["tokens"]
+    assert "account_id" not in stored_tokens
+
+    reloaded = credential_pool.load_pool("openai-codex").entries()[0]
+    assert reloaded.access_token == "opaque-B"
+    assert reloaded.account_id is None
+
+
+def test_codex_sync_back_prefers_current_jwt_account_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        _codex_sync_auth_store(
+            "opaque-A",
+            "refresh-A",
+            account_id="acct_A",
+        ),
+    )
+
+    from dataclasses import replace
+    from agent import credential_pool
+
+    pool = credential_pool.load_pool("openai-codex")
+    entry = pool.entries()[0]
+    token_b = _jwt_with_claims(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_B",
+            }
+        }
+    )
+    conflicting = replace(
+        entry,
+        access_token=token_b,
+        refresh_token="refresh-B",
+        extra={**entry.extra, "account_id": "acct_stale"},
+    )
+
+    pool._sync_device_code_entry_to_auth_store(conflicting)
+
+    auth_path = tmp_path / "hermes" / "auth.json"
+    stored_tokens = json.loads(auth_path.read_text())["providers"]["openai-codex"]["tokens"]
+    assert stored_tokens["access_token"] == token_b
+    assert stored_tokens["account_id"] == "acct_B"
+    assert credential_pool.load_pool("openai-codex").entries()[0].account_id == "acct_B"
 
 
 def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch):
@@ -2765,7 +2958,7 @@ def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatc
     from agent.credential_pool import load_pool, STATUS_EXHAUSTED
     from dataclasses import replace as dc_replace
 
-    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+    _write_auth_store(tmp_path, _codex_sync_auth_store("access-OLD", "refresh-OLD"))
 
     pool = load_pool("openai-codex")
     entry = pool.select()
@@ -2791,7 +2984,7 @@ def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatc
     assert available_before == []
 
     # Simulate `hermes model` / `hermes auth` refreshing the tokens.
-    _write_auth_store(tmp_path, _codex_auth_store("access-FRESH", "refresh-FRESH"))
+    _write_auth_store(tmp_path, _codex_sync_auth_store("access-FRESH", "refresh-FRESH"))
 
     available = pool._available_entries(clear_expired=True, refresh=False)
     assert len(available) == 1
@@ -2809,7 +3002,7 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     from agent.credential_pool import load_pool, STATUS_EXHAUSTED
     from dataclasses import replace as dc_replace
 
-    _write_auth_store(tmp_path, _codex_auth_store("access-same", "refresh-same"))
+    _write_auth_store(tmp_path, _codex_sync_auth_store("access-same", "refresh-same"))
 
     pool = load_pool("openai-codex")
     entry = pool.select()

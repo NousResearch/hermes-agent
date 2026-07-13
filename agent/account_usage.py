@@ -5,11 +5,17 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import (
+    AuthError,
+    _read_codex_tokens,
+    extract_codex_account_id,
+    resolve_codex_runtime_credentials,
+)
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 if TYPE_CHECKING:
@@ -436,80 +442,15 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return normalized + "/api/codex/usage"
 
 
-def _resolve_codex_usage_credentials(
-    base_url: Optional[str],
-    api_key: Optional[str],
-) -> tuple[str, str, Optional[str]]:
-    """Resolve Codex quota credentials from the native runtime path.
-
-    Prefer explicit live-agent credentials, then the legacy singleton OAuth
-    state, then the credential pool.  Hermes's native OAuth setup now stores
-    device-code logins in the pool, so quota diagnostics must not depend only
-    on the older singleton store.
-    """
-    explicit_key = str(api_key or "").strip()
-    if explicit_key:
-        return explicit_key, str(base_url or "").strip(), None
-
-    # Tier 2: the native runtime resolver. It ALREADY falls back to the
-    # credential pool when the singleton is empty (see
-    # ``resolve_codex_runtime_credentials`` — issue #32992), so in a pool-only
-    # setup this returns a usable ``source="credential_pool"`` token.
-    #
-    # Only ``AuthError`` ("no creds" / rate-limited) is caught so tier 3 can
-    # run: a broad ``except Exception`` would (a) mask a transient refresh /
-    # network failure and silently hand back a DIFFERENT pool account's usage,
-    # and (b) hide genuine programming errors. A refresh/network error must
-    # propagate — the outer ``fetch_account_usage`` guard fails open (shows
-    # nothing this turn) rather than reporting the wrong account.
-    #
-    # The ``account_id`` (for the ``ChatGPT-Account-Id`` header) is read
-    # best-effort: a partial/missing singleton token store must not sink an
-    # otherwise-usable resolver credential and force a header-less pool fallback.
-    try:
-        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-        account_id: Optional[str] = None
-        try:
-            token_data = _read_codex_tokens()
-            tokens = token_data.get("tokens") or {}
-            account_id = str(tokens.get("account_id", "") or "").strip() or None
-        except AuthError:
-            # Pool-only creds carry no singleton account_id; header is optional.
-            logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
-        return creds["api_key"], str(creds.get("base_url", "") or "").strip(), account_id
-    except AuthError:
-        logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
-
-    # Tier 3: direct pool select. Reached only when the resolver itself raises
-    # AuthError (e.g. singleton missing AND its own pool read found nothing at
-    # resolve time, but a pool entry is usable now). Pool credentials have no
-    # account_id concept, so the ChatGPT-Account-Id header is intentionally
-    # omitted here.
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openai-codex")
-    entry = pool.select()
-    if entry is None:
-        raise RuntimeError("No available openai-codex credential in credential pool")
-    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+def _trusted_codex_usage_host(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host == "chatgpt.com" or host.endswith(".chatgpt.com")
 
 
-def _fetch_codex_account_usage(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> Optional[AccountUsageSnapshot]:
-    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "User-Agent": "codex-cli",
-    }
-    if account_id:
-        headers["ChatGPT-Account-Id"] = account_id
-    with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+def _codex_usage_snapshot_from_payload(payload: dict[str, Any]) -> AccountUsageSnapshot:
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
@@ -539,6 +480,137 @@ def _fetch_codex_account_usage(
         plan=_title_case_slug(payload.get("plan_type")),
         windows=tuple(windows),
         details=tuple(details),
+    )
+
+
+def fetch_codex_account_usage_for_token(
+    access_token: str,
+    *,
+    base_url: Optional[str] = None,
+    account_id: Optional[str] = None,
+    timeout_seconds: float = 15.0,
+) -> AccountUsageSnapshot:
+    """Fetch Codex usage for one OAuth token without selecting a pool entry."""
+    token = str(access_token or "").strip()
+    if not token:
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason="missing access token",
+        )
+    try:
+        timeout = max(1.0, float(timeout_seconds))
+    except (TypeError, ValueError):
+        timeout = 15.0
+    usage_url = _resolve_codex_usage_url(base_url or "")
+    if not _trusted_codex_usage_host(usage_url):
+        host = (urlparse(usage_url).hostname or "unknown host").lower()
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason=(
+                "refusing to send Codex OAuth token to non-ChatGPT "
+                f"usage endpoint ({host})"
+            ),
+        )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    # A freshly-issued token is authoritative over a stored pool hint. This
+    # avoids sending a stale account id after reauthentication switches users.
+    resolved_account_id = extract_codex_account_id(token) or str(account_id or "").strip()
+    if resolved_account_id:
+        headers["ChatGPT-Account-Id"] = resolved_account_id
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get(usage_url, headers=headers)
+        response.raise_for_status()
+    return _codex_usage_snapshot_from_payload(response.json() or {})
+
+
+def _resolve_codex_usage_credentials(
+    base_url: Optional[str],
+    api_key: Optional[str],
+) -> tuple[str, str, Optional[str]]:
+    """Resolve Codex quota credentials from the native runtime path.
+
+    Prefer explicit live-agent credentials, then the legacy singleton OAuth
+    state, then the credential pool.  Hermes's native OAuth setup now stores
+    device-code logins in the pool, so quota diagnostics must not depend only
+    on the older singleton store.
+    """
+    explicit_key = str(api_key or "").strip()
+    if explicit_key:
+        return explicit_key, str(base_url or "").strip(), None
+
+    # Tier 2: the native runtime resolver. It ALREADY falls back to the
+    # credential pool when the singleton is empty (see
+    # ``resolve_codex_runtime_credentials`` — issue #32992), so in a pool-only
+    # setup this returns a usable ``source="credential_pool"`` token.
+    #
+    # Only ``AuthError`` ("no creds" / rate-limited) is caught so tier 3 can
+    # run: a broad ``except Exception`` would (a) mask a transient refresh /
+    # network failure and silently hand back a DIFFERENT pool account's usage,
+    # and (b) hide genuine programming errors. A refresh/network error must
+    # propagate — the outer ``fetch_account_usage`` guard fails open (shows
+    # nothing this turn) rather than reporting the wrong account.
+    #
+    # The resolver carries the selected pool entry's account id in the same
+    # envelope. Singleton lookup remains a best-effort compatibility fallback.
+    try:
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        token = str(creds["api_key"] or "").strip()
+        account_id: Optional[str] = (
+            extract_codex_account_id(token)
+            or str(creds.get("account_id") or "").strip()
+            or None
+        )
+        try:
+            token_data = _read_codex_tokens()
+            tokens = token_data.get("tokens") or {}
+            singleton_token = str(tokens.get("access_token") or "").strip()
+            if (
+                not account_id
+                and creds.get("source") != "credential_pool"
+                and singleton_token == token
+            ):
+                account_id = str(tokens.get("account_id", "") or "").strip() or None
+        except AuthError:
+            logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
+        return token, str(creds.get("base_url", "") or "").strip(), account_id
+    except AuthError:
+        logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
+
+    # Tier 3: direct pool select. Reached only when the resolver itself raises
+    # AuthError (e.g. singleton missing AND its own pool read found nothing at
+    # resolve time, but a pool entry is usable now).
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    if entry is None:
+        raise RuntimeError("No available openai-codex credential in credential pool")
+    token = entry.runtime_api_key
+    account_id = (
+        extract_codex_account_id(token)
+        or str(getattr(entry, "account_id", None) or "").strip()
+        or None
+    )
+    return token, str(entry.runtime_base_url or base_url or "").strip(), account_id
+
+
+def _fetch_codex_account_usage(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
+    return fetch_codex_account_usage_for_token(
+        token,
+        base_url=resolved_base_url,
+        account_id=account_id,
     )
 
 

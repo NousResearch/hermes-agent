@@ -28,6 +28,7 @@ from hermes_cli.auth import (
     _auth_store_lock,
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
+    extract_codex_account_id,
     _load_auth_store,
     _load_provider_state,
     _resolve_kimi_base_url,
@@ -125,6 +126,7 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    "account_id",
 })
 
 
@@ -166,13 +168,21 @@ class PooledCredential:
     extra: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
-        if self.extra is None:
-            self.extra = {}
+        self.extra = dict(self.extra or {})
         self.auth_type = _normalize_pool_auth_type(
             self.provider,
             self.access_token,
             self.auth_type,
         )
+        if self.provider == "openai-codex":
+            account_id = (
+                extract_codex_account_id(self.access_token)
+                or str(self.extra.get("account_id") or "").strip()
+            )
+            if account_id:
+                self.extra["account_id"] = account_id
+            else:
+                self.extra.pop("account_id", None)
 
     def __getattr__(self, name: str):
         if name in _EXTRA_KEYS:
@@ -760,6 +770,17 @@ class CredentialPool:
                 }
                 if state.get("last_refresh"):
                     field_updates["last_refresh"] = state["last_refresh"]
+                extra_updates = dict(entry.extra)
+                account_id = (
+                    extract_codex_account_id(store_access)
+                    or str(tokens.get("account_id") or "").strip()
+                )
+                if account_id:
+                    extra_updates["account_id"] = account_id
+                else:
+                    extra_updates.pop("account_id", None)
+                if extra_updates != entry.extra:
+                    field_updates["extra"] = extra_updates
                 updated = replace(entry, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()
@@ -984,6 +1005,14 @@ class CredentialPool:
                     tokens["access_token"] = entry.access_token
                     if entry.refresh_token:
                         tokens["refresh_token"] = entry.refresh_token
+                    account_id = (
+                        extract_codex_account_id(entry.access_token)
+                        or str(entry.account_id or "").strip()
+                    )
+                    if account_id:
+                        tokens["account_id"] = account_id
+                    else:
+                        tokens.pop("account_id", None)
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
                     _store_provider_state(auth_store, "openai-codex", state, set_active=False)
@@ -1086,11 +1115,22 @@ class CredentialPool:
                     entry.access_token,
                     entry.refresh_token,
                 )
+                refreshed_access_token = refreshed["access_token"]
+                account_id = (
+                    extract_codex_account_id(refreshed_access_token)
+                    or str(refreshed.get("account_id") or "").strip()
+                )
+                extra_updates = dict(entry.extra)
+                if account_id:
+                    extra_updates["account_id"] = account_id
+                else:
+                    extra_updates.pop("account_id", None)
                 updated = replace(
                     entry,
-                    access_token=refreshed["access_token"],
+                    access_token=refreshed_access_token,
                     refresh_token=refreshed["refresh_token"],
                     last_refresh=refreshed.get("last_refresh"),
+                    extra=extra_updates,
                 )
             elif self.provider == "xai-oauth":
                 # Adopt fresher tokens from auth.json before spending the
@@ -2105,6 +2145,26 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # existing Codex CLI credentials get a one-time, explicit prompt
         # via `hermes auth openai-codex`.
         if isinstance(tokens, dict) and tokens.get("access_token"):
+            access_token = tokens.get("access_token", "")
+            account_id = (
+                extract_codex_account_id(access_token)
+                or str(tokens.get("account_id") or "").strip()
+            )
+            if not account_id:
+                # A device-code reauth may switch accounts while returning an
+                # opaque access token and no explicit account id. Do not carry
+                # the previous token's account hint into the replacement.
+                for index, existing in enumerate(entries):
+                    if (
+                        existing.source == "device_code"
+                        and existing.access_token != access_token
+                        and "account_id" in existing.extra
+                    ):
+                        updated_extra = dict(existing.extra)
+                        updated_extra.pop("account_id", None)
+                        entries[index] = replace(existing, extra=updated_extra)
+                        changed = True
+                        break
             active_sources.add("device_code")
             custom_label = str(state.get("label") or "").strip()
             changed |= _upsert_entry(
@@ -2114,11 +2174,12 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                 {
                     "source": "device_code",
                     "auth_type": AUTH_TYPE_OAUTH,
-                    "access_token": tokens.get("access_token", ""),
+                    "access_token": access_token,
                     "refresh_token": tokens.get("refresh_token"),
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": state.get("last_refresh"),
-                    "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
+                    "account_id": account_id,
+                    "label": custom_label or label_from_token(access_token, "device_code"),
                 },
             )
 

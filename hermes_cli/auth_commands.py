@@ -8,12 +8,14 @@ import time
 from types import SimpleNamespace
 import uuid
 
+from agent.account_usage import fetch_codex_account_usage_for_token, render_account_usage_lines
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY,
     AUTH_TYPE_OAUTH,
     CUSTOM_POOL_PREFIX,
     SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE,
+    STATUS_DEAD,
     STATUS_EXHAUSTED,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
@@ -309,8 +311,13 @@ def auth_add_command(args) -> None:
 
     if provider == "openai-codex":
         creds = auth_mod._codex_device_code_login()
+        access_token = creds["tokens"]["access_token"]
+        account_id = (
+            auth_mod.extract_codex_account_id(access_token)
+            or str(creds["tokens"].get("account_id") or "").strip()
+        )
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds["tokens"]["access_token"],
+            access_token,
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
         # Add a distinct, self-contained pool entry per account (matching the
@@ -329,10 +336,11 @@ def auth_add_command(args) -> None:
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
             source=SOURCE_MANUAL_DEVICE_CODE,
-            access_token=creds["tokens"]["access_token"],
+            access_token=access_token,
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
             last_refresh=creds.get("last_refresh"),
+            extra={"account_id": account_id} if account_id else {},
         )
         first_credential = not pool.entries()
         pool.add_entry(entry)
@@ -482,6 +490,100 @@ def auth_reset_command(args) -> None:
     pool = load_pool(provider)
     count = pool.reset_statuses()
     print(f"Reset status on {count} {provider} credentials")
+
+
+def _entry_account_id(entry) -> str | None:
+    value = getattr(entry, "account_id", None)
+    if value in {None, ""}:
+        extra = getattr(entry, "extra", None)
+        if isinstance(extra, dict):
+            value = extra.get("account_id")
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _format_usage_error(exc: BaseException) -> str:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    reason = str(getattr(response, "reason_phrase", "") or "").strip()
+    if status_code:
+        return f"HTTP {status_code}{f' {reason}' if reason else ''}"
+    message = str(exc).strip()
+    return message or exc.__class__.__name__
+
+
+def _maybe_refresh_usage_entry(pool, entry, *, refresh: bool):
+    if not refresh:
+        return entry, None
+    entry_status = getattr(entry, "last_status", None)
+    if entry_status == STATUS_DEAD:
+        return entry, None
+    if entry_status == STATUS_EXHAUSTED:
+        exhausted_until = _exhausted_until(entry)
+        if exhausted_until is not None and time.time() < exhausted_until:
+            return entry, None
+    needs_refresh = getattr(pool, "_entry_needs_refresh", None)
+    refresh_entry = getattr(pool, "_refresh_entry", None)
+    if not callable(needs_refresh) or not callable(refresh_entry):
+        return entry, None
+    try:
+        if not needs_refresh(entry):
+            return entry, None
+        refreshed = refresh_entry(entry, force=False)
+    except Exception as exc:
+        return entry, f"token refresh failed: {_format_usage_error(exc)}"
+    if refreshed is None:
+        return entry, "token refresh failed"
+    return refreshed, None
+
+
+def _print_usage_snapshot_lines(snapshot) -> None:
+    rendered = render_account_usage_lines(snapshot)
+    body = rendered[2:] if len(rendered) >= 2 else rendered
+    if snapshot and getattr(snapshot, "plan", None):
+        body = [f"Plan: {snapshot.plan}", *body]
+    if not body:
+        body = ["No usage windows returned by provider."]
+    for line in body:
+        print(f"    {line}")
+
+
+def auth_usage_command(args) -> None:
+    provider = _normalize_provider(getattr(args, "provider", "") or "")
+    if provider != "openai-codex":
+        raise SystemExit("`hermes auth usage` currently supports pooled usage for openai-codex only.")
+    pool = load_pool(provider)
+    current_fn = getattr(pool, "current", None)
+    current = current_fn() if callable(current_fn) else None
+    entries = pool.entries()
+    if not entries:
+        print("No pooled credentials found for openai-codex.")
+        return
+    timeout = getattr(args, "timeout", 15.0)
+    refresh = not bool(getattr(args, "no_refresh", False))
+    print(f"openai-codex account usage ({len(entries)} credentials):")
+    for idx, entry in enumerate(entries, start=1):
+        marker = " ← current" if current is not None and entry.id == current.id else ""
+        source = _display_source(entry.source)
+        print(f"  #{idx} {entry.label} [{entry.id}] {entry.auth_type} {source}{marker}")
+        if entry.auth_type != AUTH_TYPE_OAUTH:
+            print("    Unavailable: Codex account usage requires OAuth credentials.")
+            continue
+        entry, refresh_error = _maybe_refresh_usage_entry(pool, entry, refresh=refresh)
+        if refresh_error:
+            print(f"    Unavailable: {refresh_error}")
+            continue
+        try:
+            snapshot = fetch_codex_account_usage_for_token(
+                entry.access_token,
+                base_url=entry.base_url,
+                account_id=_entry_account_id(entry),
+                timeout_seconds=timeout,
+            )
+        except Exception as exc:
+            print(f"    Unavailable: {_format_usage_error(exc)}")
+            continue
+        _print_usage_snapshot_lines(snapshot)
 
 
 def auth_status_command(args) -> None:
@@ -766,6 +868,9 @@ def auth_command(args) -> None:
         return
     if action == "reset":
         auth_reset_command(args)
+        return
+    if action == "usage":
+        auth_usage_command(args)
         return
     if action == "status":
         auth_status_command(args)

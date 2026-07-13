@@ -2026,6 +2026,21 @@ def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
     return claims if isinstance(claims, dict) else {}
 
 
+def extract_codex_account_id(access_token: Any) -> Optional[str]:
+    """Best-effort extraction of a ChatGPT account id from a Codex OAuth JWT."""
+    claims = _decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth")
+    if isinstance(auth_claims, dict):
+        value = auth_claims.get("chatgpt_account_id") or auth_claims.get("account_id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ("chatgpt_account_id", "account_id"):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _scope_values(raw_scope: Any) -> set[str]:
     # OAuth token responses normally return a space-separated string. Keep
     # collection support for JWT ``scp`` claims and older stored test fixtures.
@@ -3331,6 +3346,10 @@ def _sync_codex_pool_entries(
     if not access_token:
         return
     refresh_token = tokens.get("refresh_token")
+    account_id = (
+        extract_codex_account_id(access_token)
+        or str(tokens.get("account_id") or "").strip()
+    )
     pool = auth_store.get("credential_pool")
     if not isinstance(pool, dict):
         return
@@ -3369,6 +3388,10 @@ def _sync_codex_pool_entries(
         entry["access_token"] = access_token
         if refresh_token:
             entry["refresh_token"] = refresh_token
+        if account_id:
+            entry["account_id"] = account_id
+        else:
+            entry.pop("account_id", None)
         if last_refresh:
             entry["last_refresh"] = last_refresh
         entry["last_status"] = None
@@ -3381,6 +3404,15 @@ def _sync_codex_pool_entries(
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
+    tokens = dict(tokens)
+    account_id = (
+        extract_codex_account_id(tokens.get("access_token"))
+        or str(tokens.get("account_id") or "").strip()
+    )
+    if account_id:
+        tokens["account_id"] = account_id
+    else:
+        tokens.pop("account_id", None)
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
@@ -3554,6 +3586,12 @@ def refresh_codex_oauth_pure(
     next_refresh = refresh_payload.get("refresh_token")
     if isinstance(next_refresh, str) and next_refresh.strip():
         updated["refresh_token"] = next_refresh.strip()
+    account_id = (
+        extract_codex_account_id(refreshed_access)
+        or str(refresh_payload.get("account_id") or "").strip()
+    )
+    if account_id:
+        updated["account_id"] = account_id
     return updated
 
 
@@ -3594,8 +3632,17 @@ def _refresh_codex_auth_tokens(
         return imported
 
     updated_tokens = dict(tokens)
-    updated_tokens["access_token"] = refreshed["access_token"]
+    refreshed_access_token = refreshed["access_token"]
+    updated_tokens["access_token"] = refreshed_access_token
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
+    account_id = (
+        extract_codex_account_id(refreshed_access_token)
+        or str(refreshed.get("account_id") or "").strip()
+    )
+    if account_id:
+        updated_tokens["account_id"] = account_id
+    else:
+        updated_tokens.pop("account_id", None)
 
     _save_codex_tokens(updated_tokens)
     return updated_tokens
@@ -3671,8 +3718,8 @@ def resolve_codex_runtime_credentials(
             data = None
 
     if data is None:
-        pool_token = _pool_codex_access_token()
-        if pool_token:
+        pool_credentials = _pool_codex_runtime_credentials()
+        if pool_credentials:
             base_url = (
                 os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
                 or DEFAULT_CODEX_BASE_URL
@@ -3680,9 +3727,11 @@ def resolve_codex_runtime_credentials(
             return {
                 "provider": "openai-codex",
                 "base_url": base_url,
-                "api_key": pool_token,
+                "api_key": pool_credentials["api_key"],
+                "account_id": pool_credentials.get("account_id"),
+                "credential_id": pool_credentials.get("credential_id"),
                 "source": "credential_pool",
-                "last_refresh": None,
+                "last_refresh": pool_credentials.get("last_refresh"),
                 "auth_mode": "chatgpt",
             }
         pool_rate_limit = _codex_pool_rate_limit_status()
@@ -3745,6 +3794,11 @@ def resolve_codex_runtime_credentials(
         "provider": "openai-codex",
         "base_url": base_url,
         "api_key": access_token,
+        "account_id": (
+            extract_codex_account_id(access_token)
+            or str(tokens.get("account_id") or "").strip()
+            or None
+        ),
         "source": "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
@@ -3824,31 +3878,35 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _pool_codex_access_token() -> str:
-    """Return the most-recent usable access_token from the openai-codex pool.
+def _pool_codex_runtime_credentials() -> Optional[Dict[str, Any]]:
+    """Return the exact selected openai-codex pool credential envelope.
 
     Used as a fallback by ``resolve_codex_runtime_credentials`` when the
-    singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
-    directly from auth.json and picks the first non-empty access_token,
+    singleton has no creds. Reads ``credential_pool.openai-codex`` entries
+    directly from auth.json and picks the first non-empty credential,
     preferring entries that are not currently in an exhaustion cooldown.
-    Returns ``""`` when no usable entry is found (caller handles by raising
-    the original AuthError).
+    The account id travels with the selected entry so duplicate token aliases
+    cannot pair a usable credential with another entry's sidecar. Returns
+    ``None`` when no usable entry is found (caller handles by raising the
+    original AuthError).
     """
     try:
         with _auth_store_lock():
             auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
-            return ""
+            return None
         entries = pool.get("openai-codex")
         if not isinstance(entries, list):
-            return ""
+            return None
 
         def _entry_usable(entry: Dict[str, Any]) -> bool:
             if not isinstance(entry, dict):
                 return False
             token = entry.get("access_token")
             if not isinstance(token, str) or not token.strip():
+                return False
+            if str(entry.get("last_status") or "").strip().lower() == "dead":
                 return False
             # Skip entries currently in an exhaustion cooldown window.
             reset_at = entry.get("last_error_reset_at")
@@ -3858,10 +3916,21 @@ def _pool_codex_access_token() -> str:
 
         for entry in entries:
             if _entry_usable(entry):
-                return str(entry.get("access_token", "")).strip()
+                access_token = str(entry.get("access_token", "")).strip()
+                account_id = (
+                    extract_codex_account_id(access_token)
+                    or str(entry.get("account_id") or "").strip()
+                    or None
+                )
+                return {
+                    "api_key": access_token,
+                    "account_id": account_id,
+                    "credential_id": entry.get("id"),
+                    "last_refresh": entry.get("last_refresh"),
+                }
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
-    return ""
+    return None
 
 
 # =============================================================================
@@ -7452,11 +7521,19 @@ def _codex_device_code_login() -> Dict[str, Any]:
         or DEFAULT_CODEX_BASE_URL
     )
 
+    persisted_tokens = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }
+    account_id = (
+        extract_codex_account_id(access_token)
+        or str(tokens.get("account_id") or "").strip()
+    )
+    if account_id:
+        persisted_tokens["account_id"] = account_id
+
     return {
-        "tokens": {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-        },
+        "tokens": persisted_tokens,
         "base_url": base_url,
         "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "auth_mode": "chatgpt",

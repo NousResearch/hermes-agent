@@ -215,8 +215,9 @@ def test_nous_dashboard_device_flow_does_not_retry_legacy_scope_on_invoke_refusa
 
 
 def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch):
+    from agent.credential_pool import load_pool
     from hermes_cli import web_server as ws
-    from hermes_cli.auth import get_active_provider
+    from hermes_cli.auth import _read_codex_tokens, get_active_provider
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     access_token = "h.eyJleHAiOjk5OTk5OTk5OTl9.s"
@@ -254,6 +255,7 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
             return _Resp(200, {
                 "access_token": access_token,
                 "refresh_token": "codex-refresh",
+                "account_id": "acct-dashboard",
             })
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -271,6 +273,8 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
         assert runtime["provider"] == "openai-codex"
         assert runtime["api_key"] == access_token
         assert runtime["api_mode"] == "codex_responses"
+        assert _read_codex_tokens()["tokens"]["account_id"] == "acct-dashboard"
+        assert load_pool("openai-codex").entries()[0].account_id == "acct-dashboard"
     finally:
         ws._oauth_sessions.pop(sid, None)
 

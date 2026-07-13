@@ -44,8 +44,12 @@ def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refre
     return auth_file
 
 
-def _jwt_with_exp(exp_epoch: int) -> str:
-    payload = {"exp": exp_epoch}
+def _jwt_with_exp(exp_epoch: int, account_id: str | None = None) -> str:
+    payload: dict[str, object] = {"exp": exp_epoch}
+    if account_id is not None:
+        payload["https://api.openai.com/auth"] = {
+            "chatgpt_account_id": account_id,
+        }
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
     return f"h.{encoded}.s"
 
@@ -104,6 +108,110 @@ def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, mo
     assert resolved["api_key"] == "access-new"
 
 
+def test_runtime_refresh_replaces_and_clears_account_id_for_usage(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    token_a = _jwt_with_exp(int(time.time()) - 10, "acct_A")
+    auth_path = _setup_hermes_auth(
+        hermes_home,
+        access_token=token_a,
+        refresh_token="refresh-A",
+    )
+    auth_store = json.loads(auth_path.read_text())
+    auth_store["providers"]["openai-codex"]["tokens"]["account_id"] = "acct_A"
+    auth_path.write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from agent import account_usage, credential_pool
+
+    assert credential_pool.load_pool("openai-codex").entries()[0].account_id == "acct_A"
+
+    token_b = _jwt_with_exp(int(time.time()) + 3600, "acct_B")
+    refresh_payloads = iter(
+        [
+            {
+                "access_token": token_b,
+                "refresh_token": "refresh-B",
+                "account_id": "acct_stale",
+            },
+            {
+                "access_token": "opaque-B",
+                "refresh_token": "refresh-B2",
+                "account_id": "acct_opaque",
+            },
+            {"access_token": "opaque-C", "refresh_token": "refresh-C"},
+        ]
+    )
+    requests = []
+
+    class _Response:
+        def __init__(self, payload):
+            self.status_code = 200
+            self.headers = {}
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, *args, **kwargs):
+            return _Response(next(refresh_payloads))
+
+        def get(self, url, *, headers):
+            requests.append(headers)
+            return _Response({"rate_limit": {}})
+
+    monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *args, **kwargs: _Client())
+
+    resolved = resolve_codex_runtime_credentials()
+    assert resolved["api_key"] == token_b
+    stored = json.loads(auth_path.read_text())
+    assert stored["providers"]["openai-codex"]["tokens"]["account_id"] == "acct_B"
+    assert credential_pool.load_pool("openai-codex").entries()[0].account_id == "acct_B"
+
+    runtime_token = {"value": token_b}
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: {
+            "api_key": runtime_token["value"],
+            "base_url": DEFAULT_CODEX_BASE_URL,
+        },
+    )
+    account_usage._fetch_codex_account_usage()
+    assert requests[-1]["ChatGPT-Account-Id"] == "acct_B"
+
+    opaque_with_id = resolve_codex_runtime_credentials(force_refresh=True)
+    assert opaque_with_id["api_key"] == "opaque-B"
+    stored = json.loads(auth_path.read_text())
+    assert stored["providers"]["openai-codex"]["tokens"]["account_id"] == "acct_opaque"
+    assert credential_pool.load_pool("openai-codex").entries()[0].account_id == "acct_opaque"
+
+    runtime_token["value"] = "opaque-B"
+    account_usage._fetch_codex_account_usage()
+    assert requests[-1]["ChatGPT-Account-Id"] == "acct_opaque"
+
+    opaque_without_id = resolve_codex_runtime_credentials(force_refresh=True)
+    assert opaque_without_id["api_key"] == "opaque-C"
+    stored = json.loads(auth_path.read_text())
+    assert "account_id" not in stored["providers"]["openai-codex"]["tokens"]
+    assert credential_pool.load_pool("openai-codex").entries()[0].account_id is None
+
+    runtime_token["value"] = "opaque-C"
+    account_usage._fetch_codex_account_usage()
+    assert "ChatGPT-Account-Id" not in requests[-1]
+
+
 def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="access-current", refresh_token="refresh-old")
@@ -143,9 +251,11 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
         "credential_pool": {
             "openai-codex": [
                 {
+                    "id": "pool-only",
                     "source": "device_code",
                     "access_token": "pool-fallback-token",
                     "refresh_token": "pool-refresh",
+                    "account_id": "acct-pool",
                     "last_status": "ok",
                     "auth_type": "oauth",
                 },
@@ -157,6 +267,8 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
 
     resolved = resolve_codex_runtime_credentials()
     assert resolved["api_key"] == "pool-fallback-token"
+    assert resolved["account_id"] == "acct-pool"
+    assert resolved["credential_id"] == "pool-only"
     assert resolved["source"] == "credential_pool"
     assert resolved["base_url"]  # default codex backend URL
 
@@ -174,13 +286,17 @@ def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted(tmp_pat
         "credential_pool": {
             "openai-codex": [
                 {
+                    "id": "cooldown-alias",
                     "source": "device_code",
-                    "access_token": "wedged-token",
+                    "access_token": "shared-token",
+                    "account_id": "acct-wrong",
                     "last_error_reset_at": future_reset,  # in cooldown
                 },
                 {
+                    "id": "usable-alias",
                     "source": "device_code",
-                    "access_token": "usable-token",
+                    "access_token": "shared-token",
+                    "account_id": "acct-selected",
                     "last_status": "ok",
                 },
             ],
@@ -190,7 +306,9 @@ def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted(tmp_pat
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     resolved = resolve_codex_runtime_credentials()
-    assert resolved["api_key"] == "usable-token"
+    assert resolved["api_key"] == "shared-token"
+    assert resolved["account_id"] == "acct-selected"
+    assert resolved["credential_id"] == "usable-alias"
     assert resolved["source"] == "credential_pool"
 
 
@@ -232,6 +350,74 @@ def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
 
     assert data["tokens"]["access_token"] == "at123"
     assert data["tokens"]["refresh_token"] == "rt456"
+
+
+def test_save_codex_tokens_prefers_current_jwt_account_id(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from agent.credential_pool import load_pool
+
+    token = _jwt_with_exp(int(time.time()) + 3600, "acct_new")
+    _save_codex_tokens(
+        {
+            "access_token": token,
+            "refresh_token": "refresh-new",
+            "account_id": "acct_stale",
+        }
+    )
+
+    assert _read_codex_tokens()["tokens"]["account_id"] == "acct_new"
+    assert load_pool("openai-codex").entries()[0].account_id == "acct_new"
+
+
+def test_save_codex_tokens_clears_stale_account_id_on_opaque_reauth(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from agent.credential_pool import load_pool
+
+    _save_codex_tokens(
+        {
+            "access_token": "opaque-old",
+            "refresh_token": "refresh-old",
+            "account_id": "acct_old",
+        }
+    )
+    initial = load_pool("openai-codex").select()
+    assert initial is not None
+    assert initial.account_id == "acct_old"
+
+    _save_codex_tokens(
+        {
+            "access_token": "opaque-new",
+            "refresh_token": "refresh-new",
+        }
+    )
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    seeded = next(
+        entry
+        for entry in auth["credential_pool"]["openai-codex"]
+        if entry["source"] == "device_code"
+    )
+    assert seeded["access_token"] == "opaque-new"
+    assert "account_id" not in seeded
+
+    reloaded = load_pool("openai-codex").select()
+    assert reloaded is not None
+    assert reloaded.access_token == "opaque-new"
+    assert reloaded.account_id is None
 
 
 def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
@@ -1038,7 +1224,20 @@ def _patch_httpx_post(monkeypatch, responses):
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *a, **k: _FakeClient())
 
 
-def test_device_code_login_retries_on_429_then_succeeds(monkeypatch):
+@pytest.mark.parametrize(
+    ("access_token", "response_account_id", "expected_account_id"),
+    [
+        ("opaque-device-token", "acct-device", "acct-device"),
+        (
+            _jwt_with_exp(int(time.time()) + 3600, "acct-jwt"),
+            "acct-stale",
+            "acct-jwt",
+        ),
+    ],
+)
+def test_device_code_login_retries_on_429_then_succeeds(
+    monkeypatch, access_token, response_account_id, expected_account_id
+):
     """A transient 429 on the device-code request is retried, not surfaced."""
     from hermes_cli import auth as auth_mod
 
@@ -1053,14 +1252,23 @@ def test_device_code_login_retries_on_429_then_succeeds(monkeypatch):
             _FakeResp(429, headers={"retry-after": "1"}),
             _FakeResp(200, {"user_code": "ABCD", "device_auth_id": "dev-1", "interval": "5"}),
             _FakeResp(200, {"authorization_code": "auth-code", "code_verifier": "verifier"}),
-            _FakeResp(200, {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}),
+            _FakeResp(
+                200,
+                {
+                    "access_token": access_token,
+                    "refresh_token": "rt",
+                    "expires_in": 3600,
+                    "account_id": response_account_id,
+                },
+            ),
         ],
     )
     # Skip the polling sleep too (shares time.sleep, already patched).
 
     creds = auth_mod._codex_device_code_login()
 
-    assert creds["tokens"]["access_token"] == "at"
+    assert creds["tokens"]["access_token"] == access_token
+    assert creds["tokens"]["account_id"] == expected_account_id
     # The 429 caused exactly one backoff sleep before the retry succeeded.
     assert 1 in sleeps
 

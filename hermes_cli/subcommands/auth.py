@@ -62,6 +62,21 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "reset", help="Clear exhaustion status for all credentials for a provider"
     )
     auth_reset.add_argument("provider", help="Provider id")
+    auth_usage = auth_subparsers.add_parser(
+        "usage", help="Show account usage for each pooled credential"
+    )
+    auth_usage.add_argument("provider", help="Provider id (currently openai-codex)")
+    auth_usage.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="Per-account usage API timeout in seconds",
+    )
+    auth_usage.add_argument(
+        "--no-refresh",
+        action="store_true",
+        help="Do not refresh expiring OAuth tokens before checking usage",
+    )
     auth_status = auth_subparsers.add_parser(
         "status", help="Show auth status for a provider"
     )

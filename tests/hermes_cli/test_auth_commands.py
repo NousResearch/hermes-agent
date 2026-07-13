@@ -18,10 +18,15 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
 
-def _jwt_with_email(email: str) -> str:
+def _jwt_with_email(email: str, account_id: str | None = None) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    claims: dict[str, object] = {"email": email}
+    if account_id is not None:
+        claims["https://api.openai.com/auth"] = {
+            "chatgpt_account_id": account_id,
+        }
     payload = base64.urlsafe_b64encode(
-        json.dumps({"email": email}).encode()
+        json.dumps(claims).encode()
     ).rstrip(b"=").decode()
     return f"{header}.{payload}.signature"
 
@@ -359,13 +364,14 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
 def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    token = _jwt_with_email("codex@example.com")
+    token = _jwt_with_email("codex@example.com", "acct_jwt")
     monkeypatch.setattr(
         "hermes_cli.auth._codex_device_code_login",
         lambda: {
             "tokens": {
                 "access_token": token,
                 "refresh_token": "refresh-token",
+                "account_id": "acct_stale",
             },
             "base_url": "https://chatgpt.com/backend-api/codex",
             "last_refresh": "2026-03-23T10:00:00Z",
@@ -396,6 +402,7 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == token
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert entry["account_id"] == "acct_jwt"
 
 
 def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
@@ -1058,6 +1065,181 @@ def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "device_code_exhausted" in out
     assert "7d 0h left" in out
+
+
+def test_auth_usage_checks_each_codex_pool_entry_without_select(monkeypatch, capsys):
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+    from hermes_cli.auth_commands import auth_usage_command
+
+    class _Entry:
+        def __init__(self, id, label, token, account_id):
+            self.id = id
+            self.label = label
+            self.auth_type = "oauth"
+            self.source = "manual:device_code"
+            self.access_token = token
+            self.refresh_token = None
+            self.base_url = "https://chatgpt.com/backend-api/codex"
+            self.extra = {"account_id": account_id} if account_id else {}
+
+    entries = [
+        _Entry("cred-1", "primary", "token-1", "acct_1"),
+        _Entry("cred-2", "backup", "token-2", None),
+    ]
+
+    class _Pool:
+        def entries(self):
+            return entries
+
+        def current(self):
+            return entries[0]
+
+        def peek(self):
+            raise AssertionError("auth_usage_command should not call peek()")
+
+        def select(self):
+            raise AssertionError("auth_usage_command should not select a credential")
+
+        def _entry_needs_refresh(self, entry):
+            return False
+
+    calls = []
+
+    def _fake_fetch(access_token, *, base_url=None, account_id=None, timeout_seconds=15.0):
+        calls.append((access_token, base_url, account_id, timeout_seconds))
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.now(timezone.utc),
+            plan="Pro",
+            windows=(AccountUsageWindow(label="Weekly", used_percent=25),),
+        )
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_cli.auth_commands.fetch_codex_account_usage_for_token", _fake_fetch)
+
+    class _Args:
+        provider = "openai-codex"
+        timeout = 2.5
+        no_refresh = False
+
+    auth_usage_command(_Args())
+
+    assert calls == [
+        ("token-1", "https://chatgpt.com/backend-api/codex", "acct_1", 2.5),
+        ("token-2", "https://chatgpt.com/backend-api/codex", None, 2.5),
+    ]
+    out = capsys.readouterr().out
+    assert "openai-codex account usage (2 credentials):" in out
+    assert "#1 primary [cred-1] oauth device_code ← current" in out
+    assert "#2 backup [cred-2] oauth device_code" in out
+    assert out.count("Weekly: 75% remaining (25% used)") == 2
+
+
+def test_auth_usage_refresh_preserves_active_exhaustion_cooldown():
+    from hermes_cli.auth_commands import _maybe_refresh_usage_entry
+
+    reset_at = time.time() + 3600
+
+    class _Entry:
+        last_status = "exhausted"
+        last_status_at = time.time()
+        last_error_code = 429
+        last_error_reset_at = reset_at
+
+    entry = _Entry()
+
+    class _Pool:
+        def _entry_needs_refresh(self, candidate):
+            assert candidate is entry
+            return True
+
+        def _refresh_entry(self, candidate, *, force):
+            raise AssertionError("usage must not refresh an actively exhausted entry")
+
+    returned, error = _maybe_refresh_usage_entry(_Pool(), entry, refresh=True)
+
+    assert returned is entry
+    assert error is None
+    assert entry.last_status == "exhausted"
+    assert entry.last_error_reset_at == reset_at
+
+
+def test_auth_usage_refresh_does_not_reactivate_dead_credential():
+    from hermes_cli.auth_commands import _maybe_refresh_usage_entry
+
+    class _Entry:
+        last_status = "dead"
+
+    entry = _Entry()
+
+    class _Pool:
+        def _entry_needs_refresh(self, candidate):
+            assert candidate is entry
+            return True
+
+        def _refresh_entry(self, candidate, *, force):
+            raise AssertionError("usage must not refresh a dead entry")
+
+    returned, error = _maybe_refresh_usage_entry(_Pool(), entry, refresh=True)
+
+    assert returned is entry
+    assert error is None
+    assert entry.last_status == "dead"
+
+
+def test_auth_usage_continues_after_per_credential_failure(monkeypatch, capsys):
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+    from hermes_cli.auth_commands import auth_usage_command
+
+    class _Entry:
+        def __init__(self, id, label, token):
+            self.id = id
+            self.label = label
+            self.auth_type = "oauth"
+            self.source = "device_code"
+            self.access_token = token
+            self.refresh_token = None
+            self.base_url = "https://chatgpt.com/backend-api/codex"
+            self.extra = {}
+
+    entries = [_Entry("bad", "bad", "bad-token"), _Entry("ok", "ok", "ok-token")]
+
+    class _Pool:
+        def entries(self):
+            return entries
+
+        def peek(self):
+            return None
+
+        def _entry_needs_refresh(self, entry):
+            return False
+
+    def _fake_fetch(access_token, **kwargs):
+        if access_token == "bad-token":
+            raise RuntimeError("simulated usage failure")
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.now(timezone.utc),
+            windows=(AccountUsageWindow(label="Session", used_percent=10),),
+        )
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_cli.auth_commands.fetch_codex_account_usage_for_token", _fake_fetch)
+
+    class _Args:
+        provider = "openai-codex"
+        timeout = 15.0
+        no_refresh = False
+
+    auth_usage_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "#1 bad [bad]" in out
+    assert "Unavailable: simulated usage failure" in out
+    assert "#2 ok [ok]" in out
+    assert "Session: 90% remaining (10% used)" in out
 
 
 def test_auth_remove_env_seeded_clears_env_var(tmp_path, monkeypatch):

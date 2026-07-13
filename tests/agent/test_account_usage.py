@@ -1,3 +1,5 @@
+import base64
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -50,6 +52,89 @@ def codex_usage_payload():
     }
 
 
+def test_codex_usage_for_token_uses_explicit_account_id(monkeypatch, codex_usage_payload):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+
+    snapshot = account_usage.fetch_codex_account_usage_for_token(
+        " access-token ",
+        base_url="https://chatgpt.com/backend-api/codex",
+        account_id="acct_456",
+        timeout_seconds=2.5,
+    )
+
+    assert snapshot.plan == "Plus"
+    assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
+    assert calls[0]["headers"]["Authorization"] == "Bearer access-token"
+    assert calls[0]["headers"]["ChatGPT-Account-Id"] == "acct_456"
+
+
+def test_codex_usage_for_token_prefers_jwt_account_id_over_stored_hint(
+    monkeypatch, codex_usage_payload
+):
+    calls = []
+    payload = {
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acct_from_jwt"},
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    token = f"header.{encoded}.signature"
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+
+    snapshot = account_usage.fetch_codex_account_usage_for_token(
+        token,
+        account_id="acct_stale",
+    )
+
+    assert snapshot.windows[0].used_percent == 21
+    assert calls[0]["headers"]["ChatGPT-Account-Id"] == "acct_from_jwt"
+
+
+def test_codex_usage_for_token_refuses_untrusted_host(monkeypatch):
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("untrusted host must not receive OAuth token")
+        ),
+    )
+
+    snapshot = account_usage.fetch_codex_account_usage_for_token(
+        "access-token",
+        base_url="https://example.invalid/backend-api/codex",
+    )
+
+    assert snapshot.unavailable_reason is not None
+    assert "non-ChatGPT" in snapshot.unavailable_reason
+
+
+def test_codex_existing_usage_refuses_untrusted_explicit_base_url(monkeypatch):
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("untrusted host must not receive OAuth token")
+        ),
+    )
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://example.invalid/backend-api/codex",
+        api_key="access-token",
+    )
+
+    assert snapshot is not None
+    assert snapshot.unavailable_reason is not None
+    assert "non-ChatGPT" in snapshot.unavailable_reason
+
+
 def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_usage_payload):
     calls = []
     monkeypatch.setattr(
@@ -99,6 +184,7 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     pool_entry = SimpleNamespace(
         runtime_api_key="pooled-token",
         runtime_base_url="https://chatgpt.com/backend-api/codex",
+        account_id="acct-required",
     )
     pool = SimpleNamespace(select=lambda: pool_entry)
 
@@ -113,9 +199,95 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     assert snapshot.windows[1].label == "Weekly"
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer pooled-token"
-    # Pool creds have no account_id concept — the ChatGPT-Account-Id header must
-    # be omitted rather than sent stale/wrong.
-    assert "ChatGPT-Account-Id" not in calls[0]["headers"]
+    assert calls[0]["headers"]["ChatGPT-Account-Id"] == "acct-required"
+
+
+def test_codex_usage_runtime_pool_envelope_preserves_selected_account_id(
+    monkeypatch, codex_usage_payload
+):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: {
+            "api_key": "shared-opaque-token",
+            "account_id": "acct-selected",
+            "credential_id": "usable-alias",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "source": "credential_pool",
+        },
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_read_codex_tokens",
+        lambda: {
+            "tokens": {
+                "access_token": "shared-opaque-token",
+                "account_id": "acct-wrong-singleton-alias",
+            }
+        },
+    )
+
+    snapshot = account_usage.fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert calls[0]["headers"]["Authorization"] == "Bearer shared-opaque-token"
+    assert calls[0]["headers"]["ChatGPT-Account-Id"] == "acct-selected"
+
+
+def test_codex_usage_real_resolver_keeps_duplicate_alias_envelope(
+    tmp_path, monkeypatch, codex_usage_payload
+):
+    calls = []
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {},
+                "credential_pool": {
+                    "openai-codex": [
+                        {
+                            "id": "cooldown-alias",
+                            "source": "manual:device_code",
+                            "auth_type": "oauth",
+                            "access_token": "shared-opaque-token",
+                            "account_id": "acct-wrong",
+                            "last_status": "exhausted",
+                            "last_error_reset_at": 4_102_444_800,
+                        },
+                        {
+                            "id": "usable-alias",
+                            "source": "manual:device_code",
+                            "auth_type": "oauth",
+                            "access_token": "shared-opaque-token",
+                            "account_id": "acct-selected",
+                            "last_status": "ok",
+                        },
+                    ]
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty-codex-home"))
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+
+    snapshot = account_usage.fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert calls[0]["headers"]["Authorization"] == "Bearer shared-opaque-token"
+    assert calls[0]["headers"]["ChatGPT-Account-Id"] == "acct-selected"
 
 
 def test_codex_usage_does_not_swap_to_pool_on_transient_resolver_error(monkeypatch, codex_usage_payload):

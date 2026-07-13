@@ -973,6 +973,7 @@ class TestRefreshAndRevoke:
         assert kwargs["data"]["grant_type"] == "refresh_token"
         assert kwargs["data"]["refresh_token"] == "rt_old"
         assert kwargs["data"]["client_id"] == _CLIENT_ID
+        assert "scope" not in kwargs["data"]
 
     def test_refresh_keeps_previous_rt_when_idp_omits(self, provider, rsa_keypair):
         # Some IDPs don't rotate; keep the caller's existing RT alive.

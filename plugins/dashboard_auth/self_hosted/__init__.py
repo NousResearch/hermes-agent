@@ -282,9 +282,6 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             "grant_type": "refresh_token",
             "client_id": self._client_id,
             "refresh_token": refresh_token,
-            # Re-request the same scopes so the rotated ID token keeps the
-            # identity claims (some IDPs narrow scope on refresh otherwise).
-            "scope": self._scopes,
         }
         # Same client-authentication treatment as complete_login: confidential
         # clients must authenticate on the refresh grant too, or the IDP

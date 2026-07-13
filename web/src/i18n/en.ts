@@ -43,6 +43,8 @@ export const en: Translations = {
     expand: "Expand",
     general: "General",
     messaging: "Messaging",
+    item: "Item",
+    commaSeparatedValues: "comma-separated values",
     gateway: "Gateway",
     gatewayHint:
       "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
@@ -121,6 +123,8 @@ export const en: Translations = {
     currentProfileOption: "this dashboard ({name})",
     managingProfileBanner:
       "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
+    consoleTitle: "Hermes Console",
+    closeConsole: "Close console",
   },
 
   status: {
@@ -174,6 +178,7 @@ export const en: Translations = {
     startConversation: "Start a conversation to see it here",
     noMessages: "No messages",
     untitledSession: "Untitled session",
+    contextHandoff: "Context handoff",
     deleteSession: "Delete session",
     confirmDeleteTitle: "Delete session?",
     confirmDeleteMessage:
@@ -306,7 +311,12 @@ export const en: Translations = {
     expired: "expired",
     nothingToSave: "Nothing to save — fill in at least one field.",
     required: "is required",
+    mustStartWith: "{field} must start with {prefix}",
+    invalidSlackMember:
+      "{value} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.",
+    fixHighlightedFields: "Fix the highlighted fields before saving.",
     saved: "saved",
+    savedNamed: "{name} saved",
     saveFailed: "Failed to save",
     gatewayRestarting: "Gateway restarting…",
     restartFailed: "Failed to restart",
@@ -374,9 +384,6 @@ export const en: Translations = {
     invalidTelegramToken:
       "Paste the complete token from @BotFather (for example, 123456789:ABC…).",
     invalidTelegramUser: "{id} is not a numeric Telegram user ID.",
-    invalidPrefix: "{field} must start with {prefix}",
-    invalidSlackMember:
-      "{id} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.",
     ready: "Ready",
     allowedUsers: "Allowed users",
     ownerDetected: "owner detected",
@@ -386,6 +393,54 @@ export const en: Translations = {
     qrAlt: "Telegram setup QR code",
     waiting: "waiting",
     openTelegram: "Open Telegram",
+    whatsappSetupFailed: "WhatsApp setup failed.",
+    whatsappPairingExpired:
+      "WhatsApp QR setup expired. Start a new QR setup to try again.",
+    whatsappStillWaiting: "Still waiting for WhatsApp. Retrying after",
+    whatsappRestartFailedExit:
+      "Gateway restart failed (exit {code}) — restart manually",
+    whatsappSavedRestarting: "WhatsApp saved; gateway restarting…",
+    whatsappSavedRestartFailed: "WhatsApp saved; gateway restart failed",
+    preparing: "preparing",
+    whatsappLinkedHelp:
+      "WhatsApp is linked but Hermes is not listening yet. Save and restart the gateway to finish setup.",
+    whatsappPreparingHelp:
+      "Preparing the WhatsApp bridge. The QR code will appear here when it is ready.",
+    whatsappStartingHelp:
+      "Starting the WhatsApp pairing bridge. The QR code will appear here when it is ready.",
+    whatsappScanHelp:
+      "Open WhatsApp on your phone, then go to Linked Devices and scan from there. This QR is not a browser URL.",
+    whatsappLinkedAccountKnown:
+      "This is the WhatsApp account Hermes is now logged into.",
+    whatsappLinkedAccountScanned:
+      "Hermes is logged into the WhatsApp account that scanned the QR code.",
+    whatsappSelfChatInstruction:
+      "After the restart, open Message Yourself on the linked account and send Hermes a message.",
+    whatsappBotInstruction:
+      "After the restart, start a chat from another WhatsApp account with the linked account and send Hermes a message.",
+    whatsappKeepAllowlist: "Hermes will keep the saved WhatsApp allowlist.",
+    whatsappSelfChatAutoAllow:
+      "Self-chat mode will allow the linked account automatically when you save.",
+    whatsappPairingCodeInstruction:
+      "If no allowed numbers were entered, Hermes replies with a pairing code. Approve it from the dashboard Pairing page.",
+    pairWithQr: "Pair with QR",
+    whatsappConfigured: "Existing WhatsApp settings are configured.",
+    mode: "Mode",
+    bot: "Bot",
+    selfChat: "Self-chat",
+    allowedWhatsAppNumbers: "Allowed WhatsApp numbers",
+    whatsappUnknownDmPairing:
+      "After saving, unknown DMs use Hermes pairing codes unless their number is already allowed.",
+    linkedAs: "Linked as {account}",
+    whatsappDeviceLinked: "WhatsApp device linked",
+    saveRestartInstruction: "Save and restart the gateway.",
+    openChatLink: "Open chat link",
+    whatsappQrAlt: "WhatsApp setup QR code",
+    linked: "Linked",
+    whatsappExistingSession: "Existing WhatsApp session found",
+    whatsappWaitingQr: "Waiting for WhatsApp to provide a QR code…",
+    whatsappScanLinkedDevices:
+      "Scan with WhatsApp Linked Devices, not the camera app.",
   },
 
   webhooksPage: {
@@ -484,6 +539,25 @@ export const en: Translations = {
     removeFailed: "Failed to remove: {error}",
     operationStarted: "{label} started",
     operationFailed: "{label} failed: {error}",
+    fullBackup: "Full backup",
+    downloadBackup: "Download backup",
+    noBackupCreated: "No backup created yet",
+    backupStarted: "Backup started",
+    backupFailed: "Backup failed: {error}",
+    backupReady: "Backup ready to download",
+    backupDownloadFailed: "Download failed: {error}",
+    restoreFromUpload: "Restore from backup upload",
+    chooseRestoreZip: "Choose restore zip",
+    noBackupSelected: "No backup archive selected",
+    restoreUpload: "Restore upload",
+    restoreFromPath: "Restore from backups path",
+    restorePath: "Restore path",
+    backupImportStarted: "Import started",
+    backupImportFailed: "Import failed: {error}",
+    restoreBackupTitle: "Restore full Hermes backup?",
+    restoreBackupDescription:
+      "This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of {archive}. This cannot be undone.",
+    backupArchive: "the archive",
     copyFailed: "Couldn't copy to clipboard",
     pastesUploaded: "Uploaded {count} paste(s){redacted}",
     redactedSuffix: " (redacted)",
@@ -760,6 +834,11 @@ export const en: Translations = {
     authLabel: "auth:",
     sourceLink: "source",
     installed: "Installed",
+    endpoint: "Endpoint",
+    runs: "Runs",
+    installsFrom: "Installs from",
+    bootstrapCommands: "Bootstrap commands ({count})",
+    setupNotes: "Setup notes",
   },
 
   modelsPage: {
@@ -819,6 +898,43 @@ export const en: Translations = {
     overridesSummary: "{overrides} override(s) · {auto} auto",
     allAutoSummary: "{count} tasks · all auto",
     configure: "Configure",
+    save: "Save",
+    saving: "Saving…",
+    delete: "Delete",
+    remove: "Remove",
+    providerPlaceholder: "(provider)",
+    modelPlaceholder: "(model)",
+    moaName: "Mixture of Agents",
+    moaConfigurePresets: "Configure Mixture of Agents presets",
+    moaPresetsDescription:
+      "Presets appear as models under the Mixture of Agents provider. References produce perspectives; the aggregator is the acting model that answers and calls tools.",
+    setDefault: "Set default",
+    newPresetName: "new preset name",
+    addPreset: "Add preset",
+    defaultLabel: "Default",
+    referenceModels: "Reference models",
+    addReferenceModel: "Add reference model",
+    aggregator: "Aggregator",
+    selectMoaModel: "Select MoA Model",
+    moaRecursiveError:
+      "MoA presets can't reference or aggregate the Mixture of Agents provider (no recursive MoA).",
+    moaReferenceCountOne: "1 reference",
+    moaReferenceCountTwo: "2 references",
+    moaReferenceCountFew: "{count} references",
+    moaReferenceCountMany: "{count} references",
+    notLoaded: "not loaded",
+    reloadModelTitle: "Switch model?",
+    reloadModelDescription:
+      "Switching to {model} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?",
+    reload: "Reload",
+    effortNone: "Off (no thinking)",
+    effortMinimal: "Minimal",
+    effortLow: "Low",
+    effortMedium: "Medium",
+    effortHigh: "High",
+    effortExtraHigh: "Extra High",
+    effortMax: "Max",
+    effortUltra: "Ultra",
     setMainModel: "Set Main Model",
     analyticsHidden:
       "Token and cost analytics are hidden because the local counts exclude auxiliary calls (compression, vision, web extract, and others) and provider retries, so they diverge from your provider bill. Enable dashboard.show_token_analytics in Config to show the local debug estimate anyway.",
@@ -874,6 +990,8 @@ export const en: Translations = {
       "Chat connection interrupted (code {code}). Reconnecting...",
     chatReconnecting: "Chat is reconnecting.",
     chatDisconnected: "Chat disconnected.",
+    reconnectChat: "Reconnect chat",
+    reconnectNow: "Reconnect now",
     sessionEnded: "[session ended (code {code})]",
     sessionEndedShort: "[session ended]",
     sessionEndedLabel: "Session ended.",
@@ -1154,6 +1272,8 @@ export const en: Translations = {
     toolsetsCount: "{count} toolsets",
     noToolsets: "No toolsets available.",
     repeat: "repeat",
+    repeatForever: "forever",
+    repeatTimes: "{count} times",
     deliveryError: "delivery",
     modelBadge: "model",
     advancedFields: "Advanced fields",
@@ -1253,6 +1373,9 @@ export const en: Translations = {
     editModel: "Change model",
     modelSaved: "Model updated",
     modelSelect: "Select a model",
+    modelSaveFailed:
+      "Profile created, but the model could not be saved — set it from the profile editor.",
+    build: "Build",
     actions: "Actions",
     manageSkills: "Manage skills & tools",
     activeSetHint:
@@ -1301,6 +1424,62 @@ export const en: Translations = {
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
+    setupAlreadyInstalled: "already installed",
+    setupNoDeclaredSteps: "no declared setup",
+    setupResults: "Setup results",
+    providerUnavailable:
+      "This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it.",
+    finishSetupBeforeActivate:
+      "Finish these setup steps before Hermes can activate this provider.",
+    providerSetupCompleted: "Provider dependency setup completed.",
+    installingProviderDependencies: "Installing provider dependencies",
+    installProviderDependencies: "Install provider dependencies",
+    runningProviderSetup: "Running provider setup. This may take a minute…",
+    externalDependency: "External dependency",
+    installNamed: "Install {name}",
+    installDependency: "Install dependency",
+    verifyNamed: "Verify {name}",
+    verifyDependency: "Verify dependency",
+    pythonDependencies: "Python dependencies",
+    requiredEnvironmentValues:
+      "Required environment values. Fill the matching fields below, or set them in the Hermes environment.",
+    loadProviderConfigFailed: "Failed to load provider config",
+    pluginInstalled: "{name} installed",
+    installFailed: "Install failed",
+    rescanFailed: "Rescan failed",
+    saveFailed: "Save failed",
+    providerSetupFailedNamed:
+      "Provider setup failed: {name}. See setup results below.",
+    providerSetupFinished: "Provider setup finished",
+    providerSetupFailed: "Provider setup failed",
+    failed: "Failed",
+    providersSelectionHint:
+      "Configure memory providers and runtime context engine selection.",
+    memoryStatusReady: "ready",
+    memoryStatusNeedsSetup: "needs setup",
+    memoryStatusUnavailable: "unavailable",
+    memoryStatusMissing: "missing",
+    active: "active",
+    builtInMemoryFiles:
+      "Hermes will use the built-in MEMORY.md and USER.md files.",
+    activeProviderMissing:
+      "Active provider {name} is no longer installed. Select another provider and save.",
+    providerNeedsConfig:
+      "Provider dependencies are installed. Add the required credentials or self-hosted URL below, then save the provider.",
+    loadingProviderSettings: "Loading provider settings…",
+    noDashboardSettings: "This provider does not expose dashboard settings.",
+    required: "required",
+    set: "set",
+    open: "Open",
+    keepExistingSecret: "Leave blank to keep existing value",
+    hideSecret: "Hide secret",
+    showSecret: "Show secret",
+    saveMemoryProvider: "Save memory provider",
+    saveContextEngine: "Save context engine",
+    contextCompressor: "compressor",
+    pluginRemoved: "{name} removed",
+    removePluginDescription:
+      'This will remove the "{name}" plugin from your agent.',
   },
 
   skills: {
@@ -1434,6 +1613,7 @@ export const en: Translations = {
     toolsSection: "Tools",
     settingsSection: "Settings",
     jumpToSection: "Jump to section",
+    saved: "{name} saved",
   },
 
   oauth: {
@@ -1468,6 +1648,18 @@ export const en: Translations = {
     loginStatusFailed: "Login {status}",
     pollingFailed: "Polling failed: {error}",
     retryFailed: "Retry failed: {error}",
+    tokenLabel: "token",
+    openProviderDocs: "Open {name} docs",
+    disconnectTitle: "Disconnect {name}?",
+    disconnectDescription:
+      "This will remove the stored OAuth tokens for {name}. You will need to re-authenticate to use it again.",
+    thisProvider: "this provider",
+    minuteShort: "m",
+    hourShort: "h",
+    dayShort: "d",
+    loadFailed: "Failed to load providers",
+    disconnectedToast: "{name} disconnected",
+    disconnectFailed: "Disconnect failed",
     reOpenAuth: "Re-open auth page",
     reOpenVerification: "Re-open verification page",
     submitCode: "Submit code",

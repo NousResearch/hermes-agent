@@ -73,6 +73,7 @@ import {
 import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
@@ -135,7 +136,7 @@ function ToolCallBlock({
     <div className="mt-2 border border-warning/20 bg-warning/5">
       <ListItem
         onClick={() => setOpen(!open)}
-        aria-label={`${open ? t.common.collapse : t.common.expand} tool call ${toolCall.function.name}`}
+        aria-label={`${open ? t.common.collapse : t.common.expand} ${t.models.toolCalls} ${toolCall.function.name}`}
         aria-expanded={open}
         className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
       >
@@ -251,7 +252,9 @@ function MessageBubble({
     compaction: {
       bg: "bg-muted/50",
       text: "text-muted-foreground italic",
-      label: "Context handoff",
+      label:
+        t.sessions.contextHandoff ??
+        en.sessions.contextHandoff!,
     },
   };
 

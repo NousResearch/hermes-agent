@@ -1,4 +1,6 @@
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 /**
  * Confirm + full-page reload after a model change.
@@ -24,15 +26,18 @@ export function ModelReloadConfirm({
   description?: string;
   onCancel: () => void;
 }) {
+  const { t } = useI18n();
+  const copy = t.modelsPage ?? en.modelsPage!;
+
   return (
     <ConfirmDialog
       open={model !== null}
-      title="Switch model?"
+      title={copy.reloadModelTitle}
       description={
         description ??
-        `Switching to ${model ?? ""} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?`
+        copy.reloadModelDescription.replace("{model}", model ?? "")
       }
-      confirmLabel="Reload"
+      confirmLabel={copy.reload}
       onConfirm={() => window.location.reload()}
       onCancel={onCancel}
     />

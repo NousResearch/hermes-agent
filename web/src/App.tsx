@@ -94,6 +94,7 @@ import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
@@ -938,14 +939,23 @@ function SidebarSystemActions({
     if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
       const cmd = updateConfirmInfo.update_command;
       const n = updateConfirmInfo.behind;
-      return `This will run 'hermes update' (${cmd}) and pull ${n} new commit${n === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`;
+      const template =
+        t.systemPage?.updateDialogBehind ??
+        en.systemPage!.updateDialogBehind;
+      return template
+        .replace("{command}", cmd)
+        .replace("{count}", String(n));
     }
     const cmd = updateConfirmInfo?.update_command ?? "hermes update";
     return (
       t.status.updateHermesConfirmMessage ??
       `This will run 'hermes update' (${cmd}) and restart the gateway when it finishes.`
     );
-  }, [t.status.updateHermesConfirmMessage, updateConfirmInfo]);
+  }, [
+    t.status.updateHermesConfirmMessage,
+    t.systemPage?.updateDialogBehind,
+    updateConfirmInfo,
+  ]);
 
   const items: SystemActionItem[] = [
     {

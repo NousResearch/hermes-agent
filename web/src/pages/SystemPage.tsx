@@ -95,13 +95,16 @@ type BackupImportTarget =
   | { kind: "upload"; file: File }
   | { kind: "path"; path: string };
 
-function backupImportLabel(target: BackupImportTarget | null): string {
-  if (!target) return "the archive";
+function backupImportLabel(
+  target: BackupImportTarget | null,
+  fallback: string,
+): string {
+  if (!target) return fallback;
   return target.kind === "upload" ? target.file.name : target.path;
 }
 
-function backupFileName(path: string | null): string {
-  if (!path) return "No backup created yet";
+function backupFileName(path: string | null, fallback = ""): string {
+  if (!path) return fallback;
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
@@ -464,9 +467,12 @@ export default function SystemPage() {
       setActiveAction(res.name);
       setPendingBackupArchive(res.archive ?? null);
       setDownloadableBackupArchive(null);
-      showToast("Backup started", "success");
+      showToast(copy.backupStarted, "success");
     } catch (e) {
-      showToast(`Backup failed: ${e}`, "error");
+      showToast(
+        interpolate(copy.backupFailed, { error: String(e) }),
+        "error",
+      );
     }
   };
 
@@ -475,13 +481,13 @@ export default function SystemPage() {
       if (action === "backup" && pendingBackupArchive) {
         if (exitCode === 0) {
           setDownloadableBackupArchive(pendingBackupArchive);
-          showToast("Backup ready to download", "success");
+          showToast(copy.backupReady, "success");
         } else {
           setPendingBackupArchive(null);
         }
       }
     },
-    [pendingBackupArchive, showToast],
+    [copy.backupReady, pendingBackupArchive, showToast],
   );
 
   const downloadBackup = async () => {
@@ -501,7 +507,10 @@ export default function SystemPage() {
       link.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      showToast(`Download failed: ${e}`, "error");
+      showToast(
+        interpolate(copy.backupDownloadFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setDownloadingBackup(false);
     }
@@ -520,10 +529,13 @@ export default function SystemPage() {
           ? await api.runImportUpload(target.file, true)
           : await api.runImport(target.path, true);
       setActiveAction(res.name);
-      showToast("Import started", "success");
+      showToast(copy.backupImportStarted, "success");
       if (target.kind === "upload") clearImportFile();
     } catch (e) {
-      showToast(`Import failed: ${e}`, "error");
+      showToast(
+        interpolate(copy.backupImportFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setImportingBackup(false);
     }
@@ -1479,7 +1491,7 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Full backup</Label>
+                <Label>{copy.fullBackup}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     size="sm"
@@ -1487,7 +1499,7 @@ export default function SystemPage() {
                     prefix={<Database className="h-3.5 w-3.5" />}
                     onClick={() => void runDashboardBackup()}
                   >
-                    Create backup
+                    {copy.createBackup}
                   </Button>
                   <Button
                     size="sm"
@@ -1502,13 +1514,16 @@ export default function SystemPage() {
                     }
                     onClick={() => void downloadBackup()}
                   >
-                    Download backup
+                    {copy.downloadBackup}
                   </Button>
                   <span
                     className="min-w-0 truncate text-xs text-muted-foreground"
-                    title={pendingBackupArchive ?? "No backup created yet"}
+                    title={pendingBackupArchive ?? copy.noBackupCreated}
                   >
-                    {backupFileName(pendingBackupArchive)}
+                    {backupFileName(
+                      pendingBackupArchive,
+                      copy.noBackupCreated,
+                    )}
                   </span>
                 </div>
               </div>
@@ -1516,7 +1531,7 @@ export default function SystemPage() {
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Restore from backup upload</Label>
+                <Label>{copy.restoreFromUpload}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     type="button"
@@ -1526,13 +1541,13 @@ export default function SystemPage() {
                     prefix={<Upload className="h-3.5 w-3.5" />}
                     onClick={() => importUploadInputRef.current?.click()}
                   >
-                    Choose restore zip
+                    {copy.chooseRestoreZip}
                   </Button>
                   <span
                     className="min-w-0 truncate text-xs text-muted-foreground"
-                    title={importFile?.name ?? "No backup archive selected"}
+                    title={importFile?.name ?? copy.noBackupSelected}
                   >
-                    {importFile?.name ?? "No backup archive selected"}
+                    {importFile?.name ?? copy.noBackupSelected}
                   </span>
                 </div>
               </div>
@@ -1546,13 +1561,13 @@ export default function SystemPage() {
                   setImportConfirmTarget({ kind: "upload", file: importFile });
                 }}
               >
-                Restore upload
+                {copy.restoreUpload}
               </Button>
             </div>
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label htmlFor="import-path">Restore from backups path</Label>
+                <Label htmlFor="import-path">{copy.restoreFromPath}</Label>
                 <Input
                   id="import-path"
                   value={importPath}
@@ -1571,16 +1586,21 @@ export default function SystemPage() {
                   setImportConfirmTarget({ kind: "path", path });
                 }}
               >
-                Restore path
+                {copy.restorePath}
               </Button>
             </div>
             <ConfirmDialog
               open={!!importConfirmTarget}
-              title="Restore full Hermes backup?"
-              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${backupImportLabel(importConfirmTarget)}. This cannot be undone.`}
+              title={copy.restoreBackupTitle}
+              description={interpolate(copy.restoreBackupDescription, {
+                archive: backupImportLabel(
+                  importConfirmTarget,
+                  copy.backupArchive,
+                ),
+              })}
               destructive
-              confirmLabel="Restore"
-              cancelLabel="Cancel"
+              confirmLabel={copy.restore}
+              cancelLabel={copy.cancel}
               onCancel={() => setImportConfirmTarget(null)}
               onConfirm={() => {
                 const target = importConfirmTarget;

@@ -40,6 +40,7 @@ export const zh: Translations = {
     set: '设置',
     skip: '跳过',
     update: '更新',
+    resizePane: id => `调整 ${id} 的大小`,
     tryHint: term => `试试“${term}”`,
     on: '开',
     off: '关'
@@ -428,6 +429,9 @@ export const zh: Translations = {
       installed: name => `已安装「${name}」。`,
       removeTheme: '移除主题',
       importedBadge: '已导入',
+      marketplaceHeader: '来自 VS Code 市场',
+      searchThemesPlaceholder: '搜索你的主题或 VS Code 市场…',
+      noInstalledThemes: query => `没有已安装的主题匹配「${query}」。`,
       pet: {
         title: '宠物',
         intro:

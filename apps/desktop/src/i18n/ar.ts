@@ -40,6 +40,7 @@ export const ar: Translations = {
     set: 'ضبط',
     skip: 'تخطي',
     update: 'تحديث',
+    resizePane: _id => 'تغيير حجم الجزء',
     tryHint: term => `جرّب «${term}»`,
     on: 'مفعّل',
     off: 'معطّل'
@@ -440,6 +441,9 @@ export const ar: Translations = {
       installed: name => `ثُبّتت «${name}».`,
       removeTheme: 'إزالة السمة',
       importedBadge: 'مستوردة',
+      marketplaceHeader: 'من متجر فيجوال ستوديو كود',
+      searchThemesPlaceholder: 'ابحث في سماتك أو متجر فيجوال ستوديو كود…',
+      noInstalledThemes: query => `لا توجد سمة مثبّتة تطابق «${query}».`,
       themeNames: {
         nous: 'نوس',
         midnight: 'منتصف الليل',
@@ -477,9 +481,17 @@ export const ar: Translations = {
         generatedTag: 'مُولَّد',
         countCapped: (cap, total) => `عرض ${cap} من ${total} — اكتب لتضييق النتائج.`,
         count: n => {
-          if (n === 1) return 'حيوان واحد.'
-          if (n === 2) return 'حيوانان.'
-          if (n >= 3 && n <= 10) return `${n} حيوانات.`
+          if (n === 1) {
+            return 'حيوان واحد.'
+          }
+
+          if (n === 2) {
+            return 'حيوانان.'
+          }
+
+          if (n >= 3 && n <= 10) {
+            return `${n} حيوانات.`
+          }
 
           return `${n} حيوانًا.`
         },
@@ -560,6 +572,7 @@ export const ar: Translations = {
       },
       stt: {
         enabled: 'تحويل الكلام إلى نص',
+        echoTranscripts: 'إظهار النصوص المفرّغة',
         provider: 'مزوّد تحويل الكلام إلى نص',
         local: { model: 'نموذج التفريغ المحلي', language: 'لغة التفريغ' },
         openai: { model: 'نموذج OpenAI للتفريغ' },
@@ -715,6 +728,7 @@ export const ar: Translations = {
       },
       stt: {
         enabled: 'يفعّل تفريغ الكلام محليًا أو عبر مزوّد.',
+        echoTranscripts: 'يعيد نشر النص الخام للرسالة الصوتية في المحادثة.',
         elevenlabs: {
           modelId: 'نموذج Scribe من ElevenLabs للتفريغ.',
           languageCode: 'رمز لغة ISO-639-3 اختياري. اتركه فارغًا ليكتشف ElevenLabs اللغة تلقائيًا.'

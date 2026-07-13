@@ -303,6 +303,10 @@ export default function ProfilesPage() {
       editModel: p.editModel ?? "Change model",
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
+      modelSaveFailed:
+        p.modelSaveFailed ??
+        "Profile created, but the model could not be saved — set it from the profile editor.",
+      build: p.build ?? "Build",
       actions: p.actions ?? "Actions",
       manageSkills: p.manageSkills ?? "Manage skills & tools",
       activeSetHint:
@@ -448,10 +452,7 @@ export default function ProfilesPage() {
       });
       showToast(`${t.profiles.created}: ${name}`, "success");
       if (picked && res.model_set === false) {
-        showToast(
-          `Profile created, but the model could not be saved — set it from the profile editor.`,
-          "error",
-        );
+        showToast(L.modelSaveFailed, "error");
       }
       setNewName("");
       setNewDescription("");
@@ -755,7 +756,7 @@ export default function ProfilesPage() {
           outlined
           onClick={() => navigate("/profiles/new")}
         >
-          Build
+          {L.build}
         </Button>
         <Button
           className="uppercase"
@@ -769,7 +770,7 @@ export default function ProfilesPage() {
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading, navigate]);
+  }, [L.build, setEnd, t.common.create, loading, navigate]);
 
   const cloning = cloneFrom !== null;
 
@@ -823,7 +824,7 @@ export default function ProfilesPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1248,7 +1249,7 @@ export default function ProfilesPage() {
               size="icon"
               onClick={closeEditor}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>

@@ -43,6 +43,8 @@ export const ar: Translations = {
     expand: "توسيع",
     general: "عام",
     messaging: "المراسلة",
+    item: "العنصر",
+    commaSeparatedValues: "قيم مفصولة بفواصل",
     gateway: "البوابة",
     gatewayHint:
       "تُضبط منصات المراسلة وخادم الواجهة البرمجية والخطافات الشبكية في صفحة القنوات. هذه إعدادات عامة للبوابة، وتشمل وضع الوسيط أو الترحيل وقائمة السماح العامة.",
@@ -121,6 +123,8 @@ export const ar: Translations = {
     currentProfileOption: "لوحة التحكم هذه ({name})",
     managingProfileBanner:
       "تدير الملف الشخصي «{name}»؛ تنطبق الإعدادات والمفاتيح والمهارات وخوادم MCP والنموذج والمحادثات الجديدة على هذا الملف.",
+    consoleTitle: "طرفية هرمس",
+    closeConsole: "إغلاق الطرفية",
   },
 
   status: {
@@ -174,6 +178,7 @@ export const ar: Translations = {
     startConversation: "ابدأ محادثة لتظهر هنا",
     noMessages: "لا توجد رسائل",
     untitledSession: "جلسة بلا عنوان",
+    contextHandoff: "تسليم السياق",
     deleteSession: "حذف الجلسة",
     confirmDeleteTitle: "حذف الجلسة؟",
     confirmDeleteMessage:
@@ -307,7 +312,12 @@ export const ar: Translations = {
     expired: "منتهي الصلاحية",
     nothingToSave: "لا توجد قيمة للحفظ؛ املأ حقلًا واحدًا على الأقل.",
     required: "مطلوب",
+    mustStartWith: "يجب أن يبدأ الحقل {field} بالبادئة {prefix}",
+    invalidSlackMember:
+      "لا تبدو القيمة {value} معرّف عضو صالحًا في سلاك. استخدم معرّفات مثل U01ABC2DEF3.",
+    fixHighlightedFields: "صحّح الحقول المميزة قبل الحفظ.",
     saved: "حُفظ",
+    savedNamed: "حُفظ {name}",
     saveFailed: "فشل الحفظ",
     gatewayRestarting: "جارٍ إعادة تشغيل البوابة…",
     restartFailed: "فشلت إعادة التشغيل",
@@ -373,9 +383,6 @@ export const ar: Translations = {
     invalidTelegramToken:
       "ألصق رمز البوت الكامل من بوت فاذر، مثل 123456789:ABC…",
     invalidTelegramUser: "القيمة {id} ليست معرّف مستخدم تيليجرام رقميًا.",
-    invalidPrefix: "يجب أن يبدأ الحقل {field} بالقيمة {prefix}",
-    invalidSlackMember:
-      "القيمة {id} لا تبدو معرّف عضو سلاك صالحًا. استخدم معرّفًا مثل U01ABC2DEF3.",
     ready: "جاهز",
     allowedUsers: "المستخدمون المسموح لهم",
     ownerDetected: "اكتُشف المالك",
@@ -385,6 +392,57 @@ export const ar: Translations = {
     qrAlt: "رمز الاستجابة السريعة لإعداد تيليجرام",
     waiting: "قيد الانتظار",
     openTelegram: "فتح تيليجرام",
+    whatsappSetupFailed: "فشل إعداد واتساب.",
+    whatsappPairingExpired:
+      "انتهت صلاحية إعداد واتساب. ابدأ إعدادًا جديدًا عبر رمز الاستجابة السريعة.",
+    whatsappStillWaiting: "ما زلنا في انتظار واتساب. ستُعاد المحاولة بعد",
+    whatsappRestartFailedExit:
+      "فشلت إعادة تشغيل البوابة برمز الخروج {code}؛ أعد تشغيلها يدويًا",
+    whatsappSavedRestarting: "حُفظ واتساب؛ جارٍ إعادة تشغيل البوابة…",
+    whatsappSavedRestartFailed:
+      "حُفظ واتساب، لكن إعادة تشغيل البوابة فشلت",
+    preparing: "جارٍ التجهيز",
+    whatsappLinkedHelp:
+      "تم ربط واتساب، لكن هرمس لم يبدأ الاستماع بعد. احفظ الإعداد وأعد تشغيل البوابة لإكماله.",
+    whatsappPreparingHelp:
+      "جارٍ تجهيز جسر واتساب. سيظهر رمز الاستجابة السريعة هنا عندما يصبح جاهزًا.",
+    whatsappStartingHelp:
+      "جارٍ تشغيل جسر اقتران واتساب. سيظهر رمز الاستجابة السريعة هنا عندما يصبح جاهزًا.",
+    whatsappScanHelp:
+      "افتح واتساب على هاتفك، ثم انتقل إلى الأجهزة المرتبطة وامسح الرمز من هناك. هذا الرمز ليس رابطًا للمتصفح.",
+    whatsappLinkedAccountKnown:
+      "هذا هو حساب واتساب الذي سجّل هرمس الدخول إليه الآن.",
+    whatsappLinkedAccountScanned:
+      "سجّل هرمس الدخول إلى حساب واتساب الذي مسح رمز الاستجابة السريعة.",
+    whatsappSelfChatInstruction:
+      "بعد إعادة التشغيل، افتح محادثة مراسلة نفسك في الحساب المرتبط وأرسل رسالة إلى هرمس.",
+    whatsappBotInstruction:
+      "بعد إعادة التشغيل، ابدأ محادثة من حساب واتساب آخر مع الحساب المرتبط وأرسل رسالة إلى هرمس.",
+    whatsappKeepAllowlist:
+      "سيُبقي هرمس قائمة السماح المحفوظة لواتساب.",
+    whatsappSelfChatAutoAllow:
+      "سيسمح وضع مراسلة النفس للحساب المرتبط تلقائيًا عند الحفظ.",
+    whatsappPairingCodeInstruction:
+      "إذا لم تُدخل أرقامًا مسموحًا لها، فسيرد هرمس برمز اقتران. وافق عليه من صفحة الاقتران في لوحة التحكم.",
+    pairWithQr: "الاقتران برمز الاستجابة السريعة",
+    whatsappConfigured: "إعدادات واتساب الحالية مضبوطة.",
+    mode: "الوضع",
+    bot: "بوت",
+    selfChat: "مراسلة النفس",
+    allowedWhatsAppNumbers: "أرقام واتساب المسموح لها",
+    whatsappUnknownDmPairing:
+      "بعد الحفظ، تستخدم الرسائل الخاصة من الأرقام المجهولة رموز اقتران هرمس ما لم يكن الرقم مسموحًا له.",
+    linkedAs: "مرتبط بالحساب {account}",
+    whatsappDeviceLinked: "تم ربط جهاز واتساب",
+    saveRestartInstruction: "احفظ وأعد تشغيل البوابة.",
+    openChatLink: "فتح رابط المحادثة",
+    whatsappQrAlt: "رمز الاستجابة السريعة لإعداد واتساب",
+    linked: "مرتبط",
+    whatsappExistingSession: "عُثر على جلسة واتساب موجودة",
+    whatsappWaitingQr:
+      "في انتظار أن يوفّر واتساب رمز الاستجابة السريعة…",
+    whatsappScanLinkedDevices:
+      "امسح الرمز من قسم الأجهزة المرتبطة في واتساب، لا من تطبيق الكاميرا.",
   },
 
   webhooksPage: {
@@ -480,6 +538,25 @@ export const ar: Translations = {
     removeFailed: "فشلت الإزالة: {error}",
     operationStarted: "بدأ إجراء {label}",
     operationFailed: "فشل إجراء {label}: {error}",
+    fullBackup: "نسخة احتياطية كاملة",
+    downloadBackup: "تنزيل النسخة الاحتياطية",
+    noBackupCreated: "لم تُنشأ نسخة احتياطية بعد",
+    backupStarted: "بدأ إنشاء النسخة الاحتياطية",
+    backupFailed: "فشل إنشاء النسخة الاحتياطية: {error}",
+    backupReady: "النسخة الاحتياطية جاهزة للتنزيل",
+    backupDownloadFailed: "فشل التنزيل: {error}",
+    restoreFromUpload: "الاستعادة من ملف نسخة احتياطية",
+    chooseRestoreZip: "اختيار ملف الاستعادة المضغوط",
+    noBackupSelected: "لم يُحدّد ملف نسخة احتياطية",
+    restoreUpload: "استعادة الملف المرفوع",
+    restoreFromPath: "الاستعادة من مسار نسخة احتياطية",
+    restorePath: "استعادة المسار",
+    backupImportStarted: "بدأت استعادة النسخة الاحتياطية",
+    backupImportFailed: "فشلت استعادة النسخة الاحتياطية: {error}",
+    restoreBackupTitle: "استعادة نسخة هرمس الاحتياطية الكاملة؟",
+    restoreBackupDescription:
+      "سيستبدل هذا إعدادات هرمس ومهاراته وجلساته وبياناته الحالية بمحتويات {archive}. لا يمكن التراجع عن ذلك.",
+    backupArchive: "النسخة الاحتياطية",
     copyFailed: "تعذّر النسخ إلى الحافظة",
     pastesUploaded: "رُفع {count} ملف لصق{redacted}",
     redactedSuffix: " بعد التنقيح",
@@ -754,6 +831,11 @@ export const ar: Translations = {
     authLabel: "المصادقة:",
     sourceLink: "المصدر",
     installed: "مثبّت",
+    endpoint: "نقطة النهاية",
+    runs: "يشغّل",
+    installsFrom: "يُثبّت من",
+    bootstrapCommands: "أوامر التهيئة ({count})",
+    setupNotes: "ملاحظات الإعداد",
   },
 
   modelsPage: {
@@ -813,6 +895,43 @@ export const ar: Translations = {
     overridesSummary: "{overrides} تخصيص · {auto} تلقائي",
     allAutoSummary: "{count} مهمة · كلها تلقائية",
     configure: "ضبط",
+    save: "حفظ",
+    saving: "جارٍ الحفظ…",
+    delete: "حذف",
+    remove: "إزالة",
+    providerPlaceholder: "(المزوّد)",
+    modelPlaceholder: "(النموذج)",
+    moaName: "مزيج الوكلاء",
+    moaConfigurePresets: "ضبط إعدادات مزيج الوكلاء المسبقة",
+    moaPresetsDescription:
+      "تظهر الإعدادات المسبقة كنماذج ضمن مزوّد مزيج الوكلاء. تنتج النماذج المرجعية وجهات نظر متعددة، بينما يكون النموذج المجمِّع هو النموذج العامل الذي يجيب ويستدعي الأدوات.",
+    setDefault: "تعيين افتراضيًا",
+    newPresetName: "اسم إعداد مسبق جديد",
+    addPreset: "إضافة إعداد مسبق",
+    defaultLabel: "الافتراضي",
+    referenceModels: "النماذج المرجعية",
+    addReferenceModel: "إضافة نموذج مرجعي",
+    aggregator: "النموذج المجمِّع",
+    selectMoaModel: "اختيار نموذج لمزيج الوكلاء",
+    moaRecursiveError:
+      "لا يمكن لإعدادات مزيج الوكلاء أن تستخدم مزوّد مزيج الوكلاء مرجعًا أو مجمِّعًا، لأن التداخل الذاتي غير مدعوم.",
+    moaReferenceCountOne: "نموذج مرجعي واحد",
+    moaReferenceCountTwo: "نموذجان مرجعيان",
+    moaReferenceCountFew: "{count} نماذج مرجعية",
+    moaReferenceCountMany: "{count} نموذجًا مرجعيًا",
+    notLoaded: "غير محمّل",
+    reloadModelTitle: "تبديل النموذج؟",
+    reloadModelDescription:
+      "سيبدأ التبديل إلى {model} محادثة جديدة. ستبقى محادثتك الحالية في قائمة الجلسات، وستُحفظ ذاكرة الوكيل. هل تريد إعادة التحميل الآن لتطبيق التغيير؟",
+    reload: "إعادة التحميل",
+    effortNone: "متوقف، بلا تفكير",
+    effortMinimal: "أدنى",
+    effortLow: "منخفض",
+    effortMedium: "متوسط",
+    effortHigh: "مرتفع",
+    effortExtraHigh: "مرتفع جدًا",
+    effortMax: "أقصى",
+    effortUltra: "فائق",
     setMainModel: "تعيين النموذج الرئيسي",
     analyticsHidden:
       "تحليلات التوكنات والتكلفة مخفية لأن العد المحلي لا يشمل الاستدعاءات المساعدة، مثل الضغط والرؤية واستخراج الويب، ولا محاولات المزوّد المتكررة؛ لذلك يختلف عن فاتورة المزوّد. فعّل dashboard.show_token_analytics من الإعدادات لإظهار التقدير المحلي لأغراض التصحيح.",
@@ -867,6 +986,8 @@ export const ar: Translations = {
       "انقطع اتصال المحادثة (الرمز {code}). جارٍ إعادة الاتصال...",
     chatReconnecting: "جارٍ إعادة اتصال المحادثة.",
     chatDisconnected: "انقطعت المحادثة.",
+    reconnectChat: "إعادة اتصال المحادثة",
+    reconnectNow: "إعادة الاتصال الآن",
     sessionEnded: "[انتهت الجلسة (الرمز {code})]",
     sessionEndedShort: "[انتهت الجلسة]",
     sessionEndedLabel: "انتهت الجلسة.",
@@ -1153,6 +1274,8 @@ export const ar: Translations = {
     toolsetsCount: "{count} من مجموعات الأدوات",
     noToolsets: "لا توجد مجموعات أدوات متاحة.",
     repeat: "التكرار",
+    repeatForever: "بلا نهاية",
+    repeatTimes: "{count} مرات",
     deliveryError: "التسليم",
     modelBadge: "النموذج",
     advancedFields: "حقول متقدمة",
@@ -1252,6 +1375,9 @@ export const ar: Translations = {
     editModel: "تغيير النموذج",
     modelSaved: "حُدّث النموذج",
     modelSelect: "اختيار نموذج",
+    modelSaveFailed:
+      "أُنشئ الملف الشخصي، لكن تعذّر حفظ النموذج. عيّنه من محرر الملف الشخصي.",
+    build: "إنشاء متقدم",
     actions: "الإجراءات",
     manageSkills: "إدارة المهارات والأدوات",
     activeSetHint:
@@ -1300,6 +1426,62 @@ export const ar: Translations = {
     versionBadge: "الإصدار",
     showInSidebar: "إظهار في الشريط الجانبي",
     hideFromSidebar: "إخفاء من الشريط الجانبي",
+    setupAlreadyInstalled: "مثبّت مسبقًا",
+    setupNoDeclaredSteps: "لا توجد خطوات إعداد معلنة",
+    setupResults: "نتائج الإعداد",
+    providerUnavailable:
+      "هذا المزوّد مثبّت لكنه غير متاح. قد يحتاج إلى اعتماديات محلية أو خطوة إعداد يدوية قبل أن يتمكن هرمس من تفعيله.",
+    finishSetupBeforeActivate:
+      "أكمل خطوات الإعداد هذه قبل أن يتمكن هرمس من تفعيل المزوّد.",
+    providerSetupCompleted: "اكتمل إعداد اعتماديات المزوّد.",
+    installingProviderDependencies: "جارٍ تثبيت اعتماديات المزوّد",
+    installProviderDependencies: "تثبيت اعتماديات المزوّد",
+    runningProviderSetup: "جارٍ تشغيل إعداد المزوّد. قد يستغرق ذلك دقيقة…",
+    externalDependency: "اعتمادية خارجية",
+    installNamed: "تثبيت {name}",
+    installDependency: "تثبيت الاعتمادية",
+    verifyNamed: "التحقق من {name}",
+    verifyDependency: "التحقق من الاعتمادية",
+    pythonDependencies: "اعتماديات بايثون",
+    requiredEnvironmentValues:
+      "قيم البيئة المطلوبة. املأ الحقول المطابقة أدناه، أو اضبطها في بيئة هرمس.",
+    loadProviderConfigFailed: "فشل تحميل إعداد المزوّد",
+    pluginInstalled: "ثُبّتت الإضافة {name}",
+    installFailed: "فشل التثبيت",
+    rescanFailed: "فشلت إعادة الفحص",
+    saveFailed: "فشل الحفظ",
+    providerSetupFailedNamed:
+      "فشل إعداد المزوّد {name}. راجع نتائج الإعداد أدناه.",
+    providerSetupFinished: "اكتمل إعداد المزوّد",
+    providerSetupFailed: "فشل إعداد المزوّد",
+    failed: "فشل",
+    providersSelectionHint:
+      "اضبط مزوّدي الذاكرة واختيار محرك السياق المستخدم أثناء التشغيل.",
+    memoryStatusReady: "جاهز",
+    memoryStatusNeedsSetup: "يحتاج إلى إعداد",
+    memoryStatusUnavailable: "غير متاح",
+    memoryStatusMissing: "مفقود",
+    active: "نشط",
+    builtInMemoryFiles:
+      "سيستخدم هرمس ملفي الذاكرة المدمجين MEMORY.md وUSER.md.",
+    activeProviderMissing:
+      "المزوّد النشط {name} لم يعد مثبّتًا. اختر مزوّدًا آخر ثم احفظ.",
+    providerNeedsConfig:
+      "اعتماديات المزوّد مثبّتة. أضف بيانات الاعتماد المطلوبة أو رابط الاستضافة الذاتية أدناه، ثم احفظ المزوّد.",
+    loadingProviderSettings: "جارٍ تحميل إعدادات المزوّد…",
+    noDashboardSettings: "لا يوفّر هذا المزوّد إعدادات في لوحة التحكم.",
+    required: "مطلوب",
+    set: "مضبوط",
+    open: "فتح",
+    keepExistingSecret: "اتركه فارغًا للإبقاء على القيمة الحالية",
+    hideSecret: "إخفاء السر",
+    showSecret: "إظهار السر",
+    saveMemoryProvider: "حفظ مزوّد الذاكرة",
+    saveContextEngine: "حفظ محرك السياق",
+    contextCompressor: "الضاغط",
+    pluginRemoved: "أُزيلت الإضافة {name}",
+    removePluginDescription:
+      "سيؤدي هذا إلى إزالة الإضافة «{name}» من وكيلك.",
   },
 
   skills: {
@@ -1436,6 +1618,7 @@ export const ar: Translations = {
     toolsSection: "الأدوات",
     settingsSection: "الإعدادات",
     jumpToSection: "الانتقال إلى قسم",
+    saved: "حُفظ {name}",
   },
 
   oauth: {
@@ -1470,6 +1653,18 @@ export const ar: Translations = {
     loginStatusFailed: "فشل تسجيل الدخول بالحالة {status}",
     pollingFailed: "تعذّر الاستطلاع: {error}",
     retryFailed: "تعذّرت إعادة المحاولة: {error}",
+    tokenLabel: "الرمز",
+    openProviderDocs: "فتح توثيق {name}",
+    disconnectTitle: "قطع اتصال {name}؟",
+    disconnectDescription:
+      "سيؤدي هذا إلى إزالة رموز التفويض المحفوظة لـ {name}. ستحتاج إلى إعادة المصادقة لاستخدامه مجددًا.",
+    thisProvider: "هذا المزوّد",
+    minuteShort: "د",
+    hourShort: "س",
+    dayShort: "ي",
+    loadFailed: "فشل تحميل المزوّدين",
+    disconnectedToast: "قُطع اتصال {name}",
+    disconnectFailed: "فشل قطع الاتصال",
     reOpenAuth: "إعادة فتح صفحة التفويض",
     reOpenVerification: "إعادة فتح صفحة التحقق",
     submitCode: "إرسال الرمز",

@@ -202,7 +202,9 @@ export function ChatSessionList({
                 {s.message_count > 0 && (
                   <>
                     <span aria-hidden>·</span>
-                    <span>{s.message_count} msgs</span>
+                    <span>
+                      {s.message_count} {t.common.msgs}
+                    </span>
                   </>
                 )}
                 {s.source && s.source !== "cli" && (

@@ -41,6 +41,7 @@ import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
@@ -496,11 +497,16 @@ function getJobState(job: CronJob): string {
   return asText(job.state) || (job.enabled === false ? "disabled" : "scheduled");
 }
 
-function getRepeatDisplay(job: CronJob): string {
+function getRepeatDisplay(
+  job: CronJob,
+  copy: { forever: string; times: string },
+): string {
   const repeat = job.repeat;
-  if (!repeat || repeat.times == null) return "forever";
+  if (!repeat || repeat.times == null) return copy.forever;
   const completed = repeat.completed ?? 0;
-  return completed > 0 ? `${completed}/${repeat.times}` : `${repeat.times} times`;
+  return completed > 0
+    ? `${completed}/${repeat.times}`
+    : copy.times.replace("{count}", String(repeat.times));
 }
 
 function getJobMode(job: CronJob): string {
@@ -1101,7 +1107,15 @@ export default function CronPage() {
                     <span className="font-mono-ui">
                       {getJobScheduleDisplay(job, scheduleDescribeStrings)}
                     </span>
-                    <span>{t.cron.repeat ?? "repeat"}: {getRepeatDisplay(job)}</span>
+                    <span>
+                      {t.cron.repeat ?? en.cron.repeat!}:{" "}
+                      {getRepeatDisplay(job, {
+                        forever:
+                          t.cron.repeatForever ??
+                          en.cron.repeatForever!,
+                        times: t.cron.repeatTimes ?? en.cron.repeatTimes!,
+                      })}
+                    </span>
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>

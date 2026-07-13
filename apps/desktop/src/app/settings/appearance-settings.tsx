@@ -107,6 +107,7 @@ function MarketplaceThemeResults({
 }) {
   const { t } = useI18n()
   const copy = t.commandCenter.installTheme
+  const appearance = t.settings.appearance
   const debounced = useDebounced(query.trim(), 300)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -158,7 +159,7 @@ function MarketplaceThemeResults({
 
   const header = (
     <p className="mb-2 mt-4 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
-      From the VS Code Marketplace
+      {appearance.marketplaceHeader}
     </p>
   )
 
@@ -321,7 +322,7 @@ export function AppearanceSettings() {
                   <input
                     className="w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
                     onChange={event => setQuery(event.target.value)}
-                    placeholder="Search your themes or the VS Code Marketplace…"
+                    placeholder={a.searchThemesPlaceholder}
                     spellCheck={false}
                     value={query}
                   />
@@ -333,7 +334,7 @@ export function AppearanceSettings() {
                   {filteredThemes.length === 0 ? (
                     needle ? (
                       <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        No installed themes match "{query.trim()}".
+                        {a.noInstalledThemes(query.trim())}
                       </p>
                     ) : null
                   ) : (

@@ -861,13 +861,13 @@ export default function McpPage() {
                   {/* Connection detail: what the agent actually talks to. */}
                   {entry.transport === "http" && entry.url && (
                     <p className="mt-1 text-xs text-muted-foreground">
-                      <span className="font-medium">Endpoint:</span>{" "}
+                      <span className="font-medium">{copy.endpoint}:</span>{" "}
                       <code className="font-mono">{entry.url}</code>
                     </p>
                   )}
                   {entry.transport === "stdio" && entry.command && (
                     <p className="mt-1 text-xs text-muted-foreground break-all">
-                      <span className="font-medium">Runs:</span>{" "}
+                      <span className="font-medium">{copy.runs}:</span>{" "}
                       <code className="font-mono">
                         {[entry.command, ...entry.args].join(" ")}
                       </code>
@@ -877,7 +877,7 @@ export default function McpPage() {
                       before they install (matches the docs trust model). */}
                   {entry.install_url && (
                     <p className="mt-1 text-xs text-muted-foreground break-all">
-                      <span className="font-medium">Installs from:</span>{" "}
+                      <span className="font-medium">{copy.installsFrom}:</span>{" "}
                       {isHttpUrl(entry.install_url) ? (
                         <a
                           href={entry.install_url}
@@ -896,7 +896,9 @@ export default function McpPage() {
                   {entry.bootstrap.length > 0 && (
                     <details className="mt-1 text-xs text-muted-foreground">
                       <summary className="cursor-pointer select-none">
-                        Bootstrap commands ({entry.bootstrap.length})
+                        {interpolate(copy.bootstrapCommands, {
+                          count: entry.bootstrap.length,
+                        })}
                       </summary>
                       <ul className="mt-1 ml-3 list-disc space-y-0.5">
                         {entry.bootstrap.map((cmd, i) => (
@@ -913,7 +915,7 @@ export default function McpPage() {
                   {entry.post_install && (
                     <details className="mt-1 text-xs text-muted-foreground">
                       <summary className="cursor-pointer select-none">
-                        Setup notes
+                        {copy.setupNotes}
                       </summary>
                       <p className="mt-1 whitespace-pre-wrap">
                         {entry.post_install.trim()}

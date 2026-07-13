@@ -261,12 +261,14 @@ function ProjectTreeRow({
   relativeTo?: null | string
 }) {
   const renamingPath = useStore($renamingPath)
+
   // react-arborist computes the depth indent as a physical paddingLeft; mirror
   // it (and the collapsed chevron) to paddingRight when the document is RTL.
   // `withTreeInset` adds the row inset on top of arborist's calc — apply it to
   // whichever physical side matches the document direction.
   const { locale } = useI18n()
   const rtl = localeDirection(locale) === 'rtl'
+
   const rowStyle = rtl
     ? {
         ...style,

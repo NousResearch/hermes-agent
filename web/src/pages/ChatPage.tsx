@@ -1470,9 +1470,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   outlined
                   onClick={reconnectPty}
                   prefix={<RotateCcw className="h-4 w-4" />}
-                  aria-label="Reconnect chat"
+                  aria-label={chatCopy.reconnectChat}
                 >
-                  Reconnect now
+                  {chatCopy.reconnectNow}
                 </Button>
               </div>
             </div>

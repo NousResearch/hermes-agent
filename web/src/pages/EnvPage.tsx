@@ -42,6 +42,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -258,7 +259,7 @@ function EnvVarRow({
               size="icon"
               onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}
+              aria-label={`${isRevealed ? t.env.hideValue : t.env.showValue} ${varKey}`}
             >
               {isRevealed ? <EyeOff /> : <Eye />}
             </Button>
@@ -714,7 +715,10 @@ export default function EnvPage() {
         delete n[key];
         return n;
       });
-      showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
+      showToast(
+        (t.env.saved ?? en.env.saved!).replace("{name}", key),
+        "success",
+      );
     } catch (e) {
       showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
     } finally {

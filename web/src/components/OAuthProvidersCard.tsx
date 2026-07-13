@@ -21,6 +21,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 interface Props {
   onError?: (msg: string) => void;
@@ -30,6 +31,9 @@ interface Props {
 function formatExpiresAt(
   expiresAt: string | null | undefined,
   expiresInTemplate: string,
+  expiredLabel: string,
+  numberFormat: Intl.NumberFormat,
+  units: { day: string; hour: string; minute: string },
 ): string | null {
   if (!expiresAt) return null;
   try {
@@ -37,13 +41,26 @@ function formatExpiresAt(
     if (Number.isNaN(dt.getTime())) return null;
     const now = Date.now();
     const diff = dt.getTime() - now;
-    if (diff < 0) return "expired";
+    if (diff < 0) return expiredLabel;
     const mins = Math.floor(diff / 60_000);
-    if (mins < 60) return expiresInTemplate.replace("{time}", `${mins}m`);
+    if (mins < 60) {
+      return expiresInTemplate.replace(
+        "{time}",
+        `${numberFormat.format(mins)}${units.minute}`,
+      );
+    }
     const hours = Math.floor(mins / 60);
-    if (hours < 24) return expiresInTemplate.replace("{time}", `${hours}h`);
+    if (hours < 24) {
+      return expiresInTemplate.replace(
+        "{time}",
+        `${numberFormat.format(hours)}${units.hour}`,
+      );
+    }
     const days = Math.floor(hours / 24);
-    return expiresInTemplate.replace("{time}", `${days}d`);
+    return expiresInTemplate.replace(
+      "{time}",
+      `${numberFormat.format(days)}${units.day}`,
+    );
   } catch {
     return null;
   }
@@ -56,33 +73,68 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [loginFor, setLoginFor] = useState<OAuthProvider | null>(null);
   const [disconnectTarget, setDisconnectTarget] =
     useState<OAuthProvider | null>(null);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
+  const durationNumberFormat = new Intl.NumberFormat(locale);
 
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
+  const loadProviders = useCallback(async () => {
+    try {
+      const resp = await api.getOAuthProviders();
+      setProviders(resp.providers);
+    } catch (e) {
+      onErrorRef.current?.(
+        `${t.oauth.loadFailed ?? en.oauth.loadFailed!}: ${e}`,
+      );
+    }
+  }, [t.oauth.loadFailed]);
 
   const refresh = useCallback(() => {
     setLoading(true);
-    api
-      .getOAuthProviders()
-      .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
-      .finally(() => setLoading(false));
-  }, []);
+    void loadProviders().finally(() => setLoading(false));
+  }, [loadProviders]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    let cancelled = false;
+    api
+      .getOAuthProviders()
+      .then((resp) => {
+        if (!cancelled) setProviders(resp.providers);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          onErrorRef.current?.(
+            `${t.oauth.loadFailed ?? en.oauth.loadFailed!}: ${e}`,
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t.oauth.loadFailed]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);
     setDisconnectTarget(null);
     try {
       await api.disconnectOAuthProvider(provider.id);
-      onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
+      onSuccess?.(
+        (t.oauth.disconnectedToast ?? en.oauth.disconnectedToast!).replace(
+          "{name}",
+          provider.name,
+        ),
+      );
       refresh();
     } catch (e) {
-      onError?.(`${t.oauth.disconnect} failed: ${e}`);
+      onError?.(
+        `${t.oauth.disconnectFailed ?? en.oauth.disconnectFailed!}: ${e}`,
+      );
     } finally {
       setBusyId(null);
     }
@@ -135,6 +187,14 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
             const expiresLabel = formatExpiresAt(
               p.status.expires_at,
               t.oauth.expiresIn,
+              t.oauth.expired,
+              durationNumberFormat,
+              {
+                minute:
+                  t.oauth.minuteShort ?? en.oauth.minuteShort!,
+                hour: t.oauth.hourShort ?? en.oauth.hourShort!,
+                day: t.oauth.dayShort ?? en.oauth.dayShort!,
+              },
             );
             const isBusy = busyId === p.id;
             return (
@@ -162,12 +222,12 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                           {t.oauth.connected}
                         </Badge>
                       )}
-                      {expiresLabel === "expired" && (
+                      {expiresLabel === t.oauth.expired && (
                         <Badge tone="destructive" className="text-xs">
                           {t.oauth.expired}
                         </Badge>
                       )}
-                      {expiresLabel && expiresLabel !== "expired" && (
+                      {expiresLabel && expiresLabel !== t.oauth.expired && (
                         <Badge tone="outline" className="text-xs">
                           {expiresLabel}
                         </Badge>
@@ -175,7 +235,9 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     </div>
                     {p.status.logged_in && p.status.token_preview && (
                       <span className="truncate text-xs font-mono-ui text-text-secondary">
-                        <span className="text-text-tertiary">token </span>
+                        <span className="text-text-tertiary">
+                          {t.oauth.tokenLabel ?? en.oauth.tokenLabel!}{" "}
+                        </span>
                         {p.status.token_preview}
                         {p.status.source_label && (
                           <span className="text-text-tertiary">
@@ -220,7 +282,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex"
-                      title={`Open ${p.name} docs`}
+                      title={(
+                        t.oauth.openProviderDocs ??
+                        en.oauth.openProviderDocs!
+                      ).replace("{name}", p.name)}
                     >
                       <Button ghost size="icon">
                         <ExternalLink />
@@ -277,8 +342,18 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         onConfirm={() => {
           if (disconnectTarget) void handleDisconnect(disconnectTarget);
         }}
-        title={`${t.oauth.disconnect} ${disconnectTarget?.name ?? ""}?`}
-        description={`This will remove the stored OAuth tokens for ${disconnectTarget?.name ?? "this provider"}. You will need to re-authenticate to use it again.`}
+        title={(
+          t.oauth.disconnectTitle ??
+          en.oauth.disconnectTitle!
+        ).replace("{name}", disconnectTarget?.name ?? "")}
+        description={(
+          t.oauth.disconnectDescription ??
+          en.oauth.disconnectDescription!
+        ).replace(
+          "{name}",
+          disconnectTarget?.name ??
+            (t.oauth.thisProvider ?? en.oauth.thisProvider!),
+        )}
         destructive
         confirmLabel={t.oauth.disconnect}
       />

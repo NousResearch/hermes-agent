@@ -61,6 +61,8 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
+    item?: string;
+    commaSeparatedValues?: string;
     // Optional: non-English locales fall back to the English literal in the
     // component until translated, matching the enriched-profiles keys.
     gateway?: string;
@@ -141,6 +143,8 @@ export interface Translations {
     managingProfile?: string;
     currentProfileOption?: string;
     managingProfileBanner?: string;
+    consoleTitle?: string;
+    closeConsole?: string;
   };
 
   // ── Status page ──
@@ -218,6 +222,7 @@ export interface Translations {
     previousPage: string;
     nextPage: string;
     renameSession?: string;
+    contextHandoff?: string;
     exportSession?: string;
     sessionTitle?: string;
     saveTitle?: string;
@@ -323,7 +328,11 @@ export interface Translations {
     | "expired"
     | "nothingToSave"
     | "required"
+    | "mustStartWith"
+    | "invalidSlackMember"
+    | "fixHighlightedFields"
     | "saved"
+    | "savedNamed"
     | "saveFailed"
     | "gatewayRestarting"
     | "restartFailed"
@@ -360,7 +369,41 @@ export interface Translations {
     | "saveRestart"
     | "qrAlt"
     | "waiting"
-    | "openTelegram",
+    | "openTelegram"
+    | "whatsappSetupFailed"
+    | "whatsappPairingExpired"
+    | "whatsappStillWaiting"
+    | "whatsappRestartFailedExit"
+    | "whatsappSavedRestarting"
+    | "whatsappSavedRestartFailed"
+    | "preparing"
+    | "whatsappLinkedHelp"
+    | "whatsappPreparingHelp"
+    | "whatsappStartingHelp"
+    | "whatsappScanHelp"
+    | "whatsappLinkedAccountKnown"
+    | "whatsappLinkedAccountScanned"
+    | "whatsappSelfChatInstruction"
+    | "whatsappBotInstruction"
+    | "whatsappKeepAllowlist"
+    | "whatsappSelfChatAutoAllow"
+    | "whatsappPairingCodeInstruction"
+    | "pairWithQr"
+    | "whatsappConfigured"
+    | "mode"
+    | "bot"
+    | "selfChat"
+    | "allowedWhatsAppNumbers"
+    | "whatsappUnknownDmPairing"
+    | "linkedAs"
+    | "whatsappDeviceLinked"
+    | "saveRestartInstruction"
+    | "openChatLink"
+    | "whatsappQrAlt"
+    | "linked"
+    | "whatsappExistingSession"
+    | "whatsappWaitingQr"
+    | "whatsappScanLinkedDevices",
     string
   >;
 
@@ -578,6 +621,8 @@ export interface Translations {
     noToolsets?: string;
     /** "repeat" label in the job meta row — falls back to the English literal. */
     repeat?: string;
+    repeatForever?: string;
+    repeatTimes?: string;
     /** "delivery" label prefixing a delivery error — falls back to the English literal. */
     deliveryError?: string;
     /** "model" badge label — falls back to the English literal. */
@@ -663,6 +708,53 @@ export interface Translations {
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    setupAlreadyInstalled?: string;
+    setupNoDeclaredSteps?: string;
+    setupResults?: string;
+    providerUnavailable?: string;
+    finishSetupBeforeActivate?: string;
+    providerSetupCompleted?: string;
+    installingProviderDependencies?: string;
+    installProviderDependencies?: string;
+    runningProviderSetup?: string;
+    externalDependency?: string;
+    installNamed?: string;
+    installDependency?: string;
+    verifyNamed?: string;
+    verifyDependency?: string;
+    pythonDependencies?: string;
+    requiredEnvironmentValues?: string;
+    loadProviderConfigFailed?: string;
+    pluginInstalled?: string;
+    installFailed?: string;
+    rescanFailed?: string;
+    saveFailed?: string;
+    providerSetupFailedNamed?: string;
+    providerSetupFinished?: string;
+    providerSetupFailed?: string;
+    failed?: string;
+    providersSelectionHint?: string;
+    memoryStatusReady?: string;
+    memoryStatusNeedsSetup?: string;
+    memoryStatusUnavailable?: string;
+    memoryStatusMissing?: string;
+    active?: string;
+    builtInMemoryFiles?: string;
+    activeProviderMissing?: string;
+    providerNeedsConfig?: string;
+    loadingProviderSettings?: string;
+    noDashboardSettings?: string;
+    required?: string;
+    set?: string;
+    open?: string;
+    keepExistingSecret?: string;
+    hideSecret?: string;
+    showSecret?: string;
+    saveMemoryProvider?: string;
+    saveContextEngine?: string;
+    contextCompressor?: string;
+    pluginRemoved?: string;
+    removePluginDescription?: string;
   };
 
   // ── Profiles page ──
@@ -727,6 +819,8 @@ export interface Translations {
     editModel?: string;
     modelSaved?: string;
     modelSelect?: string;
+    modelSaveFailed?: string;
+    build?: string;
     actions?: string;
     manageSkills?: string;
     activeSetHint?: string;
@@ -848,6 +942,7 @@ export interface Translations {
     toolsSection?: string;
     settingsSection?: string;
     jumpToSection?: string;
+    saved?: string;
   };
 
   // ── OAuth ──
@@ -882,6 +977,17 @@ export interface Translations {
     loginStatusFailed?: string;
     pollingFailed?: string;
     retryFailed?: string;
+    tokenLabel?: string;
+    openProviderDocs?: string;
+    disconnectTitle?: string;
+    disconnectDescription?: string;
+    thisProvider?: string;
+    minuteShort?: string;
+    hourShort?: string;
+    dayShort?: string;
+    loadFailed?: string;
+    disconnectedToast?: string;
+    disconnectFailed?: string;
     reOpenAuth: string;
     reOpenVerification: string;
     submitCode: string;

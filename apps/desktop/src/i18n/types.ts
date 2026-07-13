@@ -85,6 +85,7 @@ export interface Translations {
     set: string
     skip: string
     update: string
+    resizePane: (id: string) => string
     tryHint: (term: string) => string
     on: string
     off: string
@@ -364,6 +365,9 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      marketplaceHeader: string
+      searchThemesPlaceholder: string
+      noInstalledThemes: (query: string) => string
       pet: {
         title: string
         intro: string

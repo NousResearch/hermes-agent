@@ -40,6 +40,7 @@ export const en: Translations = {
     set: 'Set',
     skip: 'Skip',
     update: 'Update',
+    resizePane: id => `Resize ${id}`,
     tryHint: term => `Try “${term}”`,
     on: 'On',
     off: 'Off'
@@ -440,6 +441,9 @@ export const en: Translations = {
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
       importedBadge: 'Imported',
+      marketplaceHeader: 'From the VS Code Marketplace',
+      searchThemesPlaceholder: 'Search your themes or the VS Code Marketplace…',
+      noInstalledThemes: query => `No installed themes match "${query}".`,
       pet: {
         title: 'Pet',
         intro:

@@ -29,6 +29,8 @@ import {
   normalizeEffort,
   VALID_EFFORTS,
 } from "@/lib/reasoning-effort";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 interface ReasoningPickerProps {
   /** Current model string from config — re-reads the saved effort when it
@@ -49,6 +51,8 @@ export function ReasoningPicker({
   refreshKey = 0,
   onChanged,
 }: ReasoningPickerProps) {
+  const { t } = useI18n();
+  const copy = t.modelsPage ?? en.modelsPage!;
   const [effort, setEffort] = useState("medium");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -106,7 +110,7 @@ export function ReasoningPicker({
     <div className="flex items-center gap-2 px-3 py-2 text-xs">
       <div className="flex items-center gap-1.5 text-text-tertiary">
         <Brain className="h-3.5 w-3.5" />
-        <span className="text-display tracking-wider">reasoning</span>
+        <span className="text-display tracking-wider">{copy.reasoning}</span>
       </div>
       <Select
         className="ml-auto min-w-0"
@@ -116,7 +120,18 @@ export function ReasoningPicker({
       >
         {EFFORT_OPTIONS.map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
-            {opt.label}
+            {
+              {
+                none: copy.effortNone,
+                minimal: copy.effortMinimal,
+                low: copy.effortLow,
+                medium: copy.effortMedium,
+                high: copy.effortHigh,
+                xhigh: copy.effortExtraHigh,
+                max: copy.effortMax,
+                ultra: copy.effortUltra,
+              }[opt.value] ?? opt.label
+            }
           </SelectOption>
         ))}
       </Select>

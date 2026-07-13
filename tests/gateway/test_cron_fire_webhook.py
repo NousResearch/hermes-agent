@@ -8,6 +8,8 @@ test_chronos_verify.py.
 """
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from aiohttp import web
@@ -105,6 +107,31 @@ async def test_missing_token_401(adapter, monkeypatch):
     async with TestClient(TestServer(app)) as cli:
         resp = await cli.post("/api/cron/fire", json={"job_id": "abc123"})
         assert resp.status == 401
+    assert spy.fired == []
+
+
+@pytest.mark.asyncio
+async def test_valid_token_refuses_during_gateway_drain(adapter, monkeypatch):
+    spy = _SpyProvider()
+    runner = SimpleNamespace(_draining=False, _external_drain_active=True)
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+
+    app = _create_app(adapter)
+    with patch("gateway.run._gateway_runner_ref", lambda: runner):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/api/cron/fire",
+                headers={"Authorization": "Bearer good"},
+                json={"job_id": "abc123"},
+            )
+            payload = await response.json()
+
+    assert response.status == 503
+    assert payload["error"]["code"] == "gateway_draining"
     assert spy.fired == []
 
 

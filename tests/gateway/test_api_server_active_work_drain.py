@@ -9,7 +9,7 @@ turns once the gateway starts draining.
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -37,9 +37,9 @@ def _make_api_adapter(*, inflight: int = 0, queued_ids=()):
     )
 
     def active_agent_work_count() -> int:
-        return int(adapter._inflight_agent_runs) + sum(
-            not task.done() for task in adapter._active_run_tasks.values()
-        )
+        return int(getattr(adapter, "_pending_agent_requests", 0)) + int(
+            adapter._inflight_agent_runs
+        ) + sum(not task.done() for task in adapter._active_run_tasks.values())
 
     adapter.active_agent_work_count = active_agent_work_count
     return adapter
@@ -94,6 +94,37 @@ class TestActiveApiRunCount:
 
 
 class TestAPIServerAdapterWorkCount:
+    def test_concurrency_limit_counts_other_pending_admissions(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter._max_concurrent_runs = 1
+        adapter._pending_agent_requests = 1
+
+        response = adapter._concurrency_limited_response()
+
+        assert response is not None
+        assert response.status == 429
+
+    @pytest.mark.asyncio
+    async def test_concurrency_limit_excludes_current_pending_admission(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter._max_concurrent_runs = 1
+        app = _make_admission_app(adapter)
+
+        async with TestClient(TestServer(app)) as client:
+            with patch.object(adapter, "_run_agent", new=AsyncMock(return_value=({}, {}))):
+                response = await client.post(
+                    "/api/sessions/s/chat",
+                    json={"message": "hello"},
+                )
+
+        assert response.status == 404
+
+    def test_counts_pending_admission_before_agent_bookkeeping(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter._pending_agent_requests = 1
+
+        assert adapter.active_agent_work_count() == 1
+
     def test_counts_live_run_task_before_agent_creation(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         adapter._inflight_agent_runs = 2
@@ -226,3 +257,70 @@ class TestDrainAdmission:
                     assert response.status == 503
                     assert response.headers["Retry-After"] == "1"
                     assert payload["error"]["code"] == "gateway_draining"
+
+    @pytest.mark.asyncio
+    async def test_external_drain_refuses_every_agent_start_endpoint(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        runner = SimpleNamespace(_draining=False, _external_drain_active=True)
+        app = _make_admission_app(adapter)
+        paths = (
+            "/api/sessions/missing/chat",
+            "/api/sessions/missing/chat/stream",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v1/runs",
+        )
+
+        with patch("gateway.run._gateway_runner_ref", lambda: runner):
+            async with TestClient(TestServer(app)) as client:
+                for path in paths:
+                    response = await client.post(path, json={})
+                    payload = await response.json()
+
+                    assert response.status == 503
+                    assert payload["error"]["code"] == "gateway_draining"
+
+    @pytest.mark.asyncio
+    async def test_admitted_request_blocks_drain_before_agent_bookkeeping(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        runner, _adapter = make_restart_runner()
+        runner.adapters = {Platform.API_SERVER: adapter}
+        app = _make_admission_app(adapter)
+        body_read_started = asyncio.Event()
+        allow_body_read = asyncio.Event()
+
+        async def delayed_read_json(_request):
+            body_read_started.set()
+            await allow_body_read.wait()
+            return {"message": "hello"}, None
+
+        with patch.object(
+            adapter,
+            "_get_existing_session_or_404",
+            return_value=({}, None),
+        ), patch.object(
+            adapter,
+            "_read_json_body",
+            side_effect=delayed_read_json,
+        ), patch.object(
+            adapter,
+            "_run_agent",
+            new=AsyncMock(return_value=({"final_response": "done"}, {})),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                request_task = asyncio.create_task(
+                    client.post("/api/sessions/missing/chat", json={})
+                )
+                await body_read_started.wait()
+
+                assert adapter._pending_agent_requests == 1
+                drain_task = asyncio.create_task(runner._drain_active_agents(2.0))
+                await asyncio.sleep(0.1)
+                assert not drain_task.done()
+
+                allow_body_read.set()
+                response = await request_task
+                assert response.status == 200
+                _snapshot, timed_out = await drain_task
+
+        assert timed_out is False

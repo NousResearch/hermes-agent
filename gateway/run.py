@@ -4122,6 +4122,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _running_agent_count(self) -> int:
         return len(self._running_agents)
 
+    def _active_work_count(self) -> int:
+        """All agent work the gateway must expose and drain as one total."""
+        return (
+            self._running_agent_count()
+            + self._active_cron_job_count()
+            + self._active_api_run_count()
+        )
+
     def _active_cron_job_count(self) -> int:
         """Count of cron jobs currently executing, from the cron scheduler's
         own in-flight tracking (``cron.scheduler._running_job_ids``).
@@ -4543,7 +4551,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 gateway_state=gateway_state,
                 exit_reason=exit_reason,
                 restart_requested=self._restart_requested,
-                active_agents=self._running_agent_count(),
+                active_agents=self._active_work_count(),
             )
         except Exception:
             pass
@@ -4566,7 +4574,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(active_agents=self._running_agent_count())
+            write_runtime_status(active_agents=self._active_work_count())
         except Exception:
             pass
 
@@ -4593,7 +4601,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         logger.info(
             "External drain ENGAGED (.drain_request.json present) — refusing "
             "new turns; %d in-flight turn(s) will finish. Process stays up.",
-            self._running_agent_count(),
+            self._active_work_count(),
         )
         # Flip the persisted lifecycle state so /api/status.gateway_busy /
         # gateway_drainable track the drain. Preserve active_agents (the
@@ -4644,6 +4652,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 if drain_requested():
                     self._enter_external_drain()
+                    # API and cron work live outside messaging's
+                    # _running_agents map. Refresh the aggregate while an
+                    # external caller polls this reversible drain state.
+                    self._persist_active_agents()
                 else:
                     self._exit_external_drain()
             except asyncio.CancelledError:
@@ -21004,13 +21016,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # historical in-process 60s ticker; an external provider (e.g. chronos)
     # may arm a schedule and return. Pass the event loop so cron delivery can
     # use live adapters (E2EE support).
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
     cron_stop = threading.Event()
     cron_provider = resolve_cron_scheduler()
+    cron_start_kwargs = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+    # External cron providers own their remote scheduling contract. Only the
+    # in-process ticker polls local due jobs, so only it receives the local
+    # external-drain dispatch gate.
+    if isinstance(cron_provider, InProcessCronScheduler):
+        cron_start_kwargs["can_dispatch"] = lambda: not (
+            runner._draining or runner._external_drain_active
+        )
     cron_thread = threading.Thread(
         target=cron_provider.start,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs=cron_start_kwargs,
         daemon=True,
         name="cron-scheduler",
     )

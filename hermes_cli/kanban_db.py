@@ -124,6 +124,19 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+# PASS-loop persistence states for the review/completion convergence guard.
+#
+# ``tracking`` = the task has seen at least one counted PASS-loop cycle and the
+# durable fingerprint/evidence payload is being carried forward.
+# ``halted`` = the threshold was reached and automation should stay stopped
+# until a human changes the proof surface or otherwise intervenes.
+# ``clear`` = loop memory was deliberately reset after meaningful progress, but
+# the last reset reason / evidence can still remain in the JSON snapshot for
+# auditability.
+VALID_PASS_LOOP_STATUSES = {"clear", "tracking", "halted"}
+PASS_LOOP_REASON_CODE = "pass-loop-detected"
+PASS_LOOP_DEFAULT_THRESHOLD = 2
+
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
 # unblocker (usually a cron) and routes the task to ``triage`` instead of back
@@ -858,6 +871,11 @@ class Task:
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
     result: Optional[str] = None
+    delivery_state: Optional[dict[str, Any]] = None
+    pass_loop_state: Optional[dict[str, Any]] = None
+    pass_loop_status: Optional[str] = None
+    pass_loop_count: int = 0
+    pass_loop_reason_code: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
@@ -928,6 +946,22 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        delivery_state_value: Optional[dict[str, Any]] = None
+        if "delivery_state" in keys and row["delivery_state"]:
+            try:
+                parsed_delivery_state = json.loads(row["delivery_state"])
+                if isinstance(parsed_delivery_state, dict):
+                    delivery_state_value = parsed_delivery_state
+            except Exception:
+                delivery_state_value = None
+        pass_loop_state_value: Optional[dict[str, Any]] = None
+        if "pass_loop_state" in keys and row["pass_loop_state"]:
+            try:
+                parsed_pass_loop_state = json.loads(row["pass_loop_state"])
+                if isinstance(parsed_pass_loop_state, dict):
+                    pass_loop_state_value = parsed_pass_loop_state
+            except Exception:
+                pass_loop_state_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -947,6 +981,23 @@ class Task:
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
             result=row["result"] if "result" in keys else None,
+            delivery_state=delivery_state_value,
+            pass_loop_state=pass_loop_state_value,
+            pass_loop_status=(
+                row["pass_loop_status"]
+                if "pass_loop_status" in keys and row["pass_loop_status"]
+                else None
+            ),
+            pass_loop_count=(
+                int(row["pass_loop_count"])
+                if "pass_loop_count" in keys and row["pass_loop_count"] is not None
+                else 0
+            ),
+            pass_loop_reason_code=(
+                row["pass_loop_reason_code"]
+                if "pass_loop_reason_code" in keys and row["pass_loop_reason_code"]
+                else None
+            ),
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
@@ -1090,6 +1141,280 @@ class Event:
 
 
 # ---------------------------------------------------------------------------
+# Delivery-state helpers (pilot: machine-checkable software-delivery truth)
+# ---------------------------------------------------------------------------
+
+DELIVERY_REVIEW_GATE_STAGES = {"implementation", "qa"}
+DELIVERY_WORKTREE_PROVENANCE_STAGES = {"implementation", "review", "converge"}
+
+
+def _delivery_ref_path(ref: Optional[dict[str, Any]]) -> Optional[str]:
+    if not isinstance(ref, dict):
+        return None
+    raw = ref.get("path") or ref.get("stored_path")
+    if raw is None:
+        return None
+    path = str(raw).strip()
+    return path or None
+
+
+def delivery_artifact_readable(ref: Optional[dict[str, Any]]) -> bool:
+    """Return True when the delivery artifact ref resolves to a readable file.
+
+    The pilot intentionally treats file readability as first-class delivery
+    truth. Unsupported or incomplete refs stay false rather than pretending
+    delivery is green.
+    """
+
+    path = _delivery_ref_path(ref)
+    if not path:
+        return False
+    try:
+        return Path(path).expanduser().is_file()
+    except OSError:
+        return False
+
+
+def _delivery_workspace_snapshot(task: Task) -> dict[str, Any]:
+    return {
+        "kind": task.workspace_kind,
+        "path": task.workspace_path,
+        "branch_name": task.branch_name,
+        "base_ref": task.workspace_base_ref,
+        "base_commit": task.workspace_base_commit,
+    }
+
+
+def _deep_merge_dicts(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dicts(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _normalize_pass_loop_state(task: Task, state: dict[str, Any]) -> dict[str, Any]:
+    """Return a normalized PASS-loop persistence snapshot for ``task``."""
+
+    now = int(time.time())
+    normalized = dict(state)
+    normalized["schema_version"] = int(normalized.get("schema_version") or 1)
+    normalized["task_id"] = task.id
+    normalized["task_status"] = task.status
+    normalized["assignee_profile"] = task.assignee
+    normalized["block_kind"] = task.block_kind
+
+    raw_status = str(normalized.get("status") or "tracking").strip().lower()
+    status = raw_status or "tracking"
+    if status not in VALID_PASS_LOOP_STATUSES:
+        raise ValueError(
+            f"pass-loop status must be one of {sorted(VALID_PASS_LOOP_STATUSES)}"
+        )
+    normalized["status"] = status
+
+    try:
+        count = int(normalized.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    normalized["count"] = max(0, count)
+
+    try:
+        threshold = int(
+            normalized.get("threshold") or PASS_LOOP_DEFAULT_THRESHOLD
+        )
+    except (TypeError, ValueError):
+        threshold = PASS_LOOP_DEFAULT_THRESHOLD
+    normalized["threshold"] = max(PASS_LOOP_DEFAULT_THRESHOLD, threshold)
+
+    reason_code = normalized.get("reason_code")
+    if reason_code is not None:
+        reason_code = str(reason_code).strip() or None
+    if status == "halted" and not reason_code:
+        reason_code = PASS_LOOP_REASON_CODE
+    normalized["reason_code"] = reason_code
+
+    fingerprint = normalized.get("fingerprint")
+    normalized["fingerprint"] = dict(fingerprint) if isinstance(fingerprint, dict) else {}
+
+    evidence = normalized.get("evidence")
+    normalized["evidence"] = dict(evidence) if isinstance(evidence, dict) else {}
+
+    resets = normalized.get("resets")
+    normalized["resets"] = list(resets) if isinstance(resets, list) else []
+
+    normalized["updated_at"] = now
+    normalized.setdefault("first_recorded_at", now)
+    return normalized
+
+
+def derive_delivery_verdict(snapshot: Optional[dict[str, Any]]) -> tuple[str, str]:
+    """Reduce a structured delivery-state snapshot into a verdict + reason."""
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        return ("unknown", "delivery_state missing")
+
+    required = [
+        "stage",
+        "workflow_stream_id",
+        "artifact",
+        "workspace",
+        "proof",
+        "review",
+        "merge",
+        "release",
+    ]
+    missing = [key for key in required if snapshot.get(key) is None]
+    if missing:
+        return ("unknown", f"missing delivery_state fields: {', '.join(missing)}")
+
+    stage = str(snapshot.get("stage") or "").strip()
+    if not stage:
+        return ("unknown", "stage missing")
+
+    artifact = snapshot.get("artifact") or {}
+    primary_ref = artifact.get("primary_ref")
+    if primary_ref is None:
+        return ("unknown", "primary artifact missing")
+    if artifact.get("readable") is False:
+        return ("blocked", "primary artifact unreadable")
+
+    proof = snapshot.get("proof") or {}
+    proof_status = str(proof.get("proof_status") or "").strip()
+    if proof_status == "failed":
+        return ("failed", "proof status failed")
+
+    workspace = snapshot.get("workspace") or {}
+    if (
+        stage in DELIVERY_WORKTREE_PROVENANCE_STAGES
+        and workspace.get("kind") == "worktree"
+        and (not workspace.get("branch_name") or not workspace.get("base_ref"))
+    ):
+        return ("unknown", "worktree delivery stage missing branch/base provenance")
+
+    task_status = str(snapshot.get("task_status") or "").strip()
+    if task_status == "blocked":
+        return ("blocked", "task is blocked")
+
+    review = snapshot.get("review") or {}
+    merge = snapshot.get("merge") or {}
+    release = snapshot.get("release") or {}
+    review_status = str(review.get("status") or "").strip()
+    merge_status = str(merge.get("status") or "").strip()
+    release_status = str(release.get("status") or "").strip()
+
+    if release_status == "released":
+        return ("released", "release evidence recorded")
+    if merge_status == "merged" and release_status not in {"released", "not_applicable"}:
+        return ("merged_not_released", "merge verified but release not proven")
+    if stage in DELIVERY_REVIEW_GATE_STAGES and review_status not in {"approved", "not_applicable"}:
+        return ("needs_review", "stage output awaits explicit review")
+    if review_status == "approved" and merge_status not in {"merged", "not_applicable"}:
+        return ("verified_not_merged", "review approved but merge not proven")
+    if task_status in {"running", "ready", "todo", "scheduled"}:
+        return ("in_progress", "delivery evidence still being collected")
+    if task_status == "done":
+        return ("in_progress", "task completed but downstream delivery truth is still partial")
+    return ("unknown", "delivery state incomplete")
+
+
+def _normalize_delivery_state(task: Task, state: dict[str, Any]) -> dict[str, Any]:
+    now = int(time.time())
+    normalized = dict(state)
+    normalized["schema_version"] = int(normalized.get("schema_version") or 1)
+    normalized["task_id"] = task.id
+    normalized["task_status"] = task.status
+    normalized["assignee_profile"] = task.assignee
+
+    workspace = normalized.get("workspace")
+    if isinstance(workspace, dict):
+        normalized["workspace"] = _deep_merge_dicts(_delivery_workspace_snapshot(task), workspace)
+    else:
+        normalized["workspace"] = _delivery_workspace_snapshot(task)
+
+    artifact_raw = normalized.get("artifact")
+    artifact: dict[str, Any] = dict(artifact_raw) if isinstance(artifact_raw, dict) else {}
+    artifact.setdefault("primary_ref", None)
+    refs = artifact.get("refs")
+    artifact["refs"] = list(refs) if isinstance(refs, list) else []
+    artifact["readable"] = delivery_artifact_readable(artifact.get("primary_ref"))
+    artifact["last_checked_at"] = now
+    normalized["artifact"] = artifact
+
+    proof_raw = normalized.get("proof")
+    proof: dict[str, Any] = dict(proof_raw) if isinstance(proof_raw, dict) else {}
+    proof.setdefault("tests_required", {"count": 0, "items": []})
+    proof.setdefault("tests_run", {"count": 0, "items": []})
+    proof.setdefault("tests_passed", {"count": 0, "items": []})
+    proof.setdefault("test_evidence_refs", [])
+    proof.setdefault("proof_status", "not_started")
+    normalized["proof"] = proof
+
+    review_raw = normalized.get("review")
+    review: dict[str, Any] = dict(review_raw) if isinstance(review_raw, dict) else {}
+    review.setdefault("status", "not_requested")
+    review.setdefault("reviewer_identity", None)
+    review.setdefault("evidence_ref", None)
+    normalized["review"] = review
+
+    merge_raw = normalized.get("merge")
+    merge: dict[str, Any] = dict(merge_raw) if isinstance(merge_raw, dict) else {}
+    merge.setdefault("status", "not_applicable")
+    merge.setdefault("target", None)
+    merge.setdefault("commit", None)
+    merge.setdefault("evidence_ref", None)
+    normalized["merge"] = merge
+
+    release_raw = normalized.get("release")
+    release: dict[str, Any] = dict(release_raw) if isinstance(release_raw, dict) else {}
+    release.setdefault("status", "not_applicable")
+    release.setdefault("target", None)
+    release.setdefault("evidence_ref", None)
+    normalized["release"] = release
+
+    normalized["risk_class"] = str(normalized.get("risk_class") or "medium")
+    verdict, reason = derive_delivery_verdict(normalized)
+    normalized["delivery_verdict"] = verdict
+    normalized["delivery_verdict_reason"] = reason
+    normalized["last_verified_at"] = now
+    return normalized
+
+
+def build_delivery_state(
+    task: Task,
+    *,
+    stage: str,
+    workflow_stream_id: str,
+    artifact_ref: Optional[dict[str, Any]] = None,
+    artifact_refs: Optional[Iterable[dict[str, Any]]] = None,
+    risk_class: str = "medium",
+    proof: Optional[dict[str, Any]] = None,
+    review: Optional[dict[str, Any]] = None,
+    merge: Optional[dict[str, Any]] = None,
+    release: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    base_state: dict[str, Any] = {
+        "schema_version": 1,
+        "task_id": task.id,
+        "workflow_stream_id": workflow_stream_id,
+        "stage": stage,
+        "task_status": task.status,
+        "assignee_profile": task.assignee,
+        "artifact": {
+            "primary_ref": artifact_ref,
+            "refs": list(artifact_refs) if artifact_refs is not None else [],
+        },
+        "workspace": _delivery_workspace_snapshot(task),
+        "proof": proof or {},
+        "review": review or {},
+        "merge": merge or {},
+        "release": release or {},
+        "risk_class": risk_class,
+    }
+    return _normalize_delivery_state(task, base_state)
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
@@ -1116,6 +1441,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     claim_expires        INTEGER,
     tenant               TEXT,
     result               TEXT,
+    delivery_state       TEXT,
+    -- PASS-loop breaker persistence snapshot. Carries the latest durable
+    -- threshold-tracking state (fingerprint, evidence refs, reset notes) while
+    -- preserving the detailed event/run history elsewhere.
+    pass_loop_state      TEXT,
+    -- Cheap query surface for the current PASS-loop lifecycle state. See
+    -- VALID_PASS_LOOP_STATUSES.
+    pass_loop_status     TEXT,
+    -- Current PASS-loop count for the latest unchanged fingerprint.
+    pass_loop_count      INTEGER NOT NULL DEFAULT 0,
+    -- Machine-readable reason code for the current halted/tracking loop
+    -- state (for the first implementation this is PASS_LOOP_REASON_CODE).
+    pass_loop_reason_code TEXT,
     idempotency_key      TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
@@ -1987,6 +2325,42 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "delivery_state" not in cols:
+        # Canonical task-level machine-readable delivery-truth snapshot for
+        # the structured software-delivery pilot. Existing rows keep NULL
+        # until a bounded backfill or an explicit stage handoff writes one.
+        _add_column_if_missing(
+            conn, "tasks", "delivery_state", "delivery_state TEXT"
+        )
+
+    if "pass_loop_state" not in cols:
+        # Durable PASS-loop fingerprint/evidence snapshot. Existing rows stay
+        # NULL until the convergence guard writes one.
+        _add_column_if_missing(
+            conn, "tasks", "pass_loop_state", "pass_loop_state TEXT"
+        )
+
+    if "pass_loop_status" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "pass_loop_status", "pass_loop_status TEXT"
+        )
+
+    if "pass_loop_count" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "pass_loop_count",
+            "pass_loop_count INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "pass_loop_reason_code" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "pass_loop_reason_code",
+            "pass_loop_reason_code TEXT",
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2000,6 +2374,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_pass_loop_status ON tasks(pass_loop_status)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
@@ -3098,6 +3475,525 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def write_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    state: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    """Persist a normalized task-level delivery-truth snapshot."""
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    normalized = _normalize_delivery_state(task, state)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET delivery_state = ? WHERE id = ?",
+            (json.dumps(normalized, ensure_ascii=False), task_id),
+        )
+        if emit_event:
+            _append_event(
+                conn,
+                task_id,
+                "delivery_state_updated",
+                {
+                    "stage": normalized.get("stage"),
+                    "workflow_stream_id": normalized.get("workflow_stream_id"),
+                    "delivery_verdict": normalized.get("delivery_verdict"),
+                    "delivery_verdict_reason": normalized.get("delivery_verdict_reason"),
+                    "artifact_readable": ((normalized.get("artifact") or {}).get("readable")),
+                },
+                run_id=run_id,
+            )
+    return normalized
+
+
+def write_pass_loop_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    state: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    """Persist a normalized PASS-loop convergence snapshot on the task row."""
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    normalized = _normalize_pass_loop_state(task, state)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET pass_loop_state = ?, pass_loop_status = ?, pass_loop_count = ?, pass_loop_reason_code = ? WHERE id = ?",
+            (
+                json.dumps(normalized, ensure_ascii=False),
+                normalized.get("status"),
+                int(normalized.get("count") or 0),
+                normalized.get("reason_code"),
+                task_id,
+            ),
+        )
+        if emit_event:
+            _append_event(
+                conn,
+                task_id,
+                "pass_loop_state_updated",
+                {
+                    "status": normalized.get("status"),
+                    "count": normalized.get("count"),
+                    "threshold": normalized.get("threshold"),
+                    "reason_code": normalized.get("reason_code"),
+                    "block_kind": normalized.get("block_kind"),
+                },
+                run_id=run_id,
+            )
+    return normalized
+
+
+def patch_task_pass_loop_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    patch: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    base = task.pass_loop_state or {}
+    merged = _deep_merge_dicts(base, patch)
+    return write_pass_loop_state(conn, task_id, merged, run_id=run_id, emit_event=emit_event)
+
+
+def init_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    stage: str,
+    workflow_stream_id: str,
+    artifact_ref: Optional[dict[str, Any]] = None,
+    artifact_refs: Optional[Iterable[dict[str, Any]]] = None,
+    risk_class: str = "medium",
+    proof: Optional[dict[str, Any]] = None,
+    review: Optional[dict[str, Any]] = None,
+    merge: Optional[dict[str, Any]] = None,
+    release: Optional[dict[str, Any]] = None,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    state = build_delivery_state(
+        task,
+        stage=stage,
+        workflow_stream_id=workflow_stream_id,
+        artifact_ref=artifact_ref,
+        artifact_refs=artifact_refs,
+        risk_class=risk_class,
+        proof=proof,
+        review=review,
+        merge=merge,
+        release=release,
+    )
+    return write_delivery_state(conn, task_id, state, run_id=run_id, emit_event=emit_event)
+
+
+def patch_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    patch: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    base = task.delivery_state or {}
+    merged = _deep_merge_dicts(base, patch)
+    return write_delivery_state(conn, task_id, merged, run_id=run_id, emit_event=emit_event)
+
+
+def update_delivery_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    primary_ref: Optional[dict[str, Any]] = None,
+    refs: Optional[Iterable[dict[str, Any]]] = None,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    artifact_patch: dict[str, Any] = {}
+    if primary_ref is not None:
+        artifact_patch["primary_ref"] = primary_ref
+    if refs is not None:
+        artifact_patch["refs"] = list(refs)
+    return patch_task_delivery_state(
+        conn,
+        task_id,
+        {"artifact": artifact_patch},
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def update_delivery_proof(
+    conn: sqlite3.Connection,
+    task_id: str,
+    proof: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"proof": proof}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    review: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"review": review}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_merge(
+    conn: sqlite3.Connection,
+    task_id: str,
+    merge: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"merge": merge}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_release(
+    conn: sqlite3.Connection,
+    task_id: str,
+    release: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"release": release}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def write_run_delivery_evidence(
+    conn: sqlite3.Connection,
+    run_id: int,
+    delivery_evidence: dict[str, Any],
+    *,
+    merge: bool = True,
+) -> dict[str, Any]:
+    row = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown run {run_id}")
+    try:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+    except Exception:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    current = metadata.get("delivery_evidence")
+    if merge and isinstance(current, dict):
+        metadata["delivery_evidence"] = _deep_merge_dicts(current, delivery_evidence)
+    else:
+        metadata["delivery_evidence"] = dict(delivery_evidence)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), run_id),
+        )
+    return metadata
+
+
+def refresh_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Re-normalize an existing delivery-state snapshot against live task truth.
+
+    This keeps fields derived from the task row itself (notably
+    ``task_status`` and workspace provenance) aligned after lifecycle
+    transitions such as complete/block/unblock.
+    """
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    if not isinstance(task.delivery_state, dict) or not task.delivery_state:
+        return None
+    return write_delivery_state(
+        conn,
+        task_id,
+        task.delivery_state,
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def refresh_task_pass_loop_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Re-normalize an existing PASS-loop snapshot against live task truth."""
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    if not isinstance(task.pass_loop_state, dict) or not task.pass_loop_state:
+        return None
+    return write_pass_loop_state(
+        conn,
+        task_id,
+        task.pass_loop_state,
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def _is_review_required_reason(reason: Optional[str]) -> bool:
+    text = str(reason or "").strip().lower()
+    return bool(text) and "review-required" in text
+
+
+def _is_pass_loop_approval_comment(body: object) -> bool:
+    text = str(body or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            '"verdict": "approve"',
+            '"review_decision": "approve"',
+            '"approved": true',
+            '"router_action": "completed',
+            '"follow_up_action": "merge',
+            'auto-approved and completed',
+            'review verdict: approve',
+            'reviewer approve',
+            'reviewer-approved',
+            'approved and pushed',
+        )
+    )
+
+
+def _pass_loop_branch_head_sha(task: Task) -> Optional[str]:
+    workspace = str(task.workspace_path or "").strip()
+    if not workspace:
+        return None
+    ws = Path(workspace).expanduser()
+    if not ws.exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ws), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    head = str(proc.stdout or "").strip()
+    return head or None
+
+
+def _latest_pass_loop_candidate(
+    conn: sqlite3.Connection, task: Task
+) -> Optional[dict[str, Any]]:
+    blocked_event = conn.execute(
+        """
+        SELECT id, kind, payload, created_at
+        FROM task_events
+        WHERE task_id = ? AND kind LIKE 'completion_blocked_%'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (task.id,),
+    ).fetchone()
+    if blocked_event is None:
+        return None
+    try:
+        payload = json.loads(blocked_event["payload"] or "{}") or {}
+    except Exception:
+        payload = {}
+    blocked_created_at = int(blocked_event["created_at"] or 0)
+    approval_signal = None
+    for row in conn.execute(
+        """
+        SELECT id, body, created_at
+        FROM task_comments
+        WHERE task_id = ?
+        ORDER BY id DESC
+        """,
+        (task.id,),
+    ).fetchall():
+        created_at = int(row["created_at"] or 0)
+        if blocked_created_at and created_at > blocked_created_at:
+            continue
+        if _is_pass_loop_approval_comment(row["body"]):
+            approval_signal = row
+            break
+    if approval_signal is None:
+        return None
+    carry_commits = payload.get("carry_commits") or []
+    if not isinstance(carry_commits, list):
+        carry_commits = [str(carry_commits)]
+    fingerprint_payload = {
+        "task_id": task.id,
+        "assignee": str(task.assignee or "").strip().lower(),
+        "branch_name": str(task.branch_name or "").strip(),
+        "branch_head_sha": _pass_loop_branch_head_sha(task),
+        "completion_block_kind": str(blocked_event["kind"] or "").strip(),
+        "source_commit": payload.get("source_commit"),
+        "proof_mode": payload.get("proof_mode"),
+        "carry_commits": [
+            str(commit).strip() for commit in carry_commits if str(commit).strip()
+        ],
+    }
+    return {
+        "approval_comment_id": int(approval_signal["id"]),
+        "approval_comment_created_at": int(approval_signal["created_at"] or 0),
+        "approval_excerpt": str(approval_signal["body"] or "").strip()[:280],
+        "blocked_event_id": int(blocked_event["id"]),
+        "blocked_event_created_at": blocked_created_at,
+        "blocked_event_kind": str(blocked_event["kind"] or "").strip(),
+        "blocked_message": str(payload.get("message") or "").strip(),
+        "fingerprint": fingerprint_payload,
+    }
+
+
+def _derive_pass_loop_state(task: Task, candidate: dict[str, Any]) -> dict[str, Any]:
+    previous = task.pass_loop_state if isinstance(task.pass_loop_state, dict) else {}
+    previous_fingerprint = previous.get("fingerprint")
+    if not isinstance(previous_fingerprint, dict):
+        previous_fingerprint = {}
+    previous_evidence = previous.get("evidence")
+    if not isinstance(previous_evidence, dict):
+        previous_evidence = {}
+    previous_count = int(previous.get("count") or 0)
+    resets = (
+        list(previous.get("resets") or [])
+        if isinstance(previous.get("resets"), list)
+        else []
+    )
+
+    same_fingerprint = previous_fingerprint == candidate["fingerprint"]
+    same_approval = int(previous_evidence.get("approval_comment_id") or 0) == int(
+        candidate["approval_comment_id"]
+    )
+    same_block = int(previous_evidence.get("completion_block_event_id") or 0) == int(
+        candidate["blocked_event_id"]
+    )
+
+    if same_fingerprint and not same_approval and not same_block:
+        count = previous_count + 1 if previous_count > 0 else 1
+    elif same_fingerprint and same_approval and same_block and previous_count > 0:
+        count = previous_count
+    else:
+        count = 1
+        if (
+            previous_count > 0
+            and previous_fingerprint
+            and previous_fingerprint != candidate["fingerprint"]
+        ):
+            resets.append(
+                {
+                    "at": int(time.time()),
+                    "from_count": previous_count,
+                    "from_fingerprint": previous_fingerprint,
+                    "to_fingerprint": candidate["fingerprint"],
+                    "reason": "meaningful_progress_fingerprint_changed",
+                    "trigger": {
+                        "approval_comment_id": int(candidate["approval_comment_id"]),
+                        "completion_block_event_id": int(candidate["blocked_event_id"]),
+                    },
+                }
+            )
+
+    status = "halted" if count >= PASS_LOOP_DEFAULT_THRESHOLD else "tracking"
+    return {
+        "status": status,
+        "count": count,
+        "threshold": PASS_LOOP_DEFAULT_THRESHOLD,
+        "reason_code": PASS_LOOP_REASON_CODE if status == "halted" else None,
+        "fingerprint": candidate["fingerprint"],
+        "evidence": {
+            "signal_path": "review_approval_comment_then_completion_block_event",
+            "approval_comment_id": int(candidate["approval_comment_id"]),
+            "approval_comment_created_at": int(candidate["approval_comment_created_at"]),
+            "approval_excerpt": candidate["approval_excerpt"],
+            "completion_block_event_id": int(candidate["blocked_event_id"]),
+            "completion_block_event_created_at": int(candidate["blocked_event_created_at"]),
+            "completion_block_kind": candidate["blocked_event_kind"],
+            "completion_block_message": candidate["blocked_message"],
+            "evidence_refs": {
+                "task_comment_ids": [int(candidate["approval_comment_id"])],
+                "task_event_ids": [int(candidate["blocked_event_id"])],
+            },
+        },
+        "resets": resets,
+    }
+
+
+def backfill_delivery_states(
+    conn: sqlite3.Connection,
+    task_specs: Iterable[dict[str, Any]],
+    *,
+    emit_events: bool = True,
+) -> list[dict[str, Any]]:
+    """Bounded helper for pilot-chain backfills from verified current data."""
+
+    written: list[dict[str, Any]] = []
+    for spec in task_specs:
+        task_id = str(spec.get("task_id") or "").strip()
+        stage = str(spec.get("stage") or "").strip()
+        workflow_stream_id = str(spec.get("workflow_stream_id") or "").strip()
+        if not task_id or not stage or not workflow_stream_id:
+            raise ValueError("each delivery-state backfill spec needs task_id, stage, and workflow_stream_id")
+        written.append(
+            init_task_delivery_state(
+                conn,
+                task_id,
+                stage=stage,
+                workflow_stream_id=workflow_stream_id,
+                artifact_ref=spec.get("artifact_ref"),
+                artifact_refs=spec.get("artifact_refs"),
+                risk_class=str(spec.get("risk_class") or "medium"),
+                proof=spec.get("proof"),
+                review=spec.get("review"),
+                merge=spec.get("merge"),
+                release=spec.get("release"),
+                run_id=spec.get("run_id"),
+                emit_event=emit_events,
+            )
+        )
+    return written
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4148,6 +5044,8 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+    refresh_task_delivery_state(conn, task_id, run_id=run_id)
+    refresh_task_pass_loop_state(conn, task_id, run_id=run_id)
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -4803,6 +5701,8 @@ def block_task(
         )
     routed_to = "blocked"
     recurrences = 0
+    run_id: Optional[int] = None
+    pass_loop_state_to_write: Optional[dict[str, Any]] = None
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
@@ -4874,45 +5774,114 @@ def block_task(
         recurrences = prev_recurrences + 1 if same_cause else 1
 
         if recurrences >= BLOCK_RECURRENCE_LIMIT:
-            # Loop detected — stop letting the unblocker spin this task. Route
-            # to triage for a human-in-the-loop decision instead of blocked.
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status        = 'triage',
-                       claim_lock    = NULL,
-                       claim_expires = NULL,
-                       worker_pid    = NULL,
-                       block_kind    = ?,
-                       block_recurrences = ?
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, recurrences, task_id) if expected_run_id is None
-                else (kind, recurrences, task_id, int(expected_run_id)),
-            )
-            if cur.rowcount != 1:
-                return False
-            run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
-            )
-            if run_id is None and reason:
-                run_id = _synthesize_ended_run(
-                    conn, task_id, outcome="blocked", summary=reason,
+            pass_loop_candidate = None
+            pass_loop_task = None
+            if _is_review_required_reason(reason):
+                pass_loop_task = get_task(conn, task_id)
+                if pass_loop_task is not None:
+                    pass_loop_candidate = _latest_pass_loop_candidate(conn, pass_loop_task)
+
+            if pass_loop_candidate is not None and pass_loop_task is not None:
+                pass_loop_state_to_write = _derive_pass_loop_state(
+                    pass_loop_task, pass_loop_candidate
                 )
-            _append_event(
-                conn, task_id, "block_loop_detected",
-                {
-                    "reason": reason,
-                    "kind": kind,
-                    "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
-                },
-                run_id=run_id,
-            )
-            routed_to = "triage"
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'blocked',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = ?,
+                           block_recurrences = ?
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """
+                    + (
+                        ""
+                        if expected_run_id is None
+                        else " AND current_run_id = ?"
+                    ),
+                    (kind, recurrences, task_id)
+                    if expected_run_id is None
+                    else (kind, recurrences, task_id, int(expected_run_id)),
+                )
+                if cur.rowcount != 1:
+                    return False
+                run_id = _end_run(
+                    conn,
+                    task_id,
+                    outcome="blocked",
+                    status="blocked",
+                    summary=reason,
+                )
+                if run_id is None and reason:
+                    run_id = _synthesize_ended_run(
+                        conn, task_id, outcome="blocked", summary=reason,
+                    )
+                _append_event(
+                    conn,
+                    task_id,
+                    "block_loop_detected",
+                    {
+                        "reason": reason,
+                        "kind": kind,
+                        "recurrences": recurrences,
+                        "limit": BLOCK_RECURRENCE_LIMIT,
+                        "pass_loop": {
+                            "signal_path": "review_approval_comment_then_completion_block_event",
+                            "status": pass_loop_state_to_write.get("status"),
+                            "count": pass_loop_state_to_write.get("count"),
+                            "threshold": pass_loop_state_to_write.get("threshold"),
+                            "reason_code": pass_loop_state_to_write.get("reason_code"),
+                            "approval_comment_id": pass_loop_candidate["approval_comment_id"],
+                            "completion_block_event_id": pass_loop_candidate["blocked_event_id"],
+                            "completion_block_kind": pass_loop_candidate["blocked_event_kind"],
+                        },
+                    },
+                    run_id=run_id,
+                )
+                routed_to = "blocked"
+            else:
+                # Loop detected — stop letting the unblocker spin this task. Route
+                # to triage for a human-in-the-loop decision instead of blocked.
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'triage',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = ?,
+                           block_recurrences = ?
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                    (kind, recurrences, task_id) if expected_run_id is None
+                    else (kind, recurrences, task_id, int(expected_run_id)),
+                )
+                if cur.rowcount != 1:
+                    return False
+                run_id = _end_run(
+                    conn, task_id,
+                    outcome="blocked", status="blocked",
+                    summary=reason,
+                )
+                if run_id is None and reason:
+                    run_id = _synthesize_ended_run(
+                        conn, task_id, outcome="blocked", summary=reason,
+                    )
+                _append_event(
+                    conn, task_id, "block_loop_detected",
+                    {
+                        "reason": reason,
+                        "kind": kind,
+                        "recurrences": recurrences,
+                        "limit": BLOCK_RECURRENCE_LIMIT,
+                    },
+                    run_id=run_id,
+                )
+                routed_to = "triage"
         else:
             if expected_run_id is None:
                 cur = conn.execute(
@@ -4966,6 +5935,15 @@ def block_task(
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
+    if pass_loop_state_to_write is not None:
+        write_pass_loop_state(
+            conn,
+            task_id,
+            pass_loop_state_to_write,
+            run_id=run_id,
+        )
+    refresh_task_delivery_state(conn, task_id, run_id=run_id)
+    refresh_task_pass_loop_state(conn, task_id, run_id=run_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
         task_id,
@@ -5111,7 +6089,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
-        return True
+    refresh_task_delivery_state(conn, task_id)
+    refresh_task_pass_loop_state(conn, task_id)
+    return True
 
 
 def specify_triage_task(

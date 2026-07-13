@@ -50,6 +50,28 @@ def _make_running_again(conn, tid):
     assert kb.claim_task(conn, tid, claimer="worker") is not None
 
 
+def _add_review_approval_comment(
+    conn,
+    tid,
+    body='claude-cli review gate verdict:\n{"verdict": "APPROVE", "router_action": "completed"}',
+):
+    kb.add_comment(conn, tid, "claude-review-router", body)
+
+
+def _add_completion_block_event(
+    conn,
+    tid,
+    *,
+    kind: str = "completion_blocked_unmerged_branch",
+    message: str = "completion blocked: branch not merged",
+):
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
+            (tid, kind, kb.json.dumps({"message": message}), int(kb.time.time())),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Loop breaker
 # ---------------------------------------------------------------------------
@@ -89,6 +111,130 @@ def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
         t = kb.get_task(conn, tid)
         assert t.status == "triage"
         assert t.block_recurrences == 2
+
+
+def test_review_required_pass_loop_first_cycle_stays_blocked_and_tracks_state(
+    kanban_home: Path,
+) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn, title="review gate loop")
+        kb.block_task(conn, tid, reason="review-required: initial handoff", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        _add_review_approval_comment(conn, tid)
+        _add_completion_block_event(conn, tid)
+
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: completion gate blocked after approve",
+            kind="needs_input",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_recurrences == 2
+        assert task.pass_loop_status == "tracking"
+        assert task.pass_loop_count == 1
+        assert task.pass_loop_reason_code is None
+        assert task.pass_loop_state is not None
+        assert (
+            task.pass_loop_state["evidence"]["completion_block_kind"]
+            == "completion_blocked_unmerged_branch"
+        )
+
+
+def test_review_required_pass_loop_second_identical_cycle_halts_without_triage(
+    kanban_home: Path,
+) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn, title="review gate loop")
+        kb.block_task(conn, tid, reason="review-required: initial handoff", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        _add_review_approval_comment(conn, tid, 'claude-cli review gate verdict:\n{"verdict": "APPROVE", "router_action": "completed", "review_decision": "APPROVE-1"}')
+        _add_completion_block_event(conn, tid)
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: completion gate blocked after approve",
+            kind="needs_input",
+        )
+
+        assert kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        _add_review_approval_comment(conn, tid, 'claude-cli review gate verdict:\n{"verdict": "APPROVE", "router_action": "completed", "review_decision": "APPROVE-2"}')
+        _add_completion_block_event(conn, tid)
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: completion gate blocked after second approve",
+            kind="needs_input",
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_recurrences == 3
+        assert task.pass_loop_status == "halted"
+        assert task.pass_loop_count == 2
+        assert task.pass_loop_reason_code == kb.PASS_LOOP_REASON_CODE
+        assert task.pass_loop_state is not None
+        assert (
+            task.pass_loop_state["evidence"]["approval_comment_id"] > 0
+        )
+        loop_events = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
+        assert loop_events
+        payload = loop_events[-1].payload or {}
+        assert payload.get("pass_loop", {}).get("status") == "halted"
+
+
+def test_review_required_pass_loop_resets_only_after_meaningful_progress(
+    kanban_home: Path,
+) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn, title="review gate loop")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET branch_name='wt/v1' WHERE id=?", (tid,))
+        kb.block_task(conn, tid, reason="review-required: initial handoff", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        _add_review_approval_comment(conn, tid, 'claude-cli review gate verdict:\n{"verdict": "APPROVE", "router_action": "completed", "review_decision": "APPROVE-v1"}')
+        _add_completion_block_event(conn, tid)
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: completion gate blocked after approve v1",
+            kind="needs_input",
+        )
+        first_task = kb.get_task(conn, tid)
+        assert first_task is not None
+        first_state = first_task.pass_loop_state
+        assert first_state is not None
+        assert first_state["count"] == 1
+
+        assert kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET branch_name='wt/v2' WHERE id=?", (tid,))
+        _add_review_approval_comment(conn, tid, 'claude-cli review gate verdict:\n{"verdict": "APPROVE", "router_action": "completed", "review_decision": "APPROVE-v2"}')
+        _add_completion_block_event(conn, tid)
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: completion gate blocked after approve v2",
+            kind="needs_input",
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.pass_loop_status == "tracking"
+        assert task.pass_loop_count == 1
+        assert task.pass_loop_state is not None
+        assert task.pass_loop_state["fingerprint"]["branch_name"] == "wt/v2"
+        assert task.pass_loop_state["resets"]
+        assert task.pass_loop_state["resets"][-1]["reason"] == "meaningful_progress_fingerprint_changed"
 
 
 def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:

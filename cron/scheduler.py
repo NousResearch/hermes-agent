@@ -238,12 +238,46 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim, pause_job
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+PAUSE_MARKER = "[PAUSE]"
+_CRON_PAUSE_TOKENS = frozenset({"[PAUSE]", "PAUSE"})
+
+def _is_cron_pause_response(text: str) -> bool:
+    """Return True when a cron final response should trigger auto-pause.
+
+    Follows the same strict-matching contract as ``_is_cron_silence_response``:
+    whole-response token, first line, last line, or ``[PAUSE]`` same-line
+    prefix.  Mid-sentence mentions are treated as real content and *not*
+    paused.
+    """
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    def _is_token(line: str) -> bool:
+        return " ".join(line.strip().upper().split()) in _CRON_PAUSE_TOKENS
+
+    # Whole response is exactly a token.
+    if _is_token(stripped):
+        return True
+    # Marker on its own first or last line.
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    if lines and (_is_token(lines[0]) or _is_token(lines[-1])):
+        return True
+    # Bracketed sentinel used as a same-line prefix — "[PAUSE] Monitor
+    # complete, auto-closing."
+    upper = stripped.upper()
+    if upper.startswith("[PAUSE]"):
+        return True
+    return False
+
 
 # Canonical silence tokens recognized in cron output.  Cron's contract is
 # intentionally looser than the gateway's exact-whole-response rule: the cron
@@ -3507,6 +3541,17 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             if should_deliver and success and _is_cron_silence_response(deliver_content):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
+
+            # Auto-pause if agent returned [PAUSE] marker.
+            # Uses the same strict-matching contract as _is_cron_silence_response
+            # to avoid false positives from mid-sentence mentions of "[PAUSE]".
+            if success and _is_cron_pause_response(deliver_content):
+                logger.info("Job '%s': agent returned %s — auto-pausing", job["id"], PAUSE_MARKER)
+                try:
+                    pause_job(job["id"], reason="Auto-paused: agent returned [PAUSE]")
+                    _notify_provider_jobs_changed()
+                except Exception as pe:
+                    logger.warning("Failed to auto-pause job %s: %s", job["id"], pe)
 
             if should_deliver:
                 try:

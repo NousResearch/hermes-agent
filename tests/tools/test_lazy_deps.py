@@ -144,6 +144,15 @@ class TestSecurityGating:
         )
         assert ld._allow_lazy_installs() is False
 
+    def test_quoted_falsey_real_config_disables(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            'security:\n  allow_lazy_installs: "false"\n',
+            encoding="utf-8",
+        )
+        assert ld._allow_lazy_installs() is False
+
     @pytest.mark.parametrize("value", [False, 0, None])
     def test_falsey_scalar_config_disables(self, monkeypatch, value):
         monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)

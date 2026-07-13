@@ -74,6 +74,8 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
 
     const scroll = {
+      getFreshScrollHeight: vi.fn(() => 100),
+      getLastManualScrollAt: vi.fn(() => 0),
       getPendingDelta: vi.fn(() => 0),
       getScrollHeight: vi.fn(() => 100),
       getScrollTop: vi.fn(() => 70),
@@ -109,6 +111,8 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
 
     const scroll = {
+      getFreshScrollHeight: vi.fn(() => 100),
+      getLastManualScrollAt: vi.fn(() => 0),
       getPendingDelta: vi.fn(() => 0),
       getScrollHeight: vi.fn(() => 100),
       getScrollTop: vi.fn(() => 79),
@@ -140,6 +144,8 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
 
     const scroll = {
+      getFreshScrollHeight: vi.fn(() => 100),
+      getLastManualScrollAt: vi.fn(() => 0),
       getPendingDelta: vi.fn(() => 0),
       getScrollHeight: vi.fn(() => 100),
       getScrollTop: vi.fn(() => 20),
@@ -160,6 +166,87 @@ describe('createGatewayEventHandler', () => {
     )
 
     onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+    vi.runOnlyPendingTimers()
+
+    expect(scroll.scrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it('detects at-bottom via fresh-height fallback when cached scroll height is stale', () => {
+    vi.useFakeTimers()
+
+    const appended: Msg[] = []
+
+    // The cached scroll height is stale (too large from a previous layout).
+    // The fresh height re-measures and shows the user IS at the bottom.
+    // Without the fresh-height fallback (getViewportSnapshot), the stale
+    // cached height would mask the at-bottom state and the snap would
+    // never fire — the regression this test guards against.
+    const scroll = {
+      getFreshScrollHeight: vi.fn(() => 100),
+      getLastManualScrollAt: vi.fn(() => 0),
+      getPendingDelta: vi.fn(() => 0),
+      getScrollHeight: vi.fn(() => 200), // stale cached height
+      getScrollTop: vi.fn(() => 80),
+      getViewportHeight: vi.fn(() => 20),
+      isSticky: vi.fn(() => false),
+      scrollToBottom: vi.fn()
+    }
+
+    const onEvent = createGatewayEventHandler(
+      buildCtx(appended, {
+        transcript: {
+          appendMessage: (msg: Msg) => appended.push(msg),
+          panel: vi.fn(),
+          scrollRef: ref(scroll),
+          setHistoryItems: vi.fn()
+        }
+      })
+    )
+
+    // Cached: bottom = 80 + 20 = 100 >= 200 - 2 = 198 → false.
+    // Fresh:  bottom = 100 >= 100 - 2 = 98 → true → snap fires.
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as unknown as Parameters<typeof onEvent>[0])
+
+    vi.runOnlyPendingTimers()
+
+    expect(scroll.scrollToBottom).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not yank when user scrolls manually between snap schedule and callback', () => {
+    vi.useFakeTimers()
+
+    const appended: Msg[] = []
+
+    let lastManualScrollAt = 0
+
+    const scroll = {
+      getFreshScrollHeight: vi.fn(() => 100),
+      getLastManualScrollAt: vi.fn(() => lastManualScrollAt),
+      getPendingDelta: vi.fn(() => 0),
+      getScrollHeight: vi.fn(() => 100),
+      getScrollTop: vi.fn(() => 80),
+      getViewportHeight: vi.fn(() => 20),
+      isSticky: vi.fn(() => false),
+      scrollToBottom: vi.fn()
+    }
+
+    const onEvent = createGatewayEventHandler(
+      buildCtx(appended, {
+        transcript: {
+          appendMessage: (msg: Msg) => appended.push(msg),
+          panel: vi.fn(),
+          scrollRef: ref(scroll),
+          setHistoryItems: vi.fn()
+        }
+      })
+    )
+
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as unknown as Parameters<typeof onEvent>[0])
+
+    // User scrolls manually after the snap was scheduled but before the
+    // deferred callback fires — the timestamp guard must prevent the yank.
+    lastManualScrollAt = Date.now() + 1
 
     vi.runOnlyPendingTimers()
 

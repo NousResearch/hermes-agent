@@ -14,6 +14,7 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
+import { getViewportSnapshot } from '../lib/viewportStore.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
@@ -120,26 +121,34 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     patchOverlayState({ clarify: null })
   }
 
-  const transcriptAtBottom = () => {
-    const scroll = scrollRef?.current
-
-    if (!scroll) {
-      return false
-    }
-
-    const bottom = scroll.getScrollTop() + scroll.getPendingDelta() + scroll.getViewportHeight()
-
-    return scroll.isSticky() || bottom >= scroll.getScrollHeight() - 2
-  }
+  const transcriptAtBottom = () =>
+    getViewportSnapshot(scrollRef?.current).atBottom
 
   const snapStickyTranscriptToBottom = () => {
-    if (!transcriptAtBottom()) {
+    // Capture the pre-commit bottom-pinned state before the final-history
+    // layout update changes geometry.  The deferred callback uses a
+    // manual-scroll timestamp guard (same pattern as scheduleResumeScrollToBottom
+    // in useSessionLifecycle.ts) so a user scroll between capture and callback
+    // prevents the yank.
+    const wasAtBottom = transcriptAtBottom()
+
+    if (!wasAtBottom) {
       return
     }
 
+    const scheduledAt = Date.now()
+
     setTimeout(() => {
-      if (transcriptAtBottom()) {
-        scrollRef?.current?.scrollToBottom()
+      const scroll = scrollRef?.current
+
+      if (!scroll) {
+        return
+      }
+
+      const manuallyScrolledAfterSnap = scroll.getLastManualScrollAt() > scheduledAt
+
+      if (!manuallyScrolledAfterSnap) {
+        scroll.scrollToBottom()
       }
     }, 0)
   }

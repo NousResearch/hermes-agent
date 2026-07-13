@@ -34,6 +34,10 @@ Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
     HERMES_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
 
+The runner intentionally neutralizes runtime voice/TTS environment flags in
+pytest subprocesses. Local interactive sessions can toggle those flags on;
+tests must never inherit them and play real audio.
+
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 """
 
@@ -89,6 +93,22 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+
+# Runtime-only interactive voice flags must not leak from a developer's live
+# Hermes process into test subprocesses. If ``HERMES_VOICE_TTS=1`` is inherited,
+# gateway tests that complete fake assistant turns can call the real TTS stack
+# and play audio (for example the fixture string "partial answer complete").
+_PYTEST_CHILD_ENV_OVERRIDES = {
+    "HERMES_VOICE": "0",
+    "HERMES_VOICE_TTS": "0",
+    "HERMES_VOICE_DEBUG": "0",
+}
+
+
+def _pytest_child_env() -> dict[str, str]:
+    """Return a copy of the environment safe for pytest subprocesses."""
+    return {**os.environ, **_PYTEST_CHILD_ENV_OVERRIDES}
 
 
 def _approximately_count_tests(
@@ -260,7 +280,7 @@ def _run_one_file(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env=os.environ,
+        env=_pytest_child_env(),
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;

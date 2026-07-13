@@ -277,3 +277,183 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
     # Discovery found the probe file (2 tests), proving the positional path
     # was consumed as a root, not forwarded to pytest as a bad flag.
     assert "test_flagprobe.py" in proc.stdout, proc.stdout
+
+
+def test_runner_scrubs_inherited_voice_tts_env(tmp_path: Path) -> None:
+    """Runtime voice flags from an interactive parent must not reach pytest.
+
+    The probe is intentionally outside ``tests/`` so the repo-level conftest
+    does not mask the runner behavior.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_voice_env_probe.py").write_text(
+        textwrap.dedent(
+            """
+            import os
+
+            def test_voice_env_flags_are_neutralized():
+                assert os.environ.get("HERMES_VOICE") == "0"
+                assert os.environ.get("HERMES_VOICE_TTS") == "0"
+                assert os.environ.get("HERMES_VOICE_DEBUG") == "0"
+            """
+        ).strip()
+        + "\n"
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "HERMES_VOICE": "1",
+            "HERMES_VOICE_TTS": "1",
+            "HERMES_VOICE_DEBUG": "1",
+        }
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--paths",
+            str(probe_dir),
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+        ],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_pytest_conftest_scrubs_voice_env_before_test_module_collection(
+    tmp_path: Path,
+) -> None:
+    """Direct pytest runs must neutralize voice flags before module import."""
+    repo_root = Path(__file__).resolve().parent.parent
+    nonce = f"{os.getpid()}-{int(time.time() * 1000)}"
+    probe = repo_root / "tests" / f"_tmp_voice_collection_probe_{nonce}.py"
+    try:
+        probe.write_text(
+            textwrap.dedent(
+                """
+                import os
+
+                assert os.environ.get("HERMES_VOICE") == "0"
+                assert os.environ.get("HERMES_VOICE_TTS") == "0"
+                assert os.environ.get("HERMES_VOICE_DEBUG") == "0"
+
+                def test_collection_observed_neutral_voice_env():
+                    pass
+                """
+            ).strip()
+            + "\n"
+        )
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HERMES_VOICE": "1",
+                "HERMES_VOICE_TTS": "1",
+                "HERMES_VOICE_DEBUG": "1",
+            }
+        )
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", str(probe)],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=60,
+        )
+
+        assert proc.returncode == 0, proc.stdout
+    finally:
+        try:
+            probe.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def test_pytest_conftest_keeps_voice_tts_neutralized_after_test_teardown(
+    tmp_path: Path,
+) -> None:
+    """Background work after fixture teardown must still see voice TTS off."""
+    repo_root = Path(__file__).resolve().parent.parent
+    nonce = f"{os.getpid()}-{int(time.time() * 1000)}"
+    probe = repo_root / "tests" / f"_tmp_voice_teardown_probe_{nonce}.py"
+    handoff = tmp_path / "voice-env-after-teardown.txt"
+    try:
+        probe.write_text(
+            textwrap.dedent(
+                f"""
+                import json, os, threading, time
+                from pathlib import Path
+
+                HANDOFF = Path({str(handoff)!r})
+                VOICE_ENV_VARS = (
+                    "HERMES_VOICE",
+                    "HERMES_VOICE_TTS",
+                    "HERMES_VOICE_DEBUG",
+                )
+
+                def test_background_thread_observes_voice_env_after_return(monkeypatch):
+                    for name in VOICE_ENV_VARS:
+                        monkeypatch.setenv(name, "1")
+                        assert os.environ[name] == "1"
+
+                    def worker():
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline and any(
+                            os.environ.get(name) == "1" for name in VOICE_ENV_VARS
+                        ):
+                            time.sleep(0.01)
+                        HANDOFF.write_text(json.dumps({{
+                            name: os.environ.get(name, "<missing>")
+                            for name in VOICE_ENV_VARS
+                        }}))
+
+                    threading.Thread(target=worker, daemon=False).start()
+                """
+            ).strip()
+            + "\n"
+        )
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HERMES_VOICE": "1",
+                "HERMES_VOICE_TTS": "1",
+                "HERMES_VOICE_DEBUG": "1",
+            }
+        )
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", str(probe)],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=60,
+        )
+
+        assert proc.returncode == 0, proc.stdout
+        assert json.loads(handoff.read_text()) == {
+            "HERMES_VOICE": "0",
+            "HERMES_VOICE_TTS": "0",
+            "HERMES_VOICE_DEBUG": "0",
+        }
+    finally:
+        try:
+            probe.unlink()
+        except FileNotFoundError:
+            pass

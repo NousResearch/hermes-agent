@@ -11,8 +11,9 @@ Hermetic-test invariants enforced here (see AGENTS.md for rationale):
    CI. Code using ``Path.home() / ".hermes"`` instead of the canonical
    ``get_hermes_home()`` is a bug to fix at the callsite.)
 3. **Deterministic runtime.** TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0.
-4. **No HERMES_SESSION_* inheritance** — the agent's current gateway
-   session must not leak into tests.
+4. **No runtime Hermes state inheritance** — the agent's current gateway
+   session, voice/TTS toggles, and other live-session flags must not leak into
+   tests.
 
 These invariants make the local test run match CI closely. Gaps that
 remain (CPU count, xdist worker count) are addressed by the canonical
@@ -25,6 +26,17 @@ import sys
 from pathlib import Path
 
 import pytest
+
+# These process-wide runtime flags must be neutralized while this root
+# conftest is imported, before pytest imports any test module for collection.
+# Function-scoped fixtures are too late for collection-time module code.
+_HERMES_RUNTIME_ZERO_VARS = frozenset({
+    "HERMES_VOICE",
+    "HERMES_VOICE_TTS",
+    "HERMES_VOICE_DEBUG",
+})
+for _runtime_var in _HERMES_RUNTIME_ZERO_VARS:
+    os.environ[_runtime_var] = "0"
 
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -170,6 +182,12 @@ def _looks_like_credential(name: str) -> bool:
 # unconditionally — individual tests that need them set do so explicitly.
 _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_YOLO_MODE",
+    # Runtime voice toggles are process-wide env flags in the TUI gateway.
+    # A live developer session can leave them enabled; tests must opt in
+    # explicitly or fake assistant completions may invoke real audio playback.
+    "HERMES_VOICE",
+    "HERMES_VOICE_TTS",
+    "HERMES_VOICE_DEBUG",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
@@ -324,6 +342,11 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "MATRIX_REQUIRE_MENTION",
 })
 
+# Voice flags are special: they are checked by background gateway threads after
+# a test emits ``message.complete``. They are neutralized at root-conftest import
+# for collection safety and kept at zero across fixture teardown so background
+# work cannot observe an inherited live interactive value between tests.
+
 
 @pytest.fixture(autouse=True)
 def _hermetic_environment(tmp_path, monkeypatch):
@@ -340,7 +363,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
 
     # 2. Blank behavioral HERMES_* vars that could change test semantics.
     for name in _HERMES_BEHAVIORAL_VARS:
-        monkeypatch.delenv(name, raising=False)
+        if name in _HERMES_RUNTIME_ZERO_VARS:
+            os.environ[name] = "0"
+        else:
+            monkeypatch.delenv(name, raising=False)
 
     # 3. Redirect HERMES_HOME to a per-test tempdir. Code that reads
     #    ``~/.hermes/*`` via ``get_hermes_home()`` now gets the tempdir.

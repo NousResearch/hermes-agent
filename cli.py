@@ -5060,22 +5060,74 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         cont = " | Continuous" if self._voice_continuous else ""
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
+    _STATUS_BAR_PLUGIN_CACHE_TTL = 1.0
+
+    def _get_status_bar_plugin_values(self, snapshot: Dict[str, Any]) -> List[str]:
+        """Return fail-closed, display-ready status-bar hook values.
+
+        Results are cached briefly because this method runs on prompt_toolkit's
+        repaint path; plugin callbacks must not stall every frame. The hook is
+        still resolved for each cache refresh so plugin loading and tests can
+        replace the module-level dispatcher without leaving a stale reference.
+        Its aggregate contract is deliberately a list, not an arbitrary
+        iterable: accepting generators or strings here would make rendering
+        consume plugin-owned state or split a contribution into characters.
+        """
+        now = time.monotonic()
+        cached_at = getattr(self, "_status_bar_plugin_values_cached_at", None)
+        if cached_at is not None and now - cached_at < self._STATUS_BAR_PLUGIN_CACHE_TTL:
+            return list(getattr(self, "_status_bar_plugin_values_cache", ()))
+
+        normalized: List[str] = []
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            # Plugins receive an isolated mapping: the renderer continues to
+            # read the authoritative snapshot after callbacks return.
+            values = invoke_hook("on_status_bar_render", snapshot=dict(snapshot))
+            if isinstance(values, list):
+                for value in values:
+                    try:
+                        # Status segments are a display API, not a generic
+                        # serialization surface. Reject accidental dict/list/
+                        # numeric returns instead of exposing Python reprs.
+                        if not isinstance(value, str):
+                            continue
+                        display_value = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", value).strip()
+                        if display_value:
+                            normalized.append(display_value)
+                    except Exception:
+                        # Keep healthy contributions if one plugin-owned value
+                        # behaves unexpectedly during normalization.
+                        continue
+        except Exception:
+            # Rendering the footer must remain available even when plugin
+            # lookup or dispatch fails. Caching this empty result also backs
+            # off persistently failing hooks until the next refresh window.
+            normalized = []
+
+        self._status_bar_plugin_values_cache = tuple(normalized)
+        self._status_bar_plugin_values_cached_at = now
+        return normalized
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
                 width = self._get_tui_terminal_width()
+            plugin_values = self._get_status_bar_plugin_values(snapshot)
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                parts = [f"⚕ {snapshot['model_short']}", duration_label]
                 if yolo_active:
-                    text += " · ⚠ YOLO"
-                return self._trim_status_bar_text(text, width)
+                    parts.append("⚠ YOLO")
+                parts.extend(plugin_values)
+                return self._trim_status_bar_text(" · ".join(parts), width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
                 compressions = snapshot.get("compressions", 0)
@@ -5093,6 +5145,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 parts.append(duration_label)
                 if yolo_active:
                     parts.append("⚠ YOLO")
+                parts.extend(plugin_values)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
             if snapshot["context_length"]:
@@ -5124,6 +5177,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 parts.append(idle_since)
             if yolo_active:
                 parts.append("⚠ YOLO")
+            parts.extend(plugin_values)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"

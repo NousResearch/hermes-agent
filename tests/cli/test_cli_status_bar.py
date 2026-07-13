@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import cli as cli_mod
 from cli import HermesCLI
 
@@ -51,6 +53,267 @@ def _attach_agent(
         ),
     )
     return cli_obj
+
+
+_STATUS_BAR_WIDTHS = (51, 52, 75, 76)
+
+
+def _plugin_status_bar_snapshot():
+    """Return a deterministic snapshot that exercises all three text tiers."""
+    return {
+        "model_short": "m",
+        "context_percent": 25,
+        "context_length": 200_000,
+        "context_tokens": 50_000,
+        "duration": "9m",
+        "compressions": 0,
+        "active_background_tasks": 0,
+        "active_background_processes": 0,
+        "active_background_subagents": 0,
+        "prompt_elapsed": "⏲ 3s",
+        "idle_since": "",
+    }
+
+
+def _plugin_status_bar_baseline(width):
+    if width < 52:
+        return "⚕ m · 9m"
+    if width < 76:
+        return "⚕ m · 25% · 9m"
+    return "⚕ m │ 50K/200K │ 25% │ 9m │ ⏲ 3s"
+
+
+def _assert_status_bar_hook_call(hook, snapshot):
+    assert hook.call_count == 1
+    assert hook.call_args.args == ("on_status_bar_render",)
+    assert set(hook.call_args.kwargs) == {"snapshot"}
+    assert hook.call_args.kwargs["snapshot"] == snapshot
+    assert hook.call_args.kwargs["snapshot"] is not snapshot
+
+
+class _BrokenTruthValue:
+    def __bool__(self):
+        raise RuntimeError("truth-value failure")
+
+
+class _BrokenStringValue:
+    def __bool__(self):
+        return True
+
+    def __str__(self):
+        raise RuntimeError("stringification failure")
+
+
+class TestStatusBarPluginValueHelper:
+    def test_invokes_once_and_normalizes_only_ordered_nonempty_string_values(self):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[None, "", 0, False, "ready", 7, {"state": "ok"}],
+        ) as hook:
+            values = cli_obj._get_status_bar_plugin_values(snapshot)
+
+        assert values == ["ready"]
+        _assert_status_bar_hook_call(hook, snapshot)
+
+    def test_sanitizes_control_characters_to_keep_footer_on_one_line(self):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[" ready\nnow\r\x1b[31m\t "],
+        ) as hook:
+            values = cli_obj._get_status_bar_plugin_values(snapshot)
+
+        assert values == ["ready now  [31m"]
+        _assert_status_bar_hook_call(hook, snapshot)
+
+    def test_plugin_cannot_mutate_renderer_snapshot(self):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+
+        def mutate_snapshot(*_args, **kwargs):
+            kwargs["snapshot"].clear()
+            return ["ready"]
+
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=mutate_snapshot):
+            assert cli_obj._get_status_bar_plugin_values(snapshot) == ["ready"]
+
+        assert snapshot == _plugin_status_bar_snapshot()
+
+    @pytest.mark.parametrize(
+        "unsupported",
+        [
+            (),
+            (value for value in ("generated",)),
+            "string aggregate",
+            None,
+        ],
+        ids=("tuple", "generator", "string", "none"),
+    )
+    def test_rejects_non_list_aggregates(self, unsupported):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch("hermes_cli.plugins.invoke_hook", return_value=unsupported) as hook:
+            assert cli_obj._get_status_bar_plugin_values(snapshot) == []
+
+        _assert_status_bar_hook_call(hook, snapshot)
+
+    @pytest.mark.parametrize("broken", [_BrokenTruthValue(), _BrokenStringValue()])
+    def test_preserves_healthy_values_when_an_element_is_broken(self, broken):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch(
+            "hermes_cli.plugins.invoke_hook", return_value=["partial", broken]
+        ) as hook:
+            assert cli_obj._get_status_bar_plugin_values(snapshot) == ["partial"]
+
+        _assert_status_bar_hook_call(hook, snapshot)
+
+    def test_caches_hook_values_during_repaint_window(self):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch("hermes_cli.plugins.invoke_hook", return_value=["ready"]) as hook, patch(
+            "cli.time.monotonic", side_effect=[10.0, 10.5, 11.0]
+        ):
+            assert cli_obj._get_status_bar_plugin_values(snapshot) == ["ready"]
+            assert cli_obj._get_status_bar_plugin_values(snapshot) == ["ready"]
+            assert cli_obj._get_status_bar_plugin_values(snapshot) == ["ready"]
+
+        assert hook.call_count == 2
+
+
+class TestStatusBarPluginTierIntegration:
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    def test_appends_ordered_truthy_values_with_tier_separator(self, width):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        separator = " · " if width < 76 else " │ "
+        expected = separator.join([_plugin_status_bar_baseline(width), "ready"])
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[None, "", 0, False, "ready", 7],
+        ) as hook:
+            text = cli_obj._build_status_bar_text(width=width)
+
+        assert text == expected
+        _assert_status_bar_hook_call(hook, snapshot)
+
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    @pytest.mark.parametrize(
+        "result_factory",
+        [
+            lambda: [],
+            lambda: [None, "", 0, False],
+            lambda: ("tuple",),
+            lambda: (value for value in ("generated",)),
+            lambda: "string aggregate",
+            lambda: None,
+        ],
+        ids=("empty-list", "falsey-list", "tuple", "generator", "string", "none"),
+    )
+    def test_omission_forms_preserve_exact_baseline_without_trailing_separator(
+        self, width, result_factory
+    ):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        separator = " · " if width < 76 else " │ "
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch(
+            "hermes_cli.plugins.invoke_hook", return_value=result_factory()
+        ) as hook:
+            text = cli_obj._build_status_bar_text(width=width)
+
+        assert text == _plugin_status_bar_baseline(width)
+        assert not text.endswith(separator)
+        _assert_status_bar_hook_call(hook, snapshot)
+
+
+class TestStatusBarPluginFailuresAndOverflow:
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    def test_invocation_failure_preserves_exact_baseline(self, width):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch(
+            "hermes_cli.plugins.invoke_hook", side_effect=RuntimeError("plugin failure")
+        ) as hook:
+            text = cli_obj._build_status_bar_text(width=width)
+
+        assert text == _plugin_status_bar_baseline(width)
+        _assert_status_bar_hook_call(hook, snapshot)
+
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    @pytest.mark.parametrize("broken", [_BrokenTruthValue(), _BrokenStringValue()])
+    def test_element_failure_preserves_exact_baseline(self, width, broken):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch(
+            "hermes_cli.plugins.invoke_hook", return_value=["partial", broken]
+        ) as hook:
+            text = cli_obj._build_status_bar_text(width=width)
+
+        separator = " · " if width < 76 else " │ "
+        assert text == _plugin_status_bar_baseline(width) + separator + "partial"
+        _assert_status_bar_hook_call(hook, snapshot)
+
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    def test_lookup_failure_preserves_exact_baseline(self, width, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        monkeypatch.delattr(plugins, "invoke_hook")
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(cli_obj, "_is_session_yolo_active", return_value=False):
+            text = cli_obj._build_status_bar_text(width=width)
+
+        assert text == _plugin_status_bar_baseline(width)
+
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    def test_plugin_values_are_appended_before_display_width_trimming(self, width):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        separator = " · " if width < 76 else " │ "
+        untrimmed = separator.join(
+            [_plugin_status_bar_baseline(width), "x" * 200]
+        )
+        expected = cli_obj._trim_status_bar_text(untrimmed, width)
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch(
+            "hermes_cli.plugins.invoke_hook", return_value=["x" * 200]
+        ) as hook:
+            text = cli_obj._build_status_bar_text(width=width)
+
+        assert text == expected
+        assert text.endswith("...")
+        assert cli_obj._status_bar_display_width(text) <= width
+        _assert_status_bar_hook_call(hook, snapshot)
 
 
 class TestCLIStatusBar:

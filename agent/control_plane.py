@@ -1,13 +1,13 @@
-"""Frontdesk control plane — schema + classify (Phase 2 substrate).
+"""Concierge control plane — schema + classify (Phase 2 substrate).
 
-This module sits one layer above :mod:`agent.frontdesk_policy`.  Where the
+This module sits one layer above :mod:`agent.concierge_policy`.  Where the
 policy module returns a *routing verdict*, the control plane wraps it into a
 richer :class:`ControlPlaneDecision` carrying:
 
 * an explicit **Intent** (STOP / STATUS / STEER / NEW_TASK_MAIN /
   NEW_TASK_WORKER / ACK / DUPLICATE / NOISE) — the single-most-likely
   interpretation that drives the surface adapter's downstream branch,
-* a **mode-gated recommendation** — when frontdesk mode is off, an otherwise
+* a **mode-gated recommendation** — when concierge mode is off, an otherwise
   worker-lane verdict is downgraded to ``MAIN`` so legacy callers keep their
   existing behaviour (design review §3.1 mode-gating invariant),
 * a **fingerprint** for replay tests (INV-6 deterministic classification),
@@ -26,7 +26,8 @@ What this module does NOT do:
   surface-adapter responsibilities; the control plane just returns the
   decision object.
 * It does **not** consult any runtime state.  Mode gating is supplied by the
-  caller via the ``frontdesk_mode_active`` keyword; the module has no idea
+  caller via the ``concierge_mode_active`` keyword (legacy alias:
+  ``frontdesk_mode_active``); the module has no idea
   whether a worker lane is registered, a turn is in flight, or a queue is
   empty.  Verifying any of those is the surface adapter's job.
 * It does **not** mutate inputs or any imported object.  Every dataclass is
@@ -35,7 +36,7 @@ What this module does NOT do:
 Hard boundaries (PRD §9.2 / design review §9.2):
 
 * No persona changes.
-* No ``/mode frontdesk`` exposure.
+* No ``/mode concierge`` (legacy frontdesk) exposure.
 * No worker dispatch wiring.
 * No mutation of ``_pending_input`` or the existing ``/busy integrated`` drain
   semantics.
@@ -47,7 +48,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import FrozenSet, Literal
 
-from agent.frontdesk_policy import (
+from agent.concierge_policy import (
+    ConciergeConfidence,
+    ConciergePolicyDecision,
+    ConciergeRecommendation,
+    ConciergeSignal,
     FrontdeskConfidence,
     FrontdeskPolicyDecision,
     FrontdeskRecommendation,
@@ -77,9 +82,9 @@ __all__ = [
 # --------------------------------------------------------------------------
 # Enum re-exports (so callers can use the short names from design review §3.1)
 # --------------------------------------------------------------------------
-Signal = FrontdeskSignal
-Recommendation = FrontdeskRecommendation
-Confidence = FrontdeskConfidence
+Signal = ConciergeSignal
+Recommendation = ConciergeRecommendation
+Confidence = ConciergeConfidence
 
 
 class Intent(Enum):
@@ -92,7 +97,7 @@ class Intent(Enum):
     * ``STEER``            — surface invokes ``running_agent.steer`` (after
                              verifying main is actually in flight).
     * ``NEW_TASK_MAIN``    — foreground main turn (the conservative default).
-    * ``NEW_TASK_WORKER``  — worker lane dispatch (frontdesk-mode-only).
+    * ``NEW_TASK_WORKER``  — worker lane dispatch (concierge-mode-only).
     * ``ACK``              — pure acknowledgement, drop silently with a
                              ``control:`` line.
     * ``DUPLICATE``        — covered by a recent turn, drop with a line.
@@ -140,9 +145,9 @@ class ControlPlaneDecision:
       and ``transcript_render is True``.
     * ``intent in {STOP, NEW_TASK_WORKER, STEER}`` ⇒ ``transcript_render
       is True``.
-    * ``frontdesk_mode_active is False`` ⇒ ``recommendation in {MAIN,
+    * ``concierge_mode_active is False`` ⇒ ``recommendation in {MAIN,
       CONTROL}`` (worker/steer-shaped policy verdicts are downgraded to MAIN).
-    * Same ``(text, frontdesk_mode_active)`` ⇒ same ``fingerprint``.
+    * Same ``(text, concierge_mode_active)`` ⇒ same ``fingerprint``.
     """
 
     intent: Intent
@@ -152,7 +157,7 @@ class ControlPlaneDecision:
     debug_label: str
     transcript_render: bool
     raw_text: str
-    frontdesk_mode_active: bool
+    concierge_mode_active: bool
     fingerprint: str
     notes: tuple[str, ...] = field(default_factory=tuple)
 
@@ -173,6 +178,11 @@ class ControlPlaneDecision:
     def should_steer(self) -> bool:
         return self.recommendation is Recommendation.STEER
 
+    @property
+    def frontdesk_mode_active(self) -> bool:
+        """Temporary alias for :attr:`concierge_mode_active`."""
+        return self.concierge_mode_active
+
     # -- serialization --------------------------------------------------
     def to_dict(self) -> dict:
         return {
@@ -183,7 +193,9 @@ class ControlPlaneDecision:
             "debug_label": self.debug_label,
             "transcript_render": self.transcript_render,
             "raw_text": self.raw_text,
-            "frontdesk_mode_active": self.frontdesk_mode_active,
+            "concierge_mode_active": self.concierge_mode_active,
+            # temporary alias key during rename
+            "frontdesk_mode_active": self.concierge_mode_active,
             "fingerprint": self.fingerprint,
             "notes": list(self.notes),
         }
@@ -334,18 +346,25 @@ class WorkerTaskResult:
 # Intent mapping
 # --------------------------------------------------------------------------
 def decide_intent_from_policy(
-    policy_decision: FrontdeskPolicyDecision,
+    policy_decision: ConciergePolicyDecision,
     *,
-    frontdesk_mode_active: bool,
+    concierge_mode_active: bool | None = None,
+    frontdesk_mode_active: bool | None = None,
 ) -> tuple[Intent, Recommendation]:
     """Map a policy verdict to ``(Intent, Recommendation)``.
 
     Pure mapping, no side effects.  The two outputs are *not* a degenerate
     pair: the recommendation can downgrade (e.g. ``WORKER_LANE`` →
-    ``MAIN``) when frontdesk mode is off, while the intent stays the
+    ``MAIN``) when concierge mode is off, while the intent stays the
     semantically-correct ``NEW_TASK_MAIN`` (matching the *effective* routing).
     Design review §3.1 mode-gating invariant.
+
+    ``frontdesk_mode_active`` is a temporary alias for ``concierge_mode_active``.
     """
+    if concierge_mode_active is None:
+        mode = bool(frontdesk_mode_active) if frontdesk_mode_active is not None else False
+    else:
+        mode = bool(concierge_mode_active)
     rec = policy_decision.recommendation
     signals = policy_decision.signals
 
@@ -377,7 +396,7 @@ def decide_intent_from_policy(
     # steer(), but Phase 2 must not change legacy off-mode UX; off ⇒ MAIN.
     # ------------------------------------------------------------------
     if rec is Recommendation.STEER:
-        if not frontdesk_mode_active:
+        if not mode:
             return Intent.NEW_TASK_MAIN, Recommendation.MAIN
         return Intent.STEER, Recommendation.STEER
 
@@ -385,7 +404,7 @@ def decide_intent_from_policy(
     # WORKER_LANE bucket — mode-gated.  Off ⇒ downgrade to MAIN.
     # ------------------------------------------------------------------
     if rec is Recommendation.WORKER_LANE:
-        if not frontdesk_mode_active:
+        if not mode:
             return Intent.NEW_TASK_MAIN, Recommendation.MAIN
         return Intent.NEW_TASK_WORKER, Recommendation.WORKER_LANE
 
@@ -409,11 +428,12 @@ def classify(
     text: str,
     *,
     lang_hint: str | None = None,
-    frontdesk_mode_active: bool = False,
+    concierge_mode_active: bool | None = None,
+    frontdesk_mode_active: bool | None = None,
 ) -> ControlPlaneDecision:
     """Classify a single user-input fragment into a :class:`ControlPlaneDecision`.
 
-    Pure function: same ``(text, lang_hint, frontdesk_mode_active)`` always
+    Pure function: same ``(text, lang_hint, concierge_mode_active)`` always
     returns the same value.
 
     Parameters
@@ -423,12 +443,14 @@ def classify(
         underlying policy classifier.
     lang_hint:
         Optional language hint (``"ko"`` short-circuits Korean detection).
-    frontdesk_mode_active:
-        ``True`` only when the surface has confirmed frontdesk mode is on for
+    concierge_mode_active:
+        ``True`` only when the surface has confirmed concierge mode is on for
         this session.  When ``False``, worker-lane and steer policy verdicts
         are downgraded to ``MAIN`` so legacy callers keep their existing
         behaviour — this is the central invariant that makes Phase 2 substrate
         safe to land without any UX change.
+    frontdesk_mode_active:
+        Temporary alias for ``concierge_mode_active``.
 
     Returns
     -------
@@ -436,27 +458,31 @@ def classify(
         A frozen dataclass with the dispatcher's verdict.  Never raises for
         any string input.
     """
+    if concierge_mode_active is None:
+        mode = bool(frontdesk_mode_active) if frontdesk_mode_active is not None else False
+    else:
+        mode = bool(concierge_mode_active)
     policy_decision = classify_request(text, lang_hint=lang_hint)
     intent, recommendation = decide_intent_from_policy(
-        policy_decision, frontdesk_mode_active=frontdesk_mode_active
+        policy_decision, concierge_mode_active=mode
     )
 
     transcript_render = intent in _TRANSCRIPT_VISIBLE_INTENTS
-    # STATUS is rendered when frontdesk is on (the user wants to see "main
+    # STATUS is rendered when concierge is on (the user wants to see "main
     # answering locally") but kept silent on legacy off-mode to avoid surfacing
     # a new chrome line for unchanged behaviour.
-    if intent is Intent.STATUS and frontdesk_mode_active:
+    if intent is Intent.STATUS and mode:
         transcript_render = True
 
     # Forward any policy-side notes; add a mode-downgrade note when the policy
     # said WORKER_LANE or STEER but mode is off.
     notes: tuple[str, ...] = tuple(policy_decision.notes)
-    if not frontdesk_mode_active and policy_decision.recommendation in {
+    if not mode and policy_decision.recommendation in {
         Recommendation.WORKER_LANE,
         Recommendation.STEER,
     }:
         notes = notes + (
-            f"downgraded {policy_decision.recommendation.name} -> MAIN: frontdesk mode off",
+            f"downgraded {policy_decision.recommendation.name} -> MAIN: concierge mode off",
         )
 
     return ControlPlaneDecision(
@@ -467,9 +493,9 @@ def classify(
         debug_label=policy_decision.debug_label,
         transcript_render=transcript_render,
         raw_text=policy_decision.raw_text,
-        frontdesk_mode_active=frontdesk_mode_active,
+        concierge_mode_active=mode,
         fingerprint=_fingerprint(
-            policy_decision.raw_text, frontdesk_mode_active=frontdesk_mode_active
+            policy_decision.raw_text, concierge_mode_active=mode
         ),
         notes=notes,
     )

@@ -1,10 +1,10 @@
 # Korean intent corpus for the frontdesk control-plane classifier (Phase 2).
 # Schema: id, text, expected_intent, expected_recommendation, notes
 #
-# Verified against agent.control_plane.classify / agent.frontdesk_policy.classify_request.
+# Verified against agent.control_plane.classify / agent.concierge_policy.classify_request.
 # Every row's expected_intent / expected_recommendation was confirmed by running
 # the classifier directly.  For NEW_TASK_WORKER rows, classify() is called with
-# frontdesk_mode_active=True.  All other rows use frontdesk_mode_active=False
+# concierge_mode_active=True.  All other rows use concierge_mode_active=False
 # (or True when noted) — the recommendation column reflects the effective output.
 #
 # DUPLICATE: classifier does not detect duplicates (no history). Two placeholder

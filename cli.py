@@ -13526,7 +13526,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     and not images
                 ):
                     try:
-                        from agent.one_room_control import handle_one_room_control
+                        from agent.concierge import handle_concierge
 
                         def _cli_cancel(_t: str) -> None:
                             if self.agent is not None and hasattr(self.agent, "interrupt"):
@@ -13543,7 +13543,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             except Exception:
                                 return False
 
-                        _or = handle_one_room_control(
+                        _or = handle_concierge(
                             text,
                             owner=self,
                             session_key=getattr(self, "session_id", None)
@@ -13554,7 +13554,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         )
                     except Exception as _or_exc:
                         logging.getLogger(__name__).warning(
-                            "one_room CLI busy predispatch failed: %s", _or_exc, exc_info=True
+                            "concierge CLI busy predispatch failed: %s", _or_exc, exc_info=True
                         )
                         _or = None
                     if _or is not None:
@@ -15331,12 +15331,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         n = len(submit_images)
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
-                    # One-room NL→Kanban gate (opt-in via orchestration.frontdesk_live_enabled)
+                    # Concierge NL→Kanban gate (opt-in via orchestration.concierge_live_enabled)
                     if isinstance(user_input, str) and not submit_images:
                         try:
-                            from agent.one_room_control import handle_one_room_control
+                            from agent.concierge import handle_concierge
 
-                            _or = handle_one_room_control(
+                            _or = handle_concierge(
                                 user_input,
                                 owner=self,
                                 session_key=getattr(self, "session_id", None)
@@ -15345,7 +15345,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             )
                         except Exception as _or_exc:
                             logging.getLogger(__name__).warning(
-                                "one_room CLI predispatch failed: %s", _or_exc, exc_info=True
+                                "concierge CLI predispatch failed: %s", _or_exc, exc_info=True
                             )
                             _or = None
                         if _or is not None:

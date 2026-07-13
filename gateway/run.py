@@ -5308,17 +5308,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
-    async def _try_one_room_control(
+    async def _try_concierge(
         self,
         event: MessageEvent,
         session_key: str,
         *,
         main_in_flight: bool,
     ) -> Optional[str]:
-        """Opt-in one-room NL gate. Returns reply text if consumed, else None."""
-        from agent.one_room_control import handle_one_room_control, one_room_control_enabled
+        """Opt-in Concierge NL gate. Returns reply text if consumed, else None."""
+        from agent.concierge import concierge_enabled, handle_concierge
 
-        if not one_room_control_enabled(owner=self):
+        if not concierge_enabled(owner=self):
             return None
         if getattr(event, "internal", False):
             return None
@@ -5340,7 +5340,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key,
                         event.source,
                         interrupt_reason=_INTERRUPT_REASON_STOP,
-                        invalidation_reason="one_room_stop",
+                        invalidation_reason="concierge_stop",
                     )
                 )
             except Exception:
@@ -5360,7 +5360,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return False
             return bool(steer(msg))
 
-        result = handle_one_room_control(
+        result = handle_concierge(
             text,
             owner=self,
             session_key=session_key,
@@ -5525,12 +5525,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Consumes STOP/STATUS/WORKER-shaped text before busy queue/interrupt
         # so control messages are never replayed as user content.
         try:
-            one_room_reply = await self._try_one_room_control(
+            concierge_reply = await self._try_concierge(
                 event,
                 session_key,
                 main_in_flight=True,
             )
-            if one_room_reply is not None:
+            if concierge_reply is not None:
                 return True
         except Exception:
             logger.warning(
@@ -10384,13 +10384,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so control messages never become a model turn or block concurrency.
         if not is_internal:
             try:
-                one_room_reply = await self._try_one_room_control(
+                concierge_reply = await self._try_concierge(
                     event,
                     _quick_key,
                     main_in_flight=False,
                 )
-                if one_room_reply is not None:
-                    # Already delivered via adapter inside _try_one_room_control;
+                if concierge_reply is not None:
+                    # Already delivered via adapter inside _try_concierge;
                     # return empty so the platform layer does not double-send.
                     return ""
             except Exception:

@@ -8985,10 +8985,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             streamer = make_stream_renderer(cols)
             prompt = text
 
-            # One-room NL→Kanban pre-dispatch (opt-in via config.yaml).
+            # Concierge NL→Kanban pre-dispatch (opt-in via config.yaml).
             if isinstance(prompt, str) and prompt.strip() and not prompt.strip().startswith("/"):
                 try:
-                    from agent.one_room_control import handle_one_room_control
+                    from agent.concierge import handle_concierge
 
                     def _tui_cancel(_t: str) -> None:
                         if hasattr(agent, "interrupt"):
@@ -9006,7 +9006,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         except Exception:
                             return False
 
-                    _or = handle_one_room_control(
+                    _or = handle_concierge(
                         prompt,
                         session_key=session.get("session_key") or sid,
                         main_in_flight=bool(session.get("running")),
@@ -9015,7 +9015,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     )
                 except Exception as _or_exc:
                     print(
-                        f"[tui_gateway] one_room predispatch failed: {_or_exc}",
+                        f"[tui_gateway] concierge predispatch failed: {_or_exc}",
                         file=sys.stderr,
                     )
                     _or = None

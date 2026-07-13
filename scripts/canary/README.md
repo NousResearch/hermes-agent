@@ -123,6 +123,55 @@ attestation before the next phase or runtime enablement.
 6. Run the fresh root collector and deterministic deployment preflight before
    gateway, writer, or Discord egress is enabled.
 
+## Stopped release publication
+
+The sealed release is published through the local owner launcher, never with a
+Cloud-side `python -c`, heredoc, shell fragment, or caller-selected SSH command.
+The action is a mutation because it creates a revision-addressed root-owned
+source checkout, managed Python, virtual environment, wheel, manifest, and
+append-only publication evidence. It does not install, start, enable, stop, or
+restart a service. It uses the attested owner gcloud identity for IAP access but
+does not request or disclose a database, Discord, or runtime credential.
+
+After the fork revision has passed review and CI, first create its local
+release-bound trusted gcloud receipt as described below. Then invoke the same
+attested launcher with the explicit stopped-release action:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --publish-stopped-release \
+  --release-sha <exact-40-character-release-sha>
+```
+
+The launcher is fixed to the fork repository, the dedicated v2 canary VM, the
+existing `/opt/muncho-canary-source/<revision>` source namespace, and
+`/opt/muncho-canary-releases/<revision>`. It first obtains a deterministic
+read-only `muncho-canary-stopped-release-plan.v1`, then returns that exact plan
+digest to the root/Linux `apply` entry point. `apply` re-observes the dedicated
+GCE/host/boot identity, all 17 fixed activation paths, and the three stopped
+service states before writing. It builds only a clean root-owned checkout whose
+HEAD and origin are exact, validates the sealed result, and publishes or
+same-boot revalidates the trusted host receipt at
+`/etc/muncho/full-canary/host-identity.json` as root-owned mode `0400`. The
+root-owned `0755` parent deliberately permits the future gateway identity to
+traverse to its separately protected `0440` observer and fixture files. The
+gate then re-observes the complete stopped plan; any drift blocks publication
+evidence. The host receipt file and internal digests are bound into the
+root-owned mode `0400` publication receipt at:
+
+```text
+/var/lib/muncho-canary-release-evidence/<revision>/stopped-release-publication.json
+```
+
+An unfamiliar source, release, activation path, unit state, receipt, incomplete
+build, or cross-revision collision is preserved and blocks the gate. No generic
+cleanup or repair authority is part of this action. An exact terminal retry may
+only revalidate the same source, sealed release, live stopped state, and receipt
+bytes.
+
 ## Phase 4 — packaged writer-only activation
 
 Runtime mutation is performed by the sealed wheel, not by importing this

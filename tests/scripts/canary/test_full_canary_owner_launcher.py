@@ -32,6 +32,7 @@ from scripts.canary.full_canary_owner_launcher import (
     GcloudOwnerAccessToken,
     HttpResponse,
     IapCoordinatorTransport,
+    IapStoppedReleaseTransport,
     OWNER_GATE_SCHEMA,
     OWNER_DISCORD_INPUT_MAGIC,
     OwnerLauncherError,
@@ -5836,6 +5837,435 @@ def test_iap_transport_is_release_addressed_and_recovery_requires_approved_owner
     assert "stop-and-retire-discord-token" in rendered
     assert PASSWORD.decode() not in rendered
     assert DISCORD_TOKEN.decode() not in rendered
+
+
+def _stopped_release_service_states():
+    return [
+        {
+            "unit": unit,
+            "state": "absent",
+            "properties": {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+                "UnitFileState": "",
+                "MainPID": "0",
+                "FragmentPath": "",
+                "DropInPaths": "",
+            },
+        }
+        for unit in launcher._STOPPED_RELEASE_UNITS
+    ]
+
+
+def _stopped_release_plan():
+    machine = "1" * 64
+    hostname = "2" * 64
+    gce = {
+        "project_id": PROJECT,
+        "project_number": "39589465056",
+        "zone": launcher.ZONE,
+        "instance_name": launcher.VM_NAME,
+        "instance_id": launcher.VM_INSTANCE_ID,
+        "service_account_email": (
+            "muncho-canary-v2-runtime@adventico-ai-platform.iam.gserviceaccount.com"
+        ),
+    }
+    release_root = f"/opt/muncho-canary-releases/{RELEASE_SHA}"
+    unsigned = {
+        "schema": launcher.STOPPED_RELEASE_PLAN_SCHEMA,
+        "revision": RELEASE_SHA,
+        "source": {
+            "repository": launcher.STOPPED_RELEASE_SOURCE_REPOSITORY,
+            "root": f"{launcher.STOPPED_RELEASE_SOURCE_BASE}/{RELEASE_SHA}",
+            "head_sha": RELEASE_SHA,
+            "tree_sha": "b" * 40,
+        },
+        "release_root": release_root,
+        "release_manifest_path": f"{release_root}/release-manifest.json",
+        "evidence_receipt_path": (
+            f"{launcher.STOPPED_RELEASE_EVIDENCE_BASE}/{RELEASE_SHA}/"
+            "stopped-release-publication.json"
+        ),
+        "host_identity_receipt_path": launcher.STOPPED_RELEASE_HOST_RECEIPT_PATH,
+        "python_version": launcher.STOPPED_RELEASE_PYTHON_VERSION,
+        "interpreter": f"{release_root}/venv/bin/python",
+        "tools": {
+            "git": "/usr/bin/git",
+            "systemctl": "/usr/bin/systemctl",
+            "uv": "/usr/local/bin/uv",
+            "uv_cache": "/var/cache/muncho-writer-release",
+        },
+        "dedicated_host": {
+            **gce,
+            "gce_identity_sha256": hashlib.sha256(_canonical(gce)).hexdigest(),
+            "machine_id_sha256": machine,
+            "hostname_sha256": hostname,
+            "host_identity_sha256": hashlib.sha256(
+                _canonical({
+                    "machine_id_sha256": machine,
+                    "hostname_sha256": hostname,
+                })
+            ).hexdigest(),
+            "boot_id_sha256": "3" * 64,
+        },
+        "activation_inventory": [
+            {"path": path, "state": "absent"}
+            for path in launcher._STOPPED_RELEASE_ACTIVATION_PATHS
+        ],
+        "service_states": _stopped_release_service_states(),
+    }
+    return {
+        **unsigned,
+        "plan_sha256": hashlib.sha256(_canonical(unsigned)).hexdigest(),
+    }
+
+
+def _stopped_release_receipt(plan):
+    release_root = f"/opt/muncho-canary-releases/{RELEASE_SHA}"
+    unsigned = {
+        "schema": launcher.STOPPED_RELEASE_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "published_services_stopped",
+        "release_revision": RELEASE_SHA,
+        "plan_sha256": plan["plan_sha256"],
+        "source": plan["source"],
+        "dedicated_host": plan["dedicated_host"],
+        "activation_inventory": plan["activation_inventory"],
+        "service_state_before": plan["service_states"],
+        "service_state_after": plan["service_states"],
+        "services_stopped_and_disabled": True,
+        "tools": plan["tools"],
+        "release_root": release_root,
+        "release_manifest_path": f"{release_root}/release-manifest.json",
+        "release_manifest_file_sha256": "4" * 64,
+        "release_artifact_sha256": "5" * 64,
+        "interpreter": f"{release_root}/venv/bin/python",
+        "interpreter_sha256": "6" * 64,
+        "python_version": launcher.STOPPED_RELEASE_PYTHON_VERSION,
+        "retained_wheel_path": f"{release_root}/artifacts/hermes_agent.whl",
+        "retained_wheel_sha256": "7" * 64,
+        "build_constraints_sha256": "8" * 64,
+        "host_identity_receipt_path": launcher.STOPPED_RELEASE_HOST_RECEIPT_PATH,
+        "host_identity_receipt_file_sha256": "9" * 64,
+        "host_identity_receipt_sha256": "a" * 64,
+        "receipt_path": (
+            f"{launcher.STOPPED_RELEASE_EVIDENCE_BASE}/{RELEASE_SHA}/"
+            "stopped-release-publication.json"
+        ),
+        "created_at_unix": 1_000,
+    }
+    return {
+        **unsigned,
+        "receipt_sha256": hashlib.sha256(_canonical(unsigned)).hexdigest(),
+    }
+
+
+def test_stopped_release_owner_validators_bind_host_receipt_path_exactly():
+    plan = _stopped_release_plan()
+    assert (
+        launcher.validate_stopped_release_plan(
+            plan,
+            expected_release_sha=RELEASE_SHA,
+        )["plan_sha256"]
+        == plan["plan_sha256"]
+    )
+
+    drifted_plan = json.loads(json.dumps(plan))
+    drifted_plan["host_identity_receipt_path"] = "/tmp/host-identity.json"
+    drifted_plan["plan_sha256"] = hashlib.sha256(
+        _canonical({
+            name: value for name, value in drifted_plan.items() if name != "plan_sha256"
+        })
+    ).hexdigest()
+    with pytest.raises(OwnerLauncherError, match="stopped_release_plan_invalid"):
+        launcher.validate_stopped_release_plan(
+            drifted_plan,
+            expected_release_sha=RELEASE_SHA,
+        )
+
+    receipt = _stopped_release_receipt(plan)
+    assert (
+        launcher.validate_stopped_release_receipt(receipt, plan=plan)["receipt_sha256"]
+        == receipt["receipt_sha256"]
+    )
+    drifted_receipt = json.loads(json.dumps(receipt))
+    drifted_receipt["host_identity_receipt_path"] = "/tmp/host-identity.json"
+    drifted_receipt["receipt_sha256"] = hashlib.sha256(
+        _canonical({
+            name: value
+            for name, value in drifted_receipt.items()
+            if name != "receipt_sha256"
+        })
+    ).hexdigest()
+    with pytest.raises(OwnerLauncherError, match="stopped_release_receipt_invalid"):
+        launcher.validate_stopped_release_receipt(drifted_receipt, plan=plan)
+
+
+def test_stopped_release_transport_renders_only_fixed_canary_iap_argv():
+    identity = SimpleNamespace(
+        account_for_read_only_preflight=lambda: "owner@example.com",
+    )
+    transport = IapStoppedReleaseTransport(
+        identity,
+        gcloud_executable=_StableExecutable(),
+        gcloud_configuration=_StableGcloudConfiguration(),
+        known_hosts=_StableExecutable("/trusted/google_compute_known_hosts"),
+    )
+    source_root = f"{launcher.STOPPED_RELEASE_SOURCE_BASE}/{RELEASE_SHA}"
+    remote = (
+        *transport._fixed_remote_environment(chdir=source_root),
+        "/usr/bin/python3",
+        "-B",
+        "-E",
+        "-s",
+        "-m",
+        "scripts.canary.writer_release",
+        "plan",
+        "--revision",
+        RELEASE_SHA,
+    )
+
+    argv = transport._remote_argv(remote, account="owner@example.com")
+    rendered = " ".join(argv)
+
+    assert argv[: len(GCLOUD_COMMAND_PREFIX) + 3] == (
+        *GCLOUD_COMMAND_PREFIX,
+        "compute",
+        "ssh",
+        "lomliev_adventico_com@muncho-canary-v2-01",
+    )
+    assert f"--project={PROJECT}" in argv
+    assert "--zone=europe-west3-a" in argv
+    assert "--tunnel-through-iap" in argv
+    assert f"--chdir={source_root}" in rendered
+    assert "scripts.canary.writer_release plan" in rendered
+    assert "python -c" not in rendered
+    assert "heredoc" not in rendered
+    assert "scp" not in rendered
+    assert "skyai-runtime-prod-01" not in rendered
+    assert "ai-platform-runtime-01" not in rendered
+    assert PASSWORD.decode() not in rendered
+    assert DISCORD_TOKEN.decode() not in rendered
+
+
+def test_stopped_release_source_publication_is_revision_addressed_and_no_shell():
+    transport = IapStoppedReleaseTransport(
+        SimpleNamespace(
+            account_for_read_only_preflight=lambda: "owner@example.com",
+        ),
+        gcloud_executable=_StableExecutable(),
+        gcloud_configuration=_StableGcloudConfiguration(),
+        known_hosts=_StableExecutable("/trusted/google_compute_known_hosts"),
+    )
+    source_root = f"{launcher.STOPPED_RELEASE_SOURCE_BASE}/{RELEASE_SHA}"
+    commands = []
+    transport._revision_source_exists = lambda _release, **_kwargs: False
+
+    def run_remote(argv, **_kwargs):
+        commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    transport._run_remote = run_remote
+
+    assert (
+        transport._prepare_source(
+            RELEASE_SHA,
+            account="owner@example.com",
+        )
+        == source_root
+    )
+    assert len(commands) == 2
+    assert commands[0][-6:] == (
+        "/usr/bin/git",
+        "clone",
+        "--no-checkout",
+        "--no-tags",
+        launcher.STOPPED_RELEASE_SOURCE_REPOSITORY,
+        source_root,
+    )
+    assert commands[1][-6:] == (
+        "/usr/bin/git",
+        "-C",
+        source_root,
+        "checkout",
+        "--detach",
+        RELEASE_SHA,
+    )
+    assert all(
+        item not in {"sh", "bash", "/bin/sh", "/bin/bash"}
+        for command in commands
+        for item in command
+    )
+
+
+def test_stopped_release_source_absence_requires_successful_bounded_find():
+    transport = IapStoppedReleaseTransport(
+        SimpleNamespace(
+            account_for_read_only_preflight=lambda: "owner@example.com",
+        ),
+        gcloud_executable=_StableExecutable(),
+        gcloud_configuration=_StableGcloudConfiguration(),
+        known_hosts=_StableExecutable("/trusted/google_compute_known_hosts"),
+    )
+    outputs = iter((b"", RELEASE_SHA.encode("ascii"), b"unexpected"))
+
+    def run_remote(argv, **kwargs):
+        assert argv == (
+            "/usr/bin/find",
+            launcher.STOPPED_RELEASE_SOURCE_BASE,
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-name",
+            RELEASE_SHA,
+            "-printf",
+            "%f",
+        )
+        assert kwargs["maximum_output_bytes"] == 40
+        return subprocess.CompletedProcess(argv, 0, next(outputs), b"")
+
+    transport._run_remote = run_remote
+
+    assert (
+        transport._revision_source_exists(
+            RELEASE_SHA,
+            account="owner@example.com",
+        )
+        is False
+    )
+    assert (
+        transport._revision_source_exists(
+            RELEASE_SHA,
+            account="owner@example.com",
+        )
+        is True
+    )
+    with pytest.raises(OwnerLauncherError, match="path_probe_invalid"):
+        transport._revision_source_exists(
+            RELEASE_SHA,
+            account="owner@example.com",
+        )
+
+
+def test_stopped_release_transport_binds_plan_and_terminal_receipt():
+    transport = IapStoppedReleaseTransport(
+        SimpleNamespace(
+            account_for_read_only_preflight=lambda: "owner@example.com",
+        ),
+        gcloud_executable=_StableExecutable(),
+        gcloud_configuration=_StableGcloudConfiguration(),
+        known_hosts=_StableExecutable("/trusted/google_compute_known_hosts"),
+    )
+    plan = _stopped_release_plan()
+    plan_sha256 = plan["plan_sha256"]
+    receipt = _stopped_release_receipt(plan)
+    observed = []
+    transport._prepare_source = lambda release, **_kwargs: (
+        observed.append(("source", release)) or "source"
+    )
+
+    def run_release(release, command, **kwargs):
+        observed.append((command, release, kwargs.get("approved_plan_sha256")))
+        return plan if command == "plan" else receipt
+
+    transport._run_release_command = run_release
+
+    assert transport.publish(RELEASE_SHA) == receipt
+    assert observed == [
+        ("source", RELEASE_SHA),
+        ("plan", RELEASE_SHA, None),
+        ("apply", RELEASE_SHA, plan_sha256),
+    ]
+
+
+def test_cli_stopped_release_action_never_constructs_live_secret_boundaries(
+    monkeypatch,
+    capfd,
+):
+    events = []
+
+    class Runtime:
+        def trusted_command_prefix(self):
+            events.append("runtime")
+            return GCLOUD_COMMAND_PREFIX
+
+    receipt = {
+        "schema": launcher.STOPPED_RELEASE_RECEIPT_SCHEMA,
+        "ok": True,
+        "release_revision": RELEASE_SHA,
+    }
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_runtime",
+        lambda _release: Runtime(),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_local_launcher_provenance",
+        lambda _release: events.append("provenance") or "a" * 64,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_validate_owner_interpreter_invocation",
+        lambda _path: events.append("interpreter"),
+    )
+    monkeypatch.setattr(launcher, "PinnedGcloudConfiguration", lambda: object())
+    monkeypatch.setattr(launcher, "GcloudOwnerAccessToken", lambda *_a, **_k: object())
+
+    class Transport:
+        def __init__(self, *_args, **_kwargs):
+            events.append("transport")
+
+        def publish(self, release):
+            events.append(("publish", release))
+            return receipt
+
+    monkeypatch.setattr(launcher, "IapStoppedReleaseTransport", Transport)
+    monkeypatch.setattr(
+        launcher,
+        "IapCoordinatorTransport",
+        lambda *_a, **_k: pytest.fail("live coordinator must not be constructed"),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "CloudSqlTemporaryAdmin",
+        lambda *_a, **_k: pytest.fail("SQL admin must not be constructed"),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "OwnerDiscordTokenReader",
+        lambda: pytest.fail("Discord token reader must not be constructed"),
+    )
+
+    assert (
+        launcher.main((
+            "--release-sha",
+            RELEASE_SHA,
+            "--publish-stopped-release",
+        ))
+        == 0
+    )
+    assert json.loads(capfd.readouterr().out) == receipt
+    assert events == [
+        "provenance",
+        "transport",
+        ("publish", RELEASE_SHA),
+        "runtime",
+        "interpreter",
+        "provenance",
+    ]
+
+
+def test_cli_stopped_release_action_is_mutually_exclusive_with_runtime_bootstrap():
+    with pytest.raises(SystemExit):
+        launcher._cli_parser().parse_args((
+            "--release-sha",
+            RELEASE_SHA,
+            "--bootstrap-trusted-runtime",
+            "--publish-stopped-release",
+        ))
 
 
 def _iap_authorization_documents(public_key):

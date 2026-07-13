@@ -11,12 +11,14 @@ whose digest is stable for identical content and modes.
 
 The systemd renderer is deliberately pure.  It emits the Canonical Writer and
 credential-free gateway units plus a tmpfiles.d contract for the setgid writer
-socket directory.  It never writes units, calls systemctl, starts services, or
-accepts environment/secret payloads.
+socket directory.  The source-side stopped-release CLI separately performs
+fixed, read-only ``systemctl show`` observations; this module never writes
+units, changes service state, or accepts environment/secret payloads.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -25,6 +27,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -99,6 +102,72 @@ _TRACKED_RELEASE_ARTIFACTS = (
     CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH,
 )
 _MAX_TRACKED_RELEASE_ARTIFACT_BYTES = 1024 * 1024
+
+# The stopped publication boundary is intentionally narrower than the release
+# builder API above.  Its CLI derives every path and tool from one exact commit
+# SHA; operators cannot redirect it to a different checkout, repository,
+# evidence directory, executable, service, host, or environment.
+STOPPED_RELEASE_PLAN_SCHEMA = "muncho-canary-stopped-release-plan.v1"
+STOPPED_RELEASE_RECEIPT_SCHEMA = "muncho-canary-stopped-release-publication.v1"
+STOPPED_RELEASE_FAILURE_SCHEMA = "muncho-canary-stopped-release-failure.v1"
+FORK_REPOSITORY = "https://github.com/lomliev/hermes-agent.git"
+DEFAULT_SOURCE_BASE = Path("/opt/muncho-canary-source")
+DEFAULT_EVIDENCE_BASE = Path("/var/lib/muncho-canary-release-evidence")
+DEFAULT_HOST_RECEIPT_PATH = Path("/etc/muncho/full-canary/host-identity.json")
+DEFAULT_SYSTEMCTL_EXECUTABLE = Path("/usr/bin/systemctl")
+_EVIDENCE_DIRECTORY_MODE = 0o700
+_HOST_RECEIPT_DIRECTORY_MODE = 0o755
+_RECEIPT_MODE = 0o400
+_MAX_RECEIPT_BYTES = 1024 * 1024
+_MAX_SERVICE_OUTPUT_BYTES = 64 * 1024
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+_ACTIVATION_PATHS = (
+    Path("/etc/muncho/writer-activation/staged/writer.json"),
+    Path("/etc/muncho/writer-activation/staged/gateway.yaml"),
+    Path("/etc/muncho/writer-activation/staged/native-observation-plan.json"),
+    Path("/etc/muncho/writer-activation/staged/activation-plan.json"),
+    Path("/etc/muncho/writer-activation/staged/owner-approval.json"),
+    Path("/etc/muncho/writer-activation/staged/external-iam-receipt.json"),
+    Path("/etc/muncho/writer-activation/staged/muncho-canonical-writer.service"),
+    Path("/etc/muncho/writer-activation/staged/hermes-cloud-gateway.service"),
+    Path("/etc/muncho/writer-activation/native-observation-plan.json"),
+    Path("/etc/muncho/writer-activation/activation-plan.json"),
+    Path("/etc/muncho/writer-activation/deployment-manifest.json"),
+    Path("/etc/systemd/system/muncho-canonical-writer.service"),
+    Path("/etc/systemd/system/hermes-cloud-gateway.service"),
+    Path("/etc/systemd/system/muncho-canonical-writer-export.service"),
+    Path("/etc/tmpfiles.d/muncho-canonical-writer.conf"),
+    Path("/etc/muncho-canonical-writer/writer.json"),
+    Path("/etc/hermes/config.yaml"),
+)
+_STOPPED_SERVICE_UNITS = (
+    "muncho-discord-egress.service",
+    "muncho-canonical-writer.service",
+    "hermes-cloud-gateway.service",
+)
+_SERVICE_PROPERTIES = (
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "UnitFileState",
+    "MainPID",
+    "FragmentPath",
+    "DropInPaths",
+)
+_HOST_OBSERVATION_FIELDS = frozenset({
+    "project_id",
+    "project_number",
+    "zone",
+    "instance_name",
+    "instance_id",
+    "service_account_email",
+    "gce_identity_sha256",
+    "machine_id_sha256",
+    "hostname_sha256",
+    "host_identity_sha256",
+    "boot_id_sha256",
+})
 
 
 def _effective_uid() -> int:
@@ -1694,6 +1763,1067 @@ def build_release(
     return manifest
 
 
+HostObserver = Callable[[], Mapping[str, str]]
+HostReceiptCollector = Callable[[int], Mapping[str, Any]]
+PathExists = Callable[[Path], bool]
+ReleaseBuilder = Callable[..., ReleaseManifest]
+Clock = Callable[[], float]
+
+
+def _sha256_json(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _stopped_release_spec(revision: str) -> ReleaseBuildSpec:
+    """Derive the only source, release, interpreter, and tool paths allowed."""
+
+    return ReleaseBuildSpec(
+        revision=revision,
+        source_root=DEFAULT_SOURCE_BASE / revision,
+        release_base=DEFAULT_RELEASE_BASE,
+        python_version=DEFAULT_PYTHON_VERSION,
+        uv_executable=DEFAULT_UV_EXECUTABLE,
+        git_executable=DEFAULT_GIT_EXECUTABLE,
+        uv_cache_dir=DEFAULT_UV_CACHE,
+    )
+
+
+def _stopped_observation_environment() -> tuple[tuple[str, str], ...]:
+    return tuple(
+        sorted(
+            {
+                "HOME": "/nonexistent",
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+                "PATH": (
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                ),
+            }.items()
+        )
+    )
+
+
+def _source_identity_commands(spec: ReleaseBuildSpec) -> tuple[BuildCommand, ...]:
+    environment = _clean_environment(spec)
+    git = str(spec.git_executable)
+    source = str(spec.source_root)
+    return (
+        BuildCommand(
+            (git, "-C", source, "config", "--get", "remote.origin.url"),
+            env=environment,
+        ),
+        BuildCommand(
+            (git, "-C", source, "rev-parse", "--verify", "HEAD^{tree}"),
+            env=environment,
+        ),
+    )
+
+
+def _bounded_command_stdout(
+    command: BuildCommand,
+    *,
+    runner: Runner,
+    label: str,
+    maximum_bytes: int,
+) -> str:
+    completed = runner(command)
+    if (
+        not isinstance(completed, subprocess.CompletedProcess)
+        or not isinstance(completed.stdout, str)
+        or not isinstance(completed.stderr, str)
+    ):
+        raise TypeError(f"{label} returned an invalid result")
+    try:
+        stdout_bytes = completed.stdout.encode("utf-8", errors="strict")
+        stderr_bytes = completed.stderr.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(f"{label} output is not UTF-8") from exc
+    if len(stdout_bytes) > maximum_bytes or len(stderr_bytes) > maximum_bytes:
+        raise RuntimeError(f"{label} output exceeds its bound")
+    if completed.returncode != 0:
+        raise RuntimeError(f"{label} failed")
+    if completed.stderr:
+        raise RuntimeError(f"{label} emitted unexpected stderr")
+    return completed.stdout
+
+
+def _collect_source_identity(
+    spec: ReleaseBuildSpec,
+    *,
+    runner: Runner,
+) -> dict[str, str]:
+    spec.validate()
+    expected_source = DEFAULT_SOURCE_BASE / spec.revision
+    if spec.source_root != expected_source:
+        raise RuntimeError("stopped-release source path is not exact")
+    _validate_root_parent_chain(spec.release_base)
+    _validate_root_parent_chain(spec.uv_cache_dir)
+    _validate_root_executable(spec.uv_executable)
+    _validate_root_executable(spec.git_executable)
+    _validate_root_source_tree(spec.source_root)
+    verify_clean_checkout(spec, runner=runner)
+    origin_command, tree_command = _source_identity_commands(spec)
+    origin_raw = _bounded_command_stdout(
+        origin_command,
+        runner=runner,
+        label="source repository verification",
+        maximum_bytes=4096,
+    )
+    if origin_raw != FORK_REPOSITORY + "\n":
+        raise RuntimeError("stopped-release source repository is not the fixed fork")
+    tree_raw = _bounded_command_stdout(
+        tree_command,
+        runner=runner,
+        label="source tree verification",
+        maximum_bytes=4096,
+    )
+    if not tree_raw.endswith("\n") or tree_raw.count("\n") != 1:
+        raise RuntimeError("stopped-release source tree identity is invalid")
+    tree_sha = tree_raw[:-1]
+    if _REVISION_RE.fullmatch(tree_sha) is None:
+        raise RuntimeError("stopped-release source tree identity is invalid")
+    return {
+        "repository": FORK_REPOSITORY,
+        "root": str(spec.source_root),
+        "head_sha": spec.revision,
+        "tree_sha": tree_sha,
+    }
+
+
+def _default_host_observer() -> Mapping[str, str]:
+    # Import lazily: the release builder remains usable without importing the
+    # broader full-canary runtime until this dedicated-host gate is requested.
+    from gateway.canonical_canary_host_identity import (
+        _observe_dedicated_canary_host,
+    )
+
+    return _observe_dedicated_canary_host()
+
+
+def _validate_host_observation(value: Mapping[str, str]) -> dict[str, str]:
+    from gateway.canonical_canary_host_identity import (
+        _dedicated_canary_gce_identity,
+    )
+
+    if not isinstance(value, Mapping) or set(value) != _HOST_OBSERVATION_FIELDS:
+        raise RuntimeError("dedicated canary host observation is incomplete")
+    observed: dict[str, str] = {}
+    for name in sorted(_HOST_OBSERVATION_FIELDS):
+        item = value[name]
+        if not isinstance(item, str) or not item or _CONTROL_RE.search(item):
+            raise RuntimeError("dedicated canary host observation is invalid")
+        observed[name] = item
+    expected_gce = _dedicated_canary_gce_identity()
+    if any(observed[name] != expected for name, expected in expected_gce.items()):
+        raise RuntimeError("dedicated canary host observation is not the fixed VM")
+    if observed["gce_identity_sha256"] != _sha256_json(expected_gce):
+        raise RuntimeError("dedicated canary GCE digest is invalid")
+    for name in _HOST_OBSERVATION_FIELDS:
+        if name.endswith("_sha256") and _SHA256_RE.fullmatch(observed[name]) is None:
+            raise RuntimeError("dedicated canary host digest is invalid")
+    return observed
+
+
+def _collect_activation_inventory(
+    *,
+    path_exists: PathExists = os.path.lexists,
+) -> list[dict[str, str]]:
+    inventory: list[dict[str, str]] = []
+    for path in _ACTIVATION_PATHS:
+        if path_exists(path):
+            raise RuntimeError("stopped-release activation path is not fresh")
+        inventory.append({"path": str(path), "state": "absent"})
+    return inventory
+
+
+def _service_observation_command(unit: str) -> BuildCommand:
+    if unit not in _STOPPED_SERVICE_UNITS:
+        raise ValueError("stopped-release service is not allow-listed")
+    return BuildCommand(
+        (
+            str(DEFAULT_SYSTEMCTL_EXECUTABLE),
+            "show",
+            "--no-pager",
+            *(f"--property={name}" for name in _SERVICE_PROPERTIES),
+            unit,
+        ),
+        env=_stopped_observation_environment(),
+    )
+
+
+def _parse_service_observation(unit: str, raw: str) -> dict[str, Any]:
+    if not isinstance(raw, str) or any(
+        character in raw for character in ("\x00", "\r")
+    ):
+        raise RuntimeError("stopped-release service output is invalid")
+    values: dict[str, str] = {}
+    for line in raw.splitlines():
+        if not line or "=" not in line:
+            raise RuntimeError("stopped-release service output is malformed")
+        name, item = line.split("=", 1)
+        if name not in _SERVICE_PROPERTIES or name in values:
+            raise RuntimeError("stopped-release service output has unexpected fields")
+        if _CONTROL_RE.search(item) is not None:
+            raise RuntimeError("stopped-release service value is invalid")
+        values[name] = item
+    if set(values) != set(_SERVICE_PROPERTIES):
+        raise RuntimeError("stopped-release service output is incomplete")
+    if not re.fullmatch(r"0|[1-9][0-9]*", values["MainPID"]):
+        raise RuntimeError("stopped-release service PID is invalid")
+
+    absent = {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "UnitFileState": "",
+        "MainPID": "0",
+        "FragmentPath": "",
+        "DropInPaths": "",
+    }
+    disabled = {
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "UnitFileState": "disabled",
+        "MainPID": "0",
+        "FragmentPath": f"/etc/systemd/system/{unit}",
+        "DropInPaths": "",
+    }
+    if values == absent:
+        state = "absent"
+    elif values == disabled:
+        state = "disabled_inactive"
+    else:
+        raise RuntimeError("stopped-release service is not safely stopped")
+    return {
+        "unit": unit,
+        "state": state,
+        "properties": {name: values[name] for name in _SERVICE_PROPERTIES},
+    }
+
+
+def _collect_service_states(*, runner: Runner = _runner) -> list[dict[str, Any]]:
+    states: list[dict[str, Any]] = []
+    for unit in _STOPPED_SERVICE_UNITS:
+        command = _service_observation_command(unit)
+        raw = _bounded_command_stdout(
+            command,
+            runner=runner,
+            label="stopped-release service observation",
+            maximum_bytes=_MAX_SERVICE_OUTPUT_BYTES,
+        )
+        states.append(_parse_service_observation(unit, raw))
+    return states
+
+
+def plan_stopped_release(
+    revision: str,
+    *,
+    runner: Runner = _runner,
+    host_observer: HostObserver = _default_host_observer,
+    path_exists: PathExists = os.path.lexists,
+) -> dict[str, Any]:
+    """Create a deterministic, read-only plan for one stopped release."""
+
+    spec = _stopped_release_spec(revision)
+    spec.validate()
+    _validate_root_executable(DEFAULT_SYSTEMCTL_EXECUTABLE)
+    source = _collect_source_identity(spec, runner=runner)
+    host = _validate_host_observation(host_observer())
+    inventory = _collect_activation_inventory(path_exists=path_exists)
+    service_states = _collect_service_states(runner=runner)
+    unsigned: dict[str, Any] = {
+        "schema": STOPPED_RELEASE_PLAN_SCHEMA,
+        "revision": spec.revision,
+        "source": source,
+        "release_root": str(spec.release_root),
+        "release_manifest_path": str(spec.release_root / RELEASE_MANIFEST_NAME),
+        "evidence_receipt_path": str(
+            DEFAULT_EVIDENCE_BASE / spec.revision / "stopped-release-publication.json"
+        ),
+        "host_identity_receipt_path": str(DEFAULT_HOST_RECEIPT_PATH),
+        "python_version": spec.python_version,
+        "interpreter": str(spec.interpreter),
+        "tools": {
+            "git": str(spec.git_executable),
+            "systemctl": str(DEFAULT_SYSTEMCTL_EXECUTABLE),
+            "uv": str(spec.uv_executable),
+            "uv_cache": str(spec.uv_cache_dir),
+        },
+        "dedicated_host": host,
+        "activation_inventory": inventory,
+        "service_states": service_states,
+    }
+    return {**unsigned, "plan_sha256": _sha256_json(unsigned)}
+
+
+def _stat_identity(item: os.stat_result) -> tuple[int, ...]:
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_uid,
+        item.st_gid,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+
+
+def _read_stable_root_file(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    exact_mode: int,
+) -> bytes:
+    before = os.lstat(path)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_uid != _BUILD_OWNER_UID
+        or before.st_gid != _BUILD_OWNER_GID
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != exact_mode
+        or not 0 <= before.st_size <= maximum_bytes
+        or _list_xattrs(path)
+    ):
+        raise RuntimeError("stopped-release evidence file is not exact")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if _stat_identity(opened) != _stat_identity(before):
+            raise RuntimeError("stopped-release evidence changed during open")
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(descriptor, min(64 * 1024, maximum_bytes + 1 - size)):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > maximum_bytes:
+                raise RuntimeError("stopped-release evidence exceeds its bound")
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    reachable = os.lstat(path)
+    if (
+        size != before.st_size
+        or _stat_identity(after) != _stat_identity(before)
+        or _stat_identity(reachable) != _stat_identity(before)
+    ):
+        raise RuntimeError("stopped-release evidence changed during read")
+    return b"".join(chunks)
+
+
+def _hash_stable_root_file(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    allowed_modes: frozenset[int],
+) -> str:
+    before = os.lstat(path)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_uid != _BUILD_OWNER_UID
+        or before.st_gid != _BUILD_OWNER_GID
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) not in allowed_modes
+        or not 0 < before.st_size <= maximum_bytes
+        or _list_xattrs(path)
+    ):
+        raise RuntimeError("stopped-release artifact file is not exact")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        opened = os.fstat(descriptor)
+        if _stat_identity(opened) != _stat_identity(before):
+            raise RuntimeError("stopped-release artifact changed during open")
+        while chunk := os.read(descriptor, 1024 * 1024):
+            size += len(chunk)
+            if size > maximum_bytes:
+                raise RuntimeError("stopped-release artifact exceeds its bound")
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    reachable = os.lstat(path)
+    if (
+        size != before.st_size
+        or _stat_identity(after) != _stat_identity(before)
+        or _stat_identity(reachable) != _stat_identity(before)
+    ):
+        raise RuntimeError("stopped-release artifact changed during hashing")
+    return digest.hexdigest()
+
+
+def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for name, item in pairs:
+        if name in value:
+            raise ValueError("stopped-release JSON contains duplicate fields")
+        value[name] = item
+    return value
+
+
+def _decode_canonical_mapping(raw: bytes, *, label: str) -> dict[str, Any]:
+    if not raw.endswith(b"\n") or raw.endswith(b"\n\n"):
+        raise RuntimeError(f"{label} does not have canonical framing")
+    try:
+        value = json.loads(
+            raw[:-1].decode("utf-8", errors="strict"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"non-JSON constant {token}")
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"{label} is not strict JSON") from exc
+    if not isinstance(value, dict) or raw != _canonical_bytes(value) + b"\n":
+        raise RuntimeError(f"{label} is not canonical JSON")
+    return value
+
+
+def _decode_unframed_canonical_mapping(raw: bytes, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"non-JSON constant {token}")
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"{label} is not strict JSON") from exc
+    if not isinstance(value, dict) or raw != _canonical_bytes(value):
+        raise RuntimeError(f"{label} is not canonical JSON")
+    return value
+
+
+def _validate_sealed_release_tree(spec: ReleaseBuildSpec) -> None:
+    _validate_root_directory(spec.release_root, exact_mode=_SEALED_DIRECTORY_MODE)
+    if os.path.lexists(spec.release_root / INCOMPLETE_MARKER_NAME):
+        raise RuntimeError("stopped-release artifact is incomplete")
+    if os.path.lexists(spec.release_root / BUILD_SCRATCH_NAME):
+        raise RuntimeError("stopped-release artifact retains build scratch")
+    for current, directories, files in os.walk(
+        spec.release_root,
+        topdown=True,
+        followlinks=False,
+    ):
+        directories.sort()
+        files.sort()
+        for name in [*directories, *files]:
+            path = Path(current) / name
+            item = os.lstat(path)
+            if (
+                item.st_uid != _BUILD_OWNER_UID
+                or item.st_gid != _BUILD_OWNER_GID
+                or _list_xattrs(path)
+            ):
+                raise RuntimeError("stopped-release tree is not root-controlled")
+            if stat.S_ISLNK(item.st_mode):
+                if not _is_within(
+                    path.resolve(strict=True),
+                    spec.release_root.resolve(strict=True),
+                ):
+                    raise RuntimeError("stopped-release symlink escapes artifact")
+            elif stat.S_ISDIR(item.st_mode):
+                if stat.S_IMODE(item.st_mode) != _SEALED_DIRECTORY_MODE:
+                    raise RuntimeError("stopped-release directory is not sealed")
+            elif stat.S_ISREG(item.st_mode):
+                expected_modes = (
+                    frozenset({_MANIFEST_MODE})
+                    if path == spec.release_root / RELEASE_MANIFEST_NAME
+                    else frozenset({_SEALED_FILE_MODE, _SEALED_EXECUTABLE_MODE})
+                )
+                if (
+                    item.st_nlink != 1
+                    or stat.S_IMODE(item.st_mode) not in expected_modes
+                ):
+                    raise RuntimeError("stopped-release file is not sealed")
+            else:
+                raise RuntimeError("stopped-release tree contains a special file")
+
+
+def _validate_completed_release(spec: ReleaseBuildSpec) -> dict[str, Any]:
+    _validate_sealed_release_tree(spec)
+    reconstructed = create_release_manifest(spec)
+    manifest_path = spec.release_root / RELEASE_MANIFEST_NAME
+    manifest_raw = _read_stable_root_file(
+        manifest_path,
+        maximum_bytes=_MAX_RECEIPT_BYTES,
+        exact_mode=_MANIFEST_MODE,
+    )
+    manifest_value = _decode_canonical_mapping(
+        manifest_raw,
+        label="stopped-release manifest",
+    )
+    if manifest_value != reconstructed.to_mapping():
+        raise RuntimeError("stopped-release manifest does not match the sealed tree")
+
+    artifact_stat = os.lstat(spec.wheel_artifact_root)
+    if (
+        not stat.S_ISDIR(artifact_stat.st_mode)
+        or stat.S_ISLNK(artifact_stat.st_mode)
+        or stat.S_IMODE(artifact_stat.st_mode) != _SEALED_DIRECTORY_MODE
+    ):
+        raise RuntimeError("stopped-release wheel directory is invalid")
+    artifact_names = sorted(os.listdir(spec.wheel_artifact_root))
+    if (
+        len(artifact_names) != 1
+        or _SAFE_WHEEL_NAME_RE.fullmatch(artifact_names[0]) is None
+    ):
+        raise RuntimeError("stopped-release must retain exactly one safe wheel")
+    wheel_path = spec.wheel_artifact_root / artifact_names[0]
+    wheel_sha256 = _hash_stable_root_file(
+        wheel_path,
+        maximum_bytes=256 * 1024 * 1024,
+        allowed_modes=frozenset({_SEALED_FILE_MODE}),
+    )
+    interpreter_sha256 = _hash_stable_root_file(
+        spec.interpreter,
+        maximum_bytes=256 * 1024 * 1024,
+        allowed_modes=frozenset({_SEALED_EXECUTABLE_MODE}),
+    )
+    return {
+        "release_root": str(spec.release_root),
+        "release_manifest_path": str(manifest_path),
+        "release_manifest_file_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "release_artifact_sha256": reconstructed.artifact_sha256,
+        "interpreter": str(spec.interpreter),
+        "interpreter_sha256": interpreter_sha256,
+        "python_version": spec.python_version,
+        "retained_wheel_path": str(wheel_path),
+        "retained_wheel_sha256": wheel_sha256,
+        "build_constraints_sha256": hashlib.sha256(
+            _PINNED_BUILD_CONSTRAINTS
+        ).hexdigest(),
+    }
+
+
+def _evidence_receipt_path(revision: str) -> Path:
+    if _REVISION_RE.fullmatch(revision) is None:
+        raise ValueError("stopped-release revision is invalid")
+    return DEFAULT_EVIDENCE_BASE / revision / "stopped-release-publication.json"
+
+
+def _validate_evidence_directory(path: Path) -> None:
+    _validate_root_directory(path, exact_mode=_EVIDENCE_DIRECTORY_MODE)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _validate_evidence_namespace(revision: str, *, receipt_exists: bool) -> None:
+    receipt_path = _evidence_receipt_path(revision)
+    revision_root = receipt_path.parent
+    _validate_root_parent_chain(DEFAULT_EVIDENCE_BASE.parent)
+    if not os.path.lexists(DEFAULT_EVIDENCE_BASE):
+        if receipt_exists or os.path.lexists(revision_root):
+            raise RuntimeError("stopped-release evidence namespace is inconsistent")
+        return
+    _validate_evidence_directory(DEFAULT_EVIDENCE_BASE)
+    if receipt_exists:
+        _validate_evidence_directory(revision_root)
+        if sorted(os.listdir(revision_root)) != [receipt_path.name]:
+            raise RuntimeError("stopped-release evidence revision has extra entries")
+    elif os.path.lexists(revision_root):
+        raise RuntimeError("stopped-release evidence revision collision exists")
+
+
+def _create_root_evidence_directory(path: Path) -> None:
+    try:
+        os.mkdir(path, _EVIDENCE_DIRECTORY_MODE)
+    except FileExistsError as exc:
+        raise RuntimeError(
+            "stopped-release evidence directory collision exists"
+        ) from exc
+    os.chown(
+        path,
+        _BUILD_OWNER_UID,
+        _BUILD_OWNER_GID,
+        follow_symlinks=False,
+    )
+    os.chmod(path, _EVIDENCE_DIRECTORY_MODE, follow_symlinks=False)
+    _validate_evidence_directory(path)
+    _fsync_directory(path.parent)
+
+
+def _create_evidence_namespace(revision: str) -> Path:
+    receipt_path = _evidence_receipt_path(revision)
+    _validate_root_parent_chain(DEFAULT_EVIDENCE_BASE.parent)
+    if os.path.lexists(DEFAULT_EVIDENCE_BASE):
+        _validate_evidence_directory(DEFAULT_EVIDENCE_BASE)
+    else:
+        _create_root_evidence_directory(DEFAULT_EVIDENCE_BASE)
+    _create_root_evidence_directory(receipt_path.parent)
+    return receipt_path
+
+
+def _receipt_unsigned(
+    plan: Mapping[str, Any],
+    release: Mapping[str, Any],
+    *,
+    service_state_after: Sequence[Mapping[str, Any]],
+    receipt_path: Path,
+    created_at_unix: int,
+) -> dict[str, Any]:
+    if type(created_at_unix) is not int or created_at_unix < 0:
+        raise ValueError("stopped-release receipt time is invalid")
+    return {
+        "schema": STOPPED_RELEASE_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "published_services_stopped",
+        "release_revision": plan["revision"],
+        "plan_sha256": plan["plan_sha256"],
+        "source": plan["source"],
+        "dedicated_host": plan["dedicated_host"],
+        "activation_inventory": plan["activation_inventory"],
+        "service_state_before": plan["service_states"],
+        "service_state_after": list(service_state_after),
+        "services_stopped_and_disabled": True,
+        "tools": plan["tools"],
+        **dict(release),
+        "receipt_path": str(receipt_path),
+        "created_at_unix": created_at_unix,
+    }
+
+
+def _create_receipt(
+    plan: Mapping[str, Any],
+    release: Mapping[str, Any],
+    *,
+    service_state_after: Sequence[Mapping[str, Any]],
+    receipt_path: Path,
+    created_at_unix: int,
+) -> dict[str, Any]:
+    unsigned = _receipt_unsigned(
+        plan,
+        release,
+        service_state_after=service_state_after,
+        receipt_path=receipt_path,
+        created_at_unix=created_at_unix,
+    )
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+def _write_receipt_no_replace(path: Path, receipt: Mapping[str, Any]) -> None:
+    raw = _canonical_bytes(receipt) + b"\n"
+    if len(raw) > _MAX_RECEIPT_BYTES:
+        raise RuntimeError("stopped-release receipt exceeds its bound")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchown(descriptor, _BUILD_OWNER_UID, _BUILD_OWNER_GID)
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written <= 0:
+                raise OSError("stopped-release receipt write made no progress")
+            offset += written
+        os.fchmod(descriptor, _RECEIPT_MODE)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_directory(path.parent)
+
+
+def _write_host_receipt_no_replace(path: Path, receipt: Mapping[str, Any]) -> None:
+    raw = _canonical_bytes(receipt)
+    if len(raw) > 16 * 1024:
+        raise RuntimeError("full-canary host identity receipt exceeds its bound")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchown(descriptor, _BUILD_OWNER_UID, _BUILD_OWNER_GID)
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written <= 0:
+                raise OSError("full-canary host identity write made no progress")
+            offset += written
+        os.fchmod(descriptor, _RECEIPT_MODE)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_directory(path.parent)
+
+
+def _default_host_receipt_collector(observed_at_unix: int) -> Mapping[str, Any]:
+    from gateway.canonical_canary_host_identity import (
+        collect_dedicated_canary_host_identity_receipt,
+    )
+
+    return collect_dedicated_canary_host_identity_receipt(
+        observed_at_unix=observed_at_unix
+    )
+
+
+def _validate_host_receipt_mapping(
+    value: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    from gateway.canonical_canary_host_identity import (
+        FULL_CANARY_HOST_IDENTITY_SCHEMA,
+    )
+
+    expected_fields = _HOST_OBSERVATION_FIELDS | {
+        "schema",
+        "collector_authority",
+        "observed_at_unix",
+        "receipt_sha256",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_fields:
+        raise RuntimeError("full-canary host identity receipt is incomplete")
+    receipt = dict(value)
+    observed_at_unix = receipt["observed_at_unix"]
+    if (
+        receipt["schema"] != FULL_CANARY_HOST_IDENTITY_SCHEMA
+        or receipt["collector_authority"] != "trusted_root_read_only_host_collector"
+        or type(observed_at_unix) is not int
+        or observed_at_unix < 0
+        or any(
+            receipt[name] != plan["dedicated_host"][name]
+            for name in _HOST_OBSERVATION_FIELDS
+        )
+    ):
+        raise RuntimeError("full-canary host identity receipt is stale or invalid")
+    unsigned = {
+        name: item for name, item in receipt.items() if name != "receipt_sha256"
+    }
+    if (
+        not isinstance(receipt["receipt_sha256"], str)
+        or _SHA256_RE.fullmatch(receipt["receipt_sha256"]) is None
+        or receipt["receipt_sha256"] != _sha256_json(unsigned)
+    ):
+        raise RuntimeError("full-canary host identity receipt digest is invalid")
+    return receipt
+
+
+def _validate_host_receipt_parent() -> None:
+    _validate_root_parent_chain(DEFAULT_HOST_RECEIPT_PATH.parent.parent)
+    _validate_root_directory(
+        DEFAULT_HOST_RECEIPT_PATH.parent,
+        exact_mode=_HOST_RECEIPT_DIRECTORY_MODE,
+    )
+
+
+def _create_host_receipt_parent() -> None:
+    parent = DEFAULT_HOST_RECEIPT_PATH.parent
+    _validate_root_parent_chain(parent.parent)
+    if os.path.lexists(parent):
+        _validate_host_receipt_parent()
+        return
+    try:
+        os.mkdir(parent, _HOST_RECEIPT_DIRECTORY_MODE)
+    except FileExistsError as exc:
+        raise RuntimeError(
+            "full-canary host receipt directory collision exists"
+        ) from exc
+    os.chown(
+        parent,
+        _BUILD_OWNER_UID,
+        _BUILD_OWNER_GID,
+        follow_symlinks=False,
+    )
+    os.chmod(parent, _HOST_RECEIPT_DIRECTORY_MODE, follow_symlinks=False)
+    _validate_host_receipt_parent()
+    _fsync_directory(parent.parent)
+
+
+def _read_host_receipt_binding(plan: Mapping[str, Any]) -> dict[str, str]:
+    _validate_host_receipt_parent()
+    raw = _read_stable_root_file(
+        DEFAULT_HOST_RECEIPT_PATH,
+        maximum_bytes=16 * 1024,
+        exact_mode=_RECEIPT_MODE,
+    )
+    value = _decode_unframed_canonical_mapping(
+        raw,
+        label="full-canary host identity receipt",
+    )
+    receipt = _validate_host_receipt_mapping(value, plan=plan)
+    return {
+        "host_identity_receipt_path": str(DEFAULT_HOST_RECEIPT_PATH),
+        "host_identity_receipt_file_sha256": hashlib.sha256(raw).hexdigest(),
+        "host_identity_receipt_sha256": receipt["receipt_sha256"],
+    }
+
+
+def _publish_or_validate_host_receipt(
+    plan: Mapping[str, Any],
+    *,
+    observed_at_unix: int,
+    collector: HostReceiptCollector,
+) -> dict[str, str]:
+    if os.path.lexists(DEFAULT_HOST_RECEIPT_PATH):
+        return _read_host_receipt_binding(plan)
+    collected = _validate_host_receipt_mapping(
+        collector(observed_at_unix),
+        plan=plan,
+    )
+    _create_host_receipt_parent()
+    _write_host_receipt_no_replace(DEFAULT_HOST_RECEIPT_PATH, collected)
+    return _read_host_receipt_binding(plan)
+
+
+def _preflight_host_receipt_namespace(plan: Mapping[str, Any]) -> None:
+    """Reject deterministic host-receipt collisions before release creation."""
+
+    if os.path.lexists(DEFAULT_HOST_RECEIPT_PATH):
+        _read_host_receipt_binding(plan)
+    elif os.path.lexists(DEFAULT_HOST_RECEIPT_PATH.parent):
+        _validate_host_receipt_parent()
+    else:
+        _validate_root_parent_chain(DEFAULT_HOST_RECEIPT_PATH.parent.parent)
+
+
+def _validate_existing_receipt(
+    path: Path,
+    *,
+    plan: Mapping[str, Any],
+    release: Mapping[str, Any],
+) -> dict[str, Any]:
+    raw = _read_stable_root_file(
+        path,
+        maximum_bytes=_MAX_RECEIPT_BYTES,
+        exact_mode=_RECEIPT_MODE,
+    )
+    receipt = _decode_canonical_mapping(raw, label="stopped-release receipt")
+    created_at_unix = receipt.get("created_at_unix")
+    if type(created_at_unix) is not int or created_at_unix < 0:
+        raise RuntimeError("stopped-release receipt time is invalid")
+    expected = _create_receipt(
+        plan,
+        release,
+        service_state_after=plan["service_states"],
+        receipt_path=path,
+        created_at_unix=created_at_unix,
+    )
+    if receipt != expected:
+        raise RuntimeError("stopped-release receipt binding is invalid")
+    return receipt
+
+
+def apply_stopped_release(
+    revision: str,
+    approved_plan_sha256: str,
+    *,
+    runner: Runner = _runner,
+    host_observer: HostObserver = _default_host_observer,
+    path_exists: PathExists = os.path.lexists,
+    release_builder: ReleaseBuilder = build_release,
+    host_receipt_collector: HostReceiptCollector = _default_host_receipt_collector,
+    clock: Clock = time.time,
+) -> dict[str, Any]:
+    """Publish one exact sealed release while all canary services stay stopped."""
+
+    _require_root_linux()
+    if (
+        not isinstance(approved_plan_sha256, str)
+        or _SHA256_RE.fullmatch(approved_plan_sha256) is None
+    ):
+        raise ValueError("stopped-release approved plan digest is invalid")
+    plan = plan_stopped_release(
+        revision,
+        runner=runner,
+        host_observer=host_observer,
+        path_exists=path_exists,
+    )
+    if plan["plan_sha256"] != approved_plan_sha256:
+        raise PermissionError("stopped-release approved plan digest does not match")
+
+    spec = _stopped_release_spec(revision)
+    receipt_path = _evidence_receipt_path(revision)
+    receipt_exists = os.path.lexists(receipt_path)
+    release_exists = os.path.lexists(spec.release_root)
+    _validate_evidence_namespace(revision, receipt_exists=receipt_exists)
+
+    if receipt_exists:
+        if not release_exists:
+            raise RuntimeError("stopped-release receipt exists without its release")
+        release = _validate_completed_release(spec)
+        if not os.path.lexists(DEFAULT_HOST_RECEIPT_PATH):
+            raise RuntimeError("stopped-release receipt lacks its host receipt")
+        host_receipt = _read_host_receipt_binding(plan)
+        return _validate_existing_receipt(
+            receipt_path,
+            plan=plan,
+            release={**release, **host_receipt},
+        )
+    if release_exists:
+        raise RuntimeError("stopped-release release collision has no receipt")
+    _preflight_host_receipt_namespace(plan)
+
+    built = release_builder(spec, runner=runner)
+    if not isinstance(built, ReleaseManifest):
+        raise TypeError("stopped-release builder returned an invalid manifest")
+    release = _validate_completed_release(spec)
+    if built.artifact_sha256 != release["release_artifact_sha256"]:
+        raise RuntimeError("stopped-release builder result does not match artifact")
+    created_at_unix = int(clock())
+    if created_at_unix < 0:
+        raise ValueError("stopped-release receipt time is invalid")
+    host_receipt = _publish_or_validate_host_receipt(
+        plan,
+        observed_at_unix=created_at_unix,
+        collector=host_receipt_collector,
+    )
+    post_build_plan = plan_stopped_release(
+        revision,
+        runner=runner,
+        host_observer=host_observer,
+        path_exists=path_exists,
+    )
+    if post_build_plan != plan:
+        raise RuntimeError("stopped-release state drifted during build")
+    release_with_host = {**release, **host_receipt}
+
+    receipt_path = _create_evidence_namespace(revision)
+    receipt = _create_receipt(
+        plan,
+        release_with_host,
+        service_state_after=post_build_plan["service_states"],
+        receipt_path=receipt_path,
+        created_at_unix=created_at_unix,
+    )
+    _write_receipt_no_replace(receipt_path, receipt)
+    return _validate_existing_receipt(
+        receipt_path,
+        plan=post_build_plan,
+        release=release_with_host,
+    )
+
+
+class _CanonicalArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        del message
+        raise ValueError("invalid stopped-release CLI arguments")
+
+
+class _StoreOnce(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        del parser, option_string
+        if getattr(namespace, self.dest, None) is not None:
+            raise ValueError("stopped-release CLI option was repeated")
+        setattr(namespace, self.dest, values)
+
+
+def _exact_revision(value: str) -> str:
+    if _REVISION_RE.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid revision")
+    return value
+
+
+def _exact_sha256(value: str) -> str:
+    if _SHA256_RE.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid digest")
+    return value
+
+
+def _cli_parser() -> argparse.ArgumentParser:
+    parser = _CanonicalArgumentParser(
+        description="Publish one fixed stopped Muncho canary release",
+        allow_abbrev=False,
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=_CanonicalArgumentParser,
+    )
+    plan = subparsers.add_parser(
+        "plan",
+        allow_abbrev=False,
+    )
+    plan.add_argument(
+        "--revision",
+        required=True,
+        default=None,
+        type=_exact_revision,
+        action=_StoreOnce,
+    )
+    apply = subparsers.add_parser(
+        "apply",
+        allow_abbrev=False,
+    )
+    apply.add_argument(
+        "--revision",
+        required=True,
+        default=None,
+        type=_exact_revision,
+        action=_StoreOnce,
+    )
+    apply.add_argument(
+        "--approved-plan-sha256",
+        required=True,
+        default=None,
+        type=_exact_sha256,
+        action=_StoreOnce,
+    )
+    return parser
+
+
+def _emit_canonical(value: Mapping[str, Any]) -> None:
+    print(_canonical_bytes(value).decode("utf-8", errors="strict"))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        arguments = _cli_parser().parse_args(argv)
+        if arguments.command == "plan":
+            result = plan_stopped_release(arguments.revision)
+        elif arguments.command == "apply":
+            result = apply_stopped_release(
+                arguments.revision,
+                arguments.approved_plan_sha256,
+            )
+        else:  # pragma: no cover - argparse enforces the command set.
+            raise RuntimeError("unsupported stopped-release command")
+        _emit_canonical(result)
+        return 0
+    except Exception as exc:
+        _emit_canonical({
+            "schema": STOPPED_RELEASE_FAILURE_SCHEMA,
+            "ok": False,
+            "error_code": "stopped_release_failed",
+            "error_type": type(exc).__name__,
+        })
+        return 2
+
 
 __all__ = [
     "BUILD_CONSTRAINTS_RELATIVE_PATH",
@@ -1705,11 +2835,19 @@ __all__ = [
     "GATEWAY_UNIT_NAME",
     "EXPORTER_UNIT_NAME",
     "DEFAULT_EXPORT_LIMIT",
+    "DEFAULT_EVIDENCE_BASE",
+    "DEFAULT_HOST_RECEIPT_PATH",
+    "DEFAULT_SOURCE_BASE",
+    "DEFAULT_SYSTEMCTL_EXECUTABLE",
+    "FORK_REPOSITORY",
     "INCOMPLETE_MARKER_NAME",
     "RELEASE_MANIFEST_NAME",
     "RELEASE_SCHEMA",
     "SCRATCH_PROVENANCE_NAME",
     "SCRATCH_PROVENANCE_SCHEMA",
+    "STOPPED_RELEASE_FAILURE_SCHEMA",
+    "STOPPED_RELEASE_PLAN_SCHEMA",
+    "STOPPED_RELEASE_RECEIPT_SCHEMA",
     "ReleaseBuildSpec",
     "ReleaseManifest",
     "SystemdUnitBundle",
@@ -1719,14 +2857,21 @@ __all__ = [
     "WRITER_MODULE",
     "WRITER_UNIT_NAME",
     "WriterOnlyUnitSpec",
+    "apply_stopped_release",
     "build_release",
     "checkout_commands",
     "collect_tree_entries",
     "create_release_manifest",
     "install_commands",
+    "main",
+    "plan_stopped_release",
     "python_bootstrap_commands",
     "render_systemd_units",
     "source_snapshot_command",
     "verify_clean_checkout",
     "wheel_install_command",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

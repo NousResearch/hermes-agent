@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Owner-side credential edge for the isolated full Cloud Muncho canary.
 
-This module deliberately contains no model, routing, or task semantics.  It
-does four mechanical things after an exact, fresh coordinator authorization:
+This module deliberately contains no model, routing, or task semantics.  Its
+secret-free stopped-release action uses only fixed IAP argv to publish one
+approved fork revision while every canary service remains inactive.  Its live
+action does four mechanical things after an exact, fresh coordinator
+authorization:
 
 * reads the canary-only Discord credential from the owner's inherited stdin;
 * asks the sealed remote coordinator to install that opaque credential;
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import ctypes
 import errno
 import getpass
@@ -56,6 +60,13 @@ VM_NAME = "muncho-canary-v2-01"
 VM_INSTANCE_ID = "9153645328899914617"
 OS_LOGIN_USERNAME = "lomliev_adventico_com"
 OS_LOGIN_PROFILE_ID = "114674870412628413680"
+STOPPED_RELEASE_SOURCE_REPOSITORY = "https://github.com/lomliev/hermes-agent.git"
+STOPPED_RELEASE_SOURCE_BASE = "/opt/muncho-canary-source"
+STOPPED_RELEASE_EVIDENCE_BASE = "/var/lib/muncho-canary-release-evidence"
+STOPPED_RELEASE_PLAN_SCHEMA = "muncho-canary-stopped-release-plan.v1"
+STOPPED_RELEASE_RECEIPT_SCHEMA = "muncho-canary-stopped-release-publication.v1"
+STOPPED_RELEASE_HOST_RECEIPT_PATH = "/etc/muncho/full-canary/host-identity.json"
+STOPPED_RELEASE_PYTHON_VERSION = "3.11.15"
 SQL_INSTANCE = "muncho-canary-pg18-v2"
 DATABASE_HOST = "10.91.0.3"
 DATABASE_PORT = 5432
@@ -132,6 +143,39 @@ _FINAL_APPROVAL_TERMINAL_CLEANUP_GRACE_SECONDS = 300
 _HBA_EXPIRY_SAFETY_MARGIN_SECONDS = 30
 _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS = 30
 _MAX_JSON_LINE_BYTES = 256 * 1024
+_STOPPED_RELEASE_ACTIVATION_PATHS = (
+    "/etc/muncho/writer-activation/staged/writer.json",
+    "/etc/muncho/writer-activation/staged/gateway.yaml",
+    "/etc/muncho/writer-activation/staged/native-observation-plan.json",
+    "/etc/muncho/writer-activation/staged/activation-plan.json",
+    "/etc/muncho/writer-activation/staged/owner-approval.json",
+    "/etc/muncho/writer-activation/staged/external-iam-receipt.json",
+    "/etc/muncho/writer-activation/staged/muncho-canonical-writer.service",
+    "/etc/muncho/writer-activation/staged/hermes-cloud-gateway.service",
+    "/etc/muncho/writer-activation/native-observation-plan.json",
+    "/etc/muncho/writer-activation/activation-plan.json",
+    "/etc/muncho/writer-activation/deployment-manifest.json",
+    "/etc/systemd/system/muncho-canonical-writer.service",
+    "/etc/systemd/system/hermes-cloud-gateway.service",
+    "/etc/systemd/system/muncho-canonical-writer-export.service",
+    "/etc/tmpfiles.d/muncho-canonical-writer.conf",
+    "/etc/muncho-canonical-writer/writer.json",
+    "/etc/hermes/config.yaml",
+)
+_STOPPED_RELEASE_UNITS = (
+    "muncho-discord-egress.service",
+    "muncho-canonical-writer.service",
+    "hermes-cloud-gateway.service",
+)
+_STOPPED_RELEASE_SERVICE_PROPERTIES = (
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "UnitFileState",
+    "MainPID",
+    "FragmentPath",
+    "DropInPaths",
+)
 _PINNED_CA_CANDIDATES = (
     "/etc/ssl/cert.pem",
     "/etc/ssl/certs/ca-certificates.crt",
@@ -193,6 +237,7 @@ _AMBIGUOUS_CLOUD_SQL_CREATE_ERRORS = frozenset({
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE_SHA = re.compile(r"^[0-9a-f]{40}$")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _ADMIN_USERNAME = re.compile(r"^muncho_canary_admin_[0-9a-f]{16}$")
 _OPERATION_NAME = re.compile(r"^[A-Za-z0-9._~-]{1,256}$")
 _OPERATION_TYPE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -7990,6 +8035,571 @@ class IapCoordinatorTransport:
         )
 
 
+def _validate_stopped_release_service_states(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != len(_STOPPED_RELEASE_UNITS):
+        raise OwnerLauncherError("stopped_release_service_state_invalid")
+    result: list[dict[str, Any]] = []
+    for raw, unit in zip(value, _STOPPED_RELEASE_UNITS, strict=True):
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "unit",
+            "state",
+            "properties",
+        }:
+            raise OwnerLauncherError("stopped_release_service_state_invalid")
+        properties = raw.get("properties")
+        if (
+            not isinstance(properties, Mapping)
+            or set(properties) != set(_STOPPED_RELEASE_SERVICE_PROPERTIES)
+            or any(
+                not isinstance(properties[name], str)
+                or _CONTROL_RE.search(properties[name]) is not None
+                for name in _STOPPED_RELEASE_SERVICE_PROPERTIES
+            )
+            or raw.get("unit") != unit
+        ):
+            raise OwnerLauncherError("stopped_release_service_state_invalid")
+        observed = {
+            name: properties[name] for name in _STOPPED_RELEASE_SERVICE_PROPERTIES
+        }
+        absent = {
+            "LoadState": "not-found",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "UnitFileState": "",
+            "MainPID": "0",
+            "FragmentPath": "",
+            "DropInPaths": "",
+        }
+        disabled = {
+            **absent,
+            "LoadState": "loaded",
+            "UnitFileState": "disabled",
+            "FragmentPath": f"/etc/systemd/system/{unit}",
+        }
+        if observed == absent:
+            state = "absent"
+        elif observed == disabled:
+            state = "disabled_inactive"
+        else:
+            raise OwnerLauncherError("stopped_release_service_state_invalid")
+        if raw.get("state") != state:
+            raise OwnerLauncherError("stopped_release_service_state_invalid")
+        result.append({
+            "unit": unit,
+            "state": state,
+            "properties": observed,
+        })
+    return result
+
+
+def _validate_stopped_release_host(value: Any) -> dict[str, str]:
+    fields = {
+        "project_id",
+        "project_number",
+        "zone",
+        "instance_name",
+        "instance_id",
+        "service_account_email",
+        "gce_identity_sha256",
+        "machine_id_sha256",
+        "hostname_sha256",
+        "host_identity_sha256",
+        "boot_id_sha256",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or any(
+            not isinstance(item, str)
+            or not item
+            or _CONTROL_RE.search(item) is not None
+            for item in value.values()
+        )
+    ):
+        raise OwnerLauncherError("stopped_release_host_invalid")
+    result = {name: str(value[name]) for name in fields}
+    expected_gce = {
+        "project_id": PROJECT,
+        "project_number": "39589465056",
+        "zone": ZONE,
+        "instance_name": VM_NAME,
+        "instance_id": VM_INSTANCE_ID,
+        "service_account_email": (
+            "muncho-canary-v2-runtime@adventico-ai-platform.iam.gserviceaccount.com"
+        ),
+    }
+    if any(result[name] != item for name, item in expected_gce.items()):
+        raise OwnerLauncherError("stopped_release_host_invalid")
+    for name in fields:
+        if name.endswith("_sha256"):
+            _require_sha256(result[name], "stopped_release_host_invalid")
+    if result["gce_identity_sha256"] != _sha256(
+        _canonical_bytes(expected_gce)
+    ) or result["host_identity_sha256"] != _sha256(
+        _canonical_bytes({
+            "machine_id_sha256": result["machine_id_sha256"],
+            "hostname_sha256": result["hostname_sha256"],
+        })
+    ):
+        raise OwnerLauncherError("stopped_release_host_invalid")
+    return result
+
+
+def validate_stopped_release_plan(
+    value: Mapping[str, Any],
+    *,
+    expected_release_sha: str,
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "revision",
+        "source",
+        "release_root",
+        "release_manifest_path",
+        "evidence_receipt_path",
+        "host_identity_receipt_path",
+        "python_version",
+        "interpreter",
+        "tools",
+        "dedicated_host",
+        "activation_inventory",
+        "service_states",
+        "plan_sha256",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != STOPPED_RELEASE_PLAN_SCHEMA
+        or value.get("revision") != expected_release_sha
+        or _RELEASE_SHA.fullmatch(expected_release_sha) is None
+    ):
+        raise OwnerLauncherError("stopped_release_plan_invalid")
+    source_root = f"{STOPPED_RELEASE_SOURCE_BASE}/{expected_release_sha}"
+    release_root = f"/opt/muncho-canary-releases/{expected_release_sha}"
+    evidence_path = (
+        f"{STOPPED_RELEASE_EVIDENCE_BASE}/{expected_release_sha}/"
+        "stopped-release-publication.json"
+    )
+    source = value.get("source")
+    if (
+        not isinstance(source, Mapping)
+        or set(source) != {"repository", "root", "head_sha", "tree_sha"}
+        or source.get("repository") != STOPPED_RELEASE_SOURCE_REPOSITORY
+        or source.get("root") != source_root
+        or source.get("head_sha") != expected_release_sha
+        or not isinstance(source.get("tree_sha"), str)
+        or _RELEASE_SHA.fullmatch(source["tree_sha"]) is None
+    ):
+        raise OwnerLauncherError("stopped_release_plan_invalid")
+    tools = value.get("tools")
+    if tools != {
+        "git": "/usr/bin/git",
+        "systemctl": "/usr/bin/systemctl",
+        "uv": "/usr/local/bin/uv",
+        "uv_cache": "/var/cache/muncho-writer-release",
+    }:
+        raise OwnerLauncherError("stopped_release_plan_invalid")
+    expected_inventory = [
+        {"path": path, "state": "absent"} for path in _STOPPED_RELEASE_ACTIVATION_PATHS
+    ]
+    if (
+        value.get("release_root") != release_root
+        or value.get("release_manifest_path") != f"{release_root}/release-manifest.json"
+        or value.get("evidence_receipt_path") != evidence_path
+        or value.get("host_identity_receipt_path") != STOPPED_RELEASE_HOST_RECEIPT_PATH
+        or value.get("python_version") != STOPPED_RELEASE_PYTHON_VERSION
+        or value.get("interpreter") != f"{release_root}/venv/bin/python"
+        or value.get("activation_inventory") != expected_inventory
+    ):
+        raise OwnerLauncherError("stopped_release_plan_invalid")
+    _validate_stopped_release_host(value.get("dedicated_host"))
+    _validate_stopped_release_service_states(value.get("service_states"))
+    plan_sha256 = _require_sha256(
+        value.get("plan_sha256"),
+        "stopped_release_plan_invalid",
+    )
+    unsigned = {name: item for name, item in value.items() if name != "plan_sha256"}
+    if plan_sha256 != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("stopped_release_plan_invalid")
+    return copy.deepcopy(dict(value))
+
+
+def validate_stopped_release_receipt(
+    value: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "ok",
+        "state",
+        "release_revision",
+        "plan_sha256",
+        "source",
+        "dedicated_host",
+        "activation_inventory",
+        "service_state_before",
+        "service_state_after",
+        "services_stopped_and_disabled",
+        "tools",
+        "release_root",
+        "release_manifest_path",
+        "release_manifest_file_sha256",
+        "release_artifact_sha256",
+        "interpreter",
+        "interpreter_sha256",
+        "python_version",
+        "retained_wheel_path",
+        "retained_wheel_sha256",
+        "build_constraints_sha256",
+        "host_identity_receipt_path",
+        "host_identity_receipt_file_sha256",
+        "host_identity_receipt_sha256",
+        "receipt_path",
+        "created_at_unix",
+        "receipt_sha256",
+    }
+    release_sha = plan.get("revision")
+    validated_plan = validate_stopped_release_plan(
+        plan,
+        expected_release_sha=str(release_sha),
+    )
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != STOPPED_RELEASE_RECEIPT_SCHEMA
+        or value.get("ok") is not True
+        or value.get("state") != "published_services_stopped"
+        or value.get("release_revision") != release_sha
+        or value.get("plan_sha256") != validated_plan["plan_sha256"]
+        or value.get("source") != validated_plan["source"]
+        or value.get("dedicated_host") != validated_plan["dedicated_host"]
+        or value.get("activation_inventory") != validated_plan["activation_inventory"]
+        or value.get("tools") != validated_plan["tools"]
+        or value.get("services_stopped_and_disabled") is not True
+    ):
+        raise OwnerLauncherError("stopped_release_receipt_invalid")
+    before = _validate_stopped_release_service_states(value.get("service_state_before"))
+    after = _validate_stopped_release_service_states(value.get("service_state_after"))
+    if before != validated_plan["service_states"] or after != before:
+        raise OwnerLauncherError("stopped_release_receipt_invalid")
+    release_root = f"/opt/muncho-canary-releases/{release_sha}"
+    receipt_path = (
+        f"{STOPPED_RELEASE_EVIDENCE_BASE}/{release_sha}/"
+        "stopped-release-publication.json"
+    )
+    wheel_path = value.get("retained_wheel_path")
+    if (
+        value.get("release_root") != release_root
+        or value.get("release_manifest_path") != f"{release_root}/release-manifest.json"
+        or value.get("interpreter") != f"{release_root}/venv/bin/python"
+        or value.get("python_version") != STOPPED_RELEASE_PYTHON_VERSION
+        or value.get("host_identity_receipt_path") != STOPPED_RELEASE_HOST_RECEIPT_PATH
+        or value.get("receipt_path") != receipt_path
+        or not isinstance(wheel_path, str)
+        or re.fullmatch(
+            rf"{re.escape(release_root)}/artifacts/[A-Za-z0-9_.+-]+\.whl",
+            wheel_path,
+        )
+        is None
+        or type(value.get("created_at_unix")) is not int
+        or value["created_at_unix"] < 0
+    ):
+        raise OwnerLauncherError("stopped_release_receipt_invalid")
+    for name in (
+        "release_manifest_file_sha256",
+        "release_artifact_sha256",
+        "interpreter_sha256",
+        "retained_wheel_sha256",
+        "build_constraints_sha256",
+        "host_identity_receipt_file_sha256",
+        "host_identity_receipt_sha256",
+    ):
+        _require_sha256(value.get(name), "stopped_release_receipt_invalid")
+    receipt_sha256 = _require_sha256(
+        value.get("receipt_sha256"),
+        "stopped_release_receipt_invalid",
+    )
+    unsigned = {name: item for name, item in value.items() if name != "receipt_sha256"}
+    if receipt_sha256 != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("stopped_release_receipt_invalid")
+    return copy.deepcopy(dict(value))
+
+
+class IapStoppedReleaseTransport(IapCoordinatorTransport):
+    """Publish one stopped, revision-addressed release through fixed IAP argv."""
+
+    _MODULE = "scripts.canary.writer_release"
+    _REMOTE_PYTHON = "/usr/bin/python3"
+    _REMOTE_GIT = "/usr/bin/git"
+    _REMOTE_ENV = "/usr/bin/env"
+    _REMOTE_FIND = "/usr/bin/find"
+
+    @staticmethod
+    def _source_root(release_sha: str) -> str:
+        if not _RELEASE_SHA.fullmatch(release_sha):
+            raise OwnerLauncherError("invalid_release_sha")
+        return f"{STOPPED_RELEASE_SOURCE_BASE}/{release_sha}"
+
+    @staticmethod
+    def _fixed_remote_environment(*, chdir: str | None = None) -> tuple[str, ...]:
+        values = (
+            "HOME=/nonexistent",
+            "LANG=C.UTF-8",
+            "LC_ALL=C.UTF-8",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "PYTHONDONTWRITEBYTECODE=1",
+        )
+        return (
+            IapStoppedReleaseTransport._REMOTE_ENV,
+            "-i",
+            *((f"--chdir={chdir}",) if chdir is not None else ()),
+            *values,
+        )
+
+    def _remote_argv(
+        self,
+        remote_argv: Sequence[str],
+        *,
+        account: str,
+    ) -> tuple[str, ...]:
+        if (
+            not remote_argv
+            or any(
+                not isinstance(item, str)
+                or not item
+                or _CONTROL_RE.search(item) is not None
+                for item in remote_argv
+            )
+            or not isinstance(account, str)
+            or GcloudOwnerAccessToken._ACCOUNT.fullmatch(account) is None
+        ):
+            raise OwnerLauncherError("stopped_release_remote_argv_invalid")
+        command_prefix = self._gcloud_executable.trusted_command_prefix()
+        if (
+            len(command_prefix) != len(_GCLOUD_PYTHON_ISOLATION_ARGS) + 2
+            or command_prefix[1:-1] != _GCLOUD_PYTHON_ISOLATION_ARGS
+        ):
+            raise OwnerLauncherError("invalid_gcloud_command_prefix")
+        self._gcloud_configuration.assert_stable()
+        known_hosts = self._known_hosts.absolute_path()
+        private_key = self._known_hosts.private_key_path()
+        self._known_hosts.public_key_line()
+        if self._owner_identity.account_for_read_only_preflight() != account:
+            raise OwnerLauncherError("stopped_release_owner_identity_changed")
+        remote_command = shlex.join((
+            "/usr/bin/sudo",
+            "--non-interactive",
+            "--",
+            *remote_argv,
+        ))
+        return (
+            *command_prefix,
+            "compute",
+            "ssh",
+            f"{OS_LOGIN_USERNAME}@{VM_NAME}",
+            f"--project={PROJECT}",
+            f"--zone={ZONE}",
+            f"--account={account}",
+            "--plain",
+            "--tunnel-through-iap",
+            "--quiet",
+            f"--command={remote_command}",
+            *self._ssh_flags(known_hosts, private_key),
+        )
+
+    def _run_remote(
+        self,
+        remote_argv: Sequence[str],
+        *,
+        account: str,
+        allowed_returncodes: frozenset[int] = frozenset({0}),
+        timeout_seconds: float = 300.0,
+        maximum_output_bytes: int = _HTTP_RESPONSE_MAX_BYTES,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if (
+            not allowed_returncodes
+            or any(
+                type(code) is not int or not 0 <= code <= 255
+                for code in allowed_returncodes
+            )
+            or not 0 < timeout_seconds <= 2_400
+            or not 0 < maximum_output_bytes <= _HTTP_RESPONSE_MAX_BYTES
+        ):
+            raise OwnerLauncherError("stopped_release_remote_contract_invalid")
+        authorization_before = self._authorization_snapshot(account)
+        argv = self._remote_argv(remote_argv, account=account)
+        self._validate_dry_run(argv)
+        if self._authorization_snapshot(account) != authorization_before:
+            raise OwnerLauncherError("iap_ssh_authorization_changed")
+        command_prefix = self._gcloud_executable.trusted_command_prefix()
+        try:
+            completed = self._preflight_runner(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=dict(
+                    _owner_gcloud_environment(
+                        self._gcloud_configuration,
+                        command_prefix[0],
+                    )
+                ),
+                shell=False,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            self._postflight()
+            raise OwnerLauncherError("stopped_release_remote_unavailable") from None
+        self._postflight()
+        if self._authorization_snapshot(account) != authorization_before:
+            raise OwnerLauncherError("iap_ssh_authorization_changed")
+        if (
+            completed.returncode not in allowed_returncodes
+            or not isinstance(completed.stdout, bytes)
+            or len(completed.stdout) > maximum_output_bytes
+        ):
+            raise OwnerLauncherError("stopped_release_remote_failed")
+        return completed
+
+    def _revision_source_exists(self, release_sha: str, *, account: str) -> bool:
+        self._source_root(release_sha)
+        completed = self._run_remote(
+            (
+                self._REMOTE_FIND,
+                STOPPED_RELEASE_SOURCE_BASE,
+                "-mindepth",
+                "1",
+                "-maxdepth",
+                "1",
+                "-name",
+                release_sha,
+                "-printf",
+                "%f",
+            ),
+            account=account,
+            maximum_output_bytes=40,
+        )
+        if completed.stdout == b"":
+            return False
+        if completed.stdout == release_sha.encode("ascii"):
+            return True
+        raise OwnerLauncherError("stopped_release_path_probe_invalid")
+
+    def _prepare_source(self, release_sha: str, *, account: str) -> str:
+        source_root = self._source_root(release_sha)
+        if self._revision_source_exists(release_sha, account=account):
+            return source_root
+        git_environment = (
+            *self._fixed_remote_environment(),
+            "GIT_CONFIG_GLOBAL=/dev/null",
+            "GIT_CONFIG_NOSYSTEM=1",
+        )
+        self._run_remote(
+            (
+                *git_environment,
+                self._REMOTE_GIT,
+                "clone",
+                "--no-checkout",
+                "--no-tags",
+                STOPPED_RELEASE_SOURCE_REPOSITORY,
+                source_root,
+            ),
+            account=account,
+            timeout_seconds=900.0,
+        )
+        self._run_remote(
+            (
+                *git_environment,
+                self._REMOTE_GIT,
+                "-C",
+                source_root,
+                "checkout",
+                "--detach",
+                release_sha,
+            ),
+            account=account,
+        )
+        return source_root
+
+    def _run_release_command(
+        self,
+        release_sha: str,
+        command: str,
+        *,
+        account: str,
+        approved_plan_sha256: str | None = None,
+    ) -> Mapping[str, Any]:
+        if command not in {"plan", "apply"}:
+            raise OwnerLauncherError("stopped_release_command_invalid")
+        if command == "apply":
+            approved = _require_sha256(
+                approved_plan_sha256,
+                "stopped_release_plan_invalid",
+            )
+        elif approved_plan_sha256 is not None:
+            raise OwnerLauncherError("stopped_release_plan_invalid")
+        else:
+            approved = None
+        source_root = self._source_root(release_sha)
+        remote = (
+            *self._fixed_remote_environment(chdir=source_root),
+            self._REMOTE_PYTHON,
+            "-B",
+            "-E",
+            "-s",
+            "-m",
+            self._MODULE,
+            command,
+            "--revision",
+            release_sha,
+            *(() if approved is None else ("--approved-plan-sha256", approved)),
+        )
+        completed = self._run_remote(
+            remote,
+            account=account,
+            timeout_seconds=2_400.0 if command == "apply" else 300.0,
+        )
+        if (
+            not completed.stdout
+            or not completed.stdout.endswith(b"\n")
+            or b"\n" in completed.stdout[:-1]
+        ):
+            raise OwnerLauncherError("stopped_release_output_invalid")
+        try:
+            return _decode_json_object(
+                completed.stdout,
+                maximum=_HTTP_RESPONSE_MAX_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError("stopped_release_output_invalid") from None
+
+    def publish(self, release_sha: str) -> Mapping[str, Any]:
+        if not _RELEASE_SHA.fullmatch(release_sha):
+            raise OwnerLauncherError("invalid_release_sha")
+        account = self._owner_identity.account_for_read_only_preflight()
+        self._prepare_source(release_sha, account=account)
+        plan = validate_stopped_release_plan(
+            self._run_release_command(
+                release_sha,
+                "plan",
+                account=account,
+            ),
+            expected_release_sha=release_sha,
+        )
+        plan_sha256 = str(plan["plan_sha256"])
+        return validate_stopped_release_receipt(
+            self._run_release_command(
+                release_sha,
+                "apply",
+                account=account,
+                approved_plan_sha256=plan_sha256,
+            ),
+            plan=plan,
+        )
+
+
 def _validate_admin_credential(username: str, password: bytearray) -> bytes:
     if not _ADMIN_USERNAME.fullmatch(username):
         raise OwnerLauncherError("invalid_admin_username")
@@ -10163,10 +10773,16 @@ def _cli_parser() -> argparse.ArgumentParser:
         required=True,
         help="exact sealed 40-character fork release SHA",
     )
-    parser.add_argument(
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument(
         "--bootstrap-trusted-runtime",
         action="store_true",
         help="publish the reviewed owner-only gcloud SDK snapshot and receipt",
+    )
+    actions.add_argument(
+        "--publish-stopped-release",
+        action="store_true",
+        help="publish the exact fork revision while every canary service is stopped",
     )
     return parser
 
@@ -10214,17 +10830,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             gcloud_executable=gcloud_executable,
             gcloud_configuration=gcloud_configuration,
         )
+
+        def runtime_and_provenance_guard(exact_release: str) -> None:
+            command = gcloud_executable.trusted_command_prefix()
+            _validate_owner_interpreter_invocation(command[0])
+            require_local_launcher_provenance(exact_release)
+
+        if arguments.publish_stopped_release:
+            release_transport = IapStoppedReleaseTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = release_transport.publish(release_sha)
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
         transport = IapCoordinatorTransport(
             owner_identity,
             gcloud_executable=gcloud_executable,
             gcloud_configuration=gcloud_configuration,
         )
         sql_admin = CloudSqlTemporaryAdmin(GoogleRestClient(owner_identity))
-
-        def runtime_and_provenance_guard(exact_release: str) -> None:
-            command = gcloud_executable.trusted_command_prefix()
-            _validate_owner_interpreter_invocation(command[0])
-            require_local_launcher_provenance(exact_release)
 
         try:
             receipt = launch_full_canary(
@@ -10318,6 +10945,7 @@ __all__ = [
     "GoogleRestClient",
     "GcloudOwnerAccessToken",
     "IapCoordinatorTransport",
+    "IapStoppedReleaseTransport",
     "HttpResponse",
     "LocalLauncherProvenance",
     "OWNER_GATE_SCHEMA",
@@ -10342,6 +10970,13 @@ __all__ = [
     "RECOVERY_WORKER_COMPLETION_SCHEMA",
     "RECOVERY_WORKER_LEASE_SCHEMA",
     "SQL_INSTANCE",
+    "STOPPED_RELEASE_EVIDENCE_BASE",
+    "STOPPED_RELEASE_HOST_RECEIPT_PATH",
+    "STOPPED_RELEASE_PLAN_SCHEMA",
+    "STOPPED_RELEASE_PYTHON_VERSION",
+    "STOPPED_RELEASE_RECEIPT_SCHEMA",
+    "STOPPED_RELEASE_SOURCE_BASE",
+    "STOPPED_RELEASE_SOURCE_REPOSITORY",
     "TRUSTED_RUNTIME_BOOTSTRAP_RECEIPT_SCHEMA",
     "TRUSTED_SDK_PUBLICATION_INTENT_SCHEMA",
     "TrustedGcloudExecutable",
@@ -10380,6 +11015,8 @@ __all__ = [
     "validate_recovery_secret_gate",
     "validate_recovery_worker_completion",
     "validate_recovery_receipt",
+    "validate_stopped_release_plan",
+    "validate_stopped_release_receipt",
     "validate_terminal_first_failure",
 ]
 

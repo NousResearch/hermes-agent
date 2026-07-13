@@ -26,6 +26,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _PACKAGED_MODULES = {
     "gateway/canonical_canary_bootstrap.py",
+    "gateway/canonical_canary_host_identity.py",
     "gateway/canonical_full_canary_coordinator.py",
     "gateway/canonical_full_canary_e2e.py",
     "gateway/canonical_full_canary_live_driver.py",

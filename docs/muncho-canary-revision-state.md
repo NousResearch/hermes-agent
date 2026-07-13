@@ -33,6 +33,27 @@ coexist read-only with the new release.
 Retention is evidence, not authority: an old directory does not authorize its
 interpreter, manifest, plan, approval, or receipt for a new revision.
 
+The only reviewed source-to-release entry point is the owner launcher's
+`--publish-stopped-release --release-sha <exact-sha>` action. It targets the
+fixed fork and dedicated v2 canary through pinned IAP/SSH argv, obtains the
+root-side deterministic stopped plan, and supplies only that plan's SHA-256 to
+the corresponding `apply` action. Publication itself is a mutation, but every
+service must be inactive and disabled or absent before and after the build.
+Success is durable only when the exact root-owned receipt exists at:
+
+```text
+/var/lib/muncho-canary-release-evidence/<revision>/stopped-release-publication.json
+```
+
+The receipt binds the clean source HEAD/tree, dedicated host and boot, fixed
+path inventory, pre/post service observations, sealed manifest and artifact,
+interpreter, retained wheel, build constraints, and approved stopped-plan
+digest. It also binds the trusted same-boot host-identity receipt at
+`/etc/muncho/full-canary/host-identity.json`; an existing stale or conflicting
+receipt blocks publication. Free-form remote Python, shell, SCP-executed
+payloads, and mutable source paths are not valid release publication
+mechanisms.
+
 ## Fixed-path fresh-state gate
 
 Before the new revision's config collector or planner writes anything, collect

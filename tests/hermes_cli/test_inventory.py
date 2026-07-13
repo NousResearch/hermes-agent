@@ -378,6 +378,131 @@ def test_include_unconfigured_skips_already_present_slugs():
     assert or_rows[0]["models"] == ["m1"]  # the authenticated row, not skeleton
 
 
+def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_rows():
+    rows = [
+        {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": True, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "gemini", "name": "Gemini", "models": ["gemini-2.5-pro"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "nous", "name": "Nous", "models": ["anthropic/claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "custom:lab", "name": "Lab", "models": ["lab-1"],
+         "total_models": 1, "is_current": False, "is_user_defined": True,
+         "source": "user-config"},
+        {"slug": "moa", "name": "MoA", "models": ["default"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "virtual"},
+    ]
+    ctx = _empty_ctx(provider="openai-codex", model="gpt-5.4")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            side_effect=lambda slug: slug == "gemini",
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert [row["slug"] for row in payload["providers"]] == [
+        "openai-codex",
+        "gemini",
+        "custom:lab",
+    ]
+
+
+def test_explicit_only_keeps_unauthenticated_current_provider_visible():
+    """Desktop's configured-only picker must retain its saved provider row."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            picker_hints=True,
+        )
+
+    assert [row["slug"] for row in payload["providers"]] == ["deepseek"]
+    row = payload["providers"][0]
+    assert row["source"] == "configured-current"
+    assert row["authenticated"] is False
+    assert row["models"] == ["deepseek-v4-pro"]
+    assert "DEEPSEEK_API_KEY" in row["warning"]
+def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
+    """If the saved provider is currently unauthenticated, keep a visible row
+    with the saved model so GUI pickers don't silently jump to another
+    authenticated provider."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx, include_unconfigured=True, picker_hints=True,
+        )
+
+    deepseek = next(r for r in payload["providers"] if r["slug"] == "deepseek")
+    assert deepseek["source"] == "configured-current"
+    assert deepseek["is_current"] is True
+    assert deepseek["authenticated"] is False
+    assert deepseek["models"] == ["deepseek-v4-pro"]
+    assert deepseek["total_models"] == 1
+    assert deepseek["auth_type"] == "api_key"
+    assert "DEEPSEEK_API_KEY" in deepseek["warning"]
+    assert "saved model only" in deepseek["warning"]
+
+
+def test_include_unconfigured_does_not_duplicate_configured_current_row():
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            include_unconfigured=True,
+            picker_hints=True,
+        )
+
+    assert sum(row["slug"] == "deepseek" for row in payload["providers"]) == 1
+
+def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
+    rows = [
+        {"slug": "moa", "name": "MoA", "models": ["review"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "virtual"},
+    ]
+    ctx = _empty_ctx(provider="openrouter", model="anthropic/claude-opus-4.8")
+    raw_config = {
+        "moa": {
+            "active_preset": "review",
+            "presets": {
+                "review": {
+                    "enabled": True,
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"},
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                },
+            },
+        },
+    }
+
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.load_config", return_value=raw_config),
+        patch("hermes_cli.config.read_raw_config", return_value=raw_config),
+        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert [row["slug"] for row in payload["providers"]] == ["moa", "openrouter"]
+    assert payload["providers"][0]["models"] == ["review"]
+    assert payload["providers"][1]["source"] == "configured-current"
+    assert payload["providers"][1]["authenticated"] is False
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 

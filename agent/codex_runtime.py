@@ -113,6 +113,15 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
 
     usage = getattr(turn, "token_usage_last", None)
     if not isinstance(usage, dict) or not usage:
+        compressor = getattr(agent, "context_compressor", None)
+        if (
+            compressor is not None
+            and getattr(compressor, "awaiting_real_usage_after_compression", False)
+        ):
+            # No usage means this turn cannot adjudicate the pending compaction.
+            # Consume the marker so a later unrelated reading is not charged to
+            # it and preflight deferral cannot stay latched indefinitely.
+            compressor.update_from_response({})
         if agent._session_db and agent.session_id:
             try:
                 if not agent._session_db_created:
@@ -120,6 +129,9 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 agent._session_db.update_token_counts(
                     agent.session_id,
                     model=agent.model,
+                    billing_provider=agent.provider,
+                    billing_base_url=agent.base_url,
+                    billing_mode="subscription_included",
                     api_call_count=1,
                 )
             except Exception as exc:
@@ -226,6 +238,81 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
         "cost_status": cost_result.status,
         "cost_source": cost_result.source,
     }
+
+
+def _record_codex_app_server_compaction(
+    agent,
+    turn,
+    *,
+    approx_tokens: int | None = None,
+    force: bool = False,
+) -> bool:
+    """Record a Codex-native context compaction boundary in Hermes state.
+
+    The app-server owns the compacted thread context, so Hermes should not
+    rewrite local transcript rows here; state.db records the boundary via the
+    session event/usage counters while preserving the visible transcript.
+    """
+    if not force and not getattr(turn, "compacted", False):
+        return False
+
+    thread_id = getattr(turn, "thread_id", None) or ""
+    turn_id = getattr(turn, "turn_id", None) or ""
+    logger.info(
+        "codex app-server compaction observed: session=%s thread=%s turn=%s force=%s",
+        getattr(agent, "session_id", None) or "none",
+        thread_id,
+        turn_id,
+        force,
+    )
+    if not force:
+        try:
+            from agent.conversation_compression import COMPACTION_STATUS
+
+            agent._emit_status(COMPACTION_STATUS)
+        except Exception:
+            pass
+
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None:
+        compressor.compression_count = getattr(
+            compressor, "compression_count", 0
+        ) + 1
+        compressor.last_compression_rough_tokens = approx_tokens or 0
+        # The app server has already completed a real compaction boundary. Its
+        # usage update (when supplied) is therefore the same real-vs-real
+        # effectiveness verdict used by the normal compression path.
+        if hasattr(compressor, "_verify_compaction_cleared_threshold"):
+            compressor._verify_compaction_cleared_threshold = True
+        if not getattr(turn, "token_usage_last", None):
+            compressor.last_prompt_tokens = -1
+            compressor.last_completion_tokens = 0
+            compressor.awaiting_real_usage_after_compression = True
+
+    agent._last_compaction_in_place = False
+    try:
+        if getattr(agent, "event_callback", None):
+            agent.event_callback(
+                "session:compress",
+                {
+                    "platform": getattr(agent, "platform", None) or "",
+                    "session_id": getattr(agent, "session_id", None) or "",
+                    "old_session_id": "",
+                    "in_place": False,
+                    "compression_count": getattr(
+                        compressor, "compression_count", 0
+                    )
+                    if compressor is not None
+                    else 0,
+                    "runtime": "codex_app_server",
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                },
+            )
+    except Exception:
+        logger.debug("event_callback error on codex session:compress", exc_info=True)
+
+    return True
 
 
 def run_codex_app_server_turn(
@@ -393,6 +480,7 @@ def run_codex_app_server_turn(
     agent._iters_since_skill = (
         getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     )
+    _record_codex_app_server_compaction(agent, turn)
     usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
 

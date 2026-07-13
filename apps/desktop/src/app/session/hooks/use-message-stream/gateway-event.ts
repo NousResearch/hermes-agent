@@ -4,6 +4,7 @@ import { type MutableRefObject, useCallback } from 'react'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
+import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -11,6 +12,7 @@ import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -19,6 +21,7 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
@@ -39,6 +42,7 @@ import {
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -114,6 +118,20 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
+
+        // Config is profile-scoped, but session.info also arrives for background
+        // sessions. Only an active-session event from the currently active
+        // gateway may reconcile the foreground cache. Requiring the renderer's
+        // source tag prevents an event queued before a profile swap from being
+        // attributed to the newly active profile.
+        if (
+          isActiveEvent &&
+          typeof payload?.approval_mode === 'string' &&
+          event.profile &&
+          normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())
+        ) {
+          reconcileApprovalModeForProfile(event.profile, payload.approval_mode)
+        }
 
         if (apply) {
           if (modelChanged) {
@@ -216,6 +234,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           requestDesktopOnboarding(payload.credential_warning)
         }
 
+        if (apply) {
+          reportInstallMethodWarning(payload?.install_warning)
+        }
+
         void refreshHermesConfig()
 
         if (modelChanged || providerChanged) {
@@ -259,6 +281,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // KawaiiSpinner), not real reasoning. The bottom-of-thread loading
         // indicator already covers that UX, so we ignore these events to
         // avoid a duplicative "Thinking" disclosure showing spinner text.
+      } else if (event.type === 'reaction') {
+        // Core-detected affection (ily / <3 / good bot) on the user's message.
+        // Play hearts only for the visible session so background turns stay quiet.
+        if (isActiveEvent && (payload?.kind ?? 'vibe') === 'vibe') {
+          burstVibeHearts()
+        }
       } else if (event.type === 'reasoning.delta') {
         if (sessionId) {
           appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))

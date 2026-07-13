@@ -45,6 +45,25 @@ def _captured_context_cwd(agent):
     return captured["cwd"]
 
 
+class TestPlatformIdentity:
+    def test_wecom_identity_is_prominent_in_volatile_prompt(self):
+        parts = build_system_prompt_parts(_make_agent(platform="wecom"))
+
+        assert "Platform identity: WeCom (wecom)" in parts["volatile"]
+        assert "do not guess or ask the user" in parts["volatile"]
+
+    def test_qqbot_identity_is_prominent_in_volatile_prompt(self):
+        parts = build_system_prompt_parts(_make_agent(platform="qqbot"))
+
+        assert "Platform identity: QQ (qqbot)" in parts["volatile"]
+        assert "do not guess or ask the user" in parts["volatile"]
+
+    def test_other_platforms_keep_existing_volatile_prompt(self):
+        parts = build_system_prompt_parts(_make_agent(platform="telegram"))
+
+        assert "Platform identity:" not in parts["volatile"]
+
+
 class TestContextFileCwd:
     def test_none_when_terminal_cwd_unset(self, monkeypatch):
         # Unset → None, so discovery falls back to the launch dir inside

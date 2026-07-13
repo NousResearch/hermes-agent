@@ -477,6 +477,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # Repeat platform identity in the high-salience volatile tier for compact
+    # models that may overlook the longer formatting/capability hint above.
+    # Keep this deliberately free of chat/user identifiers.
+    _prominent_platform_names = {
+        "wecom": "WeCom",
+        "qqbot": "QQ",
+    }
+    _platform_name = _prominent_platform_names.get(platform_key)
+    if _platform_name:
+        volatile_parts.append(
+            f"Platform identity: {_platform_name} ({platform_key}). "
+            "This value is authoritative; do not guess or ask the user which "
+            "messaging platform this conversation uses."
+        )
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable

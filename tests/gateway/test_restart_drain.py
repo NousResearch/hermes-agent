@@ -293,8 +293,13 @@ async def test_detached_restart_helper_is_idempotent(monkeypatch):
 def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):
     venv_dir = tmp_path / "venv"
     site_packages = venv_dir / "Lib" / "site-packages"
-    pth_extra = tmp_path / "pywin32_system32"
+    pywin32_system32 = site_packages / "pywin32_system32"
+    win32 = site_packages / "win32"
+    win32_lib = win32 / "lib"
+    pth_extra = tmp_path / "pywin32_extra"
     site_packages.mkdir(parents=True)
+    pywin32_system32.mkdir()
+    win32_lib.mkdir(parents=True)
     pth_extra.mkdir()
     (site_packages / "pywin32.pth").write_text(str(pth_extra), encoding="utf-8")
     project_root = str(gateway_run.Path(gateway_run.__file__).resolve().parent.parent)
@@ -310,7 +315,8 @@ def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):
     assert str(pth_extra) in gateway_run.sys.path
     assert gateway_run.os.environ["VIRTUAL_ENV"] == str(venv_dir.resolve())
     pythonpath = gateway_run.os.environ["PYTHONPATH"].split(gateway_run.os.pathsep)
-    assert pythonpath[:3] == [project_root, str(site_packages), "already-there"]
+    assert pythonpath[:5] == [project_root, str(site_packages), str(pywin32_system32), str(win32), str(win32_lib)]
+    assert pythonpath[-1] == "already-there"
 
 
 @pytest.mark.asyncio
@@ -319,7 +325,12 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     popen_calls = []
     venv_dir = tmp_path / "venv"
     site_packages = venv_dir / "Lib" / "site-packages"
+    pywin32_system32 = site_packages / "pywin32_system32"
+    win32 = site_packages / "win32"
+    win32_lib = win32 / "lib"
     site_packages.mkdir(parents=True)
+    pywin32_system32.mkdir()
+    win32_lib.mkdir(parents=True)
 
     monkeypatch.setattr(gateway_run.sys, "platform", "win32")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
@@ -348,7 +359,11 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
     assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
-    assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
+    pythonpath = kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
+    assert str(site_packages) in pythonpath
+    assert str(pywin32_system32) in pythonpath
+    assert str(win32) in pythonpath
+    assert str(win32_lib) in pythonpath
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
 

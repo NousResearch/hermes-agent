@@ -731,6 +731,24 @@ def _read_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     return parsed
 
 
+def _windows_venv_pythonpath_entries(venv_dir: Path) -> list[str]:
+    site_packages = venv_dir / "Lib" / "site-packages"
+    if not site_packages.exists():
+        return []
+
+    entries = [site_packages]
+    for relative in (
+        Path("pywin32_system32"),
+        Path("win32"),
+        Path("win32") / "lib",
+    ):
+        candidate = site_packages / relative
+        if candidate.exists():
+            entries.append(candidate)
+
+    return [str(entry) for entry in entries]
+
+
 def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     """Return (windowed_python, venv_dir, extra_pythonpath) for detached runs.
 
@@ -749,9 +767,9 @@ def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     home = cfg.get("home", "")
     if "uv" in cfg and home:
         base_pythonw = Path(home) / "pythonw.exe"
-        site_packages = venv_dir / "Lib" / "site-packages"
-        if base_pythonw.exists() and site_packages.exists():
-            return (str(base_pythonw), venv_dir, [str(site_packages)])
+        pythonpath_entries = _windows_venv_pythonpath_entries(venv_dir)
+        if base_pythonw.exists() and pythonpath_entries:
+            return (str(base_pythonw), venv_dir, pythonpath_entries)
 
     return (windowed, venv_dir, [])
 

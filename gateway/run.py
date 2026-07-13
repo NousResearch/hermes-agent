@@ -157,6 +157,24 @@ _GATEWAY_SECRET_PATTERNS = (
 )
 
 
+def _windows_venv_pythonpath_entries(venv_dir: Path) -> list[Path]:
+    site_packages = venv_dir / "Lib" / "site-packages"
+    if not site_packages.exists():
+        return []
+
+    entries = [site_packages]
+    for relative in (
+        Path("pywin32_system32"),
+        Path("win32"),
+        Path("win32") / "lib",
+    ):
+        candidate = site_packages / relative
+        if candidate.exists():
+            entries.append(candidate)
+
+    return entries
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -187,10 +205,11 @@ def _ensure_windows_gateway_venv_imports() -> None:
             continue
         seen.add(venv_key)
 
-        site_packages = resolved_venv / "Lib" / "site-packages"
-        if not site_packages.exists():
+        pythonpath_entries = _windows_venv_pythonpath_entries(resolved_venv)
+        if not pythonpath_entries:
             continue
 
+        site_packages = pythonpath_entries[0]
         project_entry = str(project_root)
         site_entry = str(site_packages)
         if project_entry not in sys.path:
@@ -202,9 +221,14 @@ def _ensure_windows_gateway_venv_imports() -> None:
             sys.path.remove(site_entry)
         insert_at = 1 if sys.path and sys.path[0] == project_entry else 0
         sys.path.insert(insert_at, site_entry)
+        for entry in reversed(pythonpath_entries[1:]):
+            extra_entry = str(entry)
+            if extra_entry in sys.path:
+                sys.path.remove(extra_entry)
+            sys.path.insert(insert_at + 1, extra_entry)
 
         os.environ["VIRTUAL_ENV"] = str(resolved_venv)
-        pythonpath = [project_entry, site_entry]
+        pythonpath = [project_entry, *[str(entry) for entry in pythonpath_entries]]
         if os.environ.get("PYTHONPATH"):
             pythonpath.append(os.environ["PYTHONPATH"])
         os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
@@ -6305,10 +6329,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 watcher_python = sys.executable
             venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
-            site_packages = venv_dir / "Lib" / "site-packages"
-            if site_packages.exists():
+            pythonpath_entries = _windows_venv_pythonpath_entries(venv_dir)
+            if pythonpath_entries:
                 watcher_env["VIRTUAL_ENV"] = str(venv_dir)
-                pythonpath = [str(project_root), str(site_packages)]
+                pythonpath = [str(project_root), *[str(entry) for entry in pythonpath_entries]]
                 if watcher_env.get("PYTHONPATH"):
                     pythonpath.append(watcher_env["PYTHONPATH"])
                 watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))

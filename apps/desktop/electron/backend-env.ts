@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 
 // Match the POSIX fallback surface used by the Python terminal environment.
@@ -73,6 +74,39 @@ function buildDesktopBackendPath({
   return appendUniquePathEntries([hermesNodeBin, venvBin, currentPath, saneEntries], { delimiter })
 }
 
+function defaultDirectoryExists(target: string): boolean {
+  try {
+    return fs.statSync(target).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function getWindowsVenvPythonPathEntries(
+  venvRoot: string | null | undefined,
+  {
+    directoryExists = defaultDirectoryExists,
+    pathModule = path.win32
+  }: {
+    directoryExists?: (target: string) => boolean
+    pathModule?: typeof path.win32
+  } = {}
+): string[] {
+  if (!venvRoot) {
+    return []
+  }
+
+  const sitePackages = pathModule.join(venvRoot, 'Lib', 'site-packages')
+  const entries = [
+    sitePackages,
+    pathModule.join(sitePackages, 'pywin32_system32'),
+    pathModule.join(sitePackages, 'win32'),
+    pathModule.join(sitePackages, 'win32', 'lib')
+  ]
+
+  return entries.filter(entry => directoryExists(entry))
+}
+
 function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
   if (!hermesHome) {
     return hermesHome
@@ -116,6 +150,7 @@ export {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
+  getWindowsVenvPythonPathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
   POSIX_SANE_PATH_ENTRIES

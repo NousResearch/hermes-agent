@@ -31,7 +31,7 @@ import {
 import nodePty from 'node-pty'
 
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
-import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
+import { buildDesktopBackendEnv, getWindowsVenvPythonPathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
@@ -1863,13 +1863,7 @@ function getVenvSitePackagesEntries(venvRoot) {
   }
 
   if (IS_WINDOWS) {
-    const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')
-
-    if (directoryExists(sitePackages)) {
-      entries.push(sitePackages)
-    }
-
-    return entries
+    return getWindowsVenvPythonPathEntries(venvRoot, { directoryExists, pathModule: path.win32 })
   }
 
   const version = (() => {

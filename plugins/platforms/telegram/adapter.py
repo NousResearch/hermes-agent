@@ -7823,7 +7823,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Save to local cache (for vision tool access)
                 cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
                 event.media_urls = [cached_path]
-                event.media_types = [f"image/{ext.lstrip('.')}" ]
+                # Normalize MIME: "image/jpg" → "image/jpeg" (standard MIME)
+                raw_ext = ext.lstrip('.')
+                mime_ext = "jpeg" if raw_ext == "jpg" else raw_ext
+                event.media_types = [f"image/{mime_ext}"]
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:

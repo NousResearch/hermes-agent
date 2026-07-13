@@ -203,6 +203,55 @@ class TestTelegramSendImageFile:
         assert "%20" in file_url
         assert _file_url_to_path(file_url) == str(gif_path)
 
+    def test_file_url_image_uses_decoded_path(self, adapter, tmp_path):
+        image_path = (tmp_path / "folder with spaces" / "encoded image.png").resolve()
+        image_path.parent.mkdir()
+        payload = b"\x89PNG" + b"\x00" * 32
+        image_path.write_bytes(payload)
+        uploaded = {}
+
+        async def send_photo(**kwargs):
+            uploaded["file"] = kwargs["photo"]
+            uploaded["path"] = kwargs["photo"].name
+            uploaded["payload"] = kwargs["photo"].read()
+            return MagicMock(message_id=45)
+
+        adapter._bot.send_photo = AsyncMock(side_effect=send_photo)
+
+        result = _run(
+            adapter.send_image_file(
+                chat_id="12345",
+                image_path=image_path.as_uri(),
+            )
+        )
+
+        assert result.success is True
+        assert uploaded["path"] == str(image_path)
+        assert uploaded["payload"] == payload
+        assert uploaded["file"].closed is True
+
+    def test_file_url_image_fallback_uses_decoded_path(self, adapter, tmp_path):
+        image_path = (tmp_path / "folder with spaces" / "fallback image.png").resolve()
+        image_path.parent.mkdir()
+        image_path.write_bytes(b"\x89PNG")
+        adapter._bot.send_photo = AsyncMock(side_effect=RuntimeError("photo failed"))
+        adapter.send_document = AsyncMock(
+            return_value=MagicMock(success=True, message_id="46")
+        )
+
+        result = _run(
+            adapter.send_image_file(
+                chat_id="12345",
+                image_path=image_path.as_uri(),
+                caption="fallback caption",
+            )
+        )
+
+        assert result.success is True
+        adapter.send_document.assert_awaited_once()
+        assert adapter.send_document.await_args.kwargs["file_path"] == str(image_path)
+        assert adapter.send_document.await_args.kwargs["caption"] == "fallback caption"
+
 
 # ---------------------------------------------------------------------------
 # Discord send_image_file tests

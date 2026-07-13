@@ -6119,6 +6119,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 metadata=metadata,
             )
 
+        image_path = local_image_path
+
         try:
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))

@@ -304,6 +304,36 @@ class TestRunConversationCodexPath:
         # Counter should be reset after the review fires
         assert agent._iters_since_skill == 0
 
+    def test_group_review_guard_preserves_external_memory_sync(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                tool_iterations=10,
+                turn_id="t1",
+                thread_id="th1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th1"
+        )
+
+        agent = _make_codex_agent(chat_type="group")
+        agent._skill_nudge_interval = 10
+        agent._iters_since_skill = 0
+        agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()))
+        agent.valid_tool_names.add("skill_manage")
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+
+        with patch.object(run_agent.threading, "Thread") as thread:
+            result = agent.run_conversation("do tool work")
+
+        thread.assert_not_called()
+        agent._memory_manager.sync_all.assert_called_once()
+        assert agent._memory_manager.sync_all.call_args.kwargs["messages"] == result["messages"]
+
     def test_background_review_signature_never_breaks(self, fake_session):
         """Even when no trigger fires, the helper must never call
         _spawn_background_review with the wrong signature. Run a turn,

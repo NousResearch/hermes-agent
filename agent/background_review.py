@@ -28,6 +28,16 @@ from agent.thread_scoped_output import thread_scoped_silence
 logger = logging.getLogger(__name__)
 
 
+# Empty preserves CLI agents; aliases support non-gateway direct-chat callers.
+_DIRECT_CHAT_TYPES = frozenset({"", "dm", "direct", "private"})
+
+
+def background_review_allowed(chat_type: Any) -> bool:
+    """Return whether automatic owner-scoped background review is safe."""
+    normalized = "" if chat_type is None else str(chat_type).strip().lower()
+    return normalized in _DIRECT_CHAT_TYPES
+
+
 # ---------------------------------------------------------------------------
 # Background-review aux-model selector + routed digest.
 #

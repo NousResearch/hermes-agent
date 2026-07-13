@@ -162,20 +162,16 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   )
 }
 
-function ctxBarColor(pct: number | undefined, t: Theme) {
+export function ctxBarColor(pct: number | undefined, t: Theme) {
   if (pct == null) {
     return t.color.muted
   }
 
-  if (pct >= 95) {
+  if (pct >= 90) {
     return t.color.statusCritical
   }
 
-  if (pct > 80) {
-    return t.color.statusBad
-  }
-
-  if (pct >= 50) {
+  if (pct >= 70) {
     return t.color.statusWarn
   }
 
@@ -249,6 +245,7 @@ export interface StatusBarSegments {
   compactCtx: boolean
   compressions: boolean
   duration: boolean
+  multiline: boolean
   subagents: boolean
   voice: boolean
 }
@@ -258,6 +255,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
 
   return {
     compactCtx: w < 72,
+    multiline: w < 72,
     bar: w >= 72,
     duration: w >= 76,
     compressions: w >= 80,
@@ -428,14 +426,19 @@ export function StatusRule({
   const segs = statusBarSegments(cols)
 
   // On narrow terminals the context read-out collapses to a bare token count
-  // (`12k tok`) and the visual fill bar is dropped entirely.
+  // plus capacity (`12k/128k ctx`) while the visual fill bar is dropped.
+  // Keeping max capacity visible matters more on phones than saving a few
+  // columns because it lets the color-coded readout make sense at a glance.
   const ctxLabel = usage.context_max
     ? segs.compactCtx
-      ? `${fmtK(usage.context_used ?? 0)} tok`
+      ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
       : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
     : usage.total > 0
       ? `${fmtK(usage.total)} tok`
       : ''
+
+  const ctxPctLabel = pct != null ? `${Math.round(pct)}%` : ''
+  const compactCtxText = [ctxLabel, ctxPctLabel].filter(Boolean).join(' ')
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
@@ -451,6 +454,61 @@ export function StatusRule({
   // so short notices reserve exactly what they need.
   const NOTICE_RESERVE_MAX = 24
   const noticeReserve = showNotice ? Math.min(stringWidth(notice!.text), NOTICE_RESERVE_MAX) : 0
+
+  if (segs.multiline) {
+    const width = Math.max(1, Math.floor(cols || 1))
+    const contextPrefix = ctxLabel ? 'ctx ' : ''
+    const contextText = ctxLabel ? `${contextPrefix}${compactCtxText}` : ''
+    const contextWidth = stringWidth(contextText)
+    const sep = modelText && contextText ? ' │ ' : ''
+    const minModelWidth = 10
+    const splitContext = !!contextText && contextWidth + stringWidth(sep) + minModelWidth > width
+
+    const modelWidth = splitContext
+      ? width
+      : Math.max(1, width - (contextText ? contextWidth + stringWidth(sep) : 0))
+
+    return (
+      <Box flexDirection="column">
+        <Box height={1} width={width}>
+          <Text color={t.color.border}>{'─ '}</Text>
+          {busy ? (
+            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+          ) : showNotice ? (
+            <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
+              {notice!.text}
+            </Text>
+          ) : (
+            <Text color={statusColor} wrap="truncate-end">
+              {status}
+            </Text>
+          )}
+        </Box>
+        <Box height={1} width={width}>
+          {modelText ? (
+            <Box flexShrink={0} width={modelWidth}>
+              <Text color={t.color.muted} wrap="truncate-end">
+                {modelText}
+              </Text>
+            </Box>
+          ) : null}
+          {!splitContext && contextText ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {sep}
+              <Text color={barColor}>{contextText}</Text>
+            </Text>
+          ) : null}
+        </Box>
+        {splitContext && contextText ? (
+          <Box height={1} width={width}>
+            <Text color={barColor} wrap="truncate-end">
+              {contextText}
+            </Text>
+          </Box>
+        ) : null}
+      </Box>
+    )
+  }
 
   // Width of the must-keep left segments (indicator + model + context). They
   // are pinned (never shrink) and reserved so the cwd/branch on the right
@@ -497,6 +555,7 @@ export function StatusRule({
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
   // raises remaining nets a negative Δ (honest).
+
   const devCreditsText =
     typeof usage.dev_credits_spent_micros === 'number'
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
@@ -584,7 +643,7 @@ export function StatusRule({
             {modelText}
           </Text>
           {ctxLabel ? (
-            <Text color={t.color.muted} wrap="truncate-end">
+            <Text color={barColor} wrap="truncate-end">
               {' │ '}
               {ctxLabel}
             </Text>

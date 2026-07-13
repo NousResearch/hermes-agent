@@ -88,6 +88,34 @@ const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactEl
   return textContent(node).includes(needle) ? node : null
 }
 
+const findTextWithColor = (node: ReactNodeLike, needle: string, color: string): React.ReactElement | null => {
+  const found = findElementWithText(node, needle)
+
+  return found?.props.color === color ? found : null
+}
+
+const hasComponentNamed = (node: ReactNodeLike, name: string): boolean => {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return false
+  }
+
+  if (Array.isArray(node)) {
+    return node.some(child => hasComponentNamed(child, name))
+  }
+
+  if (!React.isValidElement(node)) {
+    return false
+  }
+
+  const type = node.type
+
+  if (typeof type === 'function' && type.name === name) {
+    return true
+  }
+
+  return hasComponentNamed(node.props.children, name)
+}
+
 const baseProps = {
   bgCount: 0,
   busy: false,
@@ -241,6 +269,44 @@ describe('StatusRule session count click target', () => {
     // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
   })
+
+  it('uses stable narrow rows with personality indicator, model, and colored context capacity', () => {
+    const element = StatusRule({
+      bgCount: 2,
+      busy: true,
+      cols: 44,
+      cwdLabel: '~/src/hermes-agent/apps/desktop (bb/tui-statusbar-responsive)',
+      indicatorStyle: 'emoji',
+      liveSessionCount: 3,
+      model: 'qwen3.6-27b',
+      modelReasoningEffort: 'none',
+      onSessionCountClick: vi.fn(),
+      sessionStartedAt: Date.now() - 60_000,
+      showCost: true,
+      status: 'working',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: Date.now() - 14_000,
+      usage: {
+        context_max: 131_072,
+        context_percent: 13.5,
+        context_used: 17_700,
+        cost_usd: 0.5,
+        total: 17_700
+      },
+      voiceLabel: 'voice off'
+    })
+
+    const rendered = textContent(element)
+
+    expect(hasComponentNamed(element, 'FaceTicker')).toBe(true)
+    expect(rendered).toContain('qwen3.6 27b none')
+    expect(rendered).toContain('ctx 17.7k/131.1k 14%')
+    expect(findTextWithColor(element, '17.7k/131.1k', DEFAULT_THEME.color.statusGood)).not.toBeNull()
+    expect(rendered).not.toContain('3 sessions')
+    expect(rendered).not.toContain('$0.5000')
+    expect(rendered).not.toContain('~/src/hermes-agent')
+  })
 })
 
 describe('StatusRule credits notice render priority', () => {
@@ -283,6 +349,7 @@ describe('StatusRule credits notice render priority', () => {
     })
 
     const errText = findElementWithText(errEl, '✕ exhausted')
+
     expect(errText?.props.color).toBe(DEFAULT_THEME.color.error)
 
     const okEl = StatusRule({
@@ -291,6 +358,7 @@ describe('StatusRule credits notice render priority', () => {
     })
 
     const okText = findElementWithText(okEl, '✓ restored')
+
     expect(okText?.props.color).toBe(DEFAULT_THEME.color.statusGood)
   })
 
@@ -306,12 +374,12 @@ describe('StatusRule credits notice render priority', () => {
     expect(noticeText?.props.children).toBe('⚠ 90% used')
   })
 
-  it('the notice text is the shrinkable element (flexShrink=1 + truncate-end) so a long notice ellipsizes', () => {
+  it('the notice text is the shrinkable element on the single-line layout', () => {
     const longText = '⚠ ' + 'x'.repeat(200)
 
     const element = StatusRule({
       ...baseProps,
-      cols: 50,
+      cols: 80,
       notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: longText }
     })
 
@@ -346,9 +414,10 @@ describe('StatusRule credits notice render priority', () => {
     }
 
     const shrinkBox = findShrinkBoxContaining(element)
+
     expect(shrinkBox).not.toBeNull()
 
-    // Model survives on a narrow terminal because the notice yields.
+    // Model survives because the notice yields.
     expect(textContent(element)).toContain('opus 4.8')
   })
 })

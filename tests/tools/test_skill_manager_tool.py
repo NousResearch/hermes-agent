@@ -563,6 +563,127 @@ class TestSkillManageDispatcher:
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
 
+    def test_bundled_patch_stages_even_when_global_approval_is_off(
+        self, tmp_path, monkeypatch
+    ):
+        """A local edit must not silently freeze an upstream-managed package."""
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with _skill_dir(skills_root):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            (skills_root / ".bundled_manifest").write_text(
+                "test-skill:origin-hash\n", encoding="utf-8"
+            )
+            monkeypatch.setattr(
+                "tools.write_approval.write_approval_enabled",
+                lambda _subsystem: False,
+            )
+
+            raw = skill_manage(
+                action="patch",
+                name="test-skill",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the local thing.",
+            )
+
+        result = json.loads(raw)
+        assert result["staged"] is True
+        assert result["provenance"] == "bundled"
+        assert "upstream-managed" in result["message"]
+        assert "freeze future package updates" in result["message"]
+        assert "supporting files" in result["message"]
+        assert (skills_root / "test-skill" / "SKILL.md").read_text() == VALID_SKILL_CONTENT
+
+    @pytest.mark.parametrize(
+        ("action", "kwargs"),
+        [
+            ("edit", {"content": VALID_SKILL_CONTENT_2}),
+            (
+                "patch",
+                {
+                    "old_string": "Step 1: Do the thing.",
+                    "new_string": "Step 1: Do the local thing.",
+                },
+            ),
+            ("write_file", {"file_path": "references/local.md", "content": "local"}),
+            ("remove_file", {"file_path": "references/existing.md"}),
+            ("delete", {}),
+        ],
+    )
+    def test_all_bundled_mutations_stage(self, tmp_path, monkeypatch, action, kwargs):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with _skill_dir(skills_root):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            _write_file("test-skill", "references/existing.md", "existing")
+            (skills_root / ".bundled_manifest").write_text(
+                "test-skill:origin-hash\n", encoding="utf-8"
+            )
+            monkeypatch.setattr(
+                "tools.write_approval.write_approval_enabled",
+                lambda _subsystem: False,
+            )
+            result = json.loads(skill_manage(action=action, name="test-skill", **kwargs))
+
+        assert result["staged"] is True
+        assert result["provenance"] == "bundled"
+        assert (skills_root / "test-skill" / "SKILL.md").exists()
+
+    def test_hub_skill_patch_stages(self, tmp_path, monkeypatch):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with _skill_dir(skills_root):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            hub_dir = skills_root / ".hub"
+            hub_dir.mkdir()
+            (hub_dir / "lock.json").write_text(
+                json.dumps(
+                    {
+                        "installed": {
+                            "upstream-name": {"install_path": "test-skill"}
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monkeypatch.setattr(
+                "tools.write_approval.write_approval_enabled",
+                lambda _subsystem: False,
+            )
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="test-skill",
+                    old_string="Step 1: Do the thing.",
+                    new_string="Step 1: Do the local thing.",
+                )
+            )
+
+        assert result["staged"] is True
+        assert result["provenance"] == "hub"
+
+    def test_user_owned_patch_remains_autonomous(self, tmp_path, monkeypatch):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with _skill_dir(skills_root):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            monkeypatch.setattr(
+                "tools.write_approval.write_approval_enabled",
+                lambda _subsystem: False,
+            )
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="test-skill",
+                    old_string="Step 1: Do the thing.",
+                    new_string="Step 1: Do the local thing.",
+                )
+            )
+
+        assert result["success"] is True
+        assert result.get("staged") is None
+        assert "local thing" in (skills_root / "test-skill" / "SKILL.md").read_text()
+
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
         """Background-review fork creates ARE marked as agent-created."""
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW

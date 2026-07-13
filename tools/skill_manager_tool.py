@@ -1256,6 +1256,59 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
 )
 
 
+def _managed_skill_provenance(name: str) -> Optional[str]:
+    """Return upstream provenance for an installed skill, if any.
+
+    Bundled and hub skills are package-managed as a unit. Mutating one file
+    makes their update machinery preserve the whole local directory, including
+    withholding unrelated files added upstream. Keep this lookup local to the
+    skill manager so the write policy follows the exact path it will mutate.
+    """
+    existing = _find_skill(name)
+    if not existing:
+        return None
+
+    skills_root = _skills_dir()
+    try:
+        relative_path = existing["path"].resolve().relative_to(
+            skills_root.resolve()
+        ).as_posix()
+    except (OSError, ValueError):
+        # External skill roots are not represented by the local package
+        # provenance stores.
+        return None
+
+    manifest_path = skills_root / ".bundled_manifest"
+    try:
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            manifest_name = line.partition(":")[0].strip()
+            if manifest_name == name:
+                return "bundled"
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Could not read bundled skill manifest %s", manifest_path, exc_info=True)
+
+    lock_path = skills_root / ".hub" / "lock.json"
+    try:
+        lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
+        installed = lock_data.get("installed", {}) if isinstance(lock_data, dict) else {}
+        if not isinstance(installed, dict):
+            installed = {}
+        for lock_name, record in installed.items():
+            if not isinstance(record, dict):
+                continue
+            install_path = str(record.get("install_path") or lock_name).strip("/")
+            if install_path == relative_path:
+                return "hub"
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        logger.warning("Could not read hub skill lock %s", lock_path, exc_info=True)
+
+    return None
+
+
 def _apply_skill_write_gate(action, name, **payload_kwargs):
     """Evaluate the skill write gate. Returns a JSON tool-result string when the
     write should NOT proceed (blocked or staged), or None to perform the real
@@ -1271,7 +1324,19 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     except Exception:
         return None  # fail open
 
+    provenance = None if action == "create" else _managed_skill_provenance(name)
     decision = wa.evaluate_gate(wa.SKILLS)
+    if provenance and not decision.blocked:
+        decision = wa.GateDecision(
+            stage=True,
+            message=(
+                f"Staged for approval because '{name}' is an upstream-managed "
+                f"{provenance} skill. Not yet saved: editing it will freeze future "
+                "package updates, including supporting files added upstream. "
+                "Prefer SOUL, project context, or a user-owned overlay skill for "
+                "user-specific guidance. Review with /skills pending."
+            ),
+        )
     if decision.allow:
         return None
     if decision.blocked:
@@ -1290,7 +1355,9 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
-         "gist": gist, "message": decision.message},
+         "gist": gist, "message": decision.message, **(
+             {"provenance": provenance} if provenance else {}
+         )},
         ensure_ascii=False,
     )
 

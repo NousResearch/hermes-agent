@@ -71,7 +71,9 @@ def production_delivery_guard(command: str) -> Optional[str]:
         and lowered[1:4] == ["kanban", "lock", "run"]
         and "--" in lowered
     )
-    has_shell_control = any(marker in command for marker in ("\n", "$(", "`")) or any(
+    has_shell_control = any(
+        marker in command for marker in ("\n", "$(", "`", "<(", ">(")
+    ) or any(
         token and set(token) <= {";", "&", "|"} for token in lowered
     )
     if wrapped and not has_shell_control:

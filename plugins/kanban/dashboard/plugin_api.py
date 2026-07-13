@@ -1982,6 +1982,7 @@ class CreateBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    default_workdir: Optional[str] = None
     switch: bool = False
 
 
@@ -2037,6 +2038,20 @@ def list_boards(include_archived: bool = Query(False)):
 @router.post("/boards")
 def create_board_endpoint(payload: CreateBoardBody):
     """Create a new board. Idempotent — ``slug`` collision returns existing."""
+    default_workdir = None
+    if payload.default_workdir:
+        requested = Path(payload.default_workdir).expanduser()
+        if not requested.is_absolute():
+            raise HTTPException(
+                status_code=400,
+                detail="Project directory must be an absolute path.",
+            )
+        if not requested.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail="Project directory must be an existing directory.",
+            )
+        default_workdir = str(requested.resolve())
     try:
         meta = kanban_db.create_board(
             payload.slug,
@@ -2044,6 +2059,7 @@ def create_board_endpoint(payload: CreateBoardBody):
             description=payload.description,
             icon=payload.icon,
             color=payload.color,
+            default_workdir=default_workdir,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2052,6 +2068,7 @@ def create_board_endpoint(payload: CreateBoardBody):
             kanban_db.set_current_board(meta["slug"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+    meta["default_workspace_kind"] = _default_workspace_kind(meta)
     return {"board": meta, "current": kanban_db.get_current_board()}
 
 

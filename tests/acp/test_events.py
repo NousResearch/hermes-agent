@@ -62,6 +62,63 @@ class TestToolGenerationCallback:
         update = mock_send.call_args.args[3]
         assert getattr(update, "session_update", None) == "tool_call"
 
+    def test_same_generation_key_reuses_existing_placeholder(self, mock_conn, event_loop_fixture):
+        """A streamed retry for the same tool slot should not leak a new card."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("read_file", generation_key="chat:0")
+            cb("read_file", generation_key="chat:0")
+
+        assert list(tool_call_ids["read_file"]) == ["tc-gen-1"]
+        assert tool_call_meta["tc-gen-1"]["generation_key"] == "chat:0"
+        mock_send.assert_called_once()
+
+    def test_distinct_generation_keys_reserve_fifo_tool_calls(self, mock_conn, event_loop_fixture):
+        """Same-name parallel streamed tools should still each get placeholders."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("read_file", generation_key="chat:0")
+            cb("read_file", generation_key="chat:1")
+
+        assert list(tool_call_ids["read_file"]) == ["tc-gen-1", "tc-gen-2"]
+        assert tool_call_meta["tc-gen-1"]["generation_key"] == "chat:0"
+        assert tool_call_meta["tc-gen-2"]["generation_key"] == "chat:1"
+        assert mock_send.call_count == 2
+
+    def test_generation_key_retry_with_new_tool_name_moves_placeholder(self, mock_conn, event_loop_fixture):
+        """A retry that changes the tool name should update the existing card."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("read_file", generation_key="chat:0")
+            cb("terminal", generation_key="chat:0")
+
+        assert "read_file" not in tool_call_ids
+        assert list(tool_call_ids["terminal"]) == ["tc-gen-1"]
+        assert tool_call_meta["tc-gen-1"]["generation_key"] == "chat:0"
+        assert mock_send.call_count == 2
+        update = mock_send.call_args_list[-1].args[3]
+        assert getattr(update, "session_update", None) == "tool_call_update"
+        assert update.tool_call_id == "tc-gen-1"
+        assert update.title == "terminal: "
+
     def test_tool_started_reuses_generated_tool_call_id(self, mock_conn, event_loop_fixture):
         """The real tool.started event should complete the early placeholder."""
         tool_call_ids = {}

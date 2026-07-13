@@ -6,6 +6,7 @@ from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,
     build_tool_start,
+    build_tool_started_update,
     build_tool_title,
     extract_locations,
     get_tool_kind,
@@ -291,6 +292,31 @@ class TestBuildToolStart:
         result = build_tool_start("tc-5", "some_tool", args)
         assert isinstance(result, ToolCallStart)
         assert result.kind == "other"
+
+
+class TestBuildToolStartedUpdate:
+    def test_build_tool_started_update_refreshes_terminal_display_fields(self):
+        """Argument-complete updates should refresh the early placeholder display."""
+        result = build_tool_started_update("tc-terminal", "terminal", {"command": "ls -la"})
+
+        assert isinstance(result, ToolCallProgress)
+        assert result.tool_call_id == "tc-terminal"
+        assert result.status == "pending"
+        assert result.kind == "execute"
+        assert result.title == "terminal: ls -la"
+        assert result.content[0].content.text == "$ ls -la"
+        assert result.raw_input is None
+
+    def test_build_tool_started_update_refreshes_read_file_location(self):
+        result = build_tool_started_update("tc-read", "read_file", {"path": "a.py", "offset": 12})
+
+        assert isinstance(result, ToolCallProgress)
+        assert result.status == "pending"
+        assert result.kind == "read"
+        assert result.title == "read: a.py"
+        assert result.content is None
+        assert result.locations == [ToolCallLocation(path="a.py", line=12)]
+        assert result.raw_input is None
 
 
 # ---------------------------------------------------------------------------

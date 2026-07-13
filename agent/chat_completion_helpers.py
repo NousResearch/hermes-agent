@@ -2330,7 +2330,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     if name and idx not in tool_gen_notified:
                         tool_gen_notified.add(idx)
                         _fire_first_delta()
-                        agent._fire_tool_gen_started(name)
+                        agent._fire_tool_gen_started(name, generation_key=f"chat:{idx}")
                         # Record the partial tool-call name so the outer
                         # stub-builder can surface a user-visible warning
                         # if streaming dies before this tool's arguments
@@ -2543,7 +2543,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         tool_name = getattr(block, "name", None)
                         if tool_name:
                             _fire_first_delta()
-                            agent._fire_tool_gen_started(tool_name)
+                            block_index = getattr(event, "index", None)
+                            generation_key = (
+                                f"anthropic:{block_index}"
+                                if block_index is not None
+                                else None
+                            )
+                            agent._fire_tool_gen_started(tool_name, generation_key=generation_key)
 
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)

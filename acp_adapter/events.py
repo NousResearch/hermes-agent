@@ -19,7 +19,7 @@ from acp.schema import AgentPlanUpdate, PlanEntry
 from .tools import (
     build_tool_complete,
     build_tool_start,
-    get_tool_kind,
+    build_tool_started_update,
     make_tool_call_id,
 )
 
@@ -135,6 +135,7 @@ def make_tool_gen_cb(
     def _tool_gen(name: str, *args: Any, **kwargs: Any) -> None:
         if not name:
             return
+        generation_key = kwargs.get("generation_key")
 
         queue = tool_call_ids.get(name)
         if queue is None:
@@ -144,9 +145,31 @@ def make_tool_gen_cb(
             queue = deque([queue])
             tool_call_ids[name] = queue
 
+        if generation_key is not None:
+            for existing_name, existing_queue in list(tool_call_ids.items()):
+                if isinstance(existing_queue, str):
+                    existing_queue = deque([existing_queue])
+                    tool_call_ids[existing_name] = existing_queue
+                for candidate in list(existing_queue):
+                    meta = tool_call_meta.get(candidate, {})
+                    if not (meta.get("generated") and meta.get("generation_key") == generation_key):
+                        continue
+                    if existing_name == name:
+                        return
+                    existing_queue.remove(candidate)
+                    if not existing_queue:
+                        tool_call_ids.pop(existing_name, None)
+                    queue.append(candidate)
+                    update = build_tool_started_update(candidate, name, {})
+                    _send_update(conn, session_id, loop, update)
+                    return
+
         tc_id = make_tool_call_id()
         queue.append(tc_id)
-        tool_call_meta[tc_id] = {"args": {}, "snapshot": None, "generated": True}
+        meta = {"args": {}, "snapshot": None, "generated": True}
+        if generation_key is not None:
+            meta["generation_key"] = generation_key
+        tool_call_meta[tc_id] = meta
 
         update = build_tool_start(tc_id, name, {})
         _send_update(conn, session_id, loop, update)
@@ -235,12 +258,7 @@ def make_tool_progress_cb(
                 logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
 
         if already_started:
-            update = acp.update_tool_call(
-                tc_id,
-                kind=get_tool_kind(name),
-                status="pending",
-                raw_input=args,
-            )
+            update = build_tool_started_update(tc_id, name, args, edit_diff=edit_diff)
             _send_update(conn, session_id, loop, update)
         else:
             update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)

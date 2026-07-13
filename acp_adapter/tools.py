@@ -1242,6 +1242,26 @@ def build_tool_start(
     )
 
 
+def build_tool_started_update(
+    tool_call_id: str,
+    tool_name: str,
+    arguments: Dict[str, Any],
+    *,
+    edit_diff: Any = None,
+) -> ToolCallProgress:
+    """Create a pending update that refreshes an early generated placeholder."""
+    start = build_tool_start(tool_call_id, tool_name, arguments, edit_diff=edit_diff)
+    return acp.update_tool_call(
+        tool_call_id,
+        title=start.title,
+        kind=start.kind,
+        status="pending",
+        content=start.content,
+        locations=start.locations,
+        raw_input=start.raw_input,
+    )
+
+
 def _is_structured_json_result(result: Optional[str]) -> bool:
     return isinstance(_json_loads_maybe(result), (dict, list))
 

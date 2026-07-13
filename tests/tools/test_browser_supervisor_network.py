@@ -2,7 +2,7 @@
 
 import asyncio
 
-from tools.browser_supervisor import CDPSupervisor
+from tools.browser_supervisor import CDPSupervisor, NETWORK_RESPONSE_HISTORY_MAX
 
 
 def test_network_response_records_browser_reported_remote_ip():
@@ -61,6 +61,89 @@ def test_clear_network_responses_drops_recorded_history():
     supervisor.clear_network_responses()
 
     assert supervisor.snapshot().network_responses == ()
+
+
+def test_private_peer_survives_network_history_trimming():
+    supervisor = CDPSupervisor(
+        task_id="net-test",
+        cdp_url="ws://127.0.0.1/devtools/browser/test",
+    )
+
+    supervisor._on_network_response_received(
+        {
+            "type": "Document",
+            "response": {
+                "url": "https://rebind.example/internal",
+                "remoteIPAddress": "127.0.0.1",
+                "status": 200,
+            },
+        }
+    )
+    supervisor._on_network_response_received(
+        {
+            "type": "Fetch",
+            "response": {
+                "url": "https://rebind.example/metadata",
+                "remoteIPAddress": "169.254.169.254",
+                "status": 200,
+            },
+        }
+    )
+    for index in range(NETWORK_RESPONSE_HISTORY_MAX * 2 + 1):
+        supervisor._on_network_response_received(
+            {
+                "type": "Image",
+                "response": {
+                    "url": f"https://cdn.example/image-{index}.png",
+                    "remoteIPAddress": "93.184.216.34",
+                    "status": 200,
+                },
+            }
+        )
+
+    responses = supervisor.snapshot().network_responses
+
+    assert len(responses) == NETWORK_RESPONSE_HISTORY_MAX
+    assert any(record.remote_ip == "127.0.0.1" for record in responses)
+    assert any(record.remote_ip == "169.254.169.254" for record in responses)
+
+
+def test_start_network_response_window_atomically_returns_and_clears_history():
+    supervisor = CDPSupervisor(
+        task_id="net-test",
+        cdp_url="ws://127.0.0.1/devtools/browser/test",
+    )
+    supervisor._on_network_response_received(
+        {
+            "type": "Document",
+            "response": {
+                "url": "https://rebind.example/internal",
+                "remoteIPAddress": "127.0.0.1",
+                "status": 200,
+            },
+        }
+    )
+
+    prior_responses = supervisor.start_network_response_window()
+
+    assert [record.remote_ip for record in prior_responses] == ["127.0.0.1"]
+    assert supervisor.snapshot().network_responses == ()
+
+
+def test_retain_network_violation_restores_security_latch():
+    supervisor = CDPSupervisor(
+        task_id="net-test",
+        cdp_url="ws://127.0.0.1/devtools/browser/test",
+    )
+
+    supervisor.retain_network_violation(
+        "127.0.0.1",
+        "https://rebind.example/internal",
+    )
+
+    responses = supervisor.snapshot().network_responses
+    assert [record.remote_ip for record in responses] == ["127.0.0.1"]
+    assert responses[0].resource_type == "SecurityViolation"
 
 
 def test_enable_network_tracking_sends_network_enable():

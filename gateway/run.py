@@ -8730,12 +8730,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if platform_registry.is_registered(platform.value):
                 adapter = platform_registry.create_adapter(platform.value, config)
                 if adapter is not None:
-                    # Adapters that need a back-reference to the gateway runner
-                    # (e.g. for cross-platform admin alerts) declare a
-                    # ``gateway_runner`` attribute. Inject it after creation so
-                    # plugin adapters don't need a custom factory signature.
-                    if hasattr(adapter, "gateway_runner"):
-                        adapter.gateway_runner = self
+                    # Inject a back-reference to the gateway runner so every
+                    # adapter can (a) deliver cross-platform admin alerts and
+                    # (b) resolve inbound profile routing through
+                    # ``runner._profile_name_for_source``. Unconditional:
+                    # ``BasePlatformAdapter`` declares ``gateway_runner``, so
+                    # this reaches ALL platforms (not just the ones that
+                    # pre-declared it), making profile routing platform-generic.
+                    adapter.gateway_runner = self
                     return adapter
                 # Registered but failed to instantiate — don't silently fall
                 # through to built-ins (there are none for plugin platforms).

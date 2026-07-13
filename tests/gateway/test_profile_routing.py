@@ -70,6 +70,21 @@ class TestProfileRouteMatching:
                          guild_id="111")
         assert r.matches("discord", guild_id="111", chat_id="any")
 
+    def test_guild_and_chat_are_conjunctive(self):
+        # A route declaring BOTH guild_id and chat_id requires both to match.
+        # Regression guard: previously chat_id was checked first and returned
+        # True before guild_id was ever consulted.
+        r = ProfileRoute(name="gc", platform="discord", profile="scoped",
+                         guild_id="111", chat_id="222")
+        # Both match (direct channel) -> match
+        assert r.matches("discord", guild_id="111", chat_id="222")
+        # Both match via parent (thread inside the channel) -> match
+        assert r.matches("discord", guild_id="111", chat_id="333", parent_chat_id="222")
+        # chat matches but guild differs -> NO match (the bug this guards)
+        assert not r.matches("discord", guild_id="999", chat_id="222")
+        # guild matches but chat differs -> NO match
+        assert not r.matches("discord", guild_id="111", chat_id="333")
+
 
 class TestParseProfileRoutes:
     def test_empty(self):

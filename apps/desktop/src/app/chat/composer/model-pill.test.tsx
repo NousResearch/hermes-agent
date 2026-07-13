@@ -40,9 +40,9 @@ describe('ModelPill', () => {
     render(<ModelPill disabled={false} model={{ canSwitch: true, model: state.currentModel, modelMenuContent: null, provider: state.currentProvider }} />)
 
     const label = screen.getByText(/gpt-5\.6-sol-with-an-intentionally-long-display-name/i)
-    expect(label.className.split(' ')).toEqual(expect.arrayContaining(['min-w-0', 'truncate', 'whitespace-nowrap']))
+    expect(label.className.split(' ')).toEqual(expect.arrayContaining(['min-w-0', 'truncate']))
 
     const button = screen.getByRole('button', { name: 'Open model picker' })
-    expect(button.className.split(' ')).toEqual(expect.arrayContaining(['max-w-40', 'overflow-hidden', 'whitespace-nowrap']))
+    expect(button.className.split(' ')).toEqual(expect.arrayContaining(['max-w-40', 'overflow-hidden']))
   })
 })

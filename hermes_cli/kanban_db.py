@@ -6606,7 +6606,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, goal_mode FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6629,22 +6629,42 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            goal_mode_turn = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Retrying won't
-                # help.
-                protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation"
-                )
-                event_kind = "protocol_violation"
-                event_payload = {
-                    "pid": pid,
-                    "claimer": row["claim_lock"],
-                    "exit_code": code,
-                }
+                # ``kanban_complete`` / ``kanban_block``.
+                # In goal_mode, this is expected — the orchestrator
+                # finishes its turn so children can be promoted and
+                # the dispatcher can restart it for the next turn.
+                # Don't flag as a protocol violation; don't count
+                # toward the circuit breaker; just release and restart.
+                goal_mode = bool(row["goal_mode"]) if "goal_mode" in row.keys() else False
+                if goal_mode:
+                    protocol_violation = False
+                    goal_mode_turn = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) in goal_mode — "
+                        "releasing for next turn"
+                    )
+                    event_kind = "goal_turn_complete"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                    }
+                else:
+                    protocol_violation = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) without calling "
+                        "kanban_complete or kanban_block — protocol violation"
+                    )
+                    event_kind = "protocol_violation"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                    }
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
                 # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —
@@ -6713,6 +6733,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif goal_mode_turn:
+                    # Goal-mode clean exit — release without counting as
+                    # failure so the orchestrator can run unlimited turns
+                    # without tripping the circuit breaker.
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
                 else:
                     crashed.append(row["id"])
                     crash_details.append(

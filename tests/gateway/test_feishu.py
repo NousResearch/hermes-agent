@@ -1776,14 +1776,16 @@ class TestAdapterBehavior(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.handle_message = AsyncMock()
-        source = SessionSource(
-            platform=adapter.platform,
-            chat_id="oc_chat",
-            chat_name="Feishu DM",
-            chat_type="dm",
-            user_id="ou_user",
-            user_name="张三",
-        )
+        def source(message_id):
+            return SessionSource(
+                platform=adapter.platform,
+                chat_id="oc_chat",
+                chat_name="Feishu DM",
+                chat_type="dm",
+                user_id="ou_user",
+                user_name="张三",
+                message_id=message_id,
+            )
 
         async def _sleep(_delay):
             return None
@@ -1791,10 +1793,10 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _run() -> None:
             with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="A", message_type=MessageType.TEXT, source=source, message_id="om_1")
+                    MessageEvent(text="A", message_type=MessageType.TEXT, source=source("om_1"), message_id="om_1")
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="B", message_type=MessageType.TEXT, source=source, message_id="om_2")
+                    MessageEvent(text="B", message_type=MessageType.TEXT, source=source("om_2"), message_id="om_2")
                 )
                 pending = list(adapter._pending_text_batch_tasks.values())
                 self.assertEqual(len(pending), 1)
@@ -1806,6 +1808,8 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter.handle_message.await_args.args[0]
         self.assertEqual(event.text, "A\nB")
         self.assertEqual(event.message_type, MessageType.TEXT)
+        self.assertEqual(event.message_id, "om_2")
+        self.assertEqual(event.source.message_id, "om_2")
 
     @patch.dict(
         os.environ,
@@ -1822,14 +1826,16 @@ class TestAdapterBehavior(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.handle_message = AsyncMock()
-        source = SessionSource(
-            platform=adapter.platform,
-            chat_id="oc_chat",
-            chat_name="Feishu DM",
-            chat_type="dm",
-            user_id="ou_user",
-            user_name="张三",
-        )
+        def source(message_id):
+            return SessionSource(
+                platform=adapter.platform,
+                chat_id="oc_chat",
+                chat_name="Feishu DM",
+                chat_type="dm",
+                user_id="ou_user",
+                user_name="张三",
+                message_id=message_id,
+            )
 
         async def _sleep(_delay):
             return None
@@ -1837,13 +1843,13 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _run() -> None:
             with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="A", message_type=MessageType.TEXT, source=source, message_id="om_1")
+                    MessageEvent(text="A", message_type=MessageType.TEXT, source=source("om_1"), message_id="om_1")
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="B", message_type=MessageType.TEXT, source=source, message_id="om_2")
+                    MessageEvent(text="B", message_type=MessageType.TEXT, source=source("om_2"), message_id="om_2")
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="C", message_type=MessageType.TEXT, source=source, message_id="om_3")
+                    MessageEvent(text="C", message_type=MessageType.TEXT, source=source("om_3"), message_id="om_3")
                 )
                 pending = list(adapter._pending_text_batch_tasks.values())
                 self.assertEqual(len(pending), 1)
@@ -1856,6 +1862,8 @@ class TestAdapterBehavior(unittest.TestCase):
         second = adapter.handle_message.await_args_list[1].args[0]
         self.assertEqual(first.text, "A\nB")
         self.assertEqual(second.text, "C")
+        self.assertEqual(first.source.message_id, "om_2")
+        self.assertEqual(second.source.message_id, "om_3")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
@@ -1866,14 +1874,16 @@ class TestAdapterBehavior(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.handle_message = AsyncMock()
-        source = SessionSource(
-            platform=adapter.platform,
-            chat_id="oc_chat",
-            chat_name="Feishu DM",
-            chat_type="dm",
-            user_id="ou_user",
-            user_name="张三",
-        )
+        def source(message_id):
+            return SessionSource(
+                platform=adapter.platform,
+                chat_id="oc_chat",
+                chat_name="Feishu DM",
+                chat_type="dm",
+                user_id="ou_user",
+                user_name="张三",
+                message_id=message_id,
+            )
 
         async def _sleep(_delay):
             return None
@@ -1884,7 +1894,7 @@ class TestAdapterBehavior(unittest.TestCase):
                     MessageEvent(
                         text="第一张",
                         message_type=MessageType.PHOTO,
-                        source=source,
+                        source=source("om_p1"),
                         message_id="om_p1",
                         media_urls=["/tmp/a.png"],
                         media_types=["image/png"],
@@ -1894,7 +1904,7 @@ class TestAdapterBehavior(unittest.TestCase):
                     MessageEvent(
                         text="第二张",
                         message_type=MessageType.PHOTO,
-                        source=source,
+                        source=source("om_p2"),
                         message_id="om_p2",
                         media_urls=["/tmp/b.png"],
                         media_types=["image/png"],
@@ -1911,6 +1921,8 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.media_urls, ["/tmp/a.png", "/tmp/b.png"])
         self.assertIn("第一张", event.text)
         self.assertIn("第二张", event.text)
+        self.assertEqual(event.message_id, "om_p2")
+        self.assertEqual(event.source.message_id, "om_p2")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_image_downloads_then_uses_native_image_send(self):
@@ -2104,6 +2116,93 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
 
+    def test_feishu_thread_metadata_carries_reply_anchor(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _thread_metadata_for_source
+
+        source = SimpleNamespace(
+            platform=Platform.FEISHU,
+            chat_type="group",
+            thread_id="omt-thread",
+            message_id=None,
+        )
+
+        self.assertEqual(
+            _thread_metadata_for_source(source, "om-trigger"),
+            {
+                "thread_id": "omt-thread",
+                "reply_to_message_id": "om-trigger",
+            },
+        )
+
+    def test_gateway_runner_thread_metadata_carries_feishu_anchor_only_for_feishu(self):
+        from gateway.config import Platform
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+
+        self.assertEqual(
+            runner._thread_metadata_for_target(
+                Platform.FEISHU,
+                "oc_chat",
+                "omt-thread",
+                reply_to_message_id="om-trigger",
+            ),
+            {
+                "thread_id": "omt-thread",
+                "reply_to_message_id": "om-trigger",
+            },
+        )
+        self.assertEqual(
+            runner._thread_metadata_for_target(
+                Platform.DISCORD,
+                "discord-channel",
+                "discord-thread",
+                reply_to_message_id="discord-message",
+            ),
+            {"thread_id": "discord-thread"},
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_inbound_message_id_persists_as_feishu_reply_anchor(self):
+        from gateway.config import PlatformConfig
+        from gateway.session import SessionSource
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu Topic", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id="omt-thread",
+            parent_id="om-parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"topic message"}',
+            message_id="om-trigger",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om-trigger",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.message_id, "om-trigger")
+        restored = SessionSource.from_dict(event.source.to_dict())
+        self.assertEqual(restored.message_id, "om-trigger")
+
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig
@@ -2183,6 +2282,144 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(captured["request"].message_id, "om_trigger")
         self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_thread_without_reply_anchor_fails_closed(self):
+        """A thread-only send must fail without calling any message API."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        calls = []
+
+        class _MessageAPI:
+            def list(self, request):
+                calls.append("list")
+                return SimpleNamespace(success=lambda: False, code=9999, msg="unsupported")
+
+            def reply(self, request):
+                calls.append("reply")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_sent"),
+                )
+
+            def create(self, request):
+                calls.append("create")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_sent"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="thread reply",
+                    metadata={"thread_id": "omt-thread"},
+                )
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("requires reply_to_message_id", result.error)
+        self.assertEqual(calls, [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_thread_without_reply_anchor_skips_file_upload(self):
+        """Reject an unanchored thread file before creating an orphan upload."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        calls = []
+
+        class _FileAPI:
+            def create(self, request):
+                calls.append("file.create")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_key"),
+                )
+
+        class _MessageAPI:
+            def reply(self, request):
+                calls.append("message.reply")
+                return SimpleNamespace(success=lambda: True)
+
+            def create(self, request):
+                calls.append("message.create")
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(file=_FileAPI(), message=_MessageAPI())
+            )
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as temp_file:
+            result = asyncio.run(
+                adapter.send_document(
+                    chat_id="oc_chat",
+                    file_path=temp_file.name,
+                    metadata={"thread_id": "omt-thread"},
+                )
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("requires reply_to_message_id", result.error)
+        self.assertEqual(calls, [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_thread_without_reply_anchor_skips_image_upload(self):
+        """Reject an unanchored thread image before creating an orphan upload."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        calls = []
+
+        class _ImageAPI:
+            def create(self, request):
+                calls.append("image.create")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(image_key="image_key"),
+                )
+
+        class _MessageAPI:
+            def reply(self, request):
+                calls.append("message.reply")
+                return SimpleNamespace(success=lambda: True)
+
+            def create(self, request):
+                calls.append("message.create")
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(image=_ImageAPI(), message=_MessageAPI())
+            )
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".png") as temp_file:
+            result = asyncio.run(
+                adapter.send_image_file(
+                    chat_id="oc_chat",
+                    image_path=temp_file.name,
+                    metadata={"thread_id": "omt-thread"},
+                )
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("requires reply_to_message_id", result.error)
+        self.assertEqual(calls, [])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):

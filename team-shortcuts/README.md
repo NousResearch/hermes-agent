@@ -1,6 +1,6 @@
 # ชุดติดตั้ง Prompt Shortcut สำหรับทีม
 
-ชุดนี้ทำให้พนักงานใช้ Shortcut (เช่น `Use Comply`, `Use Continue`, `Review Chat`) ได้บนเครื่องตัวเอง
+ชุดนี้ทำให้พนักงานใช้ Shortcut และ AI Relay ได้บน Notebook กับ VPS
 ทั้งใน **Cursor, Claude Code และ Codex** เหมือนเครื่องเจ้าของระบบ
 
 ## ปัญหาที่ชุดนี้แก้
@@ -10,7 +10,7 @@
 พอ AI หาเนื้อ Shortcut ไม่เจอ จึงใช้ไม่ได้ ตัวติดตั้งนี้วางชุด Shortcut ลงเครื่องพนักงาน
 แล้วต่อสายให้ทั้ง 3 โปรแกรมมองเห็น
 
-## วิธีติดตั้ง (พนักงานทำครั้งเดียวต่อเครื่อง)
+## วิธีติดตั้ง (พนักงานทำครั้งเดียวต่อ Notebook หรือบัญชี VPS)
 
 พนักงานไม่ต้องมี repo Hermes Agent ในเครื่อง ให้รันคำสั่งเดียวนี้:
 
@@ -24,7 +24,17 @@ curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/te
 curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash -s -- --cursor
 ```
 
-เสร็จแล้วปิด-เปิดโปรแกรม AI ใหม่ 1 รอบ แล้วลองพิมพ์ `Use Comply` ดู
+คำสั่งเดิมนี้ติดตั้งทั้ง Shortcut + AI Relay + เพิ่ม `~/.local/bin` ให้ zsh/bash แล้ว
+
+หลังติดตั้ง พนักงานต้องล็อกอินเฉพาะ AI ที่ได้รับมอบหมายหนึ่งครั้ง เพราะบัญชีเป็นของแต่ละคนและทำแทนกันไม่ได้:
+
+```bash
+codex login
+grok login --oauth
+gemini auth login
+```
+
+Claude Code ให้ล็อกอินตามหน้าจอโปรแกรม จากนั้นปิด-เปิดโปรแกรม AI ใหม่ 1 รอบ แล้วลองพิมพ์ `Use New Chat`
 
 ## วิธีตรวจเครื่องพนักงาน
 
@@ -50,16 +60,17 @@ RESULT: PASS
 | 2 | ต่อ Claude Code ผ่าน `~/.claude/CLAUDE.md` | ไม่ |
 | 3 | ต่อ Codex ผ่าน `~/.codex/skills/prompt-shortcuts` | ไม่ |
 | 4 | ต่อ Cursor ผ่านทางลัดชดเชยที่อยู่เดิม (เฉพาะ `--cursor`) | อาจขอ 1 ครั้ง |
+| 5 | ติดตั้ง AI Relay และคำสั่งตรวจ (`relay-doctor`, `relay-status`, `gate-run`) | ไม่ |
+| 6 | เพิ่ม `~/.local/bin` ให้ zsh/bash | ไม่ |
 
 ตัวติดตั้งรันซ้ำได้ ไม่พัง (เขียนทับของเดิม)
 
 ## สำหรับพนักงานที่ทำงานบน VPS (บัญชี linux-nat)
 
-หลังเจ้าของระบบอัปเดต payload ให้รันตัวติดตั้งบน VPS ด้วย เพื่อให้ Codex runtime อ่านชุดเดียวกับเครื่องพนักงาน:
+หลังเจ้าของระบบอัปเดตชุดแจก ให้ใช้คำสั่งเดียวกับ Notebook บน VPS เพื่อให้คำสั่งลัดและ AI Relay เป็นรุ่นเดียวกัน:
 
 ```bash
-cd /home/linux-nat/SynerryTools/hermes-agent/main/team-shortcuts
-bash install-shortcuts.sh
+curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/install-from-github.sh | bash
 ```
 
 เหตุผล: VPS อ่าน Shortcut ผ่าน `/home/linux-nat/ObsidianVault/HermesAgent` ถ้าไม่ติดตั้งซ้ำหลัง sync อาจยังเห็น prompt รุ่นเก่าหรือไฟล์ Project OS ไม่ครบ
@@ -74,4 +85,4 @@ git add team-shortcuts/payload && git commit -m "sync shortcuts" && git push
 แล้วทำ 2 จุด:
 
 1. บอกพนักงานให้รันคำสั่ง `curl ... install-from-github.sh | bash` อีกครั้ง
-2. รัน `install-shortcuts.sh` บน VPS หนึ่งครั้ง เพื่อให้เครื่องกลางเท่ากับ payload
+2. รัน `install-from-github.sh` บน VPS หนึ่งครั้ง เพื่อให้เครื่องกลางเท่ากับ Notebook

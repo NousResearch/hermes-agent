@@ -14,6 +14,9 @@ INDEX="$ROOT/skills/prompt-shortcuts/Prompt Shortcuts.md"
 REFS="$ROOT/skills/prompt-shortcuts/references"
 CODEX="$HOME/.codex/skills/prompt-shortcuts"
 CLAUDE="$HOME/.claude/CLAUDE.md"
+INSTALLED_VERSION="$ROOT/.shortcut-version"
+HOOK_DOCTOR="$HOME/.local/bin/hermes-hook-doctor"
+WRITE_PERMIT="$HOME/.local/bin/hermes-write-permit"
 
 pass=true
 
@@ -46,6 +49,18 @@ print_check() {
   fi
 }
 
+match_check() {
+  local label="$1"
+  local left="$2"
+  local right="$3"
+  if [ "$left" = "$right" ]; then
+    printf 'PASS %-28s %s\n' "$label" "$left"
+  else
+    printf 'FAIL %-28s %s ไม่ตรงกับ %s\n' "$label" "$left" "$right"
+    pass=false
+  fi
+}
+
 exists_check() {
   local label="$1"
   local path="$2"
@@ -62,6 +77,9 @@ exists_check "registry_exists" "$REGISTRY"
 exists_check "skill_exists" "$SKILL"
 exists_check "index_exists" "$INDEX"
 exists_check "codex_link_exists" "$CODEX"
+exists_check "hook_doctor_exists" "$HOOK_DOCTOR"
+exists_check "write_permit_exists" "$WRITE_PERMIT"
+exists_check "installed_version_exists" "$INSTALLED_VERSION"
 
 if [ -f "$CLAUDE" ] && grep -q 'HERMES_SHORTCUTS_START' "$CLAUDE"; then
   printf 'PASS %-28s %s\n' "claude_bridge_exists" "$CLAUDE"
@@ -70,19 +88,52 @@ else
   pass=false
 fi
 
-print_check "registry_count" "$(count_table "$REGISTRY")" "29"
-print_check "skill_map_count" "$(count_skill_map "$SKILL")" "29"
-print_check "index_count" "$(count_table "$INDEX")" "29"
+if [ -x "$HOOK_DOCTOR" ] && "$HOOK_DOCTOR" >/dev/null 2>&1; then
+  printf 'PASS %-28s %s\n' "hook_health" "3/3"
+else
+  printf 'FAIL %-28s %s\n' "hook_health" "ด่านจริงไม่ผ่าน"
+  pass=false
+fi
+
+registry_count="$(count_table "$REGISTRY")"
+skill_count="$(count_skill_map "$SKILL")"
+index_count="$(count_table "$INDEX")"
+match_check "registry_vs_skill" "$registry_count" "$skill_count"
+match_check "registry_vs_index" "$registry_count" "$index_count"
 prompt_count=0
 if [ -d "$REFS" ]; then
   prompt_count="$(find "$REFS" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')"
 fi
-print_check "prompt_md_count" "$prompt_count" "33"
+if [ "$prompt_count" -ge "$registry_count" ] 2>/dev/null; then
+  printf 'PASS %-28s %s (คำสั่งลัด %s)\n' "prompt_file_coverage" "$prompt_count" "$registry_count"
+else
+  printf 'FAIL %-28s %s น้อยกว่าคำสั่งลัด %s\n' "prompt_file_coverage" "$prompt_count" "$registry_count"
+  pass=false
+fi
+
+expected_version="${HERMES_SHORTCUT_EXPECTED_VERSION:-}"
+if [ -z "$expected_version" ] && command -v curl >/dev/null 2>&1; then
+  expected_version="$(curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/VERSION 2>/dev/null | tr -d '[:space:]' || true)"
+fi
+installed_version=""
+if [ -f "$INSTALLED_VERSION" ]; then
+  installed_version="$(tr -d '[:space:]' < "$INSTALLED_VERSION")"
+fi
+if [ -n "$expected_version" ]; then
+  print_check "shortcut_version" "$installed_version" "$expected_version"
+else
+  printf 'WARN %-28s ตรวจรุ่นล่าสุดจาก GitHub ไม่ได้\n' "shortcut_version"
+fi
+
+if [ -f "$REFS/use-new-chat.md" ]; then
+  grep -q 'version: "2.6"' "$REFS/use-new-chat.md" || pass=false
+  grep -q 'ห้ามเรียกรอบที่ 3' "$REFS/use-new-chat.md" || pass=false
+fi
 
 echo ""
 if [ "$pass" = true ]; then
   echo "RESULT: PASS"
-  echo "เครื่องนี้ต่อ Prompt Shortcut พร้อมใช้ 29/29"
+  echo "เครื่องนี้ต่อ Prompt Shortcut พร้อมใช้ $registry_count/$registry_count · รุ่น $installed_version"
 else
   echo "RESULT: FAIL"
   echo "ให้รันตัวติดตั้งใหม่:"

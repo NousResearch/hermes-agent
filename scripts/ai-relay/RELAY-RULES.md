@@ -34,6 +34,9 @@
 - `relay-status --cwd <repo>` → ตารางว่า "ตอนนี้ AI ตัวไหนพร้อมใช้" (ติดตั้ง/พัก) · ใส่ `--probe` เช็คล็อกอินจริง
 - `relay-suggest --task-type <งาน> --cwd <repo>` → แนะนำ coder+reviewer จากทะเบียน×สถานะสด×กติกาคนละค่าย
 - `relay-call --tool <ชื่อ> --task-id <P#-I#> --prompt-file <brief> --cwd <repo>` → ให้ AI เขียนโค้ด 1 รอบ (อ่านแค่ช่อง status)
+- งานตรวจต้องเติม `--role review` → Codex ใช้สิทธิ์อ่านอย่างเดียว, ส่งเหตุการณ์ JSONL, ไม่ถูกตัดเพราะเงียบ, และถ้าหมดเวลาจะลองใบงานย่ออีก 1 ครั้งใน issue เดิม
+- ผู้ตรวจคนเดิมเรียกได้ไม่เกิน 2 รอบต่อ issue หลัก · รอบที่ 3 คืน `review_method_change_required` เพื่อบังคับเปลี่ยนเป็น gate-run หรือผู้ตรวจคนละค่าย
+- ห้ามเติม `b`/`retry`/`final` เพื่อเริ่มตัวนับใหม่ · `P17-I1-xcheck4` และ `P17-I1-xcheck4b` นับรวมใต้ `P17-I1` · issue เดียวรันซ้อนไม่ได้
 - `gate-run --cwd <repo> --task-id <P#-I#>` → รัน test จริง = แหล่งเดียวของ "verified"
 - `relay-report` → สรุปการใช้ · `relay-doctor` → ตรวจเครื่องพร้อมไหม
 

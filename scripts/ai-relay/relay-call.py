@@ -3,7 +3,7 @@
 
 ส่วนของ Use AI Relay (Memory Schema v1.1) · LLM อ่านแค่ช่อง status ที่ตัวนี้คืน ไม่ parse stderr เอง
 ใช้:  python relay-call.py --tool grok --task-id P1-I2 --prompt-file brief.md --cwd <worktree>
-คืน: JSON บรรทัดเดียว + exit (ok=0 not_found=10 auth=20 quota=30 crash=40 limit_exceeded=50 off_plan=60)
+คืน: JSON บรรทัดเดียว + exit (ok=0 not_found=10 auth=20 quota=30 crash=40 limit_exceeded=50 off_plan=60 already_running=70)
 
 หมายเหตุ: คำสั่งเรียก coder อ่านจาก .hermes/ai-relay/adapters.yaml
           บัญชี/สาย/เพดาน อ่านจาก .hermes/ai-relay/accounts.yaml
@@ -53,7 +53,8 @@ DEFAULT_ACCOUNTS = {
                # นาฬิกาปลุกต่อการเรียก 1 ครั้ง (วินาที) · เกินเวลา = ถือว่า "ค้าง" ตัดทิ้งแล้วสลับตัวถัดไป
                # ปรับได้ใน accounts.yaml (limits.call_timeout_seconds) หรือต่อ tool ใน adapters.yaml (timeout)
                # coder = 900 (15 นาที) · สมอง (brain: opus) คิดนานกว่า = 1800 (30 นาที) แยกกัน
-               "call_timeout_seconds": 900, "brain_call_timeout_seconds": 1800,
+               "call_timeout_seconds": 900, "review_call_timeout_seconds": 1800,
+               "brain_call_timeout_seconds": 1800,
                # ตัวจับเงียบ — ไม่มี output ใหม่เกินนี้ = ถือว่าค้าง ตัดเลย ไม่รอครบนาฬิกาใหญ่
                "silence_timeout_seconds": 180},
     "cooldown": {"fail_threshold": 3, "window_seconds": 300, "minutes": 10},
@@ -378,13 +379,17 @@ def write_ledger(cwd: Path, row: dict):
 
 TIMEOUT_MARK = "__relay_timeout__"   # ป้ายเฉพาะบอกว่า "ค้างจริง" (กันสับสนกับ CLI ที่บังเอิญ exit 124)
 
-def resolve_timeout(spec, limits):
+def resolve_timeout(spec, limits, role="code"):
     # นาฬิกาปลุกต่อการเรียก · ต่อ tool (adapters.yaml: timeout) ชนะก่อน → ค่ากลาง (accounts.yaml) → ค่าปริยาย
     # สมอง (brain: opus) คิดนานกว่า coder → ใช้ค่ากลาง+ปริยายของสมองแยก (ไม่ให้โดนตัดเร็วเกิน)
     limits = limits or {}
     is_brain = bool(spec.get("brain"))
     fallback = 1800 if is_brain else 900
-    mid_key = "brain_call_timeout_seconds" if is_brain else "call_timeout_seconds"
+    if role == "review" and not is_brain:
+        mid_key = "review_call_timeout_seconds"
+        fallback = 1800
+    else:
+        mid_key = "brain_call_timeout_seconds" if is_brain else "call_timeout_seconds"
     for v in (spec.get("timeout"), limits.get(mid_key), fallback):
         try:
             if v is not None and int(v) > 0:
@@ -393,12 +398,16 @@ def resolve_timeout(spec, limits):
             pass
     return fallback
 
-def resolve_silence(spec, limits):
+def resolve_silence(spec, limits, tool=None):
     # ตัวจับเงียบต่อ coder · ต่อ tool ชนะก่อน → ค่ากลาง → ปริยาย 180
     # สมอง (brain) อาจคิดเงียบนานได้จริง จึงปิดไว้ เว้นแต่ตั้งต่อ tool ชัดเจน
     limits = limits or {}
     if "silence_timeout" in spec:
         v = spec.get("silence_timeout")
+    elif tool == "codex":
+        # codex exec บางรุ่นไม่พ่นข้อความระหว่าง reasoning แม้โปรเซสยังทำงานจริง
+        # จึงใช้เพดานเวลารวมแทน ห้ามตัดจากความเงียบเพียงอย่างเดียว
+        return None
     elif spec.get("brain"):
         return None
     elif "silence_timeout_seconds" in limits:
@@ -410,6 +419,110 @@ def resolve_silence(spec, limits):
         return v if v > 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def canonical_issue_id(task_id: str) -> str:
+    """รวมชื่อรอบย่อยกลับเข้า issue เดิม เพื่อไม่ให้เติม xcheck4b แล้วเริ่มตัวนับใหม่."""
+    text = str(task_id or "").strip()
+    match = re.match(r"^(.+?-I\d+)(?:-|$)", text, re.I)
+    return match.group(1) if match else text
+
+
+def prepare_adapter_for_role(tool: str, spec: dict, role: str) -> dict:
+    """เปลี่ยน adapter ของผู้ตรวจให้เป็นโหมดอ่านอย่างเดียวตาม CLI แต่ละตัว."""
+    prepared = {**spec, "cmd": list(spec.get("cmd") or [])}
+    if role != "review":
+        return prepared
+    cmd = prepared["cmd"]
+    if tool == "codex":
+        if "--sandbox" in cmd:
+            pos = cmd.index("--sandbox")
+            if pos + 1 < len(cmd):
+                cmd[pos + 1] = "read-only"
+        else:
+            cmd[2:2] = ["--sandbox", "read-only"]
+        if "--json" not in cmd:
+            cmd.insert(-1 if cmd else 0, "--json")
+        prepared["silence_timeout"] = 0
+    elif tool == "grok":
+        cmd[:] = [part for part in cmd if part != "--always-approve"]
+        if "--permission-mode" in cmd:
+            pos = cmd.index("--permission-mode")
+            if pos + 1 < len(cmd):
+                cmd[pos + 1] = "plan"
+        else:
+            cmd.extend(["--permission-mode", "plan"])
+        if "--no-subagents" not in cmd:
+            cmd.append("--no-subagents")
+    elif tool == "gemini":
+        cmd[:] = [part for part in cmd if part not in ("--yolo", "-y")]
+        if "--approval-mode" in cmd:
+            pos = cmd.index("--approval-mode")
+            if pos + 1 < len(cmd):
+                cmd[pos + 1] = "plan"
+        else:
+            cmd.extend(["--approval-mode", "plan"])
+    elif cmd and Path(str(cmd[0])).name == "claude":
+        if "--permission-mode" in cmd:
+            pos = cmd.index("--permission-mode")
+            if pos + 1 < len(cmd):
+                cmd[pos + 1] = "plan"
+        else:
+            cmd.extend(["--permission-mode", "plan"])
+    return prepared
+
+
+def extract_codex_final_output(text: str) -> str:
+    """ดึงข้อความตอบสุดท้ายจาก codex exec --json; ถ้าไม่ใช่ JSONL ให้คืนของเดิม."""
+    messages = []
+    saw_json = False
+    for line in (text or "").splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        saw_json = True
+        item = event.get("item") if isinstance(event, dict) else None
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            value = item.get("text") or item.get("content")
+            if isinstance(value, str) and value.strip():
+                messages.append(value.strip())
+    if messages:
+        return messages[-1]
+    return "" if saw_json else (text or "")
+
+
+def compact_review_prompt(prompt: str, limit: int = 12000) -> str:
+    """ย่อใบตรวจหลัง timeout โดยเก็บหัว-ท้ายและบังคับตอบเฉพาะข้อค้นพบ."""
+    text = str(prompt or "")
+    instruction = (
+        "รอบก่อนหมดเวลา ให้ตรวจแบบอ่านอย่างเดียวและตอบเฉพาะ: "
+        "ข้อผิดพลาดระดับสูง/กลาง, ไฟล์กับบรรทัด, ผลกระทบ, และคำตัดสินผ่านหรือไม่ผ่าน\n\n"
+    )
+    available = max(1000, limit - len(instruction))
+    if len(text) <= available:
+        return instruction + text
+    half = available // 2
+    return instruction + text[:half] + "\n\n[ตัดรายละเอียดช่วงกลาง]\n\n" + text[-half:]
+
+
+def acquire_task_lock(cwd: Path, issue_id: str):
+    """หนึ่ง issue มี relay-call ที่ทำงานพร้อมกันได้เพียงหนึ่งโปรเซส."""
+    lock_path = cfg_dir(cwd) / f".task-{re.sub(r'[^A-Za-z0-9._-]', '_', issue_id)}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+", encoding="utf-8")
+    if not fcntl:
+        return handle
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
 
 def _kill_process_group(p):
     # timeout ต้องฆ่าทั้งกลุ่ม ไม่ใช่ฆ่าแค่ shell/coder ตัวหน้าแล้วปล่อยลูกหลานค้างเครื่อง
@@ -594,6 +707,12 @@ def main():
     ap.add_argument("--task-id", required=True)
     ap.add_argument("--prompt-file", required=True)
     ap.add_argument(
+        "--role",
+        choices=("code", "review"),
+        default="code",
+        help="บทบาทของการเรียก: code เขียนงาน, review ตรวจแบบอ่านอย่างเดียว",
+    )
+    ap.add_argument(
         "--cwd",
         default=os.environ.get("AI_RELAY_ROOT") or str(Path.home()),
         help="โฟลเดอร์ทำงานและที่เก็บ .hermes/ai-relay; ค่าเริ่มต้นคือ $AI_RELAY_ROOT หรือ home ของผู้ใช้",
@@ -645,6 +764,17 @@ def main():
         emit({"status":"off_plan","tool":a.tool,"reason_human":OFF_PLAN_REASON,
                "task_id":a.task_id,"ledger_written":True}, 60)
 
+    base_issue_id = canonical_issue_id(a.task_id)
+    task_lock = acquire_task_lock(cwd, base_issue_id)
+    if task_lock is None:
+        emit({"status":"already_running","tool":a.tool,"task_id":a.task_id,
+              "base_issue_id":base_issue_id,
+              "reason_human":"issue นี้มี AI ทำงานอยู่แล้ว จึงไม่เริ่มงานซ้อน",
+              "ledger_written":False}, 70)
+
+    # เก็บ handle ไว้จนโปรเซสจบ; ระบบปฏิบัติการจะปลดล็อกให้แม้จบด้วย sys.exit
+    _task_lock_handle = task_lock
+
     # เพดาน session
     calls = bump_calls(cwd, session_hours=session_hours)
     if limits.get("max_calls_per_session") and calls > limits["max_calls_per_session"]:
@@ -654,9 +784,30 @@ def main():
     # (Fable ถอดออกแล้ว — ไม่มีสมองพิเศษ premium · สมองหลัก = Opus 4.8 ตัวเดียว)
 
     # เพดานรอบแก้ต่อ issue (นับข้ามทุก coder · ไม่รีเซ็ตตอนสลับ) · สมองไม่กินรอบ coder
-    safe_task = re.sub(r"[^A-Za-z0-9._-]", "_", a.task_id)
+    safe_task = re.sub(r"[^A-Za-z0-9._-]", "_", base_issue_id)
     rounds = 0
-    if not is_brain:
+    review_rounds = 0
+    if not is_brain and a.role == "review":
+        safe_reviewer = re.sub(r"[^A-Za-z0-9._-]", "_", a.tool)
+        review_rounds = bump_counter(
+            cwd,
+            f".review-rounds-{safe_task}-{safe_reviewer}",
+            session_hours=session_hours,
+        )
+        if review_rounds > 2:
+            emit({
+                "status": "review_method_change_required",
+                "tool": a.tool,
+                "task_id": a.task_id,
+                "base_issue_id": base_issue_id,
+                "review_rounds_used": review_rounds,
+                "reason_human": (
+                    "ผู้ตรวจคนเดิมถูกเรียกครบ 2 รอบในปัญหานี้แล้ว "
+                    "ให้แยกข้อค้นพบและเปลี่ยนเป็น gate-run หรือผู้ตรวจคนละค่าย ห้ามเรียกรอบที่ 3"
+                ),
+                "ledger_written": False,
+            }, 55)
+    if not is_brain and a.role == "code":
         rounds = bump_counter(cwd, f".rounds-{safe_task}", session_hours=session_hours)
         if limits.get("max_rounds_per_issue") and rounds > limits["max_rounds_per_issue"]:
             emit({"status":"limit_exceeded","tool":a.tool,
@@ -699,12 +850,51 @@ def main():
             rotated_from = tool
             continue
         model = models.get("code") if tool == "ollama" else ""
-        call_timeout = resolve_timeout(adapters[tool], limits)
-        silence_timeout = resolve_silence(adapters[tool], limits)
-        relay_now("set", tool, a.task_id, "กำลังเขียนโค้ด")
-        code, out, err = run_once(adapters[tool], prompt, cwd, model, timeout=call_timeout, silence_timeout=silence_timeout)
-        st = classify(code, out, err)
-        tried.append(f"{tool}:{st}")
+        active_spec = prepare_adapter_for_role(tool, adapters[tool], a.role)
+        call_timeout = resolve_timeout(active_spec, limits, role=a.role)
+        silence_timeout = resolve_silence(active_spec, limits, tool=tool)
+        activity = "กำลังตรวจงาน" if a.role == "review" else "กำลังเขียนโค้ด"
+        relay_now("set", tool, a.task_id, activity)
+        active_prompt = prompt
+        timeout_retry = 0
+        while True:
+            code, out, err = run_once(
+                active_spec, active_prompt, cwd, model,
+                timeout=call_timeout, silence_timeout=silence_timeout,
+            )
+            st = classify(code, out, err)
+            tried.append(f"{tool}:{st}")
+            if not (st == "timeout" and tool == "codex" and a.role == "review" and timeout_retry == 0):
+                break
+
+            # เก็บรอบที่ค้างเป็น partial; ยังไม่นับเป็นผลตรวจ แล้วทำซ้ำหนึ่งครั้งใน issue เดิม
+            partial = cfg_dir(cwd)/f"fail-{re.sub(r'[^A-Za-z0-9]', '_', a.task_id)}-{tool}-attempt1.txt"
+            partial.write_text(redact(
+                f"status=timeout role=review partial=true exit={code}\n"
+                f"--- stdout (ท้าย 4000) ---\n{out[-4000:]}\n"
+                f"--- stderr (ท้าย 4000) ---\n{err[-4000:]}"
+            ), encoding="utf-8")
+            attempt_row(tool, "timeout-partial", rotated_from, str(partial))
+            record_fail(cwd, tool, cd_cfg, time.time())
+            calls = bump_calls(cwd, session_hours=session_hours)
+            if limits.get("max_calls_per_session") and calls > limits["max_calls_per_session"]:
+                relay_now("clear")
+                emit({"status":"limit_exceeded","tool":tool,
+                      "reason_human":"รอบตรวจแรกหมดเวลาและเกินเพดานจำนวนครั้ง จึงไม่เริ่มซ้ำ",
+                      "calls_used":calls,"base_issue_id":base_issue_id,
+                      "ledger_written":True}, 50)
+            timeout_retry = 1
+            active_prompt = compact_review_prompt(prompt)
+            relay_now("set", tool, a.task_id, "กำลังตรวจซ้ำด้วยใบงานย่อ")
+
+        if st == "ok" and tool == "codex" and a.role == "review":
+            final_output = extract_codex_final_output(out)
+            if final_output.strip():
+                out = final_output
+            else:
+                st = "crash"
+                tried[-1] = f"{tool}:missing-final"
+                err = (err or "") + "\nCodex JSONL ended without a final agent_message"
 
         if st == "ok":
             ofile = cfg_dir(cwd)/f"out-{re.sub(r'[^A-Za-z0-9]', '_', a.task_id)}.txt"
@@ -715,7 +905,9 @@ def main():
                 "status":"ok","calls_used":calls,"output_ref":str(ofile)})
             emit({"status":"ok","tool":tool,"account_used":tool,"rotated_from":rotated_from,
                 "reason_human":REASON["ok"],"output_ref":str(ofile),"ledger_written":True,"calls_used":calls,
-                "rounds_used":rounds,"tried":tried}, 0)
+                "rounds_used":rounds,"base_issue_id":base_issue_id,
+                "role":a.role,"review_rounds_used":review_rounds,
+                "timeout_retries":timeout_retry,"tried":tried}, 0)
 
         # ไม่ ok → จดความพยายามลง ledger ก่อน (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) แล้วค่อยตัดสินว่าสลับหรือหยุด
         attempt_row(tool, st, rotated_from)

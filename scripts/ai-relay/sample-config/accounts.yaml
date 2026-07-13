@@ -26,6 +26,10 @@ fallback:
 limits:
   max_rounds_per_issue: 3
   max_calls_per_session: 50
+  call_timeout_seconds: 900
+  review_call_timeout_seconds: 1800
+  brain_call_timeout_seconds: 1800
+  silence_timeout_seconds: 180
   budget: null
 
 cooldown:

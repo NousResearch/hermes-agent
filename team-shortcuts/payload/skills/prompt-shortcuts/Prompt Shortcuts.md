@@ -132,6 +132,8 @@ aliases:
   - use-hermes-structure
   - Use Create Content
   - use-create-content
+  - Use SonarQube
+  - use-sonarqube
 tags:
   - skills
   - knowledge
@@ -141,7 +143,7 @@ status: active
 source_of_truth: skills/prompt-shortcuts
 runtime_path: ~/.codex/skills/prompt-shortcuts
 registry: ai-context/prompt-shortcut-registry
-updated: 2026-07-06
+updated: 2026-07-11
 ---
 
 # Prompt Shortcuts
@@ -189,6 +191,7 @@ Use DesignSystem
 Use Create Design System
 Use Hermes Structure
 Use Create Content
+Use SonarQube
 ```
 
 หรือแบบชัดเจน:
@@ -222,6 +225,7 @@ Use Create Content
 ใช้ $prompt-shortcuts Use Create Design System เพื่อวางหรือย้ายระบบดีไซน์ทั้ง project
 ใช้ $prompt-shortcuts Use Hermes Structure เพื่อใช้มาตรฐานกลาง Hermes
 ใช้ $prompt-shortcuts Use Create Content เพื่อแปลงแชทเป็น Content Master
+ใช้ $prompt-shortcuts Use SonarQube กับโปรเจกต์นี้ เพื่อสแกนด้วย server ที่ติดตั้งไว้แล้วและสรุปผลภาษาไทย
 ```
 
 ## Shortcut Map
@@ -257,7 +261,7 @@ Use Create Content
 | `Use Hermes Structure` | `use-hermes-structure`, `Hermes Structure`, `ใช้ Hermes Structure`, `มาตรฐานกลาง Hermes` | [[skills/prompt-shortcuts/references/use-hermes-structure|use-hermes-structure]] |
 | `Use Create Content` | `use-create-content`, `Create Content`, `create-content`, `ใช้ Create Content`, `สร้างคอนเทนต์จากแชท`, `แปลงแชทเป็นคอนเทนต์`, `ทำ Content Master` | [[skills/prompt-shortcuts/references/use-create-content|use-create-content]] |
 | `Use QA QC` / `Use QC QA` | `use-qa-qc`, `use-qc-qa`, `Use QAQC`, `Use QCQA`, `QA QC`, `QC QA`, `ใช้ QA QC`, `ใช้ QC QA`, `ตรวจคุณภาพงาน`, `สแกนคุณภาพโปรเจกต์`, `สแกน QA`, `ตรวจงานก่อนส่งมอบ` | [[skills/prompt-shortcuts/references/use-qa-qc\|use-qa-qc]] |
-| `Use Trade-off` | `use-trade-off`, `Use Tradeoff`, `Trade-off`, `trade-off`, `tradeoff`, `ใช้ Trade-off`, `ข้อแลกเปลี่ยน`, `ได้อะไรเสียอะไร`, `Trade-off ของเรื่องนี้คืออะไร` | [[skills/prompt-shortcuts/references/use-trade-off|use-trade-off]] |
+| `Use SonarQube` | `use-sonarqube`, `SonarQube`, `ใช้ SonarQube`, `สแกน SonarQube`, `ตรวจโค้ดด้วย SonarQube` | [[skills/prompt-shortcuts/references/use-sonarqube\|use-sonarqube]] |
 
 ## ใช้งานกับ AI ตัวอื่น
 
@@ -284,6 +288,8 @@ Claude Code, Gemini, Qwen, Cursor และ AI ตัวอื่นให้เ
 - [[skills/prompt-shortcuts/references/use-save-git|use-save-git]] - prompt สำหรับ safe Git/GitLab/VPS gate ก่อน push, merge, deploy หรือสรุป readiness โดยต้องคืน SAFE/STOP decision
 - [[skills/prompt-shortcuts/references/use-merge-to-production|use-merge-to-production]] - prompt สำหรับ merge/deploy production เฉพาะเมื่อผ่านด่านและได้รับอนุมัติ
 - [[skills/prompt-shortcuts/references/use-continue|use-continue]] - prompt เต็มสำหรับทำงานต่อเองทีละเฟสจนผ่าน 100%
+- [[skills/prompt-shortcuts/references/use-sonarqube|use-sonarqube]] - prompt สำหรับสแกนโปรเจกต์ด้วย SonarQube ที่ติดตั้งไว้แล้ว ตรวจผลฝั่ง server และสรุปภาษาไทย
+- [[skills/prompt-shortcuts/references/sonarqube-vps-install-for-cursor|sonarqube-vps-install-for-cursor]] - prompt ติดตั้งบน VPS สำหรับ Cursor ใช้ครั้งเดียว ไม่ใช่ Shortcut
 - [[skills/prompt-shortcuts/references/use-move-folder|use-move-folder]] - prompt สำหรับเชื่อม Hermes กับ workflow จัดเรียงโฟลเดอร์/cleanup จริงบน VPS ที่ `/home/linux-nat/.codex/use-move-folder/project-registry`
 - [[skills/prompt-shortcuts/references/go-to-sleep|go-to-sleep]] - alias เก่าสำหรับความเข้ากันได้ย้อนหลัง ให้ชี้ไปใช้ `Use Continue`
 - [[skills/prompt-shortcuts/references/review-chat|review-chat]] - prompt เต็มสำหรับรีวิวแชท, ปิดงานค้าง, อัปเดต handoff, และเตรียมข้อความเปิด new chat

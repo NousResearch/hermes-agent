@@ -728,6 +728,91 @@ def test_resolve_silence_precedence():
     assert relay_call.resolve_silence({"brain": True, "silence_timeout": 30}, {}) == 30
 
 
+def test_codex_silence_timeout_is_disabled_unless_tool_override_exists():
+    assert relay_call.resolve_silence({}, {"silence_timeout_seconds": 600}, tool="codex") is None
+    assert relay_call.resolve_silence({"silence_timeout": 45}, {}, tool="codex") == 45
+
+
+def test_review_timeout_has_separate_longer_default():
+    assert relay_call.resolve_timeout({}, {}, role="review") == 1800
+    assert relay_call.resolve_timeout({}, {"review_call_timeout_seconds": 2400}, role="review") == 2400
+
+
+def test_canonical_issue_id_prevents_retry_suffix_from_resetting_counter():
+    assert relay_call.canonical_issue_id("P17-I1-xcheck4") == "P17-I1"
+    assert relay_call.canonical_issue_id("P17-I1-xcheck4b") == "P17-I1"
+    assert relay_call.canonical_issue_id("GRD-P2-I7-review-final") == "GRD-P2-I7"
+
+
+def test_codex_review_adapter_is_read_only_json_and_no_silence_cut():
+    prepared = relay_call.prepare_adapter_for_role(
+        "codex", relay_call.DEFAULT_ADAPTERS["codex"], "review"
+    )
+    sandbox_pos = prepared["cmd"].index("--sandbox")
+    assert prepared["cmd"][sandbox_pos + 1] == "read-only"
+    assert "--json" in prepared["cmd"]
+    assert prepared["silence_timeout"] == 0
+
+
+def test_grok_review_adapter_removes_write_approval_and_uses_plan_mode():
+    prepared = relay_call.prepare_adapter_for_role(
+        "grok", relay_call.DEFAULT_ADAPTERS["grok"], "review"
+    )
+    assert "--always-approve" not in prepared["cmd"]
+    mode_pos = prepared["cmd"].index("--permission-mode")
+    assert prepared["cmd"][mode_pos + 1] == "plan"
+    assert "--no-subagents" in prepared["cmd"]
+
+
+def test_gemini_review_adapter_replaces_yolo_with_plan_mode():
+    prepared = relay_call.prepare_adapter_for_role(
+        "gemini", relay_call.DEFAULT_ADAPTERS["gemini"], "review"
+    )
+    mode_pos = prepared["cmd"].index("--approval-mode")
+    assert prepared["cmd"][mode_pos + 1] == "plan"
+    assert "--yolo" not in prepared["cmd"]
+    assert "-y" not in prepared["cmd"]
+
+
+def test_opus_review_adapter_uses_claude_plan_permission_mode():
+    prepared = relay_call.prepare_adapter_for_role(
+        "opus", relay_call.DEFAULT_ADAPTERS["opus"], "review"
+    )
+    mode_pos = prepared["cmd"].index("--permission-mode")
+    assert prepared["cmd"][mode_pos + 1] == "plan"
+
+
+def test_extract_codex_final_output_ignores_progress_events():
+    raw = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "t1"}),
+        json.dumps({"type": "item.completed", "item": {"type": "reasoning", "text": "คิด"}}),
+        json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "ผลตรวจสุดท้าย"}}),
+    ])
+    assert relay_call.extract_codex_final_output(raw) == "ผลตรวจสุดท้าย"
+
+
+def test_compact_review_prompt_keeps_head_tail_and_marks_middle_cut():
+    prompt = "HEAD-" + ("x" * 20000) + "-TAIL"
+    compact = relay_call.compact_review_prompt(prompt, limit=2000)
+    assert len(compact) <= 2050
+    assert "HEAD-" in compact
+    assert "-TAIL" in compact
+    assert "ตัดรายละเอียดช่วงกลาง" in compact
+
+
+def test_task_lock_blocks_second_process_for_same_base_issue(tmp_path):
+    first = relay_call.acquire_task_lock(tmp_path, "P17-I1")
+    try:
+        second = relay_call.acquire_task_lock(tmp_path, "P17-I1")
+        if relay_call.fcntl:
+            assert second is None
+        else:
+            assert second is not None
+            second.close()
+    finally:
+        first.close()
+
+
 def test_opus_is_only_brain_in_default_chain():
     # หลังถอด Fable · สายสมองปริยายมี opus ตัวเดียว
     assert relay_call.DEFAULT_ACCOUNTS["fallback"]["brain"] == ["opus"]
@@ -751,7 +836,10 @@ _PLAN_WITH_TASKS = """\
 """
 
 
-def _run_relay_main(tmp_path, task_id, *, plan_text=None, no_plan=False):
+def _run_relay_main(
+    tmp_path, task_id, *, plan_text=None, no_plan=False, role="code",
+    tool="grok", run_results=None,
+):
     """เรียก relay-call.main() ใน tmp cwd · คืน (exit_code, json_payload, tool_invocations)"""
     import sys
 
@@ -764,22 +852,27 @@ def _run_relay_main(tmp_path, task_id, *, plan_text=None, no_plan=False):
 
     invoked = {"count": 0}
     orig_run_once = relay_call.run_once
+    queued_results = list(run_results or [])
 
     def fake_run_once(*args, **kwargs):
         invoked["count"] += 1
+        if queued_results:
+            return queued_results.pop(0)
         return 0, "RELAYOK", ""
 
     relay_call.run_once = fake_run_once
     argv = [
         "relay-call.py",
         "--tool",
-        "grok",
+        tool,
         "--task-id",
         task_id,
         "--prompt-file",
         str(prompt_file),
         "--cwd",
         str(tmp_path),
+        "--role",
+        role,
     ]
     if no_plan:
         argv.append("--no-plan")
@@ -865,6 +958,99 @@ def test_missing_plan_md_keeps_old_behavior(tmp_path):
     assert payload["status"] == "ok"
     assert tool_calls == 1
     assert payload.get("status") != "off_plan"
+
+
+def test_retry_suffixes_share_the_same_round_limit(tmp_path):
+    results = []
+    for task_id in ("P17-I1-xcheck4", "P17-I1-xcheck4b", "P17-I1-retry", "P17-I1-final"):
+        results.append(_run_relay_main(tmp_path, task_id, plan_text=None))
+
+    assert [item[0] for item in results[:3]] == [0, 0, 0]
+    assert results[3][0] == 50
+    assert results[3][1]["status"] == "limit_exceeded"
+    assert results[3][2] == 0
+
+
+def test_review_does_not_consume_code_writing_round_limit(tmp_path):
+    for task_id in ("P17-I3-code1", "P17-I3-code2", "P17-I3-code3"):
+        exit_code, payload, tool_calls = _run_relay_main(tmp_path, task_id, role="code")
+        assert (exit_code, payload["status"], tool_calls) == (0, "ok", 1)
+
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path, "P17-I3-review", role="review", tool="grok"
+    )
+    assert (exit_code, payload["status"], tool_calls) == (0, "ok", 1)
+    assert payload["rounds_used"] == 0
+
+
+def test_same_reviewer_is_blocked_on_third_round_for_same_root_issue(tmp_path):
+    results = []
+    for task_id in ("P17-I4-review", "P17-I4-review-retry", "P17-I4-review-final"):
+        results.append(_run_relay_main(tmp_path, task_id, role="review", tool="grok"))
+
+    assert [item[0] for item in results[:2]] == [0, 0]
+    assert results[2][0] == 55
+    assert results[2][1]["status"] == "review_method_change_required"
+    assert results[2][1]["base_issue_id"] == "P17-I4"
+    assert results[2][2] == 0
+
+
+def test_different_reviewer_is_allowed_after_two_rounds(tmp_path):
+    for task_id in ("P17-I5-review", "P17-I5-review-retry"):
+        exit_code, payload, tool_calls = _run_relay_main(
+            tmp_path, task_id, role="review", tool="grok"
+        )
+        assert (exit_code, payload["status"], tool_calls) == (0, "ok", 1)
+
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path, "P17-I5-review-final", role="review", tool="gemini"
+    )
+    assert (exit_code, payload["status"], tool_calls) == (0, "ok", 1)
+
+
+def test_codex_review_timeout_retries_once_inside_same_task(tmp_path):
+    final_event = json.dumps({
+        "type": "item.completed",
+        "item": {"type": "agent_message", "text": "ผลตรวจรอบย่อ"},
+    })
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path,
+        "P17-I1-xcheck4",
+        role="review",
+        tool="codex",
+        run_results=[
+            (124, "partial", relay_call.TIMEOUT_MARK + ":silence"),
+            (0, final_event, ""),
+        ],
+    )
+
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert payload["base_issue_id"] == "P17-I1"
+    assert payload["timeout_retries"] == 1
+    assert tool_calls == 2
+    out_file = Path(payload["output_ref"])
+    assert out_file.read_text(encoding="utf-8") == "ผลตรวจรอบย่อ"
+    partials = list((tmp_path / ".hermes" / "ai-relay").glob("*attempt1.txt"))
+    assert len(partials) == 1
+    assert "partial=true" in partials[0].read_text(encoding="utf-8")
+
+
+def test_codex_review_without_final_message_is_not_accepted(tmp_path):
+    progress_only = json.dumps({"type": "thread.started", "thread_id": "t1"})
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path,
+        "P17-I2-review",
+        role="review",
+        tool="codex",
+        run_results=[(0, progress_only, ""), (0, "Grok review final", "")],
+    )
+
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert payload["tool"] == "grok"
+    assert tool_calls == 2
+    assert "codex:missing-final" in payload["tried"]
 
 
 def test_plan_without_plan_id_keeps_old_behavior(tmp_path):

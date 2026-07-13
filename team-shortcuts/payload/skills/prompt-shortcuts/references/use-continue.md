@@ -22,13 +22,13 @@ tags:
   - phase-tracking
   - completion
 status: active
-version: "4.2"
-updated: 2026-07-08
+version: "4.4"
+updated: 2026-07-13
 schema: memory-schema-v1.2
 replaces: go-to-sleep
 ---
 
-# Use Continue (v4.2 · 2026-07-08)
+# Use Continue (v4.4 · 2026-07-13)
 
 คู่กับ Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 
@@ -64,6 +64,11 @@ Use Continue
 ชั้น 2 รายงานแล้วทำต่อได้ (แนบหลักฐานก่อน): ลง dependency (+ lockfile diff + license/security) / ลบหลายไฟล์ (+ dry-run list) / แตะไฟล์ข้าม ownership (+ สรุปผลกระทบ) / แก้ config ที่ไม่ใช่ production
 ชั้น 3A auto ผ่านด่านอัตโนมัติได้: push ขึ้น branch ตัวเอง / tag / deploy staging / แก้ CI ที่ไม่กระทบ prod / external API บน sandbox
 
+[Write Permit จาก Use New Chat — บังคับก่อนงานเขียนทุกก้อน]
+- ก่อนแก้ไฟล์ครั้งแรกของคำสั่งผู้ใช้แต่ละก้อน ต้องมี `task_id / branch / base_sha / allowed_paths / owner_approval / claim_status` ที่ยังตรงกับ Git จริง
+- สิทธิ์เดิมใช้ต่อได้เฉพาะ issue และขอบเขต path เดิม · คำสั่งใหม่ เปลี่ยนหัวข้อ เพิ่ม path หรือกลับมาหลังคำถามแทรก ต้องตรวจ branch/status/claim ใหม่
+- ถ้าเป็น `NEW_WRITABLE_TASK` ต้องกลับไป Branch Gate ขออนุมัติ branch ใหม่ใน registered folder เดิมก่อนเขียน · ห้ามถือว่า Use Continue อนุญาตใช้ branch เดิมกับทุกงาน
+
 [เปลี่ยนสำคัญ] ต้องขอคนเสมอ (ค่าตั้งต้น · แม้ด่าน SAFE):
 - merge → main · deploy production · migration prod → เพราะ merge→main = CI/CD ดันขึ้น prod ที่มีผู้ใช้จริงอัตโนมัติ
 - เปิด auto ได้เฉพาะเมื่อเจ้าของตั้ง `ALLOW_AUTO_PROD=ON` ชัดเจน (Schema §12) · เปิดแล้วยังต้องผ่านด่าน+ledger
@@ -93,7 +98,7 @@ Use Continue
 3. ทำทีละเฟส จบและตรวจก่อนข้าม · fail → แก้จนผ่านหรือระบุ blocker
 4. บันทึกเหตุผล+trade-off ทุกครั้งที่ตัดสินใจแทนผู้ใช้ · เรื่องสำคัญที่ไม่รู้จริง = หยุดถาม · รายละเอียดเล็ก = เลือกเอง+บันทึก
 
-[STOP ทันที] worktree dirty เฉพาะไฟล์ที่จะแตะ/มีงานคนอื่นเสี่ยงทับ · จะแตะชั้น 3B หรือ prod ที่ ALLOW_AUTO_PROD=OFF · ด่าน 3A ตอบ BLOCKED · error class เดิม 3 ครั้ง · เจอ secret ใน diff · ต้องเดาเรื่องสำคัญเพราะ context ไม่พอ → หยุด รายงาน ถาม 1 คำถาม
+[STOP/เปลี่ยนวิธี] ผู้ตรวจคนเดิมและวิธีเดิมไม่ผ่านครบ 2 รอบในปัญหาเดียว → ห้ามเรียกรอบที่ 3 · แยกปัญหาแล้วใช้ test/lint/build/gate-run หรือผู้ตรวจคนละค่ายทันที · worktree dirty เฉพาะไฟล์ที่จะแตะ/มีงานคนอื่นเสี่ยงทับ · จะแตะชั้น 3B หรือ prod ที่ ALLOW_AUTO_PROD=OFF · ด่าน 3A ตอบ BLOCKED · error class เดิม 3 ครั้ง · เจอ secret ใน diff · ต้องเดาเรื่องสำคัญเพราะ context ไม่พอ → หยุด รายงาน ถาม 1 คำถาม
 
 ส่งงานจบ (closeout):
 | phase_id | เป้าหมาย | % หรือสถานะ | หลักฐาน |
@@ -110,6 +115,8 @@ Use Continue
 
 ## Changelog
 
+- v4.4 (2026-07-13): ผู้ตรวจและวิธีเดิมไม่ผ่าน 2 รอบต้องหยุด เปลี่ยนเป็นการตรวจด้วยเครื่องมือจริงหรือผู้ตรวจคนละค่าย ห้ามวนรอบที่ 3
+- v4.3 (2026-07-12): รับ Write Permit ต่อหนึ่งงานจาก Use New Chat ป้องกัน Use Continue นำ branch เดิมไปใช้กับคำสั่งใหม่จนไฟล์ทับกัน
 - v4.2 (2026-07-08): เพิ่มกฎ re-anchor (หลังตอบคำถามแทรก ต้องเปิด plan.md ทวนเฟส+ข้อห้ามก่อนลงมือ) + เลขงานต้องขึ้นต้นด้วย plan_id ของแผน · จากการสอบสวนแผน GRD 2026-07-07 (ต้นตอ: AI ลืมแผนหลังตอบคำถาม + เลขงานชนกันข้ามแผน)
 - v4.1 (2026-07-05): เกาะ Memory Schema v1.2 — ขั้น 0 อ่าน `.project/plan.md` + `.project/OverviewProgress.md` + `.project/decisions.md` (เดิมอ่าน `.hermes/`+handoff) · เจอไฟล์เก่า = Migration §1b ก่อนลุย · ledger ยังอยู่ `.hermes/ledger/` (ไฟล์เครื่องจักร) · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05)
 - v4.0 (2026-06-26): เกาะ Memory Schema v1.1 · **เปลี่ยนนโยบาย: merge→main/deploy prod/migration prod ออกจาก auto → ต้องขอคน (ALLOW_AUTO_PROD=OFF ค่าตั้งต้น ตาม §12)** · เพิ่มขั้น 0 อ่าน plan/memory/token/claim ก่อนลงมือ · เคารพ claim/worktree (ไม่แตะของคนอื่น) · ledger ผูกเข้า memory (§13) · ค้น gate เอง (§5) · อ้าง phase_id/issue_id เดิม · ส่งต่อ Use Close Chat ตอนจบ · redact secret (§7)

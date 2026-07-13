@@ -1,6 +1,6 @@
 ---
 name: prompt-shortcuts
-description: Use this skill when the user invokes any reusable prompt shortcut from HermesAgent, including "Use Act-As", "Use Comply", "Use Summary", "Use Scan Feature", "Use AI Relay", "Use Viber Structure", "Use Viber Audit", "Use Impeccable", "Use Blog Auto", "Use WOW Resource", "Use Flow Guardian", "Use New Chat", "Use Close Chat", "Use Save Git", "Use Merge to Production", "Use Continue", "Use Move Folder", "Review Chat", "Use AI Pair", "Use Business Plan", "Use SaaS Opus Master Prompt", "Use BusinessPlan", "Use OverviewProgress", "Use FeatureSpec", "Use DesignSystem", "Use Create Design System", "Use Hermes Structure", "Use Create Content", or Thai/alias variants such as "ใช้ AI Relay", "ปิดแชท", "เซฟ Git", "ทำต่อ", "รีวิวแชท", "สร้างคอนเทนต์จากแชท", and "สร้างไฟล์ภาพรวมงาน".
+description: Use this skill when the user invokes any reusable prompt shortcut from HermesAgent, including "Use Act-As", "Use Comply", "Use Summary", "Use Scan Feature", "Use AI Relay", "Use Viber Structure", "Use Viber Audit", "Use Impeccable", "Use Blog Auto", "Use WOW Resource", "Use Flow Guardian", "Use New Chat", "Use Close Chat", "Use Save Git", "Use Merge to Production", "Use Continue", "Use Move Folder", "Review Chat", "Use AI Pair", "Use Business Plan", "Use SaaS Opus Master Prompt", "Use BusinessPlan", "Use OverviewProgress", "Use FeatureSpec", "Use DesignSystem", "Use Create Design System", "Use Hermes Structure", "Use Create Content", "Use SonarQube", or Thai/alias variants such as "ใช้ AI Relay", "ปิดแชท", "เซฟ Git", "ทำต่อ", "รีวิวแชท", "สร้างคอนเทนต์จากแชท", "สร้างไฟล์ภาพรวมงาน", and "สแกน SonarQube".
 metadata:
   short-description: Reusable prompt shortcut loader
 ---
@@ -42,7 +42,7 @@ This skill loads standard reusable prompts from HermesAgent. The v2 prompt files
 | `Use Hermes Structure` | `use-hermes-structure`, `Hermes Structure`, `ใช้ Hermes Structure`, `มาตรฐานกลาง Hermes` | `references/use-hermes-structure.md` |
 | `Use Create Content` | `use-create-content`, `Create Content`, `create-content`, `ใช้ Create Content`, `สร้างคอนเทนต์จากแชท`, `แปลงแชทเป็นคอนเทนต์`, `ทำ Content Master` | `references/use-create-content.md` |
 | `Use QA QC` / `Use QC QA` | `use-qa-qc`, `use-qc-qa`, `Use QAQC`, `Use QCQA`, `QA QC`, `QC QA`, `ใช้ QA QC`, `ใช้ QC QA`, `ตรวจคุณภาพงาน`, `สแกนคุณภาพโปรเจกต์`, `สแกน QA`, `ตรวจงานก่อนส่งมอบ` | `references/use-qa-qc.md` |
-| `Use Trade-off` | `use-trade-off`, `Use Tradeoff`, `Trade-off`, `trade-off`, `tradeoff`, `ใช้ Trade-off`, `ข้อแลกเปลี่ยน`, `ได้อะไรเสียอะไร`, `Trade-off ของเรื่องนี้คืออะไร` | `references/use-trade-off.md` |
+| `Use SonarQube` | `use-sonarqube`, `SonarQube`, `ใช้ SonarQube`, `สแกน SonarQube`, `ตรวจโค้ดด้วย SonarQube` | `references/use-sonarqube.md` |
 
 ## How To Use
 
@@ -66,7 +66,7 @@ For `Use Scan Feature`, scan the real repository phase by phase, refuse to claim
 
 For `Use AI Pair`, default to the 3-AI pilot when context is sufficient: Claude plans/final-reviews, Codex writes, and Qwen reviews read-only. Do not stop by asking whether to create a brief or whether to proceed when the next safe step is obvious; create the coder brief, reviewer packet, and handoff immediately when file writes are allowed, or print them in chat when they are not. Ask only when the target repo/task/branch is unknowable, a risky write/deploy lacks approval, or a required secret/account/runtime is unavailable. Keep the reviewer read-only by default, route review through controlled diff/brief/evidence, and use GitLab Merge Request/CI as the final gate.
 
-For `Use AI Relay`, load `references/use-ai-relay.md` and `references/ai-relay-catalog.md`. Treat Opus 4.8 as the only brain. Fable/Faber/Fiber 5 is removed from the active path. Use `relay-call` for AI calls and `gate-run` for real verification; never treat an AI claim as verified without a gate row. If relay commands are missing on an employee machine, tell them to run the GitHub installer command in `references/use-ai-relay.md`; if project config is missing, run `relay-doctor` instead of stopping.
+For `Use AI Relay`, load `references/use-ai-relay.md` and `references/ai-relay-catalog.md`. Honor the owner's mode from Use New Chat without asking twice: mode 1 assigns separate AIs to study/plan, production, and review; mode 2 uses a primary AI to produce the study/analysis output and a second AI to review it before acceptance. If no mode was supplied, ask once. Every code call also requires a fresh task-scoped Write Permit from Use New Chat; never reuse one for a new request or expanded path set. Fable/Faber/Fiber 5 is removed from the active path. Use `relay-call --role review` for AI reviews so Codex is read-only, silence alone does not stop it, one compact retry stays under the same issue, retry suffixes cannot reset counters, and concurrent duplicate work returns `already_running`. The same reviewer plus review method may fail at most twice per root issue; after that split the findings and switch to deterministic gates or a different-vendor reviewer, never a third identical review. Use `gate-run` for real verification; never treat an AI claim or partial timeout output as verified without a gate row.
 
 For `Use Business Plan`, review the owner's raw business/marketing/pitch/tender/website question before execution, choose the right business modules and expert roles, build phase and issue checklists, ask for missing inputs first, and do not create files or durable writes until approved.
 
@@ -82,9 +82,9 @@ For `Use Blog Auto`, extract useful work knowledge into a One Man Fleet blog rou
 
 For `Use WOW Resource`, read the mapped prompt, route through WOW System and Web Design Intelligence, select resources based on the project goal, reject mismatched/generic options, and transform the selected patterns into project-specific layout/design/script direction. Do not copy scripts or visual patterns directly.
 
-For `Use Flow Guardian`, apply Home OS Agent safe workflow before project work: report current worktree, branch, and dirty status; ask branch/worktree choice for new features; require no-write audit, approval gates, verification, tracking, and handoff when applicable.
+For `Use Flow Guardian`, apply Home OS Agent safe workflow before project work: resolve and report the registered staff+project folder, branch, and dirty status; for new writable work propose only a branch inside that existing folder. Never propose or create a new worktree. Require no-write audit, approval gates, verification, tracking, and handoff when applicable.
 
-For `Use New Chat`, run the startup checklist before any readiness response: inspect project path, worktree, branch, dirty status, local/remote/VPS equality, service/endpoint when applicable, and return a New Chat Startup Report. Do not answer only "ready for commands".
+For `Use New Chat`, run the startup checklist plus AI Relay Startup and `hermes-hook-doctor` from a single invocation before any readiness response. The doctor must prove the plain-language, independent-review, and prompt-evidence gates block their bad fixtures; file presence alone is insufficient. Inspect current folder, Git root, registered staff+project folder, folder match, branch, dirty status, local/remote/VPS equality, service/endpoint, and Relay readiness when applicable. After the report, ask the owner to choose mode 1 (separate AIs for study/plan, production, and review) or mode 2 (a primary AI creates the study/analysis output and a second AI reviews it), then pass that choice to AI Relay without asking twice. Before every distinct writable request in the same chat, re-check branch/status/claim and issue a task+scope+paths Write Permit; approval never carries to another task. Load `references/use-new-chat-conditional-gates.md` only when its legacy-memory, optional-check, or team-routing condition is present. Never propose or create a new worktree; new writable work may create only a branch inside the clean registered folder after approval. Return a New Chat Startup Report, not only "ready for commands".
 
 For `Use Close Chat`, close the chat by checking real work status, quality gate evidence, commit/push/merge handoff, and memory writes before returning CLOSED_CLEAN, CLOSED_WITH_PENDING, or NEED_OWNER_ACTION_BEFORE_CLOSE. It does not push, merge, or deploy by itself.
 
@@ -113,6 +113,8 @@ For `Use Hermes Structure`, route the owner to the Hermes standard workflow and 
 For `Use Create Content`, convert the current chat or source material into a privacy-reviewed Content Master draft, then hand off to Blog Auto or the content factory without publishing.
 
 For `Use QA QC` (or `Use QC QA`), open a two-axis quality-scan menu (project progress 25/50/75/100% × 16 check categories Q01-Q16, multi-select, Scan All last behind a confirm gate), run a cross-vendor scan pipeline (primary scanner + counter-scanner from a different vendor, fixer = third AI, reviewer ≠ fixer, verified = gate-run rows only), produce a severity table, then write `.project/qaqc-scan.md` before any fixes.
+
+For `Use SonarQube`, analyze an existing project with the owner's already-installed SonarQube instance. Read the project rules, detect its build system, verify server status and credentials without revealing secrets, run the matching scanner, confirm the server-side analysis through the API, and return a Thai report. Never install or upgrade the SonarQube server through this shortcut, and never change source code without separate owner approval.
 
 ## Source Files
 
@@ -149,6 +151,8 @@ For `Use QA QC` (or `Use QC QA`), open a two-axis quality-scan menu (project pro
 - `references/use-hermes-structure.md`: full prompt for `Use Hermes Structure`.
 - `references/use-create-content.md`: full prompt for `Use Create Content`.
 - `references/use-qa-qc.md`: full prompt for `Use QA QC` / `Use QC QA`.
+- `references/use-sonarqube.md`: full prompt for recurring `Use SonarQube` project analysis.
+- `references/sonarqube-vps-install-for-cursor.md`: one-time Cursor prompt for installing SonarQube Community Build on the owner's VPS; this is not a shortcut.
 
 ## Graph Links
 

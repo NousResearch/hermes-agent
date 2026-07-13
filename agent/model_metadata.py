@@ -213,6 +213,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
     "claude-fable-5": 1000000,
     "claude-fable": 1000000,
+    # Claude Sonnet 5 (launched 2026-06-30) — 1M context by default, 128k max
+    # output. Without this it substring-matches the "claude": 200K catch-all.
+    "claude-sonnet-5": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-opus-4.8": 1000000,
     "claude-opus-4-7": 1000000,

@@ -323,6 +323,18 @@ class TestSlackInteractiveAuth:
         assert runner.seen_sources[0].chat_id == "C1"
         assert runner.seen_sources[0].chat_type == "group"
 
+    def test_passes_workspace_scope_to_gateway_runner_auth(self):
+        adapter = _make_adapter()
+        runner = _attach_auth_runner(adapter)
+
+        assert adapter._is_interactive_user_authorized(
+            "U_OK",
+            channel_id="C1",
+            user_name="operator",
+            team_id="T1",
+        ) is True
+        assert runner.seen_sources[0].scope_id == "T1"
+
 
 class TestSlackSlashConfirmAction:
     @pytest.mark.asyncio
@@ -363,6 +375,40 @@ class TestSlackSlashConfirmAction:
         )
         mock_client.chat_update.assert_called_once()
         mock_client.chat_postMessage.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_action_uses_outer_payload_workspace_client(self, monkeypatch):
+        adapter = _make_adapter()
+        secondary_client = AsyncMock()
+        adapter._team_clients["T2"] = secondary_client
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SLACK_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "U_OWNER")
+
+        ack = AsyncMock()
+        body = {
+            "team_id": "T2",
+            "message": {
+                "ts": "2222.3333",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Original prompt"}},
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {
+            "action_id": "hermes_confirm_once",
+            "value": "agent:main:slack:group:C1:1111|confirm-1",
+        }
+
+        with patch("tools.slash_confirm.resolve", new=AsyncMock(return_value="follow-up")):
+            await adapter._handle_slash_confirm_action(ack, body, action)
+
+        secondary_client.chat_update.assert_awaited_once()
+        secondary_client.chat_postMessage.assert_awaited_once()
+        adapter._team_clients["T1"].chat_update.assert_not_called()
 
 
 # ===========================================================================

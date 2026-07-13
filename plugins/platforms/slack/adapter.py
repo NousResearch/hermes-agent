@@ -466,6 +466,12 @@ class SlackAdapter(BasePlatformAdapter):
         # session + memory scoping.
         self._assistant_threads: Dict[Tuple[str, str], Dict[str, str]] = {}
         self._ASSISTANT_THREADS_MAX = 5000
+        # Agent-view context is per workspace/user (not global): a context
+        # change for one person's Slack split view must never appear in another
+        # person's prompt. Slack also includes this in later DM events, but the
+        # cache bridges lifecycle and message delivery ordering.
+        self._agent_view_contexts: Dict[Tuple[str, str], Dict[str, str]] = {}
+        self._AGENT_VIEW_CONTEXTS_MAX = 5000
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
@@ -1091,8 +1097,8 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Register message event handler
             @self._app.event("message")
-            async def handle_message_event(event, say):
-                await self._handle_slack_message(event)
+            async def handle_message_event(event, say, body):
+                await self._handle_slack_message(event, body)
 
             # Handle app_mention explicitly. In some Slack app configurations,
             # channel mentions arrive only as app_mention events rather than the
@@ -1102,19 +1108,23 @@ class SlackAdapter(BasePlatformAdapter):
             # @mention, they share the same event ts — the dedup in
             # _handle_slack_message (MessageDeduplicator) suppresses the second.
             @self._app.event("app_mention")
-            async def handle_app_mention(event, say):
-                await self._handle_slack_message(event)
+            async def handle_app_mention(event, say, body):
+                await self._handle_slack_message(event, body)
 
             @self._app.event("app_home_opened")
-            async def handle_app_home_opened(event, say):
-                await self._handle_app_home_opened(event)
+            async def handle_app_home_opened(event, say, body):
+                await self._handle_app_home_opened(event, body)
+
+            @self._app.event("app_context_changed")
+            async def handle_app_context_changed(event, say, body):
+                await self._handle_app_context_changed(event, body)
 
             # File lifecycle events can arrive around snippet uploads even when
             # the actual user message is what we care about. Ack them so Slack
             # doesn't log noisy 404 "unhandled request" warnings.
             @self._app.event("file_shared")
-            async def handle_file_shared(event, say):
-                await self._handle_slack_file_shared(event)
+            async def handle_file_shared(event, say, body):
+                await self._handle_slack_file_shared(event, body)
 
             @self._app.event("file_created")
             async def handle_file_created(event, say):
@@ -1137,12 +1147,12 @@ class SlackAdapter(BasePlatformAdapter):
                 pass
 
             @self._app.event("assistant_thread_started")
-            async def handle_assistant_thread_started(event, say):
-                await self._handle_assistant_thread_lifecycle_event(event)
+            async def handle_assistant_thread_started(event, say, body):
+                await self._handle_assistant_thread_lifecycle_event(event, body)
 
             @self._app.event("assistant_thread_context_changed")
-            async def handle_assistant_thread_context_changed(event, say):
-                await self._handle_assistant_thread_lifecycle_event(event)
+            async def handle_assistant_thread_context_changed(event, say, body):
+                await self._handle_assistant_thread_lifecycle_event(event, body)
 
             # Register slash command handler(s)
             #
@@ -1763,7 +1773,9 @@ class SlackAdapter(BasePlatformAdapter):
         last_exc = None
         for attempt in range(3):
             try:
-                result = await self._get_client(chat_id).files_upload_v2(
+                result = await self._get_client(
+                    chat_id, team_id=self._metadata_team_id(metadata)
+                ).files_upload_v2(
                     channel=chat_id,
                     file=file_path,
                     filename=os.path.basename(file_path),
@@ -1890,7 +1902,9 @@ class SlackAdapter(BasePlatformAdapter):
                     chunk_idx + 1,
                     len(chunks),
                 )
-                result = await self._get_client(chat_id).files_upload_v2(
+                result = await self._get_client(
+                    chat_id, team_id=self._metadata_team_id(metadata)
+                ).files_upload_v2(
                     channel=chat_id,
                     file_uploads=file_uploads,
                     initial_comment=initial_comment,
@@ -2134,12 +2148,14 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Reactions -----
 
-    async def _add_reaction(self, channel: str, timestamp: str, emoji: str) -> bool:
+    async def _add_reaction(
+        self, channel: str, timestamp: str, emoji: str, team_id: str = ""
+    ) -> bool:
         """Add an emoji reaction to a message. Returns True on success."""
         if not self._app:
             return False
         try:
-            await self._get_client(channel).reactions_add(
+            await self._get_client(channel, team_id=team_id or None).reactions_add(
                 channel=channel, timestamp=timestamp, name=emoji
             )
             return True
@@ -2148,12 +2164,14 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] reactions.add failed (%s): %s", emoji, e)
             return False
 
-    async def _remove_reaction(self, channel: str, timestamp: str, emoji: str) -> bool:
+    async def _remove_reaction(
+        self, channel: str, timestamp: str, emoji: str, team_id: str = ""
+    ) -> bool:
         """Remove an emoji reaction from a message. Returns True on success."""
         if not self._app:
             return False
         try:
-            await self._get_client(channel).reactions_remove(
+            await self._get_client(channel, team_id=team_id or None).reactions_remove(
                 channel=channel, timestamp=timestamp, name=emoji
             )
             return True
@@ -2174,7 +2192,9 @@ class SlackAdapter(BasePlatformAdapter):
             return
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
-            await self._add_reaction(channel_id, ts, "eyes")
+            await self._add_reaction(
+                channel_id, ts, "eyes", str(getattr(event.source, "scope_id", "") or "")
+            )
 
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
@@ -2189,11 +2209,12 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
-        await self._remove_reaction(channel_id, ts, "eyes")
+        team_id = str(getattr(event.source, "scope_id", "") or "")
+        await self._remove_reaction(channel_id, ts, "eyes", team_id)
         if outcome == ProcessingOutcome.SUCCESS:
-            await self._add_reaction(channel_id, ts, "white_check_mark")
+            await self._add_reaction(channel_id, ts, "white_check_mark", team_id)
         elif outcome == ProcessingOutcome.FAILURE:
-            await self._add_reaction(channel_id, ts, "x")
+            await self._add_reaction(channel_id, ts, "x", team_id)
 
     # ----- User identity resolution -----
 
@@ -2298,7 +2319,9 @@ class SlackAdapter(BasePlatformAdapter):
                 response.raise_for_status()
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            result = await self._get_client(chat_id).files_upload_v2(
+            result = await self._get_client(
+                chat_id, team_id=self._metadata_team_id(metadata)
+            ).files_upload_v2(
                 channel=chat_id,
                 content=response.content,
                 filename="image.png",
@@ -2374,7 +2397,9 @@ class SlackAdapter(BasePlatformAdapter):
             last_exc = None
             for attempt in range(3):
                 try:
-                    result = await self._get_client(chat_id).files_upload_v2(
+                    result = await self._get_client(
+                        chat_id, team_id=self._metadata_team_id(metadata)
+                    ).files_upload_v2(
                         channel=chat_id,
                         file=video_path,
                         filename=os.path.basename(video_path),
@@ -2434,7 +2459,9 @@ class SlackAdapter(BasePlatformAdapter):
             last_exc = None
             for attempt in range(3):
                 try:
-                    result = await self._get_client(chat_id).files_upload_v2(
+                    result = await self._get_client(
+                        chat_id, team_id=self._metadata_team_id(metadata)
+                    ).files_upload_v2(
                         channel=chat_id,
                         file=file_path,
                         filename=display_name,
@@ -2506,10 +2533,105 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         return (str(channel_id), str(thread_ts))
 
-    def _extract_assistant_thread_metadata(self, event: dict) -> Dict[str, str]:
+    @staticmethod
+    def _agent_view_context_key(team_id: str, user_id: str) -> Optional[Tuple[str, str]]:
+        """Return a per-workspace, per-user Agent-view context cache key."""
+        if not team_id or not user_id:
+            return None
+        return (str(team_id), str(user_id))
+
+    def _cache_agent_view_context(self, metadata: Dict[str, str]) -> None:
+        """Remember a user's current Slack Agent-view context."""
+        key = self._agent_view_context_key(
+            metadata.get("team_id", ""), metadata.get("user_id", "")
+        )
+        if not key:
+            return
+        contexts = getattr(self, "_agent_view_contexts", None)
+        if not isinstance(contexts, dict):
+            contexts = {}
+            self._agent_view_contexts = contexts
+        contexts[key] = {
+            field: value
+            for field, value in metadata.items()
+            if field in {"channel_id", "context_channel_id", "team_id", "user_id"}
+            and value
+        }
+        max_contexts = getattr(self, "_AGENT_VIEW_CONTEXTS_MAX", 5000)
+        if len(contexts) > max_contexts:
+            excess = len(contexts) - max_contexts // 2
+            for old_key in list(contexts)[:excess]:
+                del contexts[old_key]
+
+    def _agent_view_context_for_event(
+        self, event: dict, team_id: str, user_id: str
+    ) -> Dict[str, str]:
+        """Read Slack's inline Agent context, falling back to lifecycle state."""
+        context = event.get("app_context") or event.get("context") or {}
+        context_channel_id = self._context_channel_id(context)
+        key = self._agent_view_context_key(team_id, user_id)
+        contexts = getattr(self, "_agent_view_contexts", {})
+        cached = contexts.get(key, {}) if isinstance(contexts, dict) and key else {}
+        return {
+            "context_channel_id": context_channel_id or cached.get("context_channel_id", ""),
+            "team_id": team_id,
+            "user_id": user_id,
+        }
+
+    @staticmethod
+    def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
+        """Resolve a workspace ID from an event plus Bolt's outer payload.
+
+        Bolt injects only the inner ``event`` into an event listener, while
+        Slack places ``team_id`` on the outer Events API payload. Reading both
+        keeps multi-workspace client routing correct after a process boundary.
+        """
+        for payload in (event, body or {}):
+            if not isinstance(payload, dict):
+                continue
+            team = payload.get("team_id") or payload.get("team")
+            if isinstance(team, str) and team:
+                return team
+            if isinstance(team, dict) and team.get("id"):
+                return str(team["id"])
+        authorizations = (body or {}).get("authorizations") if isinstance(body, dict) else None
+        for authorization in authorizations or []:
+            if isinstance(authorization, dict) and authorization.get("team_id"):
+                return str(authorization["team_id"])
+        return ""
+
+    @staticmethod
+    def _context_channel_id(context: Any) -> str:
+        """Extract the actively viewed channel from either Slack context shape."""
+        if not isinstance(context, dict):
+            return ""
+        channel_id = context.get("channel_id")
+        if channel_id:
+            return str(channel_id)
+        for entity in context.get("entities") or []:
+            if not isinstance(entity, dict):
+                continue
+            value = entity.get("value")
+            if isinstance(value, dict) and value.get("channel_id"):
+                return str(value["channel_id"])
+            if (
+                isinstance(value, str)
+                and str(entity.get("type") or "").endswith("channel_id")
+            ):
+                return value
+        return ""
+
+    def _extract_assistant_thread_metadata(
+        self, event: dict, body: Optional[dict] = None
+    ) -> Dict[str, str]:
         """Extract Slack Assistant thread identity data from an event payload."""
         assistant_thread = event.get("assistant_thread") or {}
-        context = assistant_thread.get("context") or event.get("context") or {}
+        context = (
+            assistant_thread.get("context")
+            or event.get("app_context")
+            or event.get("context")
+            or {}
+        )
 
         channel_id = (
             assistant_thread.get("channel_id")
@@ -2529,13 +2651,10 @@ class SlackAdapter(BasePlatformAdapter):
             or context.get("user_id")
             or ""
         )
-        team_id = (
-            event.get("team")
-            or event.get("team_id")
-            or assistant_thread.get("team_id")
-            or ""
+        team_id = self._event_team_id(event, body) or str(
+            assistant_thread.get("team_id") or ""
         )
-        context_channel_id = context.get("channel_id") or ""
+        context_channel_id = self._context_channel_id(context)
 
         return {
             "channel_id": str(channel_id) if channel_id else "",
@@ -2728,6 +2847,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             thread_id=thread_ts,
             chat_topic=metadata.get("context_channel_id") or None,
+            scope_id=metadata.get("team_id") or None,
         )
 
         try:
@@ -2762,6 +2882,8 @@ class SlackAdapter(BasePlatformAdapter):
             chat_name=channel_id,
             chat_type="dm",
             user_id=user_id,
+            chat_topic=metadata.get("context_channel_id") or None,
+            scope_id=metadata.get("team_id") or None,
         )
 
         try:
@@ -2773,9 +2895,11 @@ class SlackAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
 
-    async def _handle_assistant_thread_lifecycle_event(self, event: dict) -> None:
+    async def _handle_assistant_thread_lifecycle_event(
+        self, event: dict, body: Optional[dict] = None
+    ) -> None:
         """Handle Slack Assistant lifecycle events that carry user/thread identity."""
-        metadata = self._extract_assistant_thread_metadata(event)
+        metadata = self._extract_assistant_thread_metadata(event, body)
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
         await self._set_assistant_suggested_prompts(
@@ -2784,31 +2908,59 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=metadata.get("thread_ts", ""),
         )
 
-    async def _handle_app_home_opened(self, event: dict) -> None:
-        """Handle Slack Agent DM-open lifecycle events without producing replies."""
-        if event.get("tab") != "messages":
-            return
-
-        channel_id = event.get("channel") or event.get("channel_id") or ""
+    async def _handle_app_context_changed(
+        self, event: dict, body: Optional[dict] = None
+    ) -> None:
+        """Cache the current Agent-view context without entering the agent loop."""
+        context = event.get("context") or event.get("app_context") or {}
+        context_channel_id = self._context_channel_id(context)
         user_id = event.get("user") or event.get("user_id") or ""
-        team_id = event.get("team") or event.get("team_id") or ""
-
-        if team_id and channel_id:
-            self._channel_team[str(channel_id)] = str(team_id)
-
-        self._seed_agent_dm_session(
+        team_id = self._event_team_id(event, body)
+        # ``context_channel_id`` is a channel the user is viewing, not the DM
+        # Hermes owns. Do not write it into _channel_team: channel IDs can be
+        # shared across Slack Connect workspaces, so doing so can misroute a
+        # later unrelated send. Workspace ownership is recorded from actual
+        # inbound DM/channel events below.
+        self._cache_agent_view_context(
             {
-                "channel_id": str(channel_id) if channel_id else "",
+                "context_channel_id": str(context_channel_id) if context_channel_id else "",
                 "user_id": str(user_id) if user_id else "",
                 "team_id": str(team_id) if team_id else "",
             }
         )
+
+    async def _handle_app_home_opened(
+        self, event: dict, body: Optional[dict] = None
+    ) -> None:
+        """Handle Slack Agent DM-open lifecycle events without producing replies."""
+        if event.get("tab") != "messages":
+            return
+
+        context = event.get("context") or event.get("app_context") or {}
+        channel_id = event.get("channel") or event.get("channel_id") or ""
+        user_id = event.get("user") or event.get("user_id") or ""
+        team_id = self._event_team_id(event, body)
+        context_channel_id = self._context_channel_id(context)
+
+        if team_id and channel_id:
+            self._channel_team[str(channel_id)] = str(team_id)
+
+        metadata = {
+            "channel_id": str(channel_id) if channel_id else "",
+            "user_id": str(user_id) if user_id else "",
+            "team_id": str(team_id) if team_id else "",
+            "context_channel_id": context_channel_id,
+        }
+        self._cache_agent_view_context(metadata)
+        self._seed_agent_dm_session(metadata)
         await self._set_assistant_suggested_prompts(
-            str(channel_id) if channel_id else "",
-            team_id=str(team_id) if team_id else "",
+            metadata["channel_id"],
+            team_id=metadata["team_id"],
         )
 
-    async def _handle_slack_file_shared(self, event: dict) -> None:
+    async def _handle_slack_file_shared(
+        self, event: dict, body: Optional[dict] = None
+    ) -> None:
         """Fallback for Slack file shares that do not arrive as message.files.
 
         Slack documents ``file_shared`` as a file-ID-only event; callers must
@@ -2822,7 +2974,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_id or not file_id:
             return
 
-        team_id = event.get("team_id") or event.get("team") or ""
+        team_id = self._event_team_id(event, body)
         try:
             client = self._team_clients.get(team_id) if team_id else None
             info_resp = await (client or self._get_client(channel_id)).files_info(
@@ -2886,7 +3038,9 @@ class SlackAdapter(BasePlatformAdapter):
             fallback_event["thread_ts"] = thread_ts
         await self._handle_slack_message(fallback_event)
 
-    async def _handle_slack_message(self, event: dict) -> None:
+    async def _handle_slack_message(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> None:
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
@@ -3046,10 +3200,9 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = event.get("user") or assistant_meta.get("user_id", "")
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
-        team_id = (
-            event.get("team")
-            or event.get("team_id")
-            or assistant_meta.get("team_id", "")
+        team_id = self._event_team_id(event, payload) or assistant_meta.get("team_id", "")
+        agent_context = self._agent_view_context_for_event(
+            event, str(team_id or ""), str(user_id or "")
         )
 
         # Track which workspace owns this channel
@@ -3159,6 +3312,7 @@ class SlackAdapter(BasePlatformAdapter):
                     channel_id=channel_id,
                     thread_ts=event_thread_ts,
                     user_id=user_id,
+                    team_id=team_id,
                 )
                 if (
                     not reply_to_bot_thread
@@ -3189,6 +3343,7 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id=channel_id,
             thread_ts=event_thread_ts,
             user_id=user_id,
+            team_id=team_id,
         ):
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
@@ -3220,9 +3375,9 @@ class SlackAdapter(BasePlatformAdapter):
                 if not file_id:
                     continue
                 try:
-                    info_resp = await self._get_client(channel_id).files_info(
-                        file=file_id
-                    )
+                    info_resp = await self._get_client(
+                        channel_id, team_id=team_id
+                    ).files_info(file=file_id)
                     if info_resp.get("ok"):
                         f = info_resp["file"]
                     else:
@@ -3479,6 +3634,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            scope_id=str(team_id) if team_id else None,
             # Slack Workflow Builder / app posts arrive as
             # subtype=bot_message with user=None; flag them so the
             # gateway SLACK_ALLOW_BOTS bypass can authorize them
@@ -3548,6 +3704,18 @@ class SlackAdapter(BasePlatformAdapter):
         _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
             self._reacting_message_ids.add(ts)
+
+        # App-context is per-turn, user-controlled Slack UI state. Surface it
+        # with the inbound user message rather than storing it on SessionSource:
+        # putting it in the cached system prompt would rebuild the agent whenever
+        # the user switches views and would let stale context bleed into later
+        # turns. The agent receives an inert label, never a fetched channel body.
+        context_channel_id = agent_context.get("context_channel_id", "")
+        if context_channel_id and context_channel_id != channel_id:
+            msg_event.text = (
+                f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
+                f"{msg_event.text}"
+            )
 
         await self.handle_message(msg_event)
 
@@ -3637,7 +3805,9 @@ class SlackAdapter(BasePlatformAdapter):
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
-            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            result = await self._get_client(
+                chat_id, team_id=self._metadata_team_id(metadata)
+            ).chat_postMessage(**kwargs)
             msg_ts = result.get("ts", "")
             if msg_ts:
                 self._approval_resolved[msg_ts] = False
@@ -3715,7 +3885,9 @@ class SlackAdapter(BasePlatformAdapter):
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
-            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            result = await self._get_client(
+                chat_id, team_id=self._metadata_team_id(metadata)
+            ).chat_postMessage(**kwargs)
             return SendResult(
                 success=True, message_id=result.get("ts", ""), raw_response=result
             )
@@ -3729,6 +3901,7 @@ class SlackAdapter(BasePlatformAdapter):
         *,
         channel_id: str = "",
         user_name: Optional[str] = None,
+        team_id: str = "",
     ) -> bool:
         """Return whether a Slack interactive caller may perform gated actions."""
         normalized_user_id = str(user_id or "").strip()
@@ -3747,6 +3920,7 @@ class SlackAdapter(BasePlatformAdapter):
                     chat_type="dm" if str(channel_id or "").startswith("D") else "group",
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
+                    scope_id=str(team_id) if team_id else None,
                 )
                 return bool(auth_fn(source))
             except Exception:
@@ -3776,6 +3950,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Handle a slash-confirm button click from Block Kit."""
         await ack()
 
+        team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
         value = action.get("value", "")
         message = body.get("message", {})
@@ -3787,6 +3962,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id,
             channel_id=channel_id,
             user_name=user_name,
+            team_id=team_id,
         ):
             logger.warning(
                 "[Slack] Unauthorized slash-confirm click by %s (%s) - ignoring",
@@ -3851,7 +4027,7 @@ class SlackAdapter(BasePlatformAdapter):
         ]
 
         try:
-            await self._get_client(channel_id).chat_update(
+            await self._get_client(channel_id, team_id=team_id or None).chat_update(
                 channel=channel_id,
                 ts=msg_ts,
                 text=decision_text,
@@ -3876,7 +4052,9 @@ class SlackAdapter(BasePlatformAdapter):
                 thread_ts = message.get("thread_ts") or msg_ts
                 if thread_ts:
                     post_kwargs["thread_ts"] = thread_ts
-                await self._get_client(channel_id).chat_postMessage(**post_kwargs)
+                await self._get_client(
+                    channel_id, team_id=team_id or None
+                ).chat_postMessage(**post_kwargs)
             logger.info(
                 "Slack button resolved slash-confirm for session %s (choice=%s, user=%s)",
                 session_key,
@@ -3910,6 +4088,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Handle an approval button click from Block Kit."""
         await ack()
 
+        team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
         session_key = action.get("value", "")
         message = body.get("message", {})
@@ -3922,6 +4101,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id,
             channel_id=channel_id,
             user_name=user_name,
+            team_id=team_id,
         ):
             logger.warning(
                 "[Slack] Unauthorized approval click by %s (%s) - ignoring",
@@ -3989,7 +4169,7 @@ class SlackAdapter(BasePlatformAdapter):
         ]
 
         try:
-            await self._get_client(channel_id).chat_update(
+            await self._get_client(channel_id, team_id=team_id or None).chat_update(
                 channel=channel_id,
                 ts=msg_ts,
                 text=decision_text,
@@ -4049,7 +4229,7 @@ class SlackAdapter(BasePlatformAdapter):
             return cached.content
 
         try:
-            client = self._get_client(channel_id)
+            client = self._get_client(channel_id, team_id=team_id)
 
             # Retry with exponential backoff for Tier-3 rate limits (429).
             result = None
@@ -4210,7 +4390,7 @@ class SlackAdapter(BasePlatformAdapter):
             return cached.parent_text
 
         try:
-            client = self._get_client(channel_id)
+            client = self._get_client(channel_id, team_id=team_id)
             result = await client.conversations_replies(
                 channel=channel_id,
                 ts=thread_ts,
@@ -4293,6 +4473,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
+            scope_id=team_id or None,
         )
 
         event = MessageEvent(
@@ -4330,6 +4511,7 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id: str,
         thread_ts: str,
         user_id: str,
+        team_id: str = "",
     ) -> bool:
         """Check if there's an active session for a thread.
 
@@ -4354,6 +4536,7 @@ class SlackAdapter(BasePlatformAdapter):
                 chat_type="group",
                 user_id=user_id,
                 thread_id=thread_ts,
+                scope_id=team_id or None,
             )
 
             # Read session isolation settings from the store's config

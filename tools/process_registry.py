@@ -137,6 +137,8 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    # Append-only to preserve the positional constructor contract above.
+    origin_ui_session_id: str = ""              # Exact desktop/WebUI tab that commissioned notifications
 
 
 class ProcessRegistry:
@@ -309,6 +311,7 @@ class ProcessRegistry:
                 self.completion_queue.put({
                     "session_id": session.id,
                     "session_key": session.session_key,
+                    "origin_ui_session_id": session.origin_ui_session_id,
                     "command": session.command,
                     "type": "watch_disabled",
                     "suppressed": session._watch_suppressed,
@@ -340,6 +343,7 @@ class ProcessRegistry:
         self.completion_queue.put({
             "session_id": session.id,
             "session_key": session.session_key,
+            "origin_ui_session_id": session.origin_ui_session_id,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
@@ -687,6 +691,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        origin_ui_session_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -703,6 +708,7 @@ class ProcessRegistry:
             command=command,
             task_id=task_id,
             session_key=session_key,
+            origin_ui_session_id=origin_ui_session_id,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
         )
@@ -826,6 +832,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        origin_ui_session_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -843,6 +850,7 @@ class ProcessRegistry:
             command=command,
             task_id=task_id,
             session_key=session_key,
+            origin_ui_session_id=origin_ui_session_id,
             cwd=cwd,
             started_at=time.time(),
             env_ref=env,
@@ -1086,6 +1094,7 @@ class ProcessRegistry:
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
+                "origin_ui_session_id": session.origin_ui_session_id,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
@@ -1157,13 +1166,13 @@ class ProcessRegistry:
         Skips completion events the agent already consumed via wait/log or
         observed inline via poll() (see ``_drain_should_skip``).
 
-        Async-delegation events carry a conversation payload, so draining one
-        into the wrong session is a cross-chat leak (#58684, #55578). Two
-        filter modes, strongest wins:
+        Notification events carry conversation payloads, so draining one into
+        the wrong session is a cross-chat leak (#58684, #55578). Two filter
+        modes, strongest wins:
 
         - ``owns_event(evt) -> bool``: positive-proof ownership callback.
-          When provided, an async-delegation event is consumed ONLY if the
-          callback returns True; everything else is re-queued for its owner.
+          When provided, any event is consumed ONLY if the callback returns
+          True; everything else is re-queued for its owner.
           The TUI passes its compression-chain-aware ownership check here so
           a post-compression session still claims its own pre-compression
           dispatches.
@@ -1181,25 +1190,30 @@ class ProcessRegistry:
             except Exception:
                 break
             _evt_sid = evt.get("session_id", "")
-            if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
+            evt_type = _normalize_notification_event_type(evt)
+            if evt_type == "completion" and self._drain_should_skip(_evt_sid):
                 continue
-            # Filter async-delegation events so they are not delivered to the
-            # wrong session/thread (#58684). Positive-proof callback beats
-            # bare key equality when the caller can provide one.
-            if evt.get("type") == "async_delegation":
-                if owns_event is not None:
-                    try:
-                        owned = bool(owns_event(evt))
-                    except Exception:
-                        owned = False  # fail closed — never leak on a broken check
-                    if not owned:
-                        requeue.append(evt)
-                        continue
-                elif session_key:
-                    evt_session_key = evt.get("session_key", "") or ""
-                    if evt_session_key != session_key:
-                        requeue.append(evt)
-                        continue
+            # A positive-proof callback applies to every notification type:
+            # completion/watch events carry process output just as delegation
+            # events carry conversation output. A broken ownership check fails
+            # closed and leaves the event queued for its owner.
+            if owns_event is not None:
+                try:
+                    owned = bool(owns_event(evt))
+                except Exception:
+                    owned = False
+                if not owned:
+                    requeue.append(evt)
+                    continue
+            # Preserve the legacy CLI key filter for async delegation only.
+            # Process events without an ownership callback may come from old
+            # checkpoints with no session_key and remain single-session CLI
+            # notifications.
+            elif evt_type == "async_delegation" and session_key:
+                evt_session_key = evt.get("session_key", "") or ""
+                if evt_session_key != session_key:
+                    requeue.append(evt)
+                    continue
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
@@ -1811,6 +1825,7 @@ class ProcessRegistry:
                             "started_at": s.started_at,
                             "task_id": s.task_id,
                             "session_key": s.session_key,
+                            "origin_ui_session_id": s.origin_ui_session_id,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
                             "watcher_user_id": s.watcher_user_id,
@@ -1883,6 +1898,7 @@ class ProcessRegistry:
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
                 session_key=entry.get("session_key", ""),
+                origin_ui_session_id=entry.get("origin_ui_session_id", ""),
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,
@@ -1910,6 +1926,7 @@ class ProcessRegistry:
                     "session_id": session.id,
                     "check_interval": session.watcher_interval,
                     "session_key": session.session_key,
+                    "origin_ui_session_id": session.origin_ui_session_id,
                     "platform": session.watcher_platform,
                     "chat_id": session.watcher_chat_id,
                     "user_id": session.watcher_user_id,
@@ -2077,17 +2094,34 @@ def _format_async_delegation(evt: dict) -> str:
     return "\n".join(lines)
 
 
+def _normalize_notification_event_type(evt: dict) -> str:
+    """Return the formatter's real event class for suppression and routing.
+
+    Unknown, empty, and malformed type values fall through to completion
+    formatting below, so they must also use completion consumed-suppression.
+    """
+    raw_type = evt.get("type", "completion")
+    if not isinstance(raw_type, str) or not raw_type:
+        return "completion"
+    if raw_type in {"completion", "async_delegation", "watch_match", "watch_disabled"}:
+        return raw_type
+    if raw_type.startswith("watch_overflow_"):
+        return raw_type
+    return "completion"
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
     Handles completion events (notify_on_complete), watch pattern matches,
-    and watch disabled events from the unified completion_queue.
+    watch disabled events, and process-global watch-overflow summaries from
+    the unified completion_queue.
     """
-    evt_type = evt.get("type", "completion")
+    evt_type = _normalize_notification_event_type(evt)
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
 
-    if evt_type == "watch_disabled":
+    if evt_type == "watch_disabled" or evt_type.startswith("watch_overflow_"):
         return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":

@@ -36,6 +36,7 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -65,6 +66,22 @@ def session_context_engaged() -> bool:
     See the ``_session_context_engaged`` comment for the leak-policy rationale.
     """
     return _session_context_engaged
+
+
+@contextmanager
+def bind_ui_session_id(ui_session_id: str):
+    """Temporarily bind only the WebUI return address in this execution context.
+
+    Unlike :func:`set_session_vars`, this helper is nestable and deliberately
+    leaves execution-isolation keys untouched. Delegated child workers use it
+    so detached process notifications return to the parent tab without making
+    the child share the parent's process ownership scope.
+    """
+    token = _SESSION_UI_SESSION_ID.set(ui_session_id or "")
+    try:
+        yield
+    finally:
+        _SESSION_UI_SESSION_ID.reset(token)
 
 # ---------------------------------------------------------------------------
 # Per-task session variables

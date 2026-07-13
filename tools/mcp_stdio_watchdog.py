@@ -101,10 +101,10 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         except (OSError, subprocess.TimeoutExpired):
             proc.kill()
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        return
+    # start_new_session=True makes the direct child's PID the process-group ID.
+    # Keep using that stable group identity after the leader exits so descendants
+    # cannot outlive the supervisor and the lease protecting their mutation.
+    pgid = proc.pid
     identities = []
     if psutil is not None:
         for process in psutil.process_iter(["pid", "create_time"]):
@@ -217,7 +217,9 @@ def main(argv: list[str] | None = None) -> int:
     watchdog.start()
 
     try:
-        return proc.wait()
+        return_code = proc.wait()
+        _terminate_process_group(proc)
+        return return_code
     except KeyboardInterrupt:
         _terminate_process_group(proc)
         return 130

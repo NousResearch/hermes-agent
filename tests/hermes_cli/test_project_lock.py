@@ -91,6 +91,13 @@ def test_worker_production_commands_require_lock_wrapper(monkeypatch):
         "--operation deploy -- vercel --prod"
     )
     assert pl.production_delivery_guard("python3 release.py")
+    assert pl.production_delivery_guard("python3 -u release.py")
+    assert pl.production_delivery_guard("python3 -O -W ignore release.py")
+    assert pl.production_delivery_guard(
+        "hermes() { true; }\n"
+        "hermes kanban lock run --project NousResearch/hermes-agent "
+        "--operation deploy -- python3 -u release.py"
+    )
     assert pl.production_delivery_guard(
         "hermes kanban lock run --project owner/repo --operation deploy -- true && vercel --prod"
     )
@@ -389,6 +396,46 @@ def test_supervisor_does_not_spawn_before_durable_attachment(tmp_path):
     os.close(gate_write)
     assert proc.wait(timeout=5) == 75
     assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Process-group cleanup is POSIX-only")
+@pytest.mark.live_system_guard_bypass
+def test_supervisor_reaps_descendant_after_direct_child_exits(tmp_path):
+    descendant_pid_path = tmp_path / "descendant-pid"
+    descendant_code = (
+        "import os,pathlib,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"pathlib.Path({str(descendant_pid_path)!r}).write_text(str(os.getpid())); "
+        "time.sleep(30)"
+    )
+    leader_code = (
+        "import pathlib,subprocess,sys,time; "
+        "subprocess.Popen([sys.executable, '-c', "
+        f"{descendant_code!r}], stdin=subprocess.DEVNULL, "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        f"marker=pathlib.Path({str(descendant_pid_path)!r}); "
+        "exec('while not marker.exists(): time.sleep(0.01)')"
+    )
+    supervisor = subprocess.Popen(
+        pl._supervised_command([sys.executable, "-c", leader_code]),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    descendant_pid = None
+    try:
+        assert supervisor.wait(timeout=10) == 0
+        deadline = time.time() + 2
+        while time.time() < deadline and not descendant_pid_path.exists():
+            time.sleep(0.05)
+        assert descendant_pid_path.exists()
+        descendant_pid = int(descendant_pid_path.read_text())
+        assert not kb._pid_alive(descendant_pid)
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+            supervisor.wait()
+        if descendant_pid and kb._pid_alive(descendant_pid):
+            os.kill(descendant_pid, signal.SIGKILL)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="SIGKILL crash probe is POSIX-only")

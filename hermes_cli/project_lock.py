@@ -71,9 +71,10 @@ def production_delivery_guard(command: str) -> Optional[str]:
         and lowered[1:4] == ["kanban", "lock", "run"]
         and "--" in lowered
     )
-    if wrapped and "\n" not in command and not any(
+    has_shell_control = "\n" in command or any(
         token and set(token) <= {";", "&", "|"} for token in lowered
-    ):
+    )
+    if wrapped and not has_shell_control:
         try:
             project_index = lowered.index("--project") + 1
             requested = _canonical_project(tokens[project_index])
@@ -91,10 +92,15 @@ def production_delivery_guard(command: str) -> Optional[str]:
                 "Git workspace origin."
             )
         return None
+    if wrapped or any(
+        lowered[index:index + 3] == ["kanban", "lock", "run"]
+        for index in range(len(lowered) - 2)
+    ):
+        return "Production lock wrapper must be one trusted Hermes command."
 
     segments = []
     segment = []
-    for token in lowered:
+    for token in tokens:
         if token and set(token) <= {";", "&", "|"}:
             if segment:
                 segments.append(" ".join(segment))
@@ -112,36 +118,55 @@ def production_delivery_guard(command: str) -> Optional[str]:
 
     production_mutation = False
     for raw in segments:
+        raw_lower = raw.lower()
         local_or_preview = bool(re.search(
             r"(?:^|\s)--local(?:\s|$)|--target(?:=|\s+)preview\b",
-            raw,
+            raw_lower,
         ))
         prod_flag = bool(re.search(
             r"--prod(?:uction)?\b|--(?:target|environment)(?:=|\s+)production\b",
-            raw,
+            raw_lower,
         ))
         try:
             words = shlex.split(raw)
         except ValueError:
             words = raw.split()
-        executable = os.path.basename(words[0]) if words else ""
-        script = (
-            os.path.basename(words[1])
-            if executable in {"bash", "python", "python3", "sh", "zsh"}
-            and len(words) > 1
-            else executable
-        )
+        executable = os.path.basename(words[0]).lower() if words else ""
+        script = executable
+        if executable in {"bash", "python", "python3", "sh", "zsh"}:
+            options_with_value = (
+                {"-W", "-X", "--check-hash-based-pycs"}
+                if executable in {"python", "python3"}
+                else {"-O", "-o"}
+            )
+            index = 1
+            while index < len(words):
+                word = words[index]
+                if word == "--":
+                    index += 1
+                    break
+                if word in {"-c", "-m"}:
+                    index += 1
+                    break
+                if word in options_with_value:
+                    index += 2
+                    continue
+                if word.startswith("-"):
+                    index += 1
+                    continue
+                break
+            script = os.path.basename(words[index]) if index < len(words) else ""
         opaque_delivery_script = bool(
-            re.search(r"deploy|migrat|release", script)
+            re.search(r"deploy|migrat|release", script.lower())
         )
         production_mutation = (
-            (bool(re.search(r"\bvercel\b", raw)) and prod_flag)
-            or (bool(re.search(r"\bsupabase\s+db\s+push\b", raw)) and not local_or_preview)
-            or (bool(re.search(r"\bsupabase\s+migration\s+up\b", raw)) and not local_or_preview)
-            or bool(re.search(r"\bprisma\s+migrate\s+deploy\b", raw))
-            or bool(re.search(r"\bgh\b.*\bpr\b.*\bmerge\b", raw))
-            or bool(re.search(r"\bgit\b.*\bpush\b.*\bmain\b", raw))
-            or (prod_flag and any(part in raw for part in ("deploy", "migrat")))
+            (bool(re.search(r"\bvercel\b", raw_lower)) and prod_flag)
+            or (bool(re.search(r"\bsupabase\s+db\s+push\b", raw_lower)) and not local_or_preview)
+            or (bool(re.search(r"\bsupabase\s+migration\s+up\b", raw_lower)) and not local_or_preview)
+            or bool(re.search(r"\bprisma\s+migrate\s+deploy\b", raw_lower))
+            or bool(re.search(r"\bgh\b.*\bpr\b.*\bmerge\b", raw_lower))
+            or bool(re.search(r"\bgit\b.*\bpush\b.*\bmain\b", raw_lower))
+            or (prod_flag and any(part in raw_lower for part in ("deploy", "migrat")))
             or (opaque_delivery_script and not local_or_preview)
         )
         if production_mutation:

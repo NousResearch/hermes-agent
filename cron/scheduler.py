@@ -489,6 +489,107 @@ def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
     return _sequential_pool
 
 
+def _resolve_max_parallel_workers() -> Optional[int]:
+    """Resolve the shared cron parallelism limit from env/config."""
+    try:
+        env_value = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
+        if env_value:
+            return int(env_value) or None
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to config/unbounded")
+
+    try:
+        config = load_config() or {}
+        configured = (
+            config.get("cron", {}) if isinstance(config, dict) else {}
+        ).get("max_parallel_jobs")
+        if configured is not None:
+            return int(configured) or None
+    except (ValueError, TypeError):
+        logger.warning("Invalid cron.max_parallel_jobs value; defaulting to unbounded")
+    except Exception:
+        pass
+    return None
+
+
+def _submit_with_guard(
+    job: dict,
+    pool: concurrent.futures.ThreadPoolExecutor,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+) -> Optional[concurrent.futures.Future]:
+    """Submit one job while tracking it for deduplication and shutdown drain."""
+    job_id = job["id"]
+    if _interpreter_shutting_down():
+        logger.warning(
+            "Job '%s' not dispatched — interpreter is shutting down",
+            job.get("name", job_id),
+        )
+        return None
+
+    with _running_lock:
+        if job_id in _running_job_ids:
+            logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+            return None
+        _running_job_ids.add(job_id)
+
+    context = contextvars.copy_context()
+
+    def _run_and_release() -> bool:
+        try:
+            return context.run(
+                run_one_job,
+                job,
+                adapters=adapters,
+                loop=loop,
+                verbose=verbose,
+            )
+        finally:
+            with _running_lock:
+                _running_job_ids.discard(job_id)
+
+    try:
+        return pool.submit(_run_and_release)
+    except RuntimeError as submit_error:
+        with _running_lock:
+            _running_job_ids.discard(job_id)
+        if _interpreter_shutting_down(submit_error):
+            logger.warning(
+                "Job '%s' not dispatched — interpreter is shutting down",
+                job.get("name", job_id),
+            )
+            return None
+        raise
+
+
+def submit_claimed_job(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+) -> Optional[concurrent.futures.Future]:
+    """Dispatch an already-claimed job without blocking the caller.
+
+    Manual gateway runs use the same persistent pools, in-flight tracking, and
+    shutdown-drain visibility as scheduler ticks. The caller remains
+    responsible for claiming/advancing the job before dispatch.
+    """
+    if (job.get("workdir") or "").strip():
+        pool = _get_sequential_pool()
+    else:
+        pool = _get_parallel_pool(_resolve_max_parallel_workers())
+    return _submit_with_guard(
+        job,
+        pool,
+        adapters=adapters,
+        loop=loop,
+        verbose=verbose,
+    )
+
+
 def _shutdown_parallel_pool() -> None:
     """Shut down the persistent pools on process exit."""
     global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
@@ -3609,23 +3710,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
-        _max_workers: Optional[int] = None
-        try:
-            _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
-            if _env_par:
-                _max_workers = int(_env_par) or None
-        except (ValueError, TypeError):
-            logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
-        if _max_workers is None:
-            try:
-                _ucfg = load_config() or {}
-                _cfg_par = (
-                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
-                ).get("max_parallel_jobs")
-                if _cfg_par is not None:
-                    _max_workers = int(_cfg_par) or None
-            except Exception:
-                pass
+        _max_workers = _resolve_max_parallel_workers()
 
         if verbose:
             logger.info(
@@ -3633,13 +3718,6 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 len(due_jobs),
                 _max_workers if _max_workers else "unbounded",
             )
-
-        def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end. Thin wrapper around the shared
-            module-level ``run_one_job`` so ``tick`` and external providers
-            (Chronos ``fire_due``) use the identical execute→save→deliver→mark
-            body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
@@ -3653,54 +3731,6 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         _results: list = []
         _all_futures: list = []
 
-        def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor):
-            """Submit a job fire-and-forget with the in-flight dedup guard.
-
-            Returns the future, or None if the job was skipped because a prior
-            tick's run of the same job is still in flight.  The running-set
-            membership is released in the worker's finally block.
-            """
-            job_id = job["id"]
-            # A tick can race gateway teardown: once the interpreter is
-            # finalizing, ``pool.submit`` raises "cannot schedule new futures
-            # after interpreter shutdown" and crashes the tick. Skip cleanly —
-            # the job stays due and will fire on the next healthy tick
-            # (#58720, #55924).
-            if _interpreter_shutting_down():
-                logger.warning(
-                    "Job '%s' not dispatched — interpreter is shutting down",
-                    job.get("name", job_id),
-                )
-                return None
-            with _running_lock:
-                if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                    return None
-                _running_job_ids.add(job_id)
-            _ctx = contextvars.copy_context()
-
-            def _run_and_release(j=job, ctx=_ctx):
-                try:
-                    return ctx.run(_process_job, j)
-                finally:
-                    with _running_lock:
-                        _running_job_ids.discard(j["id"])
-
-            try:
-                return pool.submit(_run_and_release)
-            except RuntimeError as submit_err:
-                # Interpreter began finalizing between the guard above and the
-                # submit — release the in-flight claim we just took and skip.
-                if _interpreter_shutting_down(submit_err):
-                    with _running_lock:
-                        _running_job_ids.discard(job_id)
-                    logger.warning(
-                        "Job '%s' not dispatched — interpreter is shutting down",
-                        job.get("name", job_id),
-                    )
-                    return None
-                raise
-
         # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time
         # WITHOUT blocking the ticker thread — a long workdir job no
@@ -3710,7 +3740,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         if sequential_jobs:
             seq_pool = _get_sequential_pool()
             for job in sequential_jobs:
-                fut = _submit_with_guard(job, seq_pool)
+                fut = _submit_with_guard(
+                    job,
+                    seq_pool,
+                    adapters=adapters,
+                    loop=loop,
+                    verbose=verbose,
+                )
                 if fut is None:
                     continue
                 _all_futures.append(fut)
@@ -3725,7 +3761,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         if parallel_jobs:
             pool = _get_parallel_pool(_max_workers)
             for job in parallel_jobs:
-                fut = _submit_with_guard(job, pool)
+                fut = _submit_with_guard(
+                    job,
+                    pool,
+                    adapters=adapters,
+                    loop=loop,
+                    verbose=verbose,
+                )
                 if fut is None:
                     continue
                 _all_futures.append(fut)

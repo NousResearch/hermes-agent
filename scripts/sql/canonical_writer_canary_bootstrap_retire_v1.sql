@@ -127,7 +127,7 @@ BEGIN
            AND member_role.rolname = 'canonical_brain_canary_bootstrap_login'
            AND NOT membership.admin_option
            AND membership.inherit_option
-           AND membership.set_option
+           AND NOT membership.set_option
     ) <> 1 OR EXISTS (
         SELECT 1
           FROM pg_catalog.pg_auth_members AS membership
@@ -140,14 +140,14 @@ BEGIN
                 OR member_role.rolname =
                     'canonical_brain_canary_bootstrap_login'
                 OR member_role.rolname = 'canonical_brain_canary_bootstrap'
-               )
-           AND NOT (
-                granted_role.rolname = 'canonical_brain_canary_bootstrap'
+           )
+       AND NOT (
+            granted_role.rolname = 'canonical_brain_canary_bootstrap'
                 AND member_role.rolname =
                     'canonical_brain_canary_bootstrap_login'
                 AND NOT membership.admin_option
                 AND membership.inherit_option
-                AND membership.set_option
+                AND NOT membership.set_option
            )
     ) THEN
         RAISE EXCEPTION 'canary bootstrap retirement membership is invalid';

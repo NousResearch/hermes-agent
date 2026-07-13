@@ -103,7 +103,7 @@ BEGIN
            AND member_role.rolname = 'canonical_brain_canary_bootstrap_login'
            AND NOT membership.admin_option
            AND membership.inherit_option
-           AND membership.set_option
+           AND NOT membership.set_option
     ) <> 1 THEN
         RAISE EXCEPTION 'canary bootstrap login membership is invalid';
     END IF;

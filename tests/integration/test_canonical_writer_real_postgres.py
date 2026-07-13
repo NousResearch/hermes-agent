@@ -600,10 +600,11 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             "NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
             f"GRANT {CANONICAL_CANARY_BOOTSTRAP_ROLE} TO "
             f"{CANONICAL_CANARY_BOOTSTRAP_LOGIN} "
-            "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;\n"
+            "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;\n"
             f"CREATE ROLE {LOGIN} LOGIN INHERIT PASSWORD '{escaped_password}' "
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
-            f"GRANT {CANONICAL_WRITER_ROLE} TO {LOGIN};\n"
+            f"GRANT {CANONICAL_WRITER_ROLE} TO {LOGIN} "
+            "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;\n"
             "CREATE ROLE cloudsqladmin LOGIN SUPERUSER CREATEDB CREATEROLE "
             "REPLICATION BYPASSRLS;\n"
             "CREATE ROLE cloudsqlsuperuser LOGIN NOSUPERUSER CREATEDB CREATEROLE "
@@ -663,6 +664,18 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
         ) == ["t", "0"]
         _psql(name, DATABASE, _migration_invocation(DATABASE, migration_sql))
         _psql(name, DATABASE, _migration_invocation(DATABASE, migration_sql))
+        assert _psql_fields(
+            name,
+            DATABASE,
+            f"SELECT pg_has_role('{LOGIN}', "
+            "'canonical_brain_writer', 'USAGE'), "
+            f"pg_has_role('{LOGIN}', "
+            "'canonical_brain_writer', 'SET'), "
+            "pg_has_role('canonical_brain_canary_bootstrap_login', "
+            "'canonical_brain_canary_bootstrap', 'USAGE'), "
+            "pg_has_role('canonical_brain_canary_bootstrap_login', "
+            "'canonical_brain_canary_bootstrap', 'SET');",
+        ) == ["t", "f", "t", "f"]
         canary_preapproval: dict[str, object] = {
             "grant_id": "canary-grant:real-pg",
             "case_id": "case:real-pg-canary-scope",
@@ -2139,7 +2152,7 @@ def test_real_postgres_legacy_reconciliation_is_atomic_and_quarantined() -> None
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
             f"GRANT {CANONICAL_CANARY_BOOTSTRAP_ROLE} "
             f"TO {CANONICAL_CANARY_BOOTSTRAP_LOGIN} "
-            "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;\n"
+            "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;\n"
             f"CREATE DATABASE {database};\n"
             f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
             f"GRANT CONNECT ON DATABASE {database} TO {CANONICAL_WRITER_ROLE};\n"

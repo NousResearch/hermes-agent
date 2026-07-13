@@ -19,10 +19,22 @@ BOOTSTRAP_SQL_PATH = (
 BOOTSTRAP_RETIRE_SQL_PATH = (
     ROOT / "scripts" / "sql" / "canonical_writer_canary_bootstrap_retire_v1.sql"
 )
+FOUNDATION_PREREQUISITES_SQL_PATH = (
+    ROOT / "scripts" / "sql" / "canonical_writer_foundation_prerequisites_v1.sql"
+)
+FOUNDATION_MEMBERSHIP_SQL_PATH = (
+    ROOT / "scripts" / "sql" / "canonical_writer_foundation_membership_v1.sql"
+)
 HELPERS_PATH = ROOT / "scripts" / "sql" / "canonical_writer_v1_helpers.json"
 SQL = SQL_PATH.read_text(encoding="utf-8")
 BOOTSTRAP_SQL = BOOTSTRAP_SQL_PATH.read_text(encoding="utf-8")
 BOOTSTRAP_RETIRE_SQL = BOOTSTRAP_RETIRE_SQL_PATH.read_text(encoding="utf-8")
+FOUNDATION_PREREQUISITES_SQL = FOUNDATION_PREREQUISITES_SQL_PATH.read_text(
+    encoding="utf-8"
+)
+FOUNDATION_MEMBERSHIP_SQL = FOUNDATION_MEMBERSHIP_SQL_PATH.read_text(
+    encoding="utf-8"
+)
 
 
 def _writer_names() -> set[str]:
@@ -241,6 +253,31 @@ def test_canary_preapproval_acl_is_separate_one_shot_and_base_rerun_inert():
     )
     assert "canary_scope_bootstrap_provision" in BOOTSTRAP_SQL
     assert "stale canary bootstrap ACL already exists" in BOOTSTRAP_SQL
+
+
+def test_persistent_memberships_use_provider_native_inherit_without_set():
+    bootstrap_pair = "granted_role.rolname = 'canonical_brain_canary_bootstrap'"
+    for contract in (SQL, BOOTSTRAP_SQL, BOOTSTRAP_RETIRE_SQL):
+        assert bootstrap_pair in contract
+        assert re.search(
+            r"granted_role\.rolname = 'canonical_brain_canary_bootstrap'"
+            r"[\s\S]{0,320}"
+            r"member_role\.rolname =\s*"
+            r"'canonical_brain_canary_bootstrap_login'"
+            r"[\s\S]{0,180}"
+            r"NOT membership\.admin_option"
+            r"[\s\S]{0,100}membership\.inherit_option"
+            r"[\s\S]{0,100}NOT membership\.set_option",
+            contract,
+        )
+
+    assert "false, true, false" in FOUNDATION_PREREQUISITES_SQL
+    assert "AND NOT membership.set_option" in FOUNDATION_PREREQUISITES_SQL
+    assert "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;" in FOUNDATION_MEMBERSHIP_SQL
+    assert "AND NOT membership.set_option" in FOUNDATION_MEMBERSHIP_SQL
+    assert "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;" not in (
+        FOUNDATION_MEMBERSHIP_SQL
+    )
 
 
 def test_canary_bootstrap_retirement_is_exact_idempotent_canonical_truth():

@@ -50,7 +50,7 @@ END
 $membership_prerequisites$;
 
 GRANT canonical_brain_writer TO muncho_canary_writer_login
-    WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
+    WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
 DO $final_membership_contract$
 BEGIN
@@ -63,7 +63,7 @@ BEGIN
            AND member.rolname = 'muncho_canary_writer_login'
            AND NOT membership.admin_option
            AND membership.inherit_option
-           AND membership.set_option
+           AND NOT membership.set_option
     ) <> 1 OR (
         SELECT pg_catalog.count(*)
           FROM pg_catalog.pg_auth_members AS membership

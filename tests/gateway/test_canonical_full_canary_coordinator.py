@@ -70,6 +70,13 @@ def test_ephemeral_admin_username_is_exact_approval_derivation() -> None:
         coordinator.derive_ephemeral_admin_username("not-a-digest")
 
 
+def test_bootstrap_rotation_requires_provider_native_membership_without_set() -> None:
+    contract = coordinator._BOOTSTRAP_ROLE_PASSWORD_TEMPLATE
+
+    assert contract.count("AND NOT membership.set_option") == 2
+    assert "AND membership.set_option" not in contract
+
+
 def test_opaque_admin_frame_is_one_shot_redacted_and_zeroized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

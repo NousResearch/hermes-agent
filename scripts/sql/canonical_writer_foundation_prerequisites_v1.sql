@@ -122,7 +122,7 @@ BEGIN
         EXCEPT
         SELECT 'canonical_brain_canary_bootstrap',
                'canonical_brain_canary_bootstrap_login',
-               false, true, true
+               false, true, false
     ) THEN
         RAISE EXCEPTION 'unexpected target-role membership exists before foundation';
     END IF;
@@ -135,7 +135,7 @@ BEGIN
            AND member.rolname = 'canonical_brain_canary_bootstrap_login'
            AND NOT membership.admin_option
            AND membership.inherit_option
-           AND membership.set_option
+           AND NOT membership.set_option
     ) <> 1 THEN
         RAISE EXCEPTION
             'pre-existing bootstrap membership contract is absent';
@@ -397,7 +397,7 @@ BEGIN
            AND member.rolname = 'canonical_brain_canary_bootstrap_login'
            AND NOT membership.admin_option
            AND membership.inherit_option
-           AND membership.set_option
+           AND NOT membership.set_option
     ) <> 1 OR EXISTS (
         SELECT 1
           FROM pg_catalog.pg_auth_members AS membership
@@ -412,7 +412,7 @@ BEGIN
                 AND member.rolname = 'canonical_brain_canary_bootstrap_login'
                 AND NOT membership.admin_option
                 AND membership.inherit_option
-                AND membership.set_option
+                AND NOT membership.set_option
            )
            AND NOT (
                 legacy_shape

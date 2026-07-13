@@ -200,11 +200,24 @@ def _strict_json(raw: bytes, code: str) -> Mapping[str, Any]:
     return value
 
 
+def _effective_uid() -> int:
+    getter = getattr(os, "geteuid", None)
+    if not callable(getter):
+        raise PermissionError("full_canary_live_driver_requires_posix_uid")
+    return int(getter())
+
+
+def _effective_gid() -> int:
+    getter = getattr(os, "getegid", None)
+    if not callable(getter):
+        raise PermissionError("full_canary_live_driver_requires_posix_gid")
+    return int(getter())
+
+
 def _require_root_linux() -> None:
     if sys.platform != "linux":
         raise PermissionError("full_canary_live_driver_requires_linux")
-    geteuid = getattr(os, "geteuid", None)
-    if not callable(geteuid) or geteuid() != 0:
+    if _effective_uid() != 0:
         raise PermissionError("full_canary_live_driver_requires_uid_0")
     harden_current_process_against_dumping()
 
@@ -1346,8 +1359,8 @@ class RootEvidenceCollector:
             "release_sha": self.plan.revision,
             "collector_pid": pid,
             "collector_start_time_ticks": process_start_time_ticks(pid),
-            "collector_uid": os.geteuid(),
-            "collector_gid": os.getegid(),
+            "collector_uid": _effective_uid(),
+            "collector_gid": _effective_gid(),
             "boot_id_sha256": boot_sha256,
             "module_origin": module_origin,
             "module_sha256": module_sha256,

@@ -19,7 +19,11 @@ from gateway.canonical_writer_handlers import (
     RuntimeContext,
     _require_exact_runtime_epoch,
 )
-from gateway.platforms.api_server import APIServerAdapter, _session_stream_outcome
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    _effective_uid_for_systemd_credential,
+    _session_stream_outcome,
+)
 from gateway.session_context import clear_session_vars
 from hermes_state import SessionDB
 
@@ -102,6 +106,14 @@ def test_systemd_credential_rejects_non_basename(
     )
     with pytest.raises(ValueError, match="safe basename"):
         APIServerAdapter(config)
+
+
+def test_systemd_credential_boundary_rejects_missing_posix_uid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr("gateway.platforms.api_server.os.geteuid")
+    with pytest.raises(ValueError, match="POSIX UID"):
+        _effective_uid_for_systemd_credential()
 
 
 def test_systemd_credential_rejects_symlink(

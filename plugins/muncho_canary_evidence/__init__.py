@@ -72,6 +72,15 @@ _CASE_ID_RE = re.compile(r"^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$")
 _SNOWFLAKE_RE = re.compile(r"^[1-9][0-9]{5,24}$")
 
+
+def _process_gid() -> int:
+    """Return the POSIX process GID or reject this Linux-only plugin boundary."""
+
+    getter = getattr(os, "getgid", None)
+    if not callable(getter):
+        raise CanaryEvidenceError("config_invalid")
+    return int(getter())
+
 _CONFIG_FIELDS = frozenset(
     {
         "schema",
@@ -641,7 +650,7 @@ def load_config(
     expected_owner_uid: int = 0,
     expected_owner_gid: int | None = None,
 ) -> CanaryEvidenceConfig:
-    owner_gid = os.getgid() if expected_owner_gid is None else expected_owner_gid
+    owner_gid = _process_gid() if expected_owner_gid is None else expected_owner_gid
     _nonnegative_int(expected_owner_uid, code="config_invalid")
     _nonnegative_int(owner_gid, code="config_invalid")
     raw, config_digest = _read_owned_json(

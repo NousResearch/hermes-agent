@@ -107,6 +107,15 @@ MAX_SYSTEMD_CREDENTIAL_BYTES = 8_192
 _SYSTEMD_CREDENTIAL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
+def _effective_uid_for_systemd_credential() -> int:
+    """Return the POSIX effective UID or reject this Linux-only boundary."""
+
+    getter = getattr(os, "geteuid", None)
+    if not callable(getter):
+        raise ValueError("api_server systemd credentials require POSIX UID support")
+    return int(getter())
+
+
 class _APIServerSessionBinding(list):
     """Context reset tokens plus the exact gateway-generated run epoch."""
 
@@ -254,6 +263,7 @@ def _load_systemd_api_key_credential(name: Any) -> str:
         raise ValueError("CREDENTIALS_DIRECTORY must be an absolute real path")
 
     credential_path = directory / name
+    effective_uid = _effective_uid_for_systemd_credential()
     try:
         before = credential_path.lstat()
     except OSError as exc:
@@ -261,7 +271,7 @@ def _load_systemd_api_key_credential(name: Any) -> str:
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_nlink != 1
-        or before.st_uid not in {0, os.geteuid()}
+        or before.st_uid not in {0, effective_uid}
         or stat.S_IMODE(before.st_mode) & 0o077
         or not 0 < before.st_size <= MAX_SYSTEMD_CREDENTIAL_BYTES
     ):

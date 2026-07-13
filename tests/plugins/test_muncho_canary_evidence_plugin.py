@@ -192,6 +192,14 @@ def _loaded_config(tmp_path: Path):
     )
 
 
+def test_default_config_group_rejects_missing_posix_gid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(canary_module.os, "getgid")
+    with pytest.raises(CanaryEvidenceError, match="config_invalid"):
+        canary_module._process_gid()
+
+
 @pytest.fixture
 def short_socket_dir():
     # macOS has a much shorter sockaddr_un path limit than Linux. Resolve the

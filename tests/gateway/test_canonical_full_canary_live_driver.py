@@ -365,6 +365,17 @@ def test_root_guard_hardens_process_before_secret_use(
     assert calls == ["harden"]
 
 
+def test_posix_identity_helpers_fail_closed_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(live.os, "geteuid")
+    monkeypatch.delattr(live.os, "getegid")
+    with pytest.raises(PermissionError, match="posix_uid"):
+        live._effective_uid()
+    with pytest.raises(PermissionError, match="posix_gid"):
+        live._effective_gid()
+
+
 def test_loopback_client_idempotently_clears_both_raw_keys() -> None:
     client = live.LoopbackCanaryClient(
         control_key="control-key",

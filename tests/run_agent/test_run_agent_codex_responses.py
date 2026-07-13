@@ -629,7 +629,7 @@ def test_run_codex_stream_returns_collected_items_when_stream_ends_without_termi
     assert response.output == [output_item]
 
 
-def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkeypatch):
+def test_consume_codex_stream_routes_commentary_phase_deltas_to_interim(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 
     commentary_item = SimpleNamespace(
@@ -647,6 +647,7 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
     )
     streamed = []
     reasoning_streamed = []
+    interim_commentary = []
 
     response = _consume_codex_event_stream(
         _FakeCreateStream([
@@ -667,11 +668,317 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
         model="gpt-5-codex",
         on_text_delta=streamed.append,
         on_reasoning_delta=reasoning_streamed.append,
+        on_commentary_message=interim_commentary.append,
     )
 
     assert streamed == []
-    assert reasoning_streamed == ["I’ll call the tool now."]
+    assert reasoning_streamed == []
+    assert interim_commentary == ["I’ll call the tool now."]
     assert response.output == [commentary_item, function_item]
+    assert response.output_text == ""
+
+
+def test_consume_codex_stream_uses_output_text_done_as_commentary_fallback(monkeypatch):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    commentary_item = SimpleNamespace(
+        type="message",
+        id="msg_commentary",
+        phase="commentary",
+        content=[SimpleNamespace(type="output_text", text="I’ll inspect the logs.")],
+    )
+    interim_commentary = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(type="message", id="msg_commentary", phase="commentary"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.done",
+                item_id="msg_commentary",
+                output_index=0,
+                text="I’ll inspect the logs.",
+            ),
+            SimpleNamespace(type="response.output_item.done", output_index=0, item=commentary_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_commentary_message=interim_commentary.append,
+    )
+
+    assert interim_commentary == ["I’ll inspect the logs."]
+
+
+def test_consume_codex_stream_uses_completed_item_as_commentary_fallback(monkeypatch):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    commentary_item = SimpleNamespace(
+        type="message",
+        id="msg_commentary",
+        phase="commentary",
+        content=[SimpleNamespace(type="output_text", text="I’ll inspect the logs.")],
+    )
+    interim_commentary = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.output_item.done", output_index=0, item=commentary_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_commentary_message=interim_commentary.append,
+    )
+
+    assert interim_commentary == ["I’ll inspect the logs."]
+
+
+def test_consume_codex_stream_tracks_interleaved_message_items(monkeypatch):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    commentary_item = SimpleNamespace(
+        type="message",
+        id="msg_commentary",
+        phase="commentary",
+        content=[SimpleNamespace(type="output_text", text="I’ll inspect the logs now.")],
+    )
+    final_item = SimpleNamespace(
+        type="message",
+        id="msg_final",
+        phase="final_answer",
+        content=[SimpleNamespace(type="output_text", text="Final answer.")],
+    )
+    interim_commentary = []
+    visible_text = []
+    reasoning_text = []
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(type="message", id="msg_commentary", phase="commentary"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                item_id="msg_commentary",
+                output_index=0,
+                delta="I’ll inspect ",
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=1,
+                item=SimpleNamespace(type="message", id="msg_final", phase="final_answer"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                item_id="msg_final",
+                output_index=1,
+                delta="Final answer.",
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                item_id="msg_commentary",
+                output_index=0,
+                delta="the logs now.",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="Validated the event routing.",
+            ),
+            SimpleNamespace(type="response.output_item.done", output_index=0, item=commentary_item),
+            SimpleNamespace(type="response.output_item.done", output_index=1, item=final_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_text_delta=visible_text.append,
+        on_reasoning_delta=reasoning_text.append,
+        on_commentary_message=interim_commentary.append,
+    )
+
+    assert interim_commentary == ["I’ll inspect the logs now."]
+    assert visible_text == ["Final answer."]
+    assert reasoning_text == ["Validated the event routing."]
+    assert response.output_text == "Final answer."
+
+
+def test_run_codex_stream_deduplicates_commentary_across_transport_retry(monkeypatch):
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+    interim_commentary = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: interim_commentary.append(text)
+    )
+    commentary_item = SimpleNamespace(
+        type="message",
+        id="msg_commentary",
+        phase="commentary",
+        content=[SimpleNamespace(type="output_text", text="I’ll inspect the logs.")],
+    )
+    calls = {"create": 0}
+
+    class _FailAfterCommentary:
+        def __iter__(self):
+            yield SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(type="message", id="msg_commentary", phase="commentary"),
+            )
+            yield SimpleNamespace(
+                type="response.output_text.delta",
+                item_id="msg_commentary",
+                output_index=0,
+                delta="I’ll inspect the logs.",
+            )
+            yield SimpleNamespace(type="response.output_item.done", output_index=0, item=commentary_item)
+            raise httpx.RemoteProtocolError("stream disconnected")
+
+        def close(self):
+            pass
+
+    def _create(**kwargs):
+        calls["create"] += 1
+        if calls["create"] == 1:
+            return _FailAfterCommentary()
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(type="message", id="msg_commentary", phase="commentary"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                item_id="msg_commentary",
+                output_index=0,
+                delta="I’ll inspect the logs.",
+            ),
+            SimpleNamespace(type="response.output_item.done", output_index=0, item=commentary_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ])
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_create))
+
+    agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["create"] == 2
+    assert interim_commentary == ["I’ll inspect the logs."]
+
+
+def test_run_codex_stream_surfaces_commentary_from_concrete_response(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    interim_commentary = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: interim_commentary.append(text)
+    )
+    response = SimpleNamespace(
+        output=[SimpleNamespace(
+            type="message",
+            id="msg_commentary",
+            phase="commentary",
+            content=[SimpleNamespace(type="output_text", text="I’ll inspect the logs.")],
+        )],
+        output_text="",
+        status="completed",
+    )
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: response)
+    )
+
+    returned = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert returned is response
+    assert interim_commentary == ["I’ll inspect the logs."]
+
+
+def test_consume_codex_stream_waits_for_commentary_after_interleaved_function_call(monkeypatch):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    commentary_item = SimpleNamespace(
+        type="message",
+        id="msg_commentary",
+        phase="commentary",
+        content=[SimpleNamespace(type="output_text", text="First second")],
+    )
+    function_item = SimpleNamespace(
+        type="function_call",
+        id="call_1",
+        name="terminal",
+        arguments="{}",
+    )
+    commentary = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(type="message", id="msg_commentary", phase="commentary"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                item_id="msg_commentary",
+                output_index=0,
+                delta="First ",
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=1,
+                item=SimpleNamespace(type="function_call", id="call_1"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                item_id="msg_commentary",
+                output_index=0,
+                delta="second",
+            ),
+            SimpleNamespace(type="response.output_item.done", output_index=0, item=commentary_item),
+            SimpleNamespace(type="response.output_item.done", output_index=1, item=function_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_commentary_message=commentary.append,
+    )
+
+    assert commentary == ["First second"]
+
+
+def test_consume_codex_stream_fails_closed_for_unidentified_interleaved_delta(monkeypatch):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    commentary = []
+    reasoning = []
+    visible = []
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="commentary"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="Public preface."),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="analysis"),
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="function_call"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="PRIVATE"),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_text_delta=visible.append,
+        on_reasoning_delta=reasoning.append,
+        on_commentary_message=commentary.append,
+    )
+
+    assert commentary == ["Public preface."]
+    assert reasoning == ["PRIVATE"]
+    assert visible == []
     assert response.output_text == ""
 
 
@@ -2124,6 +2431,74 @@ def test_stream_delta_preserves_code_fence_newlines(monkeypatch):
     combined = "".join(observed)
     assert "```python\n" in combined
     assert combined.startswith("Here is the code:\n```python\n")
+
+
+def test_codex_stream_commentary_phase_emits_interim_not_reasoning(monkeypatch):
+    """Codex Harmony commentary is user-facing progress narration.
+
+    It must be visible as one interim-assistant message, but must not be routed
+    through final answer deltas or the private reasoning stream.
+    """
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    commentary = []
+    reasoning = []
+    visible_text = []
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(type="message", phase="commentary"),
+        ),
+        SimpleNamespace(type="response.output_text.delta", delta="Je vais vérifier "),
+        SimpleNamespace(type="response.output_text.delta", delta="la WebUI."),
+        SimpleNamespace(type="response.output_item.done", item=SimpleNamespace(type="message", phase="commentary")),
+        SimpleNamespace(type="response.output_item.added", item=SimpleNamespace(type="function_call")),
+        SimpleNamespace(type="response.function_call_arguments.delta", delta='{}'),
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(type="function_call", name="terminal", arguments="{}"),
+        ),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+    ]
+
+    _consume_codex_event_stream(
+        events,
+        model="gpt-5-codex",
+        on_text_delta=visible_text.append,
+        on_reasoning_delta=reasoning.append,
+        on_commentary_message=commentary.append,
+    )
+
+    assert commentary == ["Je vais vérifier la WebUI."]
+    assert reasoning == []
+    assert visible_text == []
+
+
+def test_codex_stream_analysis_phase_stays_reasoning(monkeypatch):
+    """Codex Harmony analysis is private reasoning and must not become interim prose."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    commentary = []
+    reasoning = []
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(type="message", phase="analysis"),
+        ),
+        SimpleNamespace(type="response.output_text.delta", delta="private deliberation"),
+        SimpleNamespace(type="response.output_item.done", item=SimpleNamespace(type="message", phase="analysis")),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+    ]
+
+    _consume_codex_event_stream(
+        events,
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning.append,
+        on_commentary_message=commentary.append,
+    )
+
+    assert commentary == []
+    assert reasoning == ["private deliberation"]
 
 
 def test_run_conversation_codex_continues_after_commentary_phase_message(monkeypatch):

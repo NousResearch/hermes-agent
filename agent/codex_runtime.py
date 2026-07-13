@@ -596,6 +596,33 @@ def _item_field(item: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _commentary_messages_from_output(output: Any) -> List[tuple[Any, str]]:
+    """Extract completed Harmony commentary messages from a concrete response."""
+    messages: List[tuple[Any, str]] = []
+    if not isinstance(output, list):
+        return messages
+    for output_index, item in enumerate(output):
+        if _item_field(item, "type", "") != "message":
+            continue
+        phase = _item_field(item, "phase", None)
+        if not isinstance(phase, str) or phase.strip().lower() != "commentary":
+            continue
+        chunks: List[str] = []
+        content = _item_field(item, "content", [])
+        if isinstance(content, list):
+            for part in content:
+                if _item_field(part, "type", "") != "output_text":
+                    continue
+                text = _item_field(part, "text", "")
+                if isinstance(text, str):
+                    chunks.append(text)
+        text = "".join(chunks).strip()
+        if text:
+            item_id = _item_field(item, "id", None)
+            messages.append((item_id if item_id is not None else output_index, text))
+    return messages
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -617,6 +644,8 @@ def _consume_codex_event_stream(
     model: str,
     on_text_delta=None,
     on_reasoning_delta=None,
+    on_commentary_message=None,
+    commentary_emitted_keys=None,
     on_first_delta=None,
     on_event=None,
     interrupt_check=None,
@@ -648,7 +677,12 @@ def _consume_codex_event_stream(
     * ``on_text_delta(str)`` — fires per ``response.output_text.delta``, suppressed
       once a function_call event is seen (so tool-call turns don't bleed text
       into the chat).
-    * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta``.
+    * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta`` and
+      per Harmony ``analysis`` message deltas.
+    * ``on_commentary_message(str)`` — fires once per assembled Harmony
+      ``commentary`` message. Commentary is user-facing mid-turn narration; it
+      must not be merged into final assistant text, but it should remain visible
+      through the interim-assistant channel when one exists.
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
@@ -656,15 +690,94 @@ def _consume_codex_event_stream(
     """
     collected_output_items: List[Any] = []
     collected_text_deltas: List[str] = []
+    if commentary_emitted_keys is None:
+        commentary_emitted_keys = set()
     has_tool_calls = False
     first_delta_fired = False
-    active_message_phase: str | None = None
+    active_message_state: Dict[str, Any] | None = None
+    message_states: List[Dict[str, Any]] = []
+    message_state_by_alias: Dict[tuple[str, Any], Dict[str, Any]] = {}
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
+
+    def _message_aliases(event: Any, item: Any = None) -> List[tuple[str, Any]]:
+        aliases: List[tuple[str, Any]] = []
+        item_id = _event_field(event, "item_id", None)
+        if item_id is None and item is not None:
+            item_id = _item_field(item, "id", None)
+        if item_id is not None:
+            aliases.append(("item_id", item_id))
+        output_index = _event_field(event, "output_index", None)
+        if output_index is not None:
+            aliases.append(("output_index", output_index))
+        return aliases
+
+    def _message_state(
+        event: Any,
+        item: Any = None,
+        *,
+        create: bool = False,
+        force_new: bool = False,
+    ) -> Dict[str, Any] | None:
+        nonlocal active_message_state
+        aliases = _message_aliases(event, item)
+        state = next((message_state_by_alias[a] for a in aliases if a in message_state_by_alias), None)
+        if state is None and not aliases and not force_new:
+            state = active_message_state
+        if state is None and create:
+            state = {
+                "phase": None,
+                "parts": [],
+                "emitted": False,
+                "done": False,
+                "aliases": set(),
+            }
+            message_states.append(state)
+        if state is not None:
+            for alias in aliases:
+                message_state_by_alias[alias] = state
+                state["aliases"].add(alias)
+        return state
+
+    def _completed_message_text(item: Any) -> str:
+        chunks: List[str] = []
+        content = _item_field(item, "content", [])
+        if not isinstance(content, list):
+            return ""
+        for part in content:
+            if _item_field(part, "type", "") != "output_text":
+                continue
+            text = _item_field(part, "text", "")
+            if isinstance(text, str):
+                chunks.append(text)
+        return "".join(chunks).strip()
+
+    def _flush_commentary_state(state: Dict[str, Any] | None) -> None:
+        if state is None or state.get("phase") != "commentary" or state.get("emitted"):
+            return
+        text = "".join(state.get("parts") or []).strip()
+        if not text:
+            return
+        aliases = tuple(sorted(state.get("aliases") or (), key=repr))
+        emission_key = (aliases or (("text", text),), text)
+        state["emitted"] = True
+        if emission_key in commentary_emitted_keys:
+            return
+        commentary_emitted_keys.add(emission_key)
+        if on_commentary_message is None:
+            return
+        try:
+            on_commentary_message(text)
+        except Exception:
+            logger.debug("Codex stream on_commentary_message raised", exc_info=True)
+
+    def _flush_all_commentary_states() -> None:
+        for state in message_states:
+            _flush_commentary_state(state)
 
     for event in event_iter:
         if on_event is not None:
@@ -693,28 +806,51 @@ def _consume_codex_event_stream(
             _raise_stream_error(event)
 
         # Track the phase of the active streamed message item.  Codex/Harmony
-        # ``commentary``/``analysis`` text is mid-turn preamble/progress
-        # narration, never the final answer.  We still collect completed output
-        # items for replay, but route those deltas to the reasoning callback so
-        # they display like thinking text instead of assistant content.
+        # ``commentary`` text is user-facing mid-turn preamble/progress
+        # narration; route it to the interim-assistant channel in one assembled
+        # chunk so WebUI/gateway users understand why tools are being used.
+        # ``analysis`` remains private reasoning and must not become visible
+        # assistant text.  Neither phase is part of the final answer.
         if event_type == "response.output_item.added":
             item = _event_field(event, "item")
             item_type = _item_field(item, "type", "")
             if item_type == "message":
+                state = _message_state(event, item, create=True, force_new=True)
                 phase = _item_field(item, "phase", None)
-                active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
+                state["phase"] = phase.strip().lower() if isinstance(phase, str) else None
+                active_message_state = state
             else:
-                active_message_phase = None
-            if "function_call" in str(item_type):
-                has_tool_calls = True
+                if "function_call" in str(item_type):
+                    has_tool_calls = True
+                active_message_state = None
             continue
 
-        if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+        if event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
-            is_commentary_delta = active_message_phase in {"commentary", "analysis"}
-            if delta_text and is_commentary_delta:
-                # Commentary streams through the reasoning channel, not the
-                # visible answer stream (and stays out of output_text).
+            aliases = _message_aliases(event)
+            state = _message_state(event)
+            unresolved_states = [s for s in message_states if not s.get("done")]
+            # If several message items are still open and the delta carries no
+            # identity, correlation is impossible. Fail closed through the
+            # private reasoning lane rather than risk exposing analysis as final
+            # text or interim commentary.
+            ambiguous_unidentified = (
+                not aliases
+                and bool(unresolved_states)
+                and (state is None or len(unresolved_states) > 1)
+            )
+            if delta_text and ambiguous_unidentified:
+                if on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(delta_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+                continue
+            phase = state.get("phase") if state is not None else None
+            if delta_text and phase == "commentary":
+                if not state.get("emitted"):
+                    state["parts"].append(delta_text)
+            elif delta_text and phase == "analysis":
                 if on_reasoning_delta is not None:
                     try:
                         on_reasoning_delta(delta_text)
@@ -737,6 +873,14 @@ def _consume_codex_event_stream(
                             logger.debug("Codex stream on_text_delta raised", exc_info=True)
             continue
 
+        if event_type == "response.output_text.done":
+            state = _message_state(event)
+            if state is not None and state.get("phase") == "commentary" and not state.get("parts"):
+                text = _event_field(event, "text", "")
+                if isinstance(text, str) and text:
+                    state["parts"].append(text)
+            continue
+
         if "function_call" in event_type:
             has_tool_calls = True
             # fall through — function_call items still get added on output_item.done
@@ -752,11 +896,26 @@ def _consume_codex_event_stream(
 
         if event_type == "response.output_item.done":
             done_item = _event_field(event, "item")
+            is_message = _item_field(done_item, "type", "") == "message"
+            state = _message_state(event, done_item, create=is_message)
+            if state is not None and state.get("phase") is None:
+                phase = _item_field(done_item, "phase", None)
+                state["phase"] = phase.strip().lower() if isinstance(phase, str) else None
+            if state is not None and state.get("phase") == "commentary" and not state.get("parts"):
+                completed_text = _completed_message_text(done_item)
+                if completed_text:
+                    state["parts"].append(completed_text)
+            _flush_commentary_state(state)
+            if state is not None:
+                state["done"] = True
             if done_item is not None:
                 collected_output_items.append(done_item)
+            if state is active_message_state:
+                active_message_state = None
             continue
 
         if event_type in _TERMINAL_EVENT_TYPES:
+            _flush_all_commentary_states()
             saw_terminal = True
             resp_obj = _event_field(event, "response")
             if resp_obj is not None:
@@ -788,6 +947,10 @@ def _consume_codex_event_stream(
                 terminal_status = terminal_status or "failed"
             # Stop on terminal event.
             break
+
+    # If the stream ended without a normal item boundary, still surface any
+    # assembled user-facing commentary before we inspect the final output.
+    _flush_all_commentary_states()
 
     # Build the final output list.  Prefer items observed via output_item.done;
     # if none arrived but we streamed plain text deltas (no tool calls), synthesize
@@ -846,6 +1009,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
+    # A transport retry replays the same response item ids/output indexes. Keep
+    # commentary delivery idempotent across attempts while preserving distinct
+    # messages within one response.
+    commentary_emitted_keys = set()
 
     def _on_text_delta(text: str) -> None:
         agent._codex_streamed_text_parts.append(text)
@@ -853,6 +1020,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _on_reasoning_delta(text: str) -> None:
         agent._fire_reasoning_delta(text)
+
+    def _on_commentary_message(text: str) -> None:
+        agent._emit_interim_assistant_message({"role": "assistant", "content": text})
 
     def _on_event(event: Any) -> None:
         # TTFB watchdog and activity touch — runs once per SSE event.
@@ -883,8 +1053,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
         try:
             # Compatibility: some mocks/providers return a concrete response
-            # instead of an iterable.  Pass it straight through.
+            # instead of an iterable. Surface explicit commentary message items
+            # through the same interim-assistant path before returning it.
             if hasattr(event_stream, "output") and not hasattr(event_stream, "__iter__"):
+                for item_key, text in _commentary_messages_from_output(event_stream.output):
+                    emission_key = (("item_id", item_key), text)
+                    if emission_key in commentary_emitted_keys:
+                        continue
+                    commentary_emitted_keys.add(emission_key)
+                    _on_commentary_message(text)
                 return event_stream
 
             try:
@@ -893,6 +1070,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     model=api_kwargs.get("model"),
                     on_text_delta=_on_text_delta,
                     on_reasoning_delta=_on_reasoning_delta,
+                    on_commentary_message=_on_commentary_message,
+                    commentary_emitted_keys=commentary_emitted_keys,
                     on_first_delta=on_first_delta,
                     on_event=_on_event,
                     interrupt_check=_interrupt_check,

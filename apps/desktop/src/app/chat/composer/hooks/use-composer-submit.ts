@@ -108,7 +108,13 @@ export function useComposerSubmit({
   )
 
   const submitDraft = () => {
-    if (disabled) {
+    // Allow submit during new chat initialization: when sessionId exists (user
+    // has an active session), the first submit attempt should succeed even if
+    // gateway is still initializing. This fixes the issue where the first
+    // message in a new chat stays in the input field on Windows (#63574).
+    // The dispatchSubmit call will handle the gateway not being ready (it will
+    // either queue the message or retry).
+    if (disabled && !sessionId) {
       return
     }
 

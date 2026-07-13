@@ -567,7 +567,12 @@ export function ChatBar({
       const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
-      if (disabled) {
+      // Allow submit during new chat initialization: when sessionId exists (user
+      // has an active session), the first Enter press should succeed even if
+      // gateway is still initializing. The submitDraft() call will queue the
+      // message if needed. This fixes the issue where the first message in a
+      // new chat stays in the input field on Windows (#63574).
+      if (disabled && !sessionId) {
         return
       }
 

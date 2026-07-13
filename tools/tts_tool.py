@@ -1012,7 +1012,13 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 # ===========================================================================
 # Provider: OpenAI TTS
 # ===========================================================================
-def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_openai_tts(
+    text: str,
+    output_path: str,
+    tts_config: Dict[str, Any],
+    *,
+    instructions: Optional[str] = None,
+) -> str:
     """
     Generate audio using OpenAI TTS.
 
@@ -1020,6 +1026,11 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         text: Text to convert.
         output_path: Where to save the audio file.
         tts_config: TTS config dict.
+        instructions: Optional voice-design guidance (tone, emotion, pacing,
+            accent, whispering). Forwarded to `audio.speech.create` when
+            truthy; omitted otherwise so ``tts-1``/``tts-1-hd`` and strict
+            OpenAI-compatible servers that reject unknown kwargs are
+            unaffected.
 
     Returns:
         Path to the saved audio file.
@@ -1065,6 +1076,8 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         }
         if speed != 1.0:
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
+        if instructions:
+            create_kwargs["instructions"] = instructions
         response = client.audio.speech.create(**create_kwargs)
 
         response.stream_to_file(output_path)
@@ -2153,6 +2166,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    instructions: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2167,6 +2181,10 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        instructions: Optional voice-design guidance (tone, emotion, pacing,
+            accent, whispering). Forwarded to the OpenAI backend
+            (gpt-4o-mini-tts and OpenAI-compatible servers). Silently
+            ignored by backends that don't support it.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2292,7 +2310,7 @@ def text_to_speech_tool(
                     "error": "OpenAI provider selected but 'openai' package not installed."
                 }, ensure_ascii=False)
             logger.info("Generating speech with OpenAI TTS...")
-            _generate_openai_tts(text, file_str, tts_config)
+            _generate_openai_tts(text, file_str, tts_config, instructions=instructions)
 
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
@@ -2852,6 +2870,15 @@ TTS_SCHEMA = {
             "output_path": {
                 "type": "string",
                 "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
+            },
+            "instructions": {
+                "type": "string",
+                "description": (
+                    "Optional voice-design guidance: tone, emotion, pacing, accent, "
+                    "whispering, impressions (e.g. 'Speak in a cheerful, excited whisper'). "
+                    "Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible "
+                    "voice-design servers). Silently ignored by backends that don't support it."
+                )
             }
         },
         "required": ["text"]
@@ -2864,7 +2891,8 @@ registry.register(
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
-        output_path=args.get("output_path")),
+        output_path=args.get("output_path"),
+        instructions=args.get("instructions")),
     check_fn=check_tts_requirements,
     emoji="🔊",
 )

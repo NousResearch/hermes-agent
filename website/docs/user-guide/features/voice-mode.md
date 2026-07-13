@@ -417,6 +417,11 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # optional: override for self-hosted or OpenAI-compatible endpoints
+    # The `text_to_speech` tool accepts an optional per-call `instructions`
+    # argument (tone, emotion, pacing, accent, whispering) that is forwarded
+    # to `gpt-4o-mini-tts` and to OpenAI-compatible voice-design servers
+    # (e.g. Qwen3-TTS-VoiceDesign via oMLX). See OpenAI's voice-design guide:
+    # https://platform.openai.com/docs/guides/text-to-speech
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -473,6 +478,12 @@ Provider priority (automatic fallback): **local** > **groq** > **openai**
 | **NeuTTS** | Good | Free | Depends on CPU/GPU | No |
 
 NeuTTS uses the `tts.neutts` config block above.
+
+For `openai`, the `text_to_speech` tool accepts an optional `instructions`
+argument that unlocks `gpt-4o-mini-tts`'s voice-design capability (tone,
+emotion, pacing, accent, whispering). The same field also routes to
+OpenAI-compatible voice-design servers mounted via `tts.openai.base_url`
+(e.g. Qwen3-TTS-VoiceDesign via oMLX).
 
 ---
 

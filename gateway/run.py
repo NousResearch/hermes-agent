@@ -5308,6 +5308,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    async def _try_one_room_control(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        main_in_flight: bool,
+    ) -> Optional[str]:
+        """Opt-in one-room NL gate. Returns reply text if consumed, else None."""
+        from agent.one_room_control import handle_one_room_control, one_room_control_enabled
+
+        if not one_room_control_enabled(owner=self):
+            return None
+        if getattr(event, "internal", False):
+            return None
+        if event.get_command():
+            return None  # slash commands keep existing handlers
+        text = (event.text or "").strip()
+        if not text:
+            return None
+
+        running_agent = self._running_agents.get(session_key)
+
+        def _cancel(_t: str) -> None:
+            # Best-effort hard stop of the session agent
+            try:
+                import asyncio
+
+                asyncio.get_event_loop().create_task(
+                    self._interrupt_and_clear_session(
+                        session_key,
+                        event.source,
+                        interrupt_reason=_INTERRUPT_REASON_STOP,
+                        invalidation_reason="one_room_stop",
+                    )
+                )
+            except Exception:
+                agent = self._running_agents.get(session_key)
+                if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
+                    try:
+                        agent.interrupt(_t)
+                    except Exception:
+                        pass
+
+        def _steer(msg: str) -> bool:
+            agent = self._running_agents.get(session_key)
+            if agent is None or agent is _AGENT_PENDING_SENTINEL:
+                return False
+            steer = getattr(agent, "steer", None)
+            if not callable(steer):
+                return False
+            return bool(steer(msg))
+
+        result = handle_one_room_control(
+            text,
+            owner=self,
+            session_key=session_key,
+            main_in_flight=main_in_flight and running_agent is not None,
+            cancel_callback=_cancel if main_in_flight else None,
+            steer_callback=_steer if main_in_flight else None,
+        )
+        if result is None:
+            return None
+
+        adapter = self._adapter_for_source(event.source)
+        if adapter and result.message:
+            reply_anchor = self._reply_anchor_for_event(event)
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=result.message,
+                reply_to=reply_anchor,
+                metadata=self._thread_metadata_for_source(event.source, reply_anchor),
+            )
+        return result.message
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -5446,6 +5520,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # cascade after the current turn finishes.
         if getattr(event, "internal", False):
             return False
+
+        # --- One-room control tower (opt-in NL → Kanban) ---
+        # Consumes STOP/STATUS/WORKER-shaped text before busy queue/interrupt
+        # so control messages are never replayed as user content.
+        try:
+            one_room_reply = await self._try_one_room_control(
+                event,
+                session_key,
+                main_in_flight=True,
+            )
+            if one_room_reply is not None:
+                return True
+        except Exception:
+            logger.warning(
+                "one-room control gate failed for busy session %s; falling through",
+                session_key,
+                exc_info=True,
+            )
 
         running_agent = self._running_agents.get(session_key)
 

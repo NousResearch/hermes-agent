@@ -147,3 +147,6 @@ apps/desktop/demo/
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
+
+!tests/agent/data/
+!tests/agent/data/frontdesk_intents_ko.yaml

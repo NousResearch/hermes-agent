@@ -4746,6 +4746,7 @@ function restorePersistedZoomLevel(window) {
 
       const level = clampZoomLevel(Number(stored))
       window.webContents.setZoomLevel(level)
+	  window.webContents.send('hermes:zoom:changed', { level, percent: zoomLevelToPercent(level) })
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }

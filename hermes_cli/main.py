@@ -4935,7 +4935,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     r1 = _run_npm_install_deterministic(
         npm,
         npm_cwd,
-        extra_args=(*npm_workspace_args, "--silent"),
+        extra_args=(*npm_workspace_args, "--silent", "--prefer-offline"),
         env=build_env,
     )
     if r1.returncode != 0:
@@ -8144,7 +8144,7 @@ def _update_node_dependencies() -> None:
     # Desktop deps are installed on demand by the desktop launcher
     # (see _desktop_build_needed).
     print("→ Updating Node.js dependencies...")
-    extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+    extra_args = ["--no-fund", "--no-audit", "--prefer-offline", "--progress=false"]
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 

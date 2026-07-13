@@ -551,14 +551,15 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 
 def _format_context_length(tokens: int) -> str:
     """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
-    if tokens >= 1_000_000:
-        val = tokens / 1_000_000
+    K, M = 1024, 1024 * 1024
+    if tokens >= M:
+        val = tokens / M
         rounded = round(val)
         if abs(val - rounded) < 0.05:
             return f"{rounded}M"
         return f"{val:.1f}M"
-    elif tokens >= 1_000:
-        val = tokens / 1_000
+    elif tokens >= K:
+        val = tokens / K
         rounded = round(val)
         if abs(val - rounded) < 0.05:
             return f"{rounded}K"

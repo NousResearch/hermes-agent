@@ -1025,7 +1025,7 @@ def format_token_count_compact(value: int) -> str:
         return str(int(value))
 
     sign = "-" if value < 0 else ""
-    units = ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
+    units = ((1024**3, "B"), (1024**2, "M"), (1024, "K"))
     for threshold, suffix in units:
         if abs_value >= threshold:
             scaled = abs_value / threshold

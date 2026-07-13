@@ -12423,7 +12423,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Format context length for display
         if context_length >= 1_000_000:
-            ctx_display = f"{context_length / 1_000_000:.1f}M"
+            ctx_display = f"{context_length / (1024 * 1024):.1f}M"
         elif context_length >= 1_000:
             ctx_display = f"{context_length // 1024}K"
         else:

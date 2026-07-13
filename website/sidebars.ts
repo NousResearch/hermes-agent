@@ -194,6 +194,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'devops',
+                  key: 'skills-bundled-devops',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/devops/devops-kubernetes-readonly',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'dogfood',
                   key: 'skills-bundled-dogfood',
                   collapsed: true,

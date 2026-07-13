@@ -9609,8 +9609,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from hermes_cli.commands import (
             GATEWAY_KNOWN_COMMANDS,
             is_gateway_known_command,
+            resolve_telegram_quick_command_key,
             resolve_command as _resolve_cmd,
         )
+
+        # Telegram menu names are normalized (``agent-health`` becomes
+        # ``agent_health`` and long collisions gain a suffix). Reverse the
+        # generated menu mapping before dispatch so clicking a registered
+        # command reaches the original quick-command config key.
+        if command and source.platform == Platform.TELEGRAM:
+            if isinstance(self.config, dict):
+                _telegram_quick_commands = self.config.get("quick_commands", {}) or {}
+            else:
+                _telegram_quick_commands = getattr(self.config, "quick_commands", {}) or {}
+            if isinstance(_telegram_quick_commands, dict):
+                _raw_quick_key = resolve_telegram_quick_command_key(
+                    command,
+                    _telegram_quick_commands,
+                )
+                if _raw_quick_key is not None:
+                    command = _raw_quick_key
 
         # Resolve aliases to canonical name so dispatch and hook names
         # don't depend on the exact alias the user typed.

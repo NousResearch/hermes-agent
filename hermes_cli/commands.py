@@ -709,8 +709,25 @@ def _telegram_quick_menu_commands(
     max_commands: int,
 ) -> tuple[list[tuple[str, str]], int]:
     """Build a focused Telegram menu from configured quick commands only."""
-    commands: list[tuple[str, str]] = []
-    reserved: set[str] = set()
+    entries = _telegram_quick_menu_entries(quick_commands)
+    hidden_count = max(0, len(entries) - max_commands)
+    commands = [
+        (name, description)
+        for name, description, _raw_name in entries[:max_commands]
+    ]
+    return commands, hidden_count
+
+
+def _telegram_quick_menu_entries(
+    quick_commands: Mapping[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Return ``(menu_name, description, raw_key)`` quick-command entries.
+
+    Keeping the raw config key attached through sanitizing and 32-character
+    collision handling lets gateway dispatch reverse the exact menu mapping.
+    """
+    entries: list[tuple[str, str, str]] = []
+    seen_sanitized: set[str] = set()
 
     for raw_name, raw_config in quick_commands.items():
         if not isinstance(raw_name, str) or not isinstance(raw_config, Mapping):
@@ -719,17 +736,32 @@ def _telegram_quick_menu_commands(
             continue
 
         name = _sanitize_telegram_name(raw_name)
-        if not name or name in reserved:
+        if not name or name in seen_sanitized:
             continue
 
         description = str(raw_config.get("description") or f"Run /{raw_name}")
         if len(description) > 40:
             description = description[:37] + "..."
-        commands.append((name, description))
-        reserved.add(name)
+        entries.append((name, description, raw_name))
+        seen_sanitized.add(name)
 
-    hidden_count = max(0, len(commands) - max_commands)
-    return commands[:max_commands], hidden_count
+    return _clamp_command_names(entries, reserved=set())
+
+
+def resolve_telegram_quick_command_key(
+    command: str,
+    quick_commands: Mapping[str, Any],
+    max_commands: int | None = None,
+) -> str | None:
+    """Resolve a Telegram menu command back to its raw quick-command key."""
+    if command in quick_commands:
+        return command
+    limit = telegram_menu_max_commands() if max_commands is None else max_commands
+    entries = _telegram_quick_menu_entries(quick_commands)
+    for menu_name, _description, raw_name in entries[:limit]:
+        if command == menu_name:
+            return raw_name
+    return None
 
 
 _CMD_NAME_LIMIT = 32

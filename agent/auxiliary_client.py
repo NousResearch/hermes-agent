@@ -486,7 +486,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 # "exotic provider" branch checks this before falling back to the main model.
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
-    "zai": "glm-5v-turbo",
+    "zai": "glm-4.5v",
 }
 
 # Providers whose endpoint does not accept image input, even though the
@@ -5319,7 +5319,7 @@ def resolve_vision_provider_client(
         #      _PROVIDER_VISION_MODELS provides per-provider vision model
         #      overrides when the provider has a dedicated multimodal model
         #      that differs from the chat model (e.g. xiaomi → mimo-v2-omni,
-        #      zai → glm-5v-turbo). Nous is the exception: it has a dedicated
+        #      zai → glm-4.5v). Nous is the exception: it has a dedicated
         #      strict vision backend with tier-aware defaults, so it must not
         #      fall through to the user's text chat model here.
         #   2. OpenRouter  (vision-capable aggregator fallback)

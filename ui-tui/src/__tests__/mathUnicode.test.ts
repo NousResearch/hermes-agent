@@ -45,7 +45,9 @@ describe('texToUnicode — symbols', () => {
 describe('texToUnicode — blackboard / calligraphic / fraktur', () => {
   it('renders \\mathbb capitals', () => {
     expect(texToUnicode('\\mathbb{R}')).toBe('ℝ')
-    expect(texToUnicode('\\mathbb{N} \\subset \\mathbb{Z} \\subset \\mathbb{Q} \\subset \\mathbb{R}')).toBe('ℕ ⊂ ℤ ⊂ ℚ ⊂ ℝ')
+    expect(texToUnicode('\\mathbb{N} \\subset \\mathbb{Z} \\subset \\mathbb{Q} \\subset \\mathbb{R}')).toBe(
+      'ℕ ⊂ ℤ ⊂ ℚ ⊂ ℝ'
+    )
   })
 
   it('renders \\mathcal and \\mathfrak', () => {
@@ -119,7 +121,7 @@ describe('texToUnicode — fractions', () => {
     expect(texToUnicode('\\frac{1}{\\frac{1}{x}}')).toBe('1/(1/x)')
   })
 
-  it('handles braces inside numerator / denominator (regression: regex \\frac couldn\'t)', () => {
+  it("handles braces inside numerator / denominator (regression: regex \\frac couldn't)", () => {
     // The regex-only `\frac` matcher used `[^{}]*` for each arg, which
     // failed the moment a numerator contained its own braces (here the
     // `{p-1}` from a superscript). The balanced-brace parser handles it.
@@ -198,7 +200,7 @@ describe('texToUnicode — \\boxed / \\fbox', () => {
     expect(stripBox(texToUnicode('\\fbox{answer}'))).toBe('answer')
   })
 
-  it('handles boxed expressions with nested braces (regression: regex couldn\'t)', () => {
+  it("handles boxed expressions with nested braces (regression: regex couldn't)", () => {
     // A `[^{}]*` regex would stop at the first `{` inside the body. The
     // balanced-brace parser walks past it.
     expect(stripBox(texToUnicode('\\boxed{x^{n+1}}'))).toBe('xⁿ⁺¹')

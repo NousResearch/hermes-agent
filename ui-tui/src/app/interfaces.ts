@@ -3,7 +3,7 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ImageAttachResponse } from '../gatewayTypes.js'
+import type { BillingStateResponse, ImageAttachResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -29,6 +29,22 @@ export interface StateSetter<T> {
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
+
+export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
+
+// Credits/usage notice surfaced in the status bar. Shape is snake_case to
+// match the gateway WS wire (`notification.show` payload) and the existing
+// `Usage` type — no camelCase mapping layer. The `text` already carries its
+// own leading glyph (⚠ • ✕ ✓) from the Python policy, so the renderer only
+// colours it by `level` and never adds another glyph.
+export interface Notice {
+  id?: string
+  key?: string
+  kind?: 'sticky' | 'ttl'
+  level?: NoticeLevel
+  text: string
+  ttl_ms?: null | number
+}
 
 // Single source of truth for indicator style names.  Union type is
 // derived from this tuple so adding/removing a style only touches one
@@ -69,16 +85,62 @@ export interface GatewayProviderProps {
   value: GatewayServices
 }
 
+// ── Billing overlay (Phase 2b: full-modal TUI parity) ────────────────
+// The /billing command no longer parses sub-commands; bare `/billing`
+// fetches `billing.state` and opens this overlay.  The overlay is a small
+// state machine (overview → buy|autoreload|limit → confirm) that performs
+// the SAME RPCs as the old slash flows (billing.charge / charge_status /
+// auto_reload / step_up).  Backend is unchanged & shared with the CLI.
+
+export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overview'
+
+/**
+ * The functions the overlay needs to talk to the gateway and emit
+ * transcript lines.  Built once in `billing.ts` (closing over the live
+ * SlashRunCtx) and stashed in the overlay slot, mirroring how a ConfirmReq
+ * stashes its `onConfirm` closure.  Keeps all RPC + error-mapping logic in
+ * billing.ts (single source of truth) — the overlay only renders + routes.
+ */
+export interface BillingOverlayCtx {
+  /** Run `billing.auto_reload` (enabled/threshold/top_up) → resolve ok/false. */
+  applyAutoReload: (enabled: boolean, threshold?: number, topUp?: number) => Promise<boolean>
+  /** Submit `billing.charge` for `amount` and poll to settlement (non-blocking). */
+  charge: (amount: string) => void
+  /** Open the portal in the browser + echo a transcript line. */
+  openPortal: (url: string) => void
+  /** Emit a transcript system line. */
+  sys: (text: string) => void
+  /** Validate a custom amount against state bounds + 2dp (mirrors the server). */
+  validate: (raw: string) => { amount?: string; error?: string }
+}
+
+/** Pending confirm built when leaving the buy/autoreload screen. */
+export interface BillingPendingCharge {
+  amount: string
+}
+
+export interface BillingOverlayState {
+  ctx: BillingOverlayCtx
+  /** Set when on the 'confirm' screen for a buy. */
+  pendingCharge?: BillingPendingCharge | null
+  screen: BillingScreen
+  state: BillingStateResponse
+}
+
 export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
   approval: ApprovalReq | null
+  billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
-  modelPicker: boolean
+  journey: boolean
+  modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
-  picker: boolean
+  petPicker: boolean
+  pluginsHub: boolean
   secret: null | SecretReq
+  sessions: boolean
   skillsHub: boolean
   sudo: null | SudoReq
 }
@@ -103,10 +165,15 @@ export interface UiState {
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   info: null | SessionInfo
+  liveSessionCount: number
   inlineDiffs: boolean
   mouseTracking: MouseTrackingMode
+  notice: Notice | null
+  pasteCollapseLines: number
+  pasteCollapseChars: number
+
   sections: SectionVisibility
-  showCost: boolean
+  sessionTitle: string
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string
@@ -216,6 +283,7 @@ export interface InputHandlerContext {
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceTts: StateSetter<boolean>
   }
   wheelStep: number
 }
@@ -233,6 +301,10 @@ export interface GatewayEventHandlerContext {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
     newSession: (msg?: string, title?: string) => void
+    // Set by useMainApp's exit handler to the session that was live when the
+    // gateway died unexpectedly; consumed once by the next `gateway.ready` so a
+    // respawn resumes that session instead of forging a fresh one.
+    recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
@@ -254,6 +326,7 @@ export interface GatewayEventHandlerContext {
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceTts: StateSetter<boolean>
   }
 }
 
@@ -261,6 +334,7 @@ export interface SlashHandlerContext {
   composer: {
     enqueue: (text: string) => void
     hasSelection: boolean
+    openEditor: () => Promise<void>
     paste: (quiet?: boolean) => void
     queueRef: MutableRefObject<string[]>
     selection: SelectionApi
@@ -279,6 +353,7 @@ export interface SlashHandlerContext {
     die: () => void
     dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
+    newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
@@ -296,6 +371,7 @@ export interface SlashHandlerContext {
   voice: {
     setVoiceEnabled: StateSetter<boolean>
     setVoiceRecordKey: (v: ParsedVoiceRecordKey) => void
+    setVoiceTts: StateSetter<boolean>
   }
 }
 
@@ -305,6 +381,10 @@ export interface AppLayoutActions {
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
+  activateLiveSession: (id: string) => void
+  closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
+  newLiveSession: () => void
+  newPromptSession: (prompt: string, modelArg?: string) => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void
@@ -333,6 +413,7 @@ export interface AppLayoutProgressProps {
 export interface AppLayoutStatusProps {
   cwdLabel: string
   goodVibesTick: number
+  lastTurnEndedAt: null | number
   sessionStartedAt: null | number
   showStickyPrompt: boolean
   statusColor: string
@@ -363,8 +444,12 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
   onClarifyAnswer: (value: string) => void
+  onActiveSessionSelect: (sessionId: string) => void
+  onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void
-  onPickerSelect: (sessionId: string) => void
+  onNewLiveSession: () => void
+  onNewPromptSession: (prompt: string, modelArg?: string) => void
+  onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
   pagerPageSize: number

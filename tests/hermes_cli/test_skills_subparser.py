@@ -17,7 +17,6 @@ def test_no_duplicate_skills_subparser():
     # Force fresh import of the module where parser is constructed
     # If there are duplicate 'skills' subparsers, this import will raise
     # argparse.ArgumentError at module load time
-    import importlib
     import sys
 
     # Remove cached module if present

@@ -2492,5 +2492,41 @@ export const ja = defineLocale({
       description: 'モバイルサイドバーを表示します。',
       toggle: 'サイドバーを切り替え'
     }
+  },
+
+  pet: {
+    composerPlaceholder: 'メッセージ…',
+    actionCenter: {
+      title: 'アクションセンター',
+      count: n => `${n} 件の保留中アクション`,
+      open: '保留中のアクションを確認',
+      close: 'アクションセンターを閉じる',
+      previous: '前のアイテム',
+      next: '次のアイテム',
+      noItems: '保留中のアクションはありません',
+      approvalTitle: '承認が必要です',
+      approveOnce: '一度だけ実行',
+      approveSession: 'このセッションで許可',
+      approveAlways: '常に許可…',
+      deny: '拒否',
+      denyReason: '理由（任意）',
+      denyReasonPlaceholder: '拒否理由を入力してください',
+      denySubmit: '拒否を送信',
+      alwaysConfirmTitle: 'このコマンドを常に許可しますか？',
+      alwaysConfirmDescription: pattern =>
+        `“${pattern}” パターンが永久許可リスト（~/.hermes/config.yaml）に追加されます。今後このセッションでも以降のセッションでも、このようなコマンドに対して確認は行われません。`,
+      alwaysConfirmConfirm: '常に許可',
+      cancel: 'キャンセル',
+      clarifyTitle: '質問',
+      other: 'その他（回答を入力）',
+      otherPlaceholder: '回答を入力…',
+      clarifySubmit: '続行',
+      skip: 'スキップ',
+      openInApp: 'Hermes で開く',
+      errorGeneric: 'エラーが発生しました。再試行してください。',
+      success: '完了',
+      stale: '保留中ではありません',
+      secureInputHint: count => `Hermes に ${count} 件のセキュア入力が待機中です`
+    }
   }
 })

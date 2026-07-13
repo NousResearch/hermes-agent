@@ -5,15 +5,29 @@ import { PetHeartField, playVibeHearts } from '@/components/chat/vibe-hearts'
 import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
+import { useI18n } from '@/i18n'
 import { Mail } from '@/lib/icons'
 import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
+import type { PetActionCenterState } from '@/store/pet-action-center'
 import { overlayWindowSize } from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
+
+import { PetActionCenter } from './pet-action-center'
 
 // Fallbacks mirror pet-sprite's defaults; the gateway normally sends real values.
 const DEFAULT_FRAME_W = 192
 const DEFAULT_FRAME_H = 208
 const DEFAULT_SCALE = 0.33
+
+const EMPTY_ACTION_CENTER_STATE: PetActionCenterState = {
+  action: null,
+  actionableCount: 0,
+  attentionCount: 0,
+  blockingCount: 0,
+  items: [],
+  secureInputCount: 0,
+  selectedItemId: null
+}
 
 // Must match the root's paddingBottom — the sprite renders bottom-centered, this
 // many px above the window's bottom edge. Used to anchor the resize.
@@ -61,8 +75,11 @@ interface DragState {
 }
 
 export function PetOverlayApp() {
+  const { t } = useI18n()
   const info = useStore($petInfo)
   const [composerOpen, setComposerOpen] = useState(false)
+  const [actionCenterOpen, setActionCenterOpen] = useState(false)
+  const [actionCenterState, setActionCenterState] = useState<PetActionCenterState>(EMPTY_ACTION_CENTER_STATE)
   const [draft, setDraft] = useState('')
   // Mirrored from the main renderer: a finish landed while you were away.
   const [unread, setUnread] = useState(false)
@@ -76,7 +93,8 @@ export function PetOverlayApp() {
   // Last mirrored reaction id — a bump means the main window fired a reaction.
   const lastReactionRef = useRef<number | null>(null)
   const ignoreRef = useRef(true)
-  const composerOpenRef = useRef(false)
+  const keyboardInteractiveRef = useRef(false)
+  const actionCenterOpenRef = useRef(false)
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const setIgnore = (ignore: boolean) => {
@@ -94,6 +112,7 @@ export function PetOverlayApp() {
       setBusy(Boolean(payload.busy))
       setAwaitingResponse(Boolean(payload.awaiting))
       setUnread(Boolean(payload.unread))
+      setActionCenterState(payload.actionCenter)
 
       // Play a reaction on a new id (ignore the first sync, which just primes it).
       const reaction = payload.reaction ?? null
@@ -164,7 +183,7 @@ export function PetOverlayApp() {
     }
 
     const onMove = (ev: MouseEvent) => {
-      if (dragRef.current || composerOpenRef.current) {
+      if (dragRef.current || keyboardInteractiveRef.current) {
         setIgnore(false)
 
         return
@@ -181,22 +200,28 @@ export function PetOverlayApp() {
     }
   }, [])
 
-  // The whole window must stay interactive while the composer is open (so the
-  // input keeps focus); focus it on open. The overlay is a non-activating panel
-  // (so it never steals the app's cmd/alt-tab anchor) — flip it focusable while
-  // the composer needs the keyboard, then back to non-activating when it closes.
+  // Keep the whole window interactive while either keyboard surface is open.
+  // Incoming action-center state only renders its trigger; the explicit trigger
+  // click is the sole path that flips actionCenterOpen and makes the window key.
   useEffect(() => {
-    composerOpenRef.current = composerOpen
+    const keyboardInteractive = composerOpen || actionCenterOpen
+    keyboardInteractiveRef.current = keyboardInteractive
+    actionCenterOpenRef.current = actionCenterOpen
 
-    window.hermesDesktop?.petOverlay?.setFocusable(composerOpen)
+    window.hermesDesktop?.petOverlay?.setFocusable(keyboardInteractive)
+
+    if (keyboardInteractive) {
+      setIgnore(false)
+    }
 
     if (composerOpen) {
-      setIgnore(false)
       // The OS window has to become key first (setFocusable + focus happen in
       // the main process), so focus the input on the next frame.
-      requestAnimationFrame(() => inputRef.current?.focus())
+      const frameId = requestAnimationFrame(() => inputRef.current?.focus())
+
+      return () => cancelAnimationFrame(frameId)
     }
-  }, [composerOpen])
+  }, [composerOpen, actionCenterOpen])
 
   const onPetPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) {
@@ -276,10 +301,27 @@ export function PetOverlayApp() {
       return
     }
 
+    const suppressComposer = actionCenterOpenRef.current
+
     clickTimerRef.current = setTimeout(() => {
       clickTimerRef.current = undefined
-      setComposerOpen(open => !open)
+
+      if (!suppressComposer && !actionCenterOpenRef.current) {
+        setComposerOpen(open => !open)
+      }
     }, DOUBLE_CLICK_MS)
+  }
+
+  const onActionCenterOpenChange = (open: boolean) => {
+    actionCenterOpenRef.current = open
+
+    if (open) {
+      clearTimeout(clickTimerRef.current)
+      clickTimerRef.current = undefined
+      setComposerOpen(false)
+    }
+
+    setActionCenterOpen(open)
   }
 
   const send = () => {
@@ -394,7 +436,7 @@ export function PetOverlayApp() {
               setComposerOpen(false)
             }
           }}
-          placeholder="Message…"
+          placeholder={t.pet.composerPlaceholder}
           ref={inputRef}
           style={{
             background: 'var(--ui-bg-elevated)',
@@ -413,6 +455,7 @@ export function PetOverlayApp() {
       )}
 
       <div
+        data-pet-overlay-interactive-root=""
         onPointerDown={onPetPointerDown}
         onPointerMove={onPetPointerMove}
         onPointerUp={onPetPointerUp}
@@ -426,6 +469,7 @@ export function PetOverlayApp() {
           touchAction: 'none'
         }}
       >
+        <PetActionCenter onOpenChange={onActionCenterOpenChange} state={actionCenterState} />
         <div style={{ marginBottom: 4 }}>
           <PetBubble />
         </div>
@@ -444,7 +488,7 @@ export function PetOverlayApp() {
               stopPropagation keeps a click from starting a window drag. */}
           {unread && (
             <button
-              aria-label="Open in Hermes"
+              aria-label={t.pet.actionCenter.openInApp}
               onClick={openApp}
               onPointerDown={e => e.stopPropagation()}
               onPointerUp={e => e.stopPropagation()}
@@ -465,7 +509,7 @@ export function PetOverlayApp() {
                 top: 0,
                 width: 24
               }}
-              title="Open in Hermes"
+              title={t.pet.actionCenter.openInApp}
               type="button"
             >
               <Mail style={{ height: 13, width: 13 }} />

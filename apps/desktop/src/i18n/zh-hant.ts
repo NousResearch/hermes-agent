@@ -2395,5 +2395,41 @@ export const zhHant = defineLocale({
       description: '顯示行動裝置側邊欄。',
       toggle: '切換側邊欄'
     }
+  },
+
+  pet: {
+    composerPlaceholder: '輸入訊息…',
+    actionCenter: {
+      title: '操作中心',
+      count: n => `${n} 個待處理操作`,
+      open: '查看待處理操作',
+      close: '關閉操作中心',
+      previous: '上一項',
+      next: '下一項',
+      noItems: '沒有待處理操作',
+      approvalTitle: '需要批准',
+      approveOnce: '執行一次',
+      approveSession: '本工作階段允許',
+      approveAlways: '始終允許…',
+      deny: '拒絕',
+      denyReason: '原因（可選）',
+      denyReasonPlaceholder: '請輸入拒絕原因',
+      denySubmit: '送出拒絕',
+      alwaysConfirmTitle: '始終允許此命令？',
+      alwaysConfirmDescription: pattern =>
+        `這會將「${pattern}」模式新增到永久允許清單（~/.hermes/config.yaml）。Hermes 不會再為此類命令詢問——無論是本工作階段還是未來的任何工作階段。`,
+      alwaysConfirmConfirm: '始終允許',
+      cancel: '取消',
+      clarifyTitle: '問題',
+      other: '其他（輸入你的回答）',
+      otherPlaceholder: '輸入你的回答…',
+      clarifySubmit: '繼續',
+      skip: '略過',
+      openInApp: '在 Hermes 中開啟',
+      errorGeneric: '發生錯誤。請重試。',
+      success: '完成',
+      stale: '已不再待處理',
+      secureInputHint: count => `Hermes 中有 ${count} 個安全輸入需要處理`
+    }
   }
 })

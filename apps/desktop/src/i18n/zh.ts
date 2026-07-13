@@ -2680,5 +2680,41 @@ export const zh: Translations = {
       description: '显示移动端侧边栏。',
       toggle: '切换侧边栏'
     }
+  },
+
+  pet: {
+    composerPlaceholder: '输入消息…',
+    actionCenter: {
+      title: '操作中心',
+      count: n => `${n} 个待处理操作`,
+      open: '查看待处理操作',
+      close: '关闭操作中心',
+      previous: '上一项',
+      next: '下一项',
+      noItems: '没有待处理操作',
+      approvalTitle: '需要批准',
+      approveOnce: '运行一次',
+      approveSession: '本会话允许',
+      approveAlways: '始终允许…',
+      deny: '拒绝',
+      denyReason: '原因（可选）',
+      denyReasonPlaceholder: '请输入拒绝原因',
+      denySubmit: '发送拒绝',
+      alwaysConfirmTitle: '始终允许此命令？',
+      alwaysConfirmDescription: pattern =>
+        `这会将“${pattern}”模式添加到永久允许列表（~/.hermes/config.yaml）。Hermes 不会再为此类命令询问——无论是本会话还是未来的任何会话。`,
+      alwaysConfirmConfirm: '始终允许',
+      cancel: '取消',
+      clarifyTitle: '问题',
+      other: '其他（输入你的回答）',
+      otherPlaceholder: '输入你的回答…',
+      clarifySubmit: '继续',
+      skip: '跳过',
+      openInApp: '在 Hermes 中打开',
+      errorGeneric: '出错了。请重试。',
+      success: '完成',
+      stale: '已不再待处理',
+      secureInputHint: count => `Hermes 中有 ${count} 个安全输入需要处理`
+    }
   }
 }

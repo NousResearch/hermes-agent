@@ -2535,5 +2535,41 @@ export const en: Translations = {
       description: 'Displays the mobile sidebar.',
       toggle: 'Toggle Sidebar'
     }
+  },
+
+  pet: {
+    composerPlaceholder: 'Message…',
+    actionCenter: {
+      title: 'Action Center',
+      count: n => `${n} pending action${n === 1 ? '' : 's'}`,
+      open: 'Review pending actions',
+      close: 'Close action center',
+      previous: 'Previous item',
+      next: 'Next item',
+      noItems: 'No pending actions',
+      approvalTitle: 'Approval needed',
+      approveOnce: 'Run once',
+      approveSession: 'Allow this session',
+      approveAlways: 'Always allow…',
+      deny: 'Reject',
+      denyReason: 'Reason (optional)',
+      denyReasonPlaceholder: 'Why are you rejecting this?',
+      denySubmit: 'Send rejection',
+      alwaysConfirmTitle: 'Always allow this command?',
+      alwaysConfirmDescription: pattern =>
+        `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
+      alwaysConfirmConfirm: 'Always allow',
+      cancel: 'Cancel',
+      clarifyTitle: 'Question',
+      other: 'Other (type your answer)',
+      otherPlaceholder: 'Type your answer…',
+      clarifySubmit: 'Continue',
+      skip: 'Skip',
+      openInApp: 'Open in Hermes',
+      errorGeneric: 'Something went wrong. Try again.',
+      success: 'Done',
+      stale: 'No longer pending',
+      secureInputHint: count => `${count} secure input${count === 1 ? '' : 's'} need attention in Hermes`
+    }
   }
 }

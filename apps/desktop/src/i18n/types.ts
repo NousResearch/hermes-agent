@@ -2122,4 +2122,42 @@ export interface Translations {
       toggle: string
     }
   }
+
+  pet: {
+    composerPlaceholder: string
+    actionCenter: {
+      title: string
+      count: (n: number) => string
+      open: string
+      close: string
+      previous: string
+      next: string
+      noItems: string
+      // Approval
+      approvalTitle: string
+      approveOnce: string
+      approveSession: string
+      approveAlways: string
+      deny: string
+      denyReason: string
+      denyReasonPlaceholder: string
+      denySubmit: string
+      alwaysConfirmTitle: string
+      alwaysConfirmDescription: (pattern: string) => string
+      alwaysConfirmConfirm: string
+      cancel: string
+      // Clarify
+      clarifyTitle: string
+      other: string
+      otherPlaceholder: string
+      clarifySubmit: string
+      skip: string
+      // Shared
+      openInApp: string
+      errorGeneric: string
+      success: string
+      stale: string
+      secureInputHint: (count: number) => string
+    }
+  }
 }

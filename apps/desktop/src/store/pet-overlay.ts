@@ -399,6 +399,16 @@ export function setPetOverlayActionCenterHandler(fn: ((control: PetActionCenterC
 }
 
 /**
+ * Send a typed control from the overlay side. This is the gateway-less control
+ * channel — the overlay calls this, the main renderer's bridge parses it via
+ * `parsePetOverlayControl` and dispatches to registered handlers. No gateway
+ * imports, no profile/session/route values are passed from the component.
+ */
+export function sendPetOverlayControl(control: PetOverlayControl): void {
+  window.hermesDesktop?.petOverlay?.control(control)
+}
+
+/**
  * Wire the overlay→renderer control channel once. Returns a disposer. Idempotent
  * — a second call while already wired is a no-op.
  */

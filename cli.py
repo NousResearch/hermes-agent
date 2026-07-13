@@ -9464,9 +9464,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print("(._.) No active agent -- send a message first.")
             return
 
-        if not self.agent.compression_enabled:
-            print("(._.) Compression is disabled in config.")
-            return
+        # No compression_enabled gate here: the config flag disables
+        # *automatic* compaction only. Manual /compress is an explicit user
+        # action — the context-overflow error path (conversation_loop.py)
+        # directs users here when auto-compaction is off, and the gateway's
+        # /compress handler has never gated on the flag.
 
         from hermes_cli.partial_compress import (
             extract_compress_flags,

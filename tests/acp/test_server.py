@@ -1560,12 +1560,13 @@ class TestSlashCommands:
         original_session_db = object()
         state.agent._session_db = original_session_db
 
-        def _compress_context(messages, system_prompt, *, approx_tokens, task_id):
+        def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
             assert state.agent._session_db is None
             assert messages == state.history
             assert system_prompt == "system"
             assert approx_tokens == 40
             assert task_id == state.session_id
+            assert force is True
             return [{"role": "user", "content": "summary"}], "new-system"
 
         state.agent._compress_context = MagicMock(side_effect=_compress_context)
@@ -1593,8 +1594,42 @@ class TestSlashCommands:
             "system",
             approx_tokens=40,
             task_id=state.session_id,
+            force=True,
         )
         mock_save.assert_called_once_with(state.session_id)
+
+    def test_compact_works_when_auto_compaction_disabled(self, agent, mock_manager):
+        """compression.enabled: false disables *automatic* compaction only —
+        manual /compact must still compress (matches CLI /compress and the
+        gateway handler)."""
+        state = self._make_state(mock_manager)
+        state.history = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ]
+        state.agent.compression_enabled = False
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = None
+        state.agent._session_db = None
+        state.agent._compress_context = MagicMock(
+            return_value=([{"role": "user", "content": "summary"}], "new-system")
+        )
+
+        with (
+            patch.object(agent.session_manager, "save_session"),
+            patch(
+                "agent.model_metadata.estimate_request_tokens_rough",
+                side_effect=[40, 12],
+            ),
+        ):
+            result = agent._handle_slash_command("/compact", state)
+
+        assert "disabled" not in result.lower()
+        assert "Context compressed: 4 -> 1 messages" in result
+        state.agent._compress_context.assert_called_once()
+        assert state.agent._compress_context.call_args.kwargs.get("force") is True
 
     def test_unknown_command_returns_none(self, agent, mock_manager):
         state = self._make_state(mock_manager)

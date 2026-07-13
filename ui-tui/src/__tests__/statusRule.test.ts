@@ -69,6 +69,8 @@ describe('statusBarSegments', () => {
       voice: true,
       bg: true,
       subagents: true,
+      tools: true,
+      provider: true,
       cost: true
     })
   })
@@ -83,7 +85,7 @@ describe('statusBarSegments', () => {
   })
 
   it('sheds tail segments in priority order as the terminal narrows', () => {
-    // cost is the first to go, the context bar the last of the tail.
+    // provider/cost/tools are the first to go, the context bar the last of the tail.
     const order: (keyof ReturnType<typeof statusBarSegments>)[] = [
       'bar',
       'duration',
@@ -91,7 +93,9 @@ describe('statusBarSegments', () => {
       'voice',
       'bg',
       'subagents',
-      'cost'
+      'tools',
+      'cost',
+      'provider'
     ]
 
     let prevCount = Infinity

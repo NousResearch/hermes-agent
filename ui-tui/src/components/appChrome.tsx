@@ -248,8 +248,11 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
+  cost: boolean
   duration: boolean
+  provider: boolean
   subagents: boolean
+  tools: boolean
   voice: boolean
 }
 
@@ -263,7 +266,10 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    subagents: w >= 92
+    subagents: w >= 92,
+    tools: w >= 96,
+    cost: w >= 104,
+    provider: w >= 112
   }
 }
 
@@ -361,7 +367,23 @@ const effortLabel = (effort?: string) => {
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? `R:${value}` : ''
+}
+
+const providerLabel = (provider?: string) => {
+  const value = String(provider ?? '').trim()
+
+  return value ? `via ${value}` : ''
+}
+
+const costLabel = (usage: Usage) => {
+  if (typeof usage.cost_usd !== 'number' || !Number.isFinite(usage.cost_usd) || usage.cost_usd <= 0) {
+    return ''
+  }
+
+  const prefix = usage.cost_status === 'estimated' ? '~' : ''
+
+  return `${prefix}$${usage.cost_usd.toFixed(3)}`
 }
 
 const shortModelLabel = (model: string) =>
@@ -409,6 +431,7 @@ export function StatusRule({
   status,
   statusColor,
   model,
+  modelProvider,
   modelFast,
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
@@ -492,6 +515,10 @@ export function StatusRule({
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const toolCalls = typeof usage.calls === 'number' ? usage.calls : 0
+  const toolCallsText = toolCalls > 0 ? `tools ${toolCalls}` : ''
+  const costText = costLabel(usage)
+  const providerText = providerLabel(modelProvider)
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -517,6 +544,9 @@ export function StatusRule({
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
   const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+  const showTools = segs.tools && !!toolCallsText && fits(SEP + stringWidth(toolCallsText))
+  const showCost = segs.cost && !!costText && fits(SEP + stringWidth(costText))
+  const showProvider = segs.provider && !!providerText && fits(SEP + stringWidth(providerText))
 
   // Parked-background reassurance: a top-level delegate_task runs in the
   // background, so the turn ends (idle) while the subagent keeps working and its
@@ -637,6 +667,24 @@ export function StatusRule({
         {showSubagents ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}⛓ {subagentCount}
+          </Text>
+        ) : null}
+        {showTools ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {toolCallsText}
+          </Text>
+        ) : null}
+        {showCost ? (
+          <Text color={usage.cost_status === 'exact' ? t.color.statusGood : t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {costText}
+          </Text>
+        ) : null}
+        {showProvider ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {providerText}
           </Text>
         ) : null}
         {showResumeHint ? (
@@ -777,6 +825,7 @@ interface StatusRuleProps {
   cols: number
   cwdLabel: string
   model: string
+  modelProvider?: string
   modelFast?: boolean
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle

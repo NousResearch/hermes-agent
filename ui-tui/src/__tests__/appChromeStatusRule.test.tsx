@@ -243,6 +243,39 @@ describe('StatusRule session count click target', () => {
   })
 })
 
+
+describe('StatusRule runtime detail readout', () => {
+  it('labels non-default reasoning effort explicitly in the model segment', () => {
+    const element = StatusRule({
+      ...baseProps,
+      model: 'openai-codex/gpt-5.5',
+      modelReasoningEffort: 'xhigh'
+    })
+
+    expect(textContent(element)).toContain('R:xhigh')
+  })
+
+  it('renders provider, tool-call count, and cost as budgeted status segments on a wide terminal', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 140,
+      model: 'openai-codex/gpt-5.5',
+      modelProvider: 'openai-codex',
+      usage: {
+        ...baseProps.usage,
+        calls: 12,
+        cost_status: 'estimated',
+        cost_usd: 0.0421
+      }
+    })
+
+    const rendered = textContent(element)
+    expect(rendered).toContain('via openai-codex')
+    expect(rendered).toContain('tools 12')
+    expect(rendered).toContain('~$0.042')
+  })
+})
+
 describe('StatusRule credits notice render priority', () => {
   it('replaces the idle status with the notice text and keeps model + context', () => {
     const element = StatusRule({

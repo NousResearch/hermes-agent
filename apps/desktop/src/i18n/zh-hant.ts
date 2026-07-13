@@ -1946,6 +1946,16 @@ export const zhHant = defineLocale({
       viewAllLogs: '查看全部記錄 →',
       messagingPlatforms: '訊息平台'
     },
+    approvalMode: {
+      title: '核准模式',
+      ariaLabel: mode => `核准模式：${mode}`,
+      manual: '手動',
+      manualDescription: '執行需要核准的操作前詢問',
+      smart: '智慧',
+      smartDescription: '自動評估操作，並在需要時詢問',
+      off: '關閉',
+      offDescription: '不顯示核准提示，直接執行'
+    },
     statusbar: {
       unknown: '未知',
       restart: '重新啟動',

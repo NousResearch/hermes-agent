@@ -2233,6 +2233,16 @@ export const zh: Translations = {
       viewAllLogs: '查看全部日志 →',
       messagingPlatforms: '消息平台'
     },
+    approvalMode: {
+      title: '审批模式',
+      ariaLabel: mode => `审批模式：${mode}`,
+      manual: '手动',
+      manualDescription: '执行需要审批的操作前询问',
+      smart: '智能',
+      smartDescription: '自动评估操作，并在需要时询问',
+      off: '关闭',
+      offDescription: '不显示审批提示，直接运行'
+    },
     statusbar: {
       unknown: '未知',
       restart: '重启',

@@ -361,5 +361,3 @@ class TestContextNotHalvedOnOutputCapError:
         safe_out = max(1, available_out - 64)
         assert safe_out == 1
 
-
-

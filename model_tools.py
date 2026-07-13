@@ -1344,12 +1344,216 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        # ── Tool error classification & recovery annotation ──────────
+        # Classify tool failures so the LLM sees a structured recovery hint
+        # on the next turn.  Pattern-matching (no LLM call), safe under all
+        # prompt-caching and role-alternation invariants — the annotation
+        # stays inside the existing tool-result message.
+
+        # ── Execution tracer: record this tool call ─────────────────
+        try:
+            from agent.execution_tracer import trace_event
+
+            success = False
+            result_summary = ""
+            try:
+                rd = json.loads(result) if isinstance(result, str) else {}
+                success = not bool(rd.get("error")) if isinstance(rd, dict) else True
+                if isinstance(rd, dict):
+                    if rd.get("bytes_written"):
+                        result_summary = f"Wrote {rd['bytes_written']} bytes"
+                    elif rd.get("exit_code") is not None and rd["exit_code"] == 0:
+                        result_summary = "OK"
+                    elif rd.get("sent"):
+                        result_summary = "Message sent"
+                    elif rd.get("written"):
+                        result_summary = "Written"
+            except Exception:
+                pass
+
+            trace_event(
+                session_id=task_id or "",
+                tool_name=function_name,
+                duration_ms=execution_duration_ms,
+                success=success,
+                result_summary=result_summary,
+                task_id=task_id or "",
+            )
+        except Exception:
+            pass
+
+        try:
+            from agent.error_classifier import classify_tool_error
+
+            classification = classify_tool_error(
+                result,
+                tool_name=function_name,
+                tool_args=_tool_original_args,
+            )
+        except Exception:
+            classification = None
+
+        if classification is not None:
+            recovery_annotation = {
+                "class": classification.reason.value,
+                "confidence": classification.confidence,
+                "retryable": classification.retryable,
+                "max_retries": classification.max_retries,
+                "hint": classification.recovery_hint,
+            }
+            if classification.known_fix:
+                recovery_annotation["known_fix"] = classification.known_fix
+
+            # ── Enrich execution trace with error details ─────────────
+            try:
+                from agent.execution_tracer import enrich_last_trace
+                enrich_last_trace(
+                    error_class=classification.reason.value,
+                    error_message=str(classification.reason.value),
+                    confidence=classification.confidence,
+                    recovery_action=classification.known_fix or "",
+                )
+            except Exception:
+                pass
+
+            # ── Skill auto-patch hint ─────────────────────────────────
+            # When the error class is env_issue or wrong_approach, the
+            # recovery knowledge should be persisted to the relevant skill
+            # so this failure doesn't recur in future sessions.  The LLM
+            # sees this hint and may call skill_manage(action='patch')
+            # after successful recovery.
+            if classification.reason.value in ("env_issue", "wrong_approach", "permission", "timeout"):
+                recovery_annotation["skill_patch_hint"] = (
+                    "After you recover from this failure, consider patching "
+                    "the relevant skill with the learned fix using "
+                    "skill_manage(action='patch'). Add the pitfall to the "
+                    "skill's ## Pitfalls section so future sessions avoid "
+                    "this issue."
+                )
+            try:
+                result_data = json.loads(result)
+                if isinstance(result_data, dict):
+                    result_data["_recovery"] = recovery_annotation
+                    result = json.dumps(result_data, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                pass  # Non-JSON result — skip annotation
+
         return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
         return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+
+
+# ── Task durability: progress save hook ──────────────────────────────
+# Called after each successful effectful tool call to persist task
+# progress to state.db so a restarted session can resume where it left off.
+# Skips read-only tools (NO_EFFECT_TOOL_NAMES) — only checkpoint mutations.
+
+def _persist_agent_message(function_args: dict, result: Any, task_id: str) -> None:
+    """Write a send_agent_message call to the agent_messages table."""
+    import json as _json
+
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        from_id = f"session:{task_id}"
+
+        to_id = function_args.get("to", "")
+        msg_type = function_args.get("msg_type", "instruction")
+        payload = function_args.get("payload", {})
+        ttl = function_args.get("ttl", 0)
+
+        db.send_agent_message(
+            to_id=to_id,
+            from_id=from_id,
+            msg_type=msg_type,
+            payload=payload,
+            ttl=ttl,
+        )
+    except Exception:
+        pass  # Best-effort — never disrupt the main loop
+
+
+def _save_tool_progress(
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    task_id: str,
+) -> None:
+    """Best-effort: persist tool progress to the session's task checkpoint.
+
+    Also intercepts send_agent_message calls to persist them to state.db.
+    """
+    try:
+        from agent.tool_result_classification import NO_EFFECT_TOOL_NAMES
+
+        # ── Agent messaging persistence ──────────────────────────────
+        if function_name in ("send_agent_message", "blackboard_write", "agent_handoff"):
+            return  # Already persisted by the handler itself
+
+        if function_name in NO_EFFECT_TOOL_NAMES:
+            return  # Read-only tools don't need checkpointing
+
+        from hermes_state import SessionDB
+        session_id = os.environ.get("HERMES_SESSION_ID", "")
+        if not session_id:
+            return
+
+        db = SessionDB()
+        if not db.has_task_checkpoint(session_id):
+            return  # No task started for this session
+
+        # Load current checkpoint, append this tool call, save back
+        cp = db.load_task_checkpoint(session_id)
+        if not cp:
+            return
+
+        import json as _json
+
+        # Build step summary
+        result_summary = ""
+        try:
+            rd = _json.loads(result) if isinstance(result, str) else (result or {})
+            if isinstance(rd, dict):
+                if rd.get("error"):
+                    # Failed tool calls aren't "completed" — only save successes
+                    return
+                # Extract meaningful success signal
+                if "bytes_written" in rd:
+                    result_summary = f"Wrote {rd['bytes_written']} bytes"
+                elif "exit_code" in rd and rd["exit_code"] == 0:
+                    output = str(rd.get("output", ""))[:80]
+                    result_summary = output or "Command succeeded"
+                elif "success" in rd:
+                    result_summary = str(rd.get("success", ""))[:80]
+                else:
+                    result_summary = "Completed"
+        except Exception:
+            result_summary = "Completed"
+
+        step = {
+            "tool": function_name,
+            "args": {k: str(v)[:80] for k, v in (function_args or {}).items()},
+            "result_summary": result_summary,
+            "at": __import__("time").time(),
+        }
+
+        completed = cp.get("completed_tool_calls", [])
+        if isinstance(completed, list):
+            completed.append(step)
+
+        db.save_task_checkpoint(
+            session_id,
+            task_goal=cp.get("task_goal", ""),
+            current_phase=cp.get("current_phase", ""),
+            completed_tool_calls=completed,
+            iteration_budget_remaining=cp.get("iteration_budget_remaining", 0),
+        )
+    except Exception:
+        pass  # Best-effort — never disrupt the main loop
 
 
 # =============================================================================
@@ -1379,3 +1583,82 @@ def check_toolset_requirements() -> Dict[str, bool]:
 def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)
+
+
+# ── Skill auto-patch suggestion generator ─────────────────────────────
+# Called by the agent after successful recovery to generate a concrete
+# skill_manage patch payload.  Takes failure + recovery data and returns
+# the old_string / new_string / section to patch.
+
+def build_skill_patch_suggestion(
+    *,
+    skill_name: str,
+    tool_name: str,
+    error_message: str,
+    error_class: str,
+    recovery_command: str = "",
+    recovery_summary: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Build a skill_manage(action='patch') payload from a recovered failure.
+
+    Returns a dict with patch payload keys (old_string, new_string, section),
+    or None if the error class is not patch-worthy.
+    """
+    import json as _json
+
+    PATCHABLE_CLASSES = frozenset({"env_issue", "wrong_approach", "permission", "timeout"})
+    if error_class not in PATCHABLE_CLASSES:
+        return None
+
+    # Select the target section and build patch content
+    if error_class == "env_issue":
+        section = "## Prerequisites"
+        new_entry = (
+            f"\n### {tool_name}\n"
+            f"- **Required**: If you get `{error_message[:80]}`, run:\n"
+            f"  ```bash\n"
+            f"  {recovery_command or 'see recovery hint above'}\n"
+            f"  ```\n"
+        )
+        # old_string is the section heading — we append after it
+        old_string = section
+
+    elif error_class == "wrong_approach":
+        section = "## Pitfalls"
+        scenario = error_message[:60].split("\n")[0].strip()
+        new_entry = (
+            f"\n### {scenario}\n"
+            f"- **Symptom**: `{error_message[:100]}`\n"
+            f"- **Fix**: {recovery_summary or 'Change approach as shown above'}\n"
+        )
+        old_string = section
+
+    elif error_class == "permission":
+        section = "## Pitfalls"
+        new_entry = (
+            f"\n### Permission required\n"
+            f"- **Symptom**: `{error_message[:100]}`\n"
+            f"- **Fix**: {recovery_summary or 'Request permission or use alternate path'}\n"
+        )
+        old_string = section
+
+    elif error_class == "timeout":
+        section = "## Pitfalls"
+        new_entry = (
+            f"\n### {tool_name} timeout\n"
+            f"- **Symptom**: `{error_message[:100]}`\n"
+            f"- **Fix**: Increase timeout or split work into smaller chunks.\n"
+        )
+        old_string = section
+
+    else:
+        return None
+
+    return {
+        "action": "patch",
+        "name": skill_name,
+        "old_string": old_string,
+        "new_string": old_string + "\n" + new_entry.strip(),
+        "section": section,
+        "entry": new_entry.strip(),
+    }

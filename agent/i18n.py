@@ -1,302 +1,148 @@
-"""Lightweight internationalization (i18n) for Hermes static user-facing messages.
+"""Agent i18n — localized system messages.
 
-Scope (thin slice, by design): only the highest-impact static strings shown
-to the user by Hermes itself -- approval prompts, a handful of gateway slash
-command replies, restart-drain notices.  Agent-generated output, log lines,
-error tracebacks, tool outputs, and slash-command descriptions all stay in
-English.
+Provides translated strings for system-generated messages injected
+into system prompts and tool results.  Extensible: add a dict per
+locale (id, ja, ko, fr, de, ...).
 
-Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
-catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
-``gateway.approval_expired``).  Missing keys fall back to English; if English
-is missing too, the key path itself is returned so a broken catalog never
-crashes the agent.
-
-Usage::
-
-    from agent.i18n import t
-    print(t("approval.choose_long"))                       # current lang
-    print(t("gateway.draining", count=3))                  # {count} formatted
-    print(t("approval.choose_long", lang="zh"))            # explicit override
-
-Language resolution order:
-    1. Explicit ``lang=`` argument passed to :func:`t`
-    2. ``HERMES_LANGUAGE`` environment variable (for tests / quick override)
-    3. ``display.language`` from config.yaml
-    4. ``"en"`` (baseline)
-
-Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+Config:  config.yaml → agent.lang: "id"
+         or env: HERMES_LANG=id
 """
 
 from __future__ import annotations
 
-import logging
 import os
-import sysconfig
-import threading
-from functools import lru_cache
-from pathlib import Path
-from typing import Any
+from typing import Dict
 
-logger = logging.getLogger(__name__)
+# ── Lookup ──────────────────────────────────────────────────────────────
 
-SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu",
-)
-DEFAULT_LANGUAGE = "en"
+_CURRENT_LANG = os.environ.get("HERMES_LANG", "")
 
-# Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
-# get the right catalog instead of silently falling back to English.
-_LANGUAGE_ALIASES: dict[str, str] = {
-    "english": "en", "en-us": "en", "en-gb": "en",
-    # Simplified Chinese — explicit codes route here; bare "chinese" / "mandarin"
-    # also default to Simplified since that's the larger user base.
-    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
-    # Traditional Chinese — distinct catalog.  Cover Taiwan / Hong Kong / Macau
-    # locale tags plus the common "traditional" alias.
-    "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",
-    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
-    "japanese": "ja", "jp": "ja", "ja-jp": "ja",
-    "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
-    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
-    "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
-    "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
-    "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
-    # Afrikaans — South African Dutch-derived language; "af-ZA" is the common BCP-47 tag.
-    "afrikaans": "af", "af-za": "af",
-    # Korean
-    "korean": "ko", "한국어": "ko", "ko-kr": "ko",
-    # Italian
-    "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
-    # Irish (Gaeilge) — ga is the BCP-47 code
-    "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
-    # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
-    # is in the same family but rendered identically here (no separate br catalog).
-    "portuguese": "pt", "português": "pt", "portugues": "pt",
-    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
-    # Russian
-    "russian": "ru", "русский": "ru", "ru-ru": "ru",
-    # Hungarian
-    "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
+# ── Translations ────────────────────────────────────────────────────────
+
+_MESSAGES: Dict[str, Dict[str, str]] = {
+    "en": {
+        # Task resume
+        "task_resume_header": "[TASK RESUME]",
+        "task_resume_body": "You are resuming a previously interrupted task.",
+        "task_resume_original": "Original task",
+        "task_resume_phase": "Current phase",
+        "task_resume_progress": "Progress: {count} steps completed (do NOT re-execute):",
+        "task_resume_budget": "Budget: {count} turns remaining.",
+        "task_resume_continue": "Continue from where you left off. Verify state before repeating any action.",
+        # Mailbox
+        "mailbox_header": "[AGENT MAILBOX — {count} unread message(s)]",
+        "mailbox_age_s": "{age}s ago",
+        "mailbox_age_m": "{age}m ago",
+        # Error recovery
+        "skill_patch_hint": (
+            "After you recover from this failure, consider patching "
+            "the relevant skill with the learned fix using "
+            "skill_manage(action='patch'). Add the pitfall to the "
+            "skill's ## Pitfalls section so future sessions avoid "
+            "this issue."
+        ),
+        # Dashboard
+        "dashboard_health": "Health",
+        "dashboard_tools": "Tools",
+        "dashboard_budget": "Budget",
+        "dashboard_phase": "Phase",
+        "dashboard_done": "Done",
+        "dashboard_mailbox": "Mailbox",
+        "dashboard_errors": "Error breakdown",
+        "dashboard_events": "Recent events",
+        "dashboard_no_task": "(no active task)",
+        "dashboard_no_errors": "No errors recorded",
+        "dashboard_no_events": "(no events yet)",
+    },
+    "id": {
+        # Task resume
+        "task_resume_header": "[LANJUTKAN TUGAS]",
+        "task_resume_body": "Anda melanjutkan tugas yang sebelumnya terhenti.",
+        "task_resume_original": "Tugas awal",
+        "task_resume_phase": "Fase saat ini",
+        "task_resume_progress": "Progress: {count} langkah selesai (JANGAN ulangi):",
+        "task_resume_budget": "Budget: {count} giliran tersisa.",
+        "task_resume_continue": "Lanjutkan dari tempat Anda berhenti. Verifikasi kondisi sebelum mengulangi tindakan apa pun.",
+        # Mailbox
+        "mailbox_header": "[KOTAK MASUK AGEN — {count} pesan belum dibaca]",
+        "mailbox_age_s": "{age} detik lalu",
+        "mailbox_age_m": "{age} menit lalu",
+        # Error recovery
+        "skill_patch_hint": (
+            "Setelah Anda pulih dari kegagalan ini, pertimbangkan "
+            "untuk memperbarui skill terkait dengan perbaikan yang "
+            "dipelajari menggunakan skill_manage(action='patch'). "
+            "Tambahkan ke bagian ## Pitfalls skill agar sesi "
+            "selanjutnya tidak mengalami masalah ini."
+        ),
+        # Dashboard
+        "dashboard_health": "Kesehatan",
+        "dashboard_tools": "Tools",
+        "dashboard_budget": "Budget",
+        "dashboard_phase": "Fase",
+        "dashboard_done": "Selesai",
+        "dashboard_mailbox": "Kotak Masuk",
+        "dashboard_errors": "Rincian Error",
+        "dashboard_events": "Kejadian Terbaru",
+        "dashboard_no_task": "(tidak ada tugas aktif)",
+        "dashboard_no_errors": "Tidak ada error tercatat",
+        "dashboard_no_events": "(belum ada kejadian)",
+    },
 }
 
-_catalog_cache: dict[str, dict[str, str]] = {}
-_catalog_lock = threading.Lock()
+
+# ── Public API ──────────────────────────────────────────────────────────
 
 
-def _locales_dir() -> Path:
-    """Return the directory containing locale YAML files.
+def set_lang(lang: str) -> None:
+    """Set the active language for system messages."""
+    global _CURRENT_LANG
+    _CURRENT_LANG = lang
 
-    Resolution order, first existing wins:
 
-    1. ``HERMES_BUNDLED_LOCALES`` env var -- set by the Nix wrapper (or any
-       sealed-packaging system) to point at the installed catalog directory.
-    2. ``<repo-root>/locales`` -- source checkouts and ``pip install -e .``,
-       where the working tree sits next to ``agent/``.
-    3. ``<sysconfig data|purelib|platlib>/locales`` -- pip wheel installs.
-       setuptools ``data-files`` extracts ``locales/*.yaml`` under the
-       interpreter's ``data`` scheme; the other schemes are checked as a
-       safety net for nonstandard layouts.
+def get_lang() -> str:
+    """Return current language code, defaulting to 'en'."""
+    return _CURRENT_LANG or "en"
 
-    Falling through to the source-style path (even when missing) keeps
-    ``_load_catalog`` error messages informative -- it logs the path it
-    looked at -- rather than raising.
+
+def t(key: str, **kwargs) -> str:
+    """Translate a message key to the active language.
+
+    Falls back to English if the key or language is missing.
     """
-    override = os.getenv("HERMES_BUNDLED_LOCALES", "").strip()
-    if override:
-        candidate = Path(override)
-        if candidate.is_dir():
-            return candidate
-        logger.warning(
-            "HERMES_BUNDLED_LOCALES points to a non-directory path (%s); "
-            "falling back to bundled/source locale resolution",
-            override,
-        )
-
-    # agent/i18n.py -> agent/ -> repo root (source checkout, editable install)
-    source_dir = Path(__file__).resolve().parent.parent / "locales"
-    if source_dir.is_dir():
-        return source_dir
-
-    # pip wheel install: data-files lands under the interpreter data scheme.
-    # ``data`` (== sys.prefix in a venv) is where setuptools data-files extract
-    # and is checked first. ``purelib``/``platlib`` (site-packages) are a safety
-    # net for nonstandard layouts. NOTE: this does NOT cover ``pip install
-    # --user`` (user scheme, ~/.local/locales) or ``pip install --target`` --
-    # both are out of scope; see the plan header.
-    for scheme in ("data", "purelib", "platlib"):
-        raw = sysconfig.get_path(scheme)
-        if not raw:
-            continue
-        candidate = Path(raw) / "locales"
-        if candidate.is_dir():
-            return candidate
-
-    # Last resort: return the source-style path so _load_catalog's catalog-missing
-    # log (logger.debug "i18n catalog missing for %s at %s") stays informative.
-    return source_dir
-
-
-def _normalize_lang(value: Any) -> str:
-    """Normalize a user-supplied language value to a supported code.
-
-    Accepts supported codes directly, common aliases (``chinese`` -> ``zh``),
-    and case-insensitive regional tags (``zh-CN`` -> ``zh``).  Returns the
-    default language for unknown values.
-    """
-    if not isinstance(value, str):
-        return DEFAULT_LANGUAGE
-    key = value.strip().lower()
-    if not key:
-        return DEFAULT_LANGUAGE
-    if key in SUPPORTED_LANGUAGES:
-        return key
-    if key in _LANGUAGE_ALIASES:
-        return _LANGUAGE_ALIASES[key]
-    # Try stripping a region suffix (e.g. "pt-br" -> "pt" won't be supported,
-    # but "zh-CN" -> "zh" will).
-    base = key.split("-", 1)[0]
-    if base in SUPPORTED_LANGUAGES:
-        return base
-    return DEFAULT_LANGUAGE
-
-
-def _load_catalog(lang: str) -> dict[str, str]:
-    """Load and flatten one locale YAML file into a dotted-key dict.
-
-    YAML files can be nested for human readability; this produces the flat
-    key space :func:`t` expects.  Cached per-language for the process.
-    """
-    with _catalog_lock:
-        cached = _catalog_cache.get(lang)
-        if cached is not None:
-            return cached
-
-    path = _locales_dir() / f"{lang}.yaml"
-    if not path.is_file():
-        logger.debug("i18n catalog missing for %s at %s", lang, path)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
-        return {}
-
-    try:
-        import yaml  # PyYAML is already a hermes dependency
-        with path.open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-    except Exception as exc:
-        logger.warning("Failed to load i18n catalog %s: %s", path, exc)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
-        return {}
-
-    flat: dict[str, str] = {}
-    _flatten_into(raw, "", flat)
-    with _catalog_lock:
-        _catalog_cache[lang] = flat
-    return flat
-
-
-def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
-    if isinstance(node, dict):
-        for key, value in node.items():
-            child_key = f"{prefix}.{key}" if prefix else str(key)
-            _flatten_into(value, child_key, out)
-    elif isinstance(node, str):
-        out[prefix] = node
-    # Non-string, non-dict leaves are ignored -- catalogs are text-only.
-
-
-@lru_cache(maxsize=1)
-def _config_language_cached() -> str | None:
-    """Read ``display.language`` from config.yaml once per process.
-
-    Cached because ``t()`` is called in hot paths (every approval prompt,
-    every gateway reply) and re-reading YAML each call would be wasteful.
-    ``reset_language_cache()`` clears this when config changes at runtime
-    (e.g. after the setup wizard).
-    """
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        lang = (cfg.get("display") or {}).get("language")
-        if lang:
-            return _normalize_lang(lang)
-    except Exception as exc:
-        logger.debug("Could not read display.language from config: %s", exc)
-    return None
-
-
-def reset_language_cache() -> None:
-    """Invalidate cached language resolution and catalogs.
-
-    Call after :func:`hermes_cli.config.save_config` if a running process
-    needs to pick up a changed ``display.language`` without restart.
-    """
-    _config_language_cached.cache_clear()
-    with _catalog_lock:
-        _catalog_cache.clear()
-
-
-def get_language() -> str:
-    """Resolve the active language using env > config > default order."""
-    env_lang = os.environ.get("HERMES_LANGUAGE")
-    if env_lang:
-        return _normalize_lang(env_lang)
-    cfg_lang = _config_language_cached()
-    if cfg_lang:
-        return cfg_lang
-    return DEFAULT_LANGUAGE
-
-
-def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
-    """Translate a dotted key to the active language.
-
-    Parameters
-    ----------
-    key
-        Dotted path into the catalog, e.g. ``"approval.choose_long"``.
-    lang
-        Explicit language override.  Takes precedence over env + config.
-    **format_kwargs
-        ``str.format`` substitution arguments (``t("gateway.drain", count=3)``
-        expects a catalog entry with a ``{count}`` placeholder).
-
-    Returns
-    -------
-    The translated string, or the English fallback if the key is missing in
-    the target language, or the bare key if English is also missing.
-    """
-    target = _normalize_lang(lang) if lang else get_language()
-    catalog = _load_catalog(target)
-    value = catalog.get(key)
-
-    if value is None and target != DEFAULT_LANGUAGE:
-        # Fall through to English rather than showing a key path to the user.
-        value = _load_catalog(DEFAULT_LANGUAGE).get(key)
-
-    if value is None:
-        # Last-ditch: return the key itself.  A broken catalog should not
-        # crash anything; it just looks ugly until someone fixes it.
-        logger.debug("i18n miss: key=%r lang=%r", key, target)
-        value = key
-
-    if format_kwargs:
+    lang = get_lang()
+    if lang not in _MESSAGES:
+        lang = "en"
+    msg = _MESSAGES.get(lang, {}).get(key)
+    if msg is None:
+        msg = _MESSAGES.get("en", {}).get(key, key)
+    if kwargs:
         try:
-            return value.format(**format_kwargs)
-        except (KeyError, IndexError, ValueError) as exc:
-            logger.warning(
-                "i18n format failed for key=%r lang=%r kwargs=%r: %s",
-                key, target, format_kwargs, exc,
-            )
-            return value
-    return value
+            msg = msg.format(**kwargs)
+        except (KeyError, ValueError):
+            pass
+    return msg
 
 
-__all__ = [
-    "SUPPORTED_LANGUAGES",
-    "DEFAULT_LANGUAGE",
-    "t",
-    "get_language",
-    "reset_language_cache",
-]
+def lang_directive(lang: str) -> str:
+    """Return a system-prompt language directive for the given locale."""
+    directives = {
+        "id": (
+            "You are speaking with an Indonesian user (Bahasa Indonesia). "
+            "Respond in Indonesian unless the user writes in English. "
+            "Translate all system guidance and tool descriptions mentally "
+            "to Indonesian before acting. Keep technical terms in English "
+            "where no natural Indonesian equivalent exists."
+        ),
+        "ja": (
+            "You are speaking with a Japanese user. "
+            "Respond in Japanese unless the user writes in English. "
+            "Translate all system guidance and tool descriptions mentally "
+            "to Japanese before acting."
+        ),
+        "ko": (
+            "You are speaking with a Korean user. "
+            "Respond in Korean unless the user writes in English."
+        ),
+    }
+    return directives.get(lang, directives.get("en", ""))

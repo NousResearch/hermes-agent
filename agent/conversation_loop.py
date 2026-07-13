@@ -279,6 +279,90 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _build_mailbox_block(agent) -> str:
+    """Build a mailbox context block from unread agent messages."""
+    import json as _json
+    import time as _time
+
+    session_id = getattr(agent, "session_id", None)
+    session_db = getattr(agent, "_session_db", None)
+    if not session_id or not session_db:
+        return ""
+
+    agent_id = f"session:{session_id}"
+    try:
+        messages = session_db.read_agent_mailbox(agent_id)
+    except Exception:
+        return ""
+
+    if not messages:
+        return ""
+
+    from agent.i18n import t as _t
+
+    now = _time.time()
+    block = [_t("mailbox_header", count=len(messages))]
+    block.append("─" * 50)
+
+    for msg in messages:
+        age_sec = int(now - msg.get("at", now))
+        age_str = _t("mailbox_age_s", age=age_sec) if age_sec < 120 else _t("mailbox_age_m", age=age_sec // 60)
+        block.append(f"From: {msg['from']:24s}  Type: {msg['type']:12s}  {age_str}")
+        payload = msg.get("payload", {})
+        if isinstance(payload, dict):
+            for k, v in payload.items():
+                val_str = str(v)
+                if len(val_str) > 120:
+                    val_str = val_str[:117] + "..."
+                block.append(f"  {k}: {val_str}")
+        block.append("─" * 50)
+
+    return "\n".join(block)
+
+
+def _build_task_resume_block(checkpoint: dict) -> str:
+    """Build a structured resume prompt from a task checkpoint.
+
+    Injected into the system prompt so the agent knows what task it was
+    working on, what steps are completed (don't repeat), and what phase
+    to continue from.
+    """
+    goal = checkpoint.get("task_goal", "")
+    phase = checkpoint.get("current_phase", "")
+    completed = checkpoint.get("completed_tool_calls", [])
+    budget = checkpoint.get("iteration_budget_remaining", 0)
+
+    if not goal or not completed:
+        return ""
+
+    from agent.i18n import t as _t
+
+    lines = [
+        _t("task_resume_header"),
+        _t("task_resume_body"),
+        "",
+        f"{_t('task_resume_original')}: {goal}",
+    ]
+    if phase:
+        lines.append(f"{_t('task_resume_phase')}: {phase}")
+
+    lines.append("")
+    lines.append(_t("task_resume_progress", count=len(completed)))
+    for i, step in enumerate(completed):
+        if not isinstance(step, dict):
+            continue
+        tool = step.get("tool", "unknown")
+        summary = step.get("result_summary", "")
+        lines.append(f"  {i+1}. `{tool}`: {summary}")
+
+    lines.append("")
+    if budget > 0:
+        lines.append(_t("task_resume_budget", count=budget))
+    lines.append(_t("task_resume_continue"))
+
+    return "\n".join(lines)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -359,6 +443,55 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # First turn of a new session (or recovering from a broken stored
     # prompt) — build from scratch.
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
+
+    # ── Task durability: append resume context ───────────────────────
+    # When resuming a session that has a task checkpoint, append a
+    # structured summary so the agent knows what it was working on and
+    # doesn't repeat completed steps.  This is a system-prompt suffix,
+    # so it participates in prompt caching (the cached prefix includes
+    # the resume block for the rest of the resumed session).
+    try:
+        if conversation_history and agent._session_db and agent.session_id:
+            cp = agent._session_db.load_task_checkpoint(agent.session_id)
+            if cp and cp.get("completed_tool_calls"):
+                agent._session_db.save_task_checkpoint(
+                    agent.session_id,
+                    task_goal=cp.get("task_goal", ""),
+                    increment_resume=True,
+                )
+                resume_block = _build_task_resume_block(cp)
+                if resume_block:
+                    agent._cached_system_prompt = (
+                        (agent._cached_system_prompt or "")
+                        + "\n\n"
+                        + resume_block
+                    )
+                    logger.info(
+                        "Injected task resume block for session=%s (%d completed steps)",
+                        agent.session_id,
+                        len(cp.get("completed_tool_calls", [])),
+                    )
+    except Exception:
+        pass  # Best-effort — never block session start
+
+    # ── Agent mailbox: inject unread messages ─────────────────────────
+    # Part of the multi-agent collaboration protocol.  Agents receive
+    # messages from other agents (delegate_task children, cron workers,
+    # broadcasts) as context injected into the system prompt.
+    try:
+        _mailbox_block = _build_mailbox_block(agent)
+        if _mailbox_block:
+            agent._cached_system_prompt = (
+                (agent._cached_system_prompt or "")
+                + "\n\n"
+                + _mailbox_block
+            )
+            logger.info(
+                "Injected agent mailbox block for session=%s",
+                agent.session_id,
+            )
+    except Exception:
+        pass  # Best-effort — never block session start
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this

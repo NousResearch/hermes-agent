@@ -8,6 +8,7 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from typing import Any, Optional
 from unittest.mock import patch
@@ -213,7 +214,9 @@ class TestLifecycle:
 
         def clarify_callback(question, choices):
             prompts.append((question, choices))
-            return "Staging"
+            # Hermes UIs return the rendered choice text. Codex expects the
+            # canonical option label, without the display-only description.
+            return "Staging: Safe preview"
 
         client.queue_server_request(
             "item/tool/requestUserInput",
@@ -484,6 +487,114 @@ class TestLifecycle:
         assert client.error_responses == [(
             "input-1", -32602, "Secret input is not supported by the Hermes UI"
         )]
+
+    @pytest.mark.parametrize("secret_value", [None, "false", 0, 1, []])
+    def test_request_user_input_rejects_malformed_secret_flag(self, secret_value):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "token",
+                "question": "Paste the token",
+                "options": None,
+                "isSecret": secret_value,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Invalid request_user_input isSecret flag"
+        )]
+
+    def test_request_user_input_rejects_missing_secret_flag(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "token",
+                "question": "Paste the token",
+                "options": None,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Invalid request_user_input isSecret flag"
+        )]
+
+    @pytest.mark.parametrize("cancel_mode", ["deadline", "interrupt"])
+    def test_blocked_request_user_input_respects_turn_cancellation(self, cancel_mode):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": None,
+                "isSecret": False,
+            }],
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        def clarify_callback(question, choices):
+            entered.set()
+            release.wait(timeout=1.0)
+            return "late answer"
+
+        s = make_session(client, clarify_callback=clarify_callback)
+        if cancel_mode == "interrupt":
+            def interrupt_after_prompt():
+                assert entered.wait(timeout=0.5)
+                s.request_interrupt()
+
+            threading.Thread(target=interrupt_after_prompt, daemon=True).start()
+
+        started = time.monotonic()
+        try:
+            result = s.run_turn("ask me", turn_timeout=0.1)
+        finally:
+            release.set()
+
+        assert time.monotonic() - started < 0.5
+        assert result.interrupted is True
+        if cancel_mode == "deadline":
+            assert result.should_retire is True
+            assert "turn timed out after 0.1s" in result.error
 
     def test_dynamic_tool_server_request_is_dispatched_to_hermes(self):
         client = FakeClient()

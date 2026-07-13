@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -710,7 +711,7 @@ class CodexAppServerSession:
                                 or "codex reported turn_aborted"
                             )
                 try:
-                    self._handle_server_request(sreq)
+                    self._handle_server_request(sreq, deadline=deadline)
                 except RuntimeError as exc:
                     # The subprocess can exit after the liveness check above but
                     # before the JSON-RPC reply reaches stdin. Retire the broken
@@ -1067,7 +1068,55 @@ class CodexAppServerSession:
         except TimeoutError:
             logger.warning("turn/interrupt timed out")
 
-    def _handle_request_user_input(self, rid: Any, params: Any) -> None:
+    def _invoke_clarify_callback(
+        self,
+        prompt: str,
+        choices: Optional[list[str]],
+        *,
+        deadline: Optional[float],
+    ) -> tuple[str, Any]:
+        """Run the blocking Hermes UI callback without pinning the turn loop."""
+        assert self._clarify_callback is not None
+        outcome: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+        def _worker() -> None:
+            try:
+                value = self._clarify_callback(prompt, choices)
+            except Exception as exc:
+                outcome.put(("error", exc))
+            else:
+                outcome.put(("result", value))
+
+        threading.Thread(
+            target=_worker,
+            name="codex-request-user-input",
+            daemon=True,
+        ).start()
+
+        while True:
+            if self._interrupt_event.is_set():
+                return ("cancelled", None)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return ("timeout", None)
+                wait_for = min(0.05, remaining)
+            else:
+                wait_for = 0.05
+            if self._client is None or not self._client.is_alive():
+                return ("transport_error", None)
+            try:
+                return outcome.get(timeout=wait_for)
+            except queue.Empty:
+                continue
+
+    def _handle_request_user_input(
+        self,
+        rid: Any,
+        params: Any,
+        *,
+        deadline: Optional[float] = None,
+    ) -> None:
         """Relay Codex's native request_user_input flow through Hermes' UI.
 
         Correlation is intentionally strict because App Server multiplexes
@@ -1124,7 +1173,9 @@ class CodexAppServerSession:
             )
             return
 
-        prepared: list[tuple[str, str, Optional[list[str]]]] = []
+        prepared: list[
+            tuple[str, str, Optional[list[str]], dict[str, str]]
+        ] = []
         seen_question_ids: set[str] = set()
         for question_obj in questions:
             if not isinstance(question_obj, dict):
@@ -1147,11 +1198,19 @@ class CodexAppServerSession:
                     message="Invalid request_user_input question identity",
                 )
                 return
-            if question_obj.get("isSecret") is True:
+            is_secret = question_obj.get("isSecret")
+            if is_secret is True:
                 self._client.respond_error(
                     rid,
                     code=-32602,
                     message="Secret input is not supported by the Hermes UI",
+                )
+                return
+            if is_secret is not False:
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Invalid request_user_input isSecret flag",
                 )
                 return
             seen_question_ids.add(question_id)
@@ -1163,6 +1222,7 @@ class CodexAppServerSession:
 
             options = question_obj.get("options")
             choices: Optional[list[str]] = None
+            canonical_choices: dict[str, str] = {}
             if options is not None:
                 if not isinstance(options, list) or len(options) > 4:
                     self._client.respond_error(
@@ -1193,16 +1253,50 @@ class CodexAppServerSession:
                     if isinstance(description, str) and description.strip():
                         rendered = f"{rendered}: {description.strip()}"
                     rendered_choices.append(rendered)
+                    canonical_choices[rendered] = label.strip()
                 choices = rendered_choices or None
-            prepared.append((question_id, prompt, choices))
+            prepared.append((question_id, prompt, choices, canonical_choices))
 
         answers: dict[str, dict[str, list[str]]] = {}
         try:
-            for question_id, prompt, choices in prepared:
-                answer = self._clarify_callback(prompt, choices)
-                answers[question_id] = {
-                    "answers": [] if answer is None else [str(answer)]
-                }
+            for question_id, prompt, choices, canonical_choices in prepared:
+                outcome_kind, answer = self._invoke_clarify_callback(
+                    prompt, choices, deadline=deadline
+                )
+                if outcome_kind != "result":
+                    if outcome_kind == "error":
+                        raise answer
+                    error = {
+                        "cancelled": (
+                            -32800,
+                            "Hermes user-input request was cancelled",
+                        ),
+                        "timeout": (
+                            -32001,
+                            "Hermes user-input request timed out",
+                        ),
+                        "transport_error": (
+                            -32603,
+                            "Hermes user-input transport stopped",
+                        ),
+                    }[outcome_kind]
+                    self._request_user_input_responses[request_key] = (
+                        "error", error
+                    )
+                    self._client.respond_error(
+                        rid, code=error[0], message=error[1]
+                    )
+                    return
+                if answer is None:
+                    answer_values: list[str] = []
+                else:
+                    answer_text = str(answer)
+                    canonical = canonical_choices.get(
+                        answer_text,
+                        canonical_choices.get(answer_text.strip(), answer_text),
+                    )
+                    answer_values = [canonical]
+                answers[question_id] = {"answers": answer_values}
         except Exception:
             logger.exception("clarify_callback raised on request_user_input")
             error = (-32603, "Hermes user-input UI failed")
@@ -1214,7 +1308,9 @@ class CodexAppServerSession:
         self._request_user_input_responses[request_key] = ("result", response)
         self._client.respond(rid, response)
 
-    def _handle_server_request(self, req: dict) -> None:
+    def _handle_server_request(
+        self, req: dict, *, deadline: Optional[float] = None
+    ) -> None:
         """Translate a codex server request (approval) into Hermes' approval
         flow, then send the response.
 
@@ -1233,7 +1329,7 @@ class CodexAppServerSession:
         params = req.get("params") or {}
 
         if method == "item/tool/requestUserInput":
-            self._handle_request_user_input(rid, params)
+            self._handle_request_user_input(rid, params, deadline=deadline)
         elif method == "item/tool/call":
             failure = {
                 "success": False,

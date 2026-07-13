@@ -72,7 +72,7 @@ def production_delivery_guard(command: str) -> Optional[str]:
         and "--" in lowered
     )
     has_shell_control = any(
-        marker in command for marker in ("\n", "$(", "`", "<(", ">(")
+        marker in command for marker in ("\n", "$(", "`", "<", ">")
     ) or any(
         token and set(token) <= {";", "&", "|"} for token in lowered
     )

@@ -106,6 +106,11 @@ def test_worker_production_commands_require_lock_wrapper(monkeypatch):
     assert pl.production_delivery_guard(
         f"{Path(sys.executable).with_name('hermes')} kanban lock run "
         "--project NousResearch/hermes-agent --operation deploy -- "
+        "python3 release.py > production.log"
+    )
+    assert pl.production_delivery_guard(
+        f"{Path(sys.executable).with_name('hermes')} kanban lock run "
+        "--project NousResearch/hermes-agent --operation deploy -- "
         "cat <(python3 -u release.py)"
     )
     assert pl.production_delivery_guard(

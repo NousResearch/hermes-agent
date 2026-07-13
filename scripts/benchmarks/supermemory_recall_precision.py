@@ -123,7 +123,7 @@ def _prefetch_with_selection_trace(
         context = provider.prefetch(query)
     finally:
         client._selection_trace = None
-    return context, selected_ids
+    return context, selected_ids if context else []
 
 
 def evaluate(fixture: dict[str, Any]) -> dict[str, Any]:

@@ -170,3 +170,46 @@ def test_selected_ids_match_items_emitted_by_formatter_policy(monkeypatch):
     assert "Recent transient status" not in context
     assert "Search-only result" not in context
     assert selected_ids == emitted_ids == ["shared"]
+
+
+@pytest.mark.parametrize("failure_mode", ["empty", "raise"])
+def test_empty_prefetch_discards_partial_selection_trace_and_next_call_is_clean(monkeypatch, failure_mode):
+    documents = {
+        "shared": {"content": "Shared durable fact", "label": "durable", "class": "identity"},
+    }
+    cases = [{
+        "query": "discard partial trace",
+        "static": ["shared"],
+    }]
+    provider = SupermemoryMemoryProvider()
+    provider._active = True
+    provider._auto_recall = True
+    provider._max_recall_results = 5
+    provider._profile_frequency = 50
+    client = FixtureClient(cases, documents)
+    provider._client = client  # type: ignore[assignment]
+    provider.on_turn_start(1, cases[0]["query"])
+
+    production_formatter = supermemory_module._format_prefetch_context
+
+    def unsuccessful_formatter(static_facts, dynamic_facts, search_results, max_results):
+        rendered = f"{static_facts[0]}"
+        if failure_mode == "raise":
+            raise RuntimeError(f"failed after rendering {rendered}")
+        return ""
+
+    monkeypatch.setattr(supermemory_module, "_format_prefetch_context", unsuccessful_formatter)
+
+    context, selected_ids = _prefetch_with_selection_trace(provider, cases[0]["query"])
+
+    assert context == ""
+    assert selected_ids == []
+    assert client._selection_trace is None
+
+    monkeypatch.setattr(supermemory_module, "_format_prefetch_context", production_formatter)
+
+    next_context, next_selected_ids = _prefetch_with_selection_trace(provider, cases[0]["query"])
+
+    assert "Shared durable fact" in next_context
+    assert next_selected_ids == ["shared"]
+    assert client._selection_trace is None

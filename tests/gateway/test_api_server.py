@@ -653,6 +653,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_post(
         "/api/platforms/{platform}/events",
         adapter._handle_platform_event_callback,
@@ -4276,6 +4277,39 @@ class TestPreviousResponseIdHardening:
             too_long_id = "x" * (MAX_PREVIOUS_RESPONSE_ID_LENGTH + 1)
             resp = await cli.post(
                 "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "follow up",
+                    "previous_response_id": too_long_id,
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "too long" in data["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_runs_previous_response_id_invalid_type_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={
+                    "model": "hermes-agent",
+                    "input": "follow up",
+                    "previous_response_id": 123,
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "previous_response_id" in data["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_runs_previous_response_id_too_long_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            too_long_id = "x" * (MAX_PREVIOUS_RESPONSE_ID_LENGTH + 1)
+            resp = await cli.post(
+                "/v1/runs",
                 json={
                     "model": "hermes-agent",
                     "input": "follow up",

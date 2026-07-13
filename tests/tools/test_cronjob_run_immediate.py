@@ -7,6 +7,8 @@ last_run_at stayed null forever. Now action='run' claims the job (at-most-once,
 blocking a concurrent tick) and fires it inline via the shared run_one_job body.
 """
 import json
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.cronjob_tools import cronjob, _execute_job_now
@@ -67,6 +69,39 @@ class TestCronjobRunExecutesImmediately:
         assert res["claimed"] is False
         assert res["success"] is False
         m_run.assert_not_called()
+
+    def test_execute_job_now_passes_live_gateway_context_to_delivery(self):
+        """Manual runs must deliver on the live gateway adapter's owning loop."""
+        adapters = {"matrix": object()}
+        gateway_loop = object()
+        runner = SimpleNamespace(adapters=adapters, _gateway_loop=gateway_loop)
+        completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=completed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is True
+        m_run.assert_called_once_with(
+            _JOB,
+            adapters=adapters,
+            loop=gateway_loop,
+        )
+
+    def test_execute_job_now_remains_standalone_without_gateway(self):
+        """CLI-only runs retain the standalone delivery path."""
+        completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch.dict(sys.modules, {"gateway.run": None}), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=completed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is True
+        m_run.assert_called_once_with(_JOB, adapters=None, loop=None)
 
     def test_execute_job_now_marks_failure_on_exception(self):
         """An exception during fire is captured, marked failed, not propagated."""

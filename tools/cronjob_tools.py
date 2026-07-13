@@ -638,7 +638,20 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+        # Manual runs invoked from a gateway agent execute outside the scheduler
+        # ticker, but they still share the process with the live platform
+        # adapters.  Pass the gateway-owned adapter map and event loop through to
+        # run_one_job so delivery is scheduled on the loop that owns clients such
+        # as Matrix/aiohttp.  Calling those clients from run_one_job's standalone
+        # asyncio.run() loop raises errors like "Timeout context manager should be
+        # used inside a task" and can break encrypted Matrix delivery.
+        gateway_module = sys.modules.get("gateway.run")
+        runner_ref = getattr(gateway_module, "_gateway_runner_ref", None)
+        runner = runner_ref() if callable(runner_ref) else None
+        adapters = getattr(runner, "adapters", None) if runner is not None else None
+        gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
+
+        processed = run_one_job(job, adapters=adapters, loop=gateway_loop)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {

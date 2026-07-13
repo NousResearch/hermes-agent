@@ -457,6 +457,46 @@ class _ReadWriteLock:
 # running cron job.  See _ReadWriteLock and run_job for the usage contract.
 _terminal_cwd_lock = _ReadWriteLock()
 
+# ``HERMES_CRON_SESSION`` is still consumed by approval code through
+# ``os.environ``.  Unlike ContextVars it is process-global, so concurrent cron
+# jobs must share one reference-counted lifetime: the first job snapshots the
+# ambient interactive value and the last job restores it.  Per-job save/restore
+# races when two workdir-less jobs run on the parallel pool.
+_cron_session_lock = threading.Lock()
+_active_cron_session_count = 0
+_cron_session_prior_value: Optional[str] = None
+_CRON_SESSION_UNSET = "_UNSET_"
+
+
+def _enter_cron_session() -> None:
+    """Mark the process as cron-owned until the last active cron job exits."""
+    global _active_cron_session_count, _cron_session_prior_value
+    with _cron_session_lock:
+        if _active_cron_session_count == 0:
+            _cron_session_prior_value = os.environ.get(
+                "HERMES_CRON_SESSION", _CRON_SESSION_UNSET
+            )
+        _active_cron_session_count += 1
+        os.environ["HERMES_CRON_SESSION"] = "1"
+
+
+def _exit_cron_session() -> None:
+    """Release one cron job's marker lease and restore ambient state at zero."""
+    global _active_cron_session_count, _cron_session_prior_value
+    with _cron_session_lock:
+        if _active_cron_session_count <= 0:
+            logger.error("Cron session marker released without an active lease")
+            return
+        _active_cron_session_count -= 1
+        if _active_cron_session_count:
+            return
+        prior_value = _cron_session_prior_value
+        if prior_value in (None, _CRON_SESSION_UNSET):
+            os.environ.pop("HERMES_CRON_SESSION", None)
+        else:
+            os.environ["HERMES_CRON_SESSION"] = prior_value
+        _cron_session_prior_value = None
+
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
     """Return (or create) the persistent parallel pool."""
@@ -2682,13 +2722,10 @@ def run_job(
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide, but the scheduler often lives in the same
-    # gateway process that serves interactive chats.  Restore the previous
-    # value in finally so a cron tick does not make later interactive tool
-    # calls look like non-interactive cron executions.
-    _prior_cron_session = os.environ.get("HERMES_CRON_SESSION", "_UNSET_")
-    os.environ["HERMES_CRON_SESSION"] = "1"
+    # Mark this process as cron-owned while one or more cron jobs are active.
+    # The reference-counted lease preserves the marker across overlapping jobs
+    # and restores any pre-existing interactive value after the final exit.
+    _enter_cron_session()
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
@@ -3326,13 +3363,10 @@ def run_job(
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
-        # Restore process-wide cron marker after this job. The scheduler runs
-        # inside long-lived gateway processes, so do not taint later interactive
-        # sessions and their terminal tools.
-        if _prior_cron_session == "_UNSET_":
-            os.environ.pop("HERMES_CRON_SESSION", None)
-        else:
-            os.environ["HERMES_CRON_SESSION"] = _prior_cron_session
+        # Release this job's process-wide marker lease only after all of its
+        # cron-mode tool work has finished. The final overlapping job restores
+        # the ambient non-cron value.
+        _exit_cron_session()
         # Release the cwd lock now that the env is restored, so a waiting
         # workdir job (or queued reader) can proceed without seeing the override.
         if _holds_cwd_write:

@@ -80,8 +80,17 @@ def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
     return schema
 
 
-def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
+def memory_provider_tools_enabled(
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]] = None,
+    *,
+    memory_tool_present: bool = False,
+) -> bool:
     """Return whether external memory-provider tools should be exposed."""
+    if disabled_toolsets and "memory" in disabled_toolsets:
+        return False
+    if memory_tool_present:
+        return True
     if enabled_toolsets is None:
         return True
     if not enabled_toolsets:
@@ -110,9 +119,10 @@ def inject_memory_provider_tools(agent: Any) -> int:
         for tool in tools
         if isinstance(tool, dict)
     }
-    if (
-        "memory" not in existing_tool_names
-        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
+    if not memory_provider_tools_enabled(
+        getattr(agent, "enabled_toolsets", None),
+        getattr(agent, "disabled_toolsets", None),
+        memory_tool_present="memory" in existing_tool_names,
     ):
         return 0
 

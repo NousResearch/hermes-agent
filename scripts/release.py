@@ -86,6 +86,7 @@ LEGACY_AUTHOR_MAP = {
     "marceloparra.hm@gmail.com": "marcelohildebrand",  # PR #42346 salvage (lmstudio: JIT load mode)
     "qlskssk@gmail.com": "Soju06",  # agent turn-latency perf PRs
     "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
+    "wangzhe00zju@gmail.com": "flyingdoubleG",  # PR #18166 salvage (memory-provider tools honor disabled_toolsets in initial and MCP-refresh injection)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "gn00742754@gmail.com": "SemonCat",  # PR #56786 salvage (Slack Agent View manifests and Assistant APIs)
     "KCAYAAI@users.noreply.github.com": "KCAYAAI",  # PR #62248 partial salvage (resume typing after clarify reply)

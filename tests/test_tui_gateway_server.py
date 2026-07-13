@@ -8693,6 +8693,265 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         server._sessions.clear()
 
 
+# ── Mid-build config.set reconciliation ────────────────────────────────────
+# _make_agent can block for seconds (MCP discovery, prompt/skill build). A
+# config.set landing in that window only updates the session dict — the agent
+# is still None, so the live-apply branch is skipped — and the build must not
+# install an agent constructed from the values snapshotted at build start.
+# These tests thread the real deferred build through an event-controlled
+# barrier and mutate the session mid-build.
+
+
+def _patch_deferred_build_collaborators(monkeypatch, emitted=None):
+    """Stub _start_agent_build's collaborators (worker/callbacks/pollers) so a
+    test can drive the real deferred-build thread against a fake _make_agent."""
+
+    class FakeWorker:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
+    monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        (lambda ev, sid, payload: emitted.append((ev, sid, payload)))
+        if emitted is not None
+        else (lambda *a, **k: None),
+    )
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_probe_config_health", lambda *_a: None)
+
+
+def _deferred_build_session(**extra):
+    return {
+        "agent": None,
+        "agent_ready": threading.Event(),
+        "session_key": "reconcile-key",
+        "profile_home": None,
+        "model_override": None,
+        "create_reasoning_override": None,
+        "create_service_tier_override": None,
+        **extra,
+    }
+
+
+def test_deferred_build_adopts_reasoning_set_mid_build(monkeypatch):
+    """config.set reasoning racing the deferred build must not be lost: the
+    session dict is updated but the agent is still None (live-apply skipped),
+    and the build snapshotted the OLD value into its kwargs before blocking.
+    The installed agent and the session.info emitted at build completion must
+    reflect the newer value.
+    """
+    build_entered = threading.Event()
+    release_build = threading.Event()
+    emitted = []
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        build_entered.set()
+        assert release_build.wait(timeout=10), "test never released the build"
+        return types.SimpleNamespace(
+            model="m1",
+            provider="p1",
+            reasoning_config=kwargs.get("reasoning_config_override"),
+            service_tier=kwargs.get("service_tier_override"),
+        )
+
+    _patch_deferred_build_collaborators(monkeypatch, emitted)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent, session=None: {
+            "reasoning_effort": (getattr(agent, "reasoning_config", None) or {}).get(
+                "effort", ""
+            )
+        },
+    )
+
+    sid = "reconcile-reasoning-sid"
+    session = _deferred_build_session(
+        create_reasoning_override={"enabled": True, "effort": "low"}
+    )
+    server._sessions[sid] = session
+    try:
+        server._start_agent_build(sid, session)
+        assert build_entered.wait(timeout=10), "deferred build never started"
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": sid, "key": "reasoning", "value": "xhigh"},
+            }
+        )
+        assert resp["result"]["value"] == "xhigh"
+        # The change landed on the session dict only — the agent is mid-build.
+        assert session["agent"] is None
+        assert session["create_reasoning_override"] == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+        release_build.set()
+        assert session["agent_ready"].wait(timeout=10), "agent build did not finish"
+        assert session["agent"].reasoning_config == {"enabled": True, "effort": "xhigh"}
+        infos = [p for ev, esid, p in emitted if ev == "session.info" and esid == sid]
+        assert infos, "build completion never emitted session.info"
+        assert infos[-1]["reasoning_effort"] == "xhigh"
+    finally:
+        server._sessions.clear()
+
+
+class _SwitchRecordingAgent:
+    def __init__(self, model, provider, **attrs):
+        self.model = model
+        self.provider = provider
+        self.switch_calls = []
+        for name, value in attrs.items():
+            setattr(self, name, value)
+
+    def switch_model(self, new_model, new_provider, api_key="", base_url="", api_mode=""):
+        self.switch_calls.append((new_model, new_provider, base_url, api_mode))
+        self.model = new_model
+        self.provider = new_provider
+
+
+def test_deferred_build_adopts_model_pin_set_mid_build(monkeypatch):
+    """A model override pinned while the deferred build is in flight (the
+    agent-None paths of `/model X --provider Y` and `/moa` write
+    session["model_override"] directly) must be applied to the built agent via
+    the same in-place switch_model the live path uses. Otherwise the session
+    silently runs on the model snapshotted at build start and nothing ever
+    reconciles it — _sync_agent_model_with_config skips sessions that carry a
+    model_override.
+    """
+    build_entered = threading.Event()
+    release_build = threading.Event()
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        build_entered.set()
+        assert release_build.wait(timeout=10), "test never released the build"
+        return _SwitchRecordingAgent("old/model", "old-provider")
+
+    _patch_deferred_build_collaborators(monkeypatch)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+
+    sid = "reconcile-model-sid"
+    session = _deferred_build_session()
+    server._sessions[sid] = session
+    try:
+        server._start_agent_build(sid, session)
+        assert build_entered.wait(timeout=10), "deferred build never started"
+        session["model_override"] = {
+            "model": "new/model",
+            "provider": "new-provider",
+            "base_url": "https://new.example/v1",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+        }
+        release_build.set()
+        assert session["agent_ready"].wait(timeout=10), "agent build did not finish"
+        assert session["agent"].switch_calls == [
+            ("new/model", "new-provider", "https://new.example/v1", "chat_completions")
+        ]
+        assert session["agent"].model == "new/model"
+    finally:
+        server._sessions.clear()
+
+
+def test_deferred_build_does_not_reswitch_unchanged_model_override(monkeypatch):
+    """The install-time reconcile compares against the override the build was
+    handed: an override that did NOT change mid-build (every normal create and
+    deferred resume) must not trigger a redundant switch_model on install."""
+    override = {"model": "picked/model", "provider": "picked-provider"}
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        return _SwitchRecordingAgent("picked/model", "picked-provider")
+
+    _patch_deferred_build_collaborators(monkeypatch)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+
+    sid = "no-reswitch-sid"
+    session = _deferred_build_session(model_override=override)
+    server._sessions[sid] = session
+    try:
+        server._start_agent_build(sid, session)
+        assert session["agent_ready"].wait(timeout=10), "agent build did not finish"
+        assert session["agent"].switch_calls == []
+    finally:
+        server._sessions.clear()
+
+
+def test_reset_session_agent_adopts_reasoning_set_mid_rebuild(monkeypatch):
+    """/new rebuilds the agent through the same seconds-long _make_agent. A
+    config.set reasoning landing mid-rebuild applies to the OLD (about to be
+    discarded) agent and the session dict; the freshly installed agent must
+    adopt it too instead of reverting to the snapshot taken at rebuild start.
+    """
+    build_entered = threading.Event()
+    release_build = threading.Event()
+
+    old_agent = types.SimpleNamespace(
+        model="m1",
+        provider="p1",
+        reasoning_config={"enabled": True, "effort": "low"},
+    )
+
+    def fake_make_agent(sid, key, session_id=None, **kwargs):
+        build_entered.set()
+        assert release_build.wait(timeout=10), "test never released the build"
+        return types.SimpleNamespace(
+            model="m1",
+            provider="p1",
+            reasoning_config=kwargs.get("reasoning_config_override"),
+        )
+
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: True)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda *_a: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: {})
+
+    sid = "reset-reconcile-sid"
+    session = _session(agent=old_agent)
+    session["create_reasoning_override"] = {"enabled": True, "effort": "low"}
+    server._sessions[sid] = session
+    try:
+        reset_thread = threading.Thread(
+            target=lambda: server._reset_session_agent(sid, session), daemon=True
+        )
+        reset_thread.start()
+        assert build_entered.wait(timeout=10), "reset rebuild never started"
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": sid, "key": "reasoning", "value": "xhigh"},
+            }
+        )
+        assert resp["result"]["value"] == "xhigh"
+        release_build.set()
+        reset_thread.join(timeout=10)
+        assert not reset_thread.is_alive(), "reset rebuild did not finish"
+        assert session["agent"] is not old_agent
+        assert session["agent"].reasoning_config == {"enabled": True, "effort": "xhigh"}
+    finally:
+        server._sessions.clear()
+
+
 # ── _get_usage active_subagents (TUI status-bar ⛓ indicator) ──────────────
 # Mirrors the classic CLI status bar: _get_usage embeds a live count of
 # background/async subagents from tools.async_delegation.active_count() so the

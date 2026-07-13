@@ -1,7 +1,6 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
-import os
 import urllib.error
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -11,8 +10,9 @@ import pytest
 from tools.discord_tool import (
     DiscordAPIError,
     _ACTIONS,
+    _ADMIN_ACTIONS,
+    _CORE_ACTIONS,
     _available_actions,
-    _build_schema,
     _channel_type_name,
     _detect_capabilities,
     _discord_request,
@@ -21,8 +21,11 @@ from tools.discord_tool import (
     _load_allowed_actions_config,
     _reset_capability_cache,
     check_discord_tool_requirements,
-    discord_server,
+    discord_admin_handler,
+    discord_core,
     get_dynamic_schema,
+    get_dynamic_schema_admin,
+    get_dynamic_schema_core,
 )
 
 
@@ -139,6 +142,41 @@ class TestDiscordRequest:
         assert exc_info.value.status == 403
         assert "Missing Access" in exc_info.value.body
 
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_response_body_size_limit(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setattr("tools.discord_tool._DISCORD_RESPONSE_BODY_MAX_BYTES", 8)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b"x" * 9
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen_fn.return_value = mock_resp
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 502
+        assert "response body exceeded 8 bytes" in exc_info.value.body
+        mock_resp.read.assert_called_once_with(9)
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_http_error_body_size_limit(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setattr("tools.discord_tool._DISCORD_ERROR_BODY_MAX_BYTES", 8)
+        http_error = urllib.error.HTTPError(
+            url="https://discord.com/api/v10/test",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=BytesIO(b"x" * 9),
+        )
+        mock_urlopen_fn.side_effect = http_error
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 403
+        assert "error body exceeded 8 bytes" in exc_info.value.body
+
 
 # ---------------------------------------------------------------------------
 # Main handler: validation
@@ -147,32 +185,38 @@ class TestDiscordRequest:
 class TestDiscordServerValidation:
     def test_no_token(self, monkeypatch):
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
-        result = json.loads(discord_server(action="list_guilds"))
+        result = json.loads(discord_admin_handler(action="list_guilds"))
         assert "error" in result
         assert "DISCORD_BOT_TOKEN" in result["error"]
 
     def test_unknown_action(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        result = json.loads(discord_server(action="bad_action"))
+        result = json.loads(discord_core(action="bad_action"))
         assert "error" in result
         assert "Unknown action" in result["error"]
         assert "available_actions" in result
 
     def test_missing_required_guild_id(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        result = json.loads(discord_server(action="list_channels"))
+        result = json.loads(discord_admin_handler(action="list_channels"))
         assert "error" in result
         assert "guild_id" in result["error"]
 
     def test_missing_required_channel_id(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        result = json.loads(discord_server(action="fetch_messages"))
+        result = json.loads(discord_core(action="fetch_messages"))
         assert "error" in result
         assert "channel_id" in result["error"]
 
+    def test_missing_required_message_id_for_delete(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(action="delete_message", channel_id="11"))
+        assert "error" in result
+        assert "message_id" in result["error"]
+
     def test_missing_multiple_params(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        result = json.loads(discord_server(action="add_role"))
+        result = json.loads(discord_admin_handler(action="add_role"))
         assert "error" in result
         assert "guild_id" in result["error"]
         assert "user_id" in result["error"]
@@ -191,7 +235,7 @@ class TestListGuilds:
             {"id": "111", "name": "Test Server", "icon": "abc", "owner": True, "permissions": "123"},
             {"id": "222", "name": "Other Server", "icon": None, "owner": False, "permissions": "456"},
         ]
-        result = json.loads(discord_server(action="list_guilds"))
+        result = json.loads(discord_admin_handler(action="list_guilds"))
         assert result["count"] == 2
         assert result["guilds"][0]["name"] == "Test Server"
         assert result["guilds"][1]["id"] == "222"
@@ -219,7 +263,7 @@ class TestServerInfo:
             "premium_subscription_count": 5,
             "verification_level": 1,
         }
-        result = json.loads(discord_server(action="server_info", guild_id="111"))
+        result = json.loads(discord_admin_handler(action="server_info", guild_id="111"))
         assert result["name"] == "My Server"
         assert result["member_count"] == 42
         assert result["online_count"] == 10
@@ -242,7 +286,7 @@ class TestListChannels:
             {"id": "12", "name": "voice", "type": 2, "position": 1, "parent_id": "10", "topic": None, "nsfw": False},
             {"id": "13", "name": "no-category", "type": 0, "position": 0, "parent_id": None, "topic": None, "nsfw": False},
         ]
-        result = json.loads(discord_server(action="list_channels", guild_id="111"))
+        result = json.loads(discord_admin_handler(action="list_channels", guild_id="111"))
         assert result["total_channels"] == 3  # excludes the category itself
         groups = result["channel_groups"]
         # Uncategorized first
@@ -257,7 +301,7 @@ class TestListChannels:
     def test_empty_guild(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = []
-        result = json.loads(discord_server(action="list_channels", guild_id="111"))
+        result = json.loads(discord_admin_handler(action="list_channels", guild_id="111"))
         assert result["total_channels"] == 0
 
 
@@ -274,7 +318,7 @@ class TestChannelInfo:
             "topic": "Welcome!", "nsfw": False, "position": 0,
             "parent_id": "10", "rate_limit_per_user": 0, "last_message_id": "999",
         }
-        result = json.loads(discord_server(action="channel_info", channel_id="11"))
+        result = json.loads(discord_admin_handler(action="channel_info", channel_id="11"))
         assert result["name"] == "general"
         assert result["type"] == "text"
         assert result["guild_id"] == "111"
@@ -293,7 +337,7 @@ class TestListRoles:
             {"id": "2", "name": "Admin", "position": 2, "color": 16711680, "mentionable": True, "managed": False, "hoist": True},
             {"id": "3", "name": "Mod", "position": 1, "color": 255, "mentionable": True, "managed": False, "hoist": True},
         ]
-        result = json.loads(discord_server(action="list_roles", guild_id="111"))
+        result = json.loads(discord_admin_handler(action="list_roles", guild_id="111"))
         assert result["count"] == 3
         # Should be sorted by position descending
         assert result["roles"][0]["name"] == "Admin"
@@ -317,7 +361,7 @@ class TestMemberInfo:
             "joined_at": "2024-01-01T00:00:00Z",
             "premium_since": None,
         }
-        result = json.loads(discord_server(action="member_info", guild_id="111", user_id="42"))
+        result = json.loads(discord_admin_handler(action="member_info", guild_id="111", user_id="42"))
         assert result["username"] == "testuser"
         assert result["nickname"] == "Testy"
         assert result["roles"] == ["2", "3"]
@@ -334,7 +378,7 @@ class TestSearchMembers:
         mock_req.return_value = [
             {"user": {"id": "42", "username": "testuser", "global_name": "Test", "bot": False}, "nick": None, "roles": []},
         ]
-        result = json.loads(discord_server(action="search_members", guild_id="111", query="test"))
+        result = json.loads(discord_core(action="search_members", guild_id="111", query="test"))
         assert result["count"] == 1
         assert result["members"][0]["username"] == "testuser"
         mock_req.assert_called_once_with(
@@ -346,7 +390,7 @@ class TestSearchMembers:
     def test_search_members_limit_capped(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = []
-        discord_server(action="search_members", guild_id="111", query="x", limit=200)
+        discord_core(action="search_members", guild_id="111", query="x", limit=200)
         call_params = mock_req.call_args[1]["params"]
         assert call_params["limit"] == "100"  # Capped at 100
 
@@ -370,7 +414,7 @@ class TestFetchMessages:
                 "pinned": False,
             },
         ]
-        result = json.loads(discord_server(action="fetch_messages", channel_id="11"))
+        result = json.loads(discord_core(action="fetch_messages", channel_id="11"))
         assert result["count"] == 1
         assert result["messages"][0]["content"] == "Hello world"
         assert result["messages"][0]["author"]["username"] == "user1"
@@ -379,7 +423,7 @@ class TestFetchMessages:
     def test_fetch_messages_with_pagination(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = []
-        discord_server(action="fetch_messages", channel_id="11", before="999", limit=10)
+        discord_core(action="fetch_messages", channel_id="11", before="999", limit=10)
         call_params = mock_req.call_args[1]["params"]
         assert call_params["before"] == "999"
         assert call_params["limit"] == "10"
@@ -396,21 +440,21 @@ class TestListPins:
         mock_req.return_value = [
             {"id": "500", "content": "Important announcement", "author": {"username": "admin"}, "timestamp": "2024-01-01T00:00:00Z"},
         ]
-        result = json.loads(discord_server(action="list_pins", channel_id="11"))
+        result = json.loads(discord_admin_handler(action="list_pins", channel_id="11"))
         assert result["count"] == 1
         assert result["pinned_messages"][0]["content"] == "Important announcement"
 
 
 # ---------------------------------------------------------------------------
-# Actions: pin_message / unpin_message
+# Actions: pin_message / unpin_message / delete_message
 # ---------------------------------------------------------------------------
 
-class TestPinUnpin:
+class TestPinUnpinDelete:
     @patch("tools.discord_tool._discord_request")
     def test_pin_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = None  # 204
-        result = json.loads(discord_server(action="pin_message", channel_id="11", message_id="500"))
+        result = json.loads(discord_admin_handler(action="pin_message", channel_id="11", message_id="500"))
         assert result["success"] is True
         mock_req.assert_called_once_with("PUT", "/channels/11/pins/500", "test-token")
 
@@ -418,8 +462,18 @@ class TestPinUnpin:
     def test_unpin_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = None
-        result = json.loads(discord_server(action="unpin_message", channel_id="11", message_id="500"))
+        result = json.loads(discord_admin_handler(action="unpin_message", channel_id="11", message_id="500"))
         assert result["success"] is True
+        mock_req.assert_called_once_with("DELETE", "/channels/11/pins/500", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_delete_message(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+        result = json.loads(discord_admin_handler(action="delete_message", channel_id="11", message_id="500"))
+        assert result["success"] is True
+        assert "deleted" in result["message"]
+        mock_req.assert_called_once_with("DELETE", "/channels/11/messages/500", "test-token")
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +485,7 @@ class TestCreateThread:
     def test_create_standalone_thread(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = {"id": "800", "name": "New Thread"}
-        result = json.loads(discord_server(action="create_thread", channel_id="11", name="New Thread"))
+        result = json.loads(discord_core(action="create_thread", channel_id="11", name="New Thread"))
         assert result["success"] is True
         assert result["thread_id"] == "800"
         # Verify the API call
@@ -444,7 +498,7 @@ class TestCreateThread:
     def test_create_thread_from_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = {"id": "801", "name": "Discussion"}
-        result = json.loads(discord_server(
+        result = json.loads(discord_core(
             action="create_thread", channel_id="11", name="Discussion", message_id="1001",
         ))
         assert result["success"] is True
@@ -463,7 +517,7 @@ class TestRoleManagement:
     def test_add_role(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = None
-        result = json.loads(discord_server(
+        result = json.loads(discord_admin_handler(
             action="add_role", guild_id="111", user_id="42", role_id="2",
         ))
         assert result["success"] is True
@@ -475,7 +529,7 @@ class TestRoleManagement:
     def test_remove_role(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = None
-        result = json.loads(discord_server(
+        result = json.loads(discord_admin_handler(
             action="remove_role", guild_id="111", user_id="42", role_id="2",
         ))
         assert result["success"] is True
@@ -490,15 +544,23 @@ class TestErrorHandling:
     def test_api_error_handled(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.side_effect = DiscordAPIError(403, '{"message": "Missing Access"}')
-        result = json.loads(discord_server(action="list_guilds"))
+        result = json.loads(discord_admin_handler(action="list_guilds"))
         assert "error" in result
         assert "403" in result["error"]
 
     @patch("tools.discord_tool._discord_request")
-    def test_unexpected_error_handled(self, mock_req, monkeypatch):
+    def test_unexpected_error_handled_admin(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.side_effect = RuntimeError("something broke")
-        result = json.loads(discord_server(action="list_guilds"))
+        result = json.loads(discord_admin_handler(action="list_guilds"))
+        assert "error" in result
+        assert "something broke" in result["error"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_unexpected_error_handled_core(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = RuntimeError("something broke")
+        result = json.loads(discord_core(action="fetch_messages", channel_id="11"))
         assert "error" in result
         assert "something broke" in result["error"]
 
@@ -508,79 +570,110 @@ class TestErrorHandling:
 # ---------------------------------------------------------------------------
 
 class TestRegistration:
-    def test_tool_registered(self):
+    def test_core_tool_registered(self):
         from tools.registry import registry
-        entry = registry._tools.get("discord_server")
+        entry = registry._tools.get("discord")
         assert entry is not None
-        assert entry.schema["name"] == "discord_server"
+        assert entry.schema["name"] == "discord"
         assert entry.toolset == "discord"
         assert entry.check_fn is not None
         assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
 
-    def test_schema_actions(self):
-        """Static schema should list all actions (the model_tools post-processing
-        narrows this per-session; static registration is the superset)."""
+    def test_admin_tool_registered(self):
         from tools.registry import registry
-        entry = registry._tools["discord_server"]
-        actions = entry.schema["parameters"]["properties"]["action"]["enum"]
-        expected = [
-            "list_guilds", "server_info", "list_channels", "channel_info",
-            "list_roles", "member_info", "search_members", "fetch_messages",
-            "list_pins", "pin_message", "unpin_message", "create_thread",
-            "add_role", "remove_role",
-        ]
-        assert set(actions) == set(expected)
-        assert set(_ACTIONS.keys()) == set(expected)
+        entry = registry._tools.get("discord_admin")
+        assert entry is not None
+        assert entry.schema["name"] == "discord_admin"
+        assert entry.toolset == "discord_admin"
+        assert entry.check_fn is not None
+        assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
+
+    def test_core_schema_actions(self):
+        """Core static schema should list only core actions."""
+        from tools.registry import registry
+        entry = registry._tools["discord"]
+        actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
+        assert actions == {"fetch_messages", "search_members", "create_thread"}
+
+    def test_admin_schema_actions(self):
+        """Admin static schema should list only admin actions."""
+        from tools.registry import registry
+        entry = registry._tools["discord_admin"]
+        actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
+        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        assert actions == expected_admin
+
+    def test_all_actions_covered(self):
+        """Core + admin actions should cover all known actions."""
+        assert set(_CORE_ACTIONS.keys()) | set(_ADMIN_ACTIONS.keys()) == set(_ACTIONS.keys())
+        assert set(_CORE_ACTIONS.keys()) & set(_ADMIN_ACTIONS.keys()) == set()
 
     def test_schema_parameter_bounds(self):
         from tools.registry import registry
-        entry = registry._tools["discord_server"]
+        entry = registry._tools["discord"]
         props = entry.schema["parameters"]["properties"]
         assert props["limit"]["minimum"] == 1
         assert props["limit"]["maximum"] == 100
         assert props["auto_archive_duration"]["enum"] == [60, 1440, 4320, 10080]
 
-    def test_schema_description_is_action_manifest(self):
-        """The top-level description should include the action manifest
-        (one-line signatures per action) so the model can find required
-        params without re-reading every parameter description."""
+    def test_core_schema_description(self):
+        """Core schema description should mention core actions."""
         from tools.registry import registry
-        entry = registry._tools["discord_server"]
+        entry = registry._tools["discord"]
         desc = entry.schema["description"]
-        # Spot-check a few entries
-        assert "list_guilds()" in desc
         assert "fetch_messages(channel_id)" in desc
+        assert "search_members(guild_id, query)" in desc
+        assert "create_thread(channel_id, name)" in desc
+        # Admin actions should NOT be in core description
+        assert "list_guilds()" not in desc
+        assert "add_role(" not in desc
+
+    def test_admin_schema_description(self):
+        """Admin schema description should mention admin actions."""
+        from tools.registry import registry
+        entry = registry._tools["discord_admin"]
+        desc = entry.schema["description"]
+        assert "list_guilds()" in desc
         assert "add_role(guild_id, user_id, role_id)" in desc
+        assert "delete_message(channel_id, message_id)" in desc
+        # Core actions should NOT be in admin description
+        assert "fetch_messages(" not in desc
+        assert "create_thread(" not in desc
 
     def test_handler_callable(self):
         from tools.registry import registry
-        entry = registry._tools["discord_server"]
+        entry = registry._tools["discord"]
         assert callable(entry.handler)
+        entry_admin = registry._tools["discord_admin"]
+        assert callable(entry_admin.handler)
 
 
 # ---------------------------------------------------------------------------
-# Toolset: discord_server only in hermes-discord
+# Toolset: discord / discord_admin only in hermes-discord
 # ---------------------------------------------------------------------------
 
 class TestToolsetInclusion:
-    def test_discord_server_in_hermes_discord_toolset(self):
+    def test_discord_tools_in_hermes_discord_toolset(self):
         from toolsets import TOOLSETS
-        assert "discord_server" in TOOLSETS["hermes-discord"]["tools"]
+        assert "discord" in TOOLSETS["hermes-discord"]["tools"]
+        assert "discord_admin" in TOOLSETS["hermes-discord"]["tools"]
 
-    def test_discord_server_not_in_core_tools(self):
+    def test_discord_tools_not_in_core_tools(self):
         from toolsets import _HERMES_CORE_TOOLS
-        assert "discord_server" not in _HERMES_CORE_TOOLS
+        assert "discord" not in _HERMES_CORE_TOOLS
+        assert "discord_admin" not in _HERMES_CORE_TOOLS
 
-    def test_discord_server_not_in_other_toolsets(self):
+    def test_discord_tools_not_in_other_toolsets(self):
         from toolsets import TOOLSETS
         for name, ts in TOOLSETS.items():
-            if name == "hermes-discord":
+            if name in {"hermes-discord", "hermes-gateway", "discord", "discord_admin"}:
                 continue
-            # The gateway toolset might include it if it unions all platform tools
-            if name == "hermes-gateway":
-                continue
-            assert "discord_server" not in ts.get("tools", []), (
-                f"discord_server should not be in toolset '{name}'"
+            tools = ts.get("tools", [])
+            assert "discord" not in tools or name == "discord", (
+                f"discord tool should not be in toolset '{name}'"
+            )
+            assert "discord_admin" not in tools or name == "discord_admin", (
+                f"discord_admin tool should not be in toolset '{name}'"
             )
 
 
@@ -651,6 +744,151 @@ class TestCapabilityDetection:
         mock_req.return_value = {"flags": 0}
         _detect_capabilities("tok")
         _detect_capabilities("tok", force=True)
+        assert mock_req.call_count == 2
+
+
+class TestNonBlockingCapabilityDetection:
+    """The schema-build path must never block on a discord.com HTTP call.
+
+    ``_detect_capabilities_nonblocking`` resolves memory cache → disk cache →
+    permissive default (+ background detect), keeping the ~2s blocking
+    detection off the first-token critical path (TTFT fix, July 2026).
+    """
+
+    def setup_method(self):
+        _reset_capability_cache()
+
+    def teardown_method(self):
+        _reset_capability_cache()
+
+    def test_memory_cache_hit_no_network(self):
+        from tools.discord_tool import _capability_cache, _detect_capabilities_nonblocking
+        caps_in = {"has_members_intent": False, "has_message_content": True, "detected": True}
+        _capability_cache["tok"] = caps_in
+        with patch("tools.discord_tool._discord_request") as mock_req:
+            caps = _detect_capabilities_nonblocking("tok")
+        assert caps == caps_in
+        mock_req.assert_not_called()
+
+    def test_cold_start_returns_permissive_default_immediately(self):
+        from tools.discord_tool import _detect_capabilities_nonblocking
+        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("tools.discord_tool.threading.Thread") as mock_thread:
+            caps = _detect_capabilities_nonblocking("tok")
+        assert caps["has_members_intent"] is True
+        assert caps["has_message_content"] is True
+        assert caps["detected"] is False
+        # Background detection was scheduled exactly once
+        assert mock_thread.call_count == 1
+
+    def test_cold_start_pins_default_for_process_schema_stability(self):
+        """Within one process the schema must not flip mid-conversation:
+        the permissive default is pinned in the memory cache so later
+        schema builds see the same caps even after bg detection lands
+        on disk."""
+        from tools.discord_tool import _capability_cache, _detect_capabilities_nonblocking
+        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("tools.discord_tool.threading.Thread"):
+            first = _detect_capabilities_nonblocking("tok")
+        # Even if the disk now has restrictive caps, the pinned entry wins.
+        with patch(
+            "tools.discord_tool._load_caps_from_disk",
+            return_value={"has_members_intent": False, "has_message_content": False, "detected": True},
+        ):
+            second = _detect_capabilities_nonblocking("tok")
+        assert first == second
+        assert _capability_cache["tok"] is first
+
+    def test_bg_detection_scheduled_once_per_token(self):
+        from tools.discord_tool import _detect_capabilities_nonblocking
+        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("tools.discord_tool.threading.Thread") as mock_thread:
+            _detect_capabilities_nonblocking("tok")
+            # Second cold call for the same token in the same process
+            from tools.discord_tool import _capability_cache
+            _capability_cache.pop("tok", None)  # simulate another cold path
+            _detect_capabilities_nonblocking("tok")
+        # bg started set persists → only one thread scheduled
+        assert mock_thread.call_count == 1
+
+    def test_disk_cache_round_trip(self, tmp_path, monkeypatch):
+        import tools.discord_tool as dt
+        monkeypatch.setattr(
+            dt, "_capability_disk_cache_path",
+            lambda: tmp_path / "discord_capabilities.json",
+        )
+        caps_in = {"has_members_intent": True, "has_message_content": False, "detected": True}
+        dt._save_caps_to_disk("tok", caps_in)
+        assert dt._load_caps_from_disk("tok") == caps_in
+        # Wrong token → miss
+        assert dt._load_caps_from_disk("other") is None
+
+    def test_disk_cache_expires(self, tmp_path, monkeypatch):
+        import time as _time
+
+        import tools.discord_tool as dt
+        monkeypatch.setattr(
+            dt, "_capability_disk_cache_path",
+            lambda: tmp_path / "discord_capabilities.json",
+        )
+        caps_in = {"has_members_intent": True, "has_message_content": True, "detected": True}
+        dt._save_caps_to_disk("tok", caps_in)
+        # Rewrite timestamp to be stale
+        import json as _json
+        p = tmp_path / "discord_capabilities.json"
+        data = _json.loads(p.read_text())
+        for entry in data.values():
+            entry["ts"] = _time.time() - dt._CAPABILITY_DISK_TTL_SECONDS - 10
+        p.write_text(_json.dumps(data))
+        assert dt._load_caps_from_disk("tok") is None
+
+    def test_schema_build_uses_nonblocking_path(self, monkeypatch):
+        """get_dynamic_schema_core must not call the blocking detection."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("tools.discord_tool.threading.Thread"), \
+             patch("tools.discord_tool._discord_request") as mock_req:
+            schema = get_dynamic_schema_core()
+        # No blocking HTTP call happened on the schema-build path
+        mock_req.assert_not_called()
+        assert schema is not None
+        actions = set(schema["parameters"]["properties"]["action"]["enum"])
+        assert actions == set(_CORE_ACTIONS.keys())  # permissive default
+
+    @patch("tools.discord_tool._discord_request")
+    def test_cache_is_keyed_by_token(self, mock_req):
+        """Regression: token A's capabilities must not leak to token B.
+
+        Before the fix, the cache was a single module-global dict. The first
+        call populated it and every subsequent call — regardless of token —
+        returned the same cached value, producing wrong schema gating for
+        rotated or multi-token deployments.
+        """
+        def _per_token_flags(method, path, token, **_kwargs):
+            # token A: both intents; token B: neither.
+            if token == "tok_a":
+                return {"flags": (1 << 14) | (1 << 18)}
+            return {"flags": 0}
+
+        mock_req.side_effect = _per_token_flags
+
+        caps_a = _detect_capabilities("tok_a")
+        caps_b = _detect_capabilities("tok_b")
+
+        assert caps_a["has_members_intent"] is True
+        assert caps_a["has_message_content"] is True
+        assert caps_b["has_members_intent"] is False
+        assert caps_b["has_message_content"] is False
+        # Each token should hit the endpoint exactly once.
+        assert mock_req.call_count == 2
+
+        # Re-requesting either token serves from its own cache entry.
+        _detect_capabilities("tok_a")
+        _detect_capabilities("tok_b")
         assert mock_req.call_count == 2
 
 
@@ -798,40 +1036,74 @@ class TestDynamicSchema:
     @patch("tools.discord_tool._discord_request")
     def test_no_token_returns_none(self, mock_req, monkeypatch):
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
-        assert get_dynamic_schema() is None
+        assert get_dynamic_schema_core() is None
+        assert get_dynamic_schema_admin() is None
         mock_req.assert_not_called()
 
     @patch("tools.discord_tool._discord_request")
-    def test_full_intents_full_schema(self, mock_req, monkeypatch):
+    def test_full_intents_core_schema(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
             "hermes_cli.config.load_config",
             lambda: {"discord": {"server_actions": ""}},
         )
         mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
-        schema = get_dynamic_schema()
-        actions = schema["parameters"]["properties"]["action"]["enum"]
-        assert set(actions) == set(_ACTIONS.keys())
-        # No content warning
+        schema = get_dynamic_schema_core()
+        actions = set(schema["parameters"]["properties"]["action"]["enum"])
+        assert actions == set(_CORE_ACTIONS.keys())
+        assert schema["name"] == "discord"
+
+    @patch("tools.discord_tool._discord_request")
+    def test_full_intents_admin_schema(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
+        schema = get_dynamic_schema_admin()
+        actions = set(schema["parameters"]["properties"]["action"]["enum"])
+        assert actions == set(_ADMIN_ACTIONS.keys())
+        assert schema["name"] == "discord_admin"
+        # No content warning when MESSAGE_CONTENT is enabled
         assert "MESSAGE_CONTENT" not in schema["description"]
 
     @patch("tools.discord_tool._discord_request")
-    def test_no_members_intent_removes_member_actions_from_schema(
+    def test_no_members_intent_removes_member_actions_from_admin_schema(
         self, mock_req, monkeypatch,
     ):
+        """member_info is an admin action; it should be hidden when
+        GUILD_MEMBERS intent is missing."""
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
             "hermes_cli.config.load_config",
             lambda: {"discord": {"server_actions": ""}},
         )
         mock_req.return_value = {"flags": 1 << 18}  # only MESSAGE_CONTENT
-        schema = get_dynamic_schema()
+        # Warm the capability cache — schema builds are non-blocking and use
+        # the permissive default until detection has completed (background
+        # thread + disk cache); filtering applies once caps are known.
+        _detect_capabilities("tok")
+        schema = get_dynamic_schema_admin()
+        actions = schema["parameters"]["properties"]["action"]["enum"]
+        assert "member_info" not in actions
+        assert "member_info" not in schema["description"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_no_members_intent_hides_search_members_from_core(
+        self, mock_req, monkeypatch,
+    ):
+        """search_members is a core action gated by GUILD_MEMBERS intent."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = {"flags": 1 << 18}  # only MESSAGE_CONTENT
+        _detect_capabilities("tok")  # warm cache — schema builds are non-blocking
+        schema = get_dynamic_schema_core()
         actions = schema["parameters"]["properties"]["action"]["enum"]
         assert "search_members" not in actions
-        assert "member_info" not in actions
-        # Manifest description should also not advertise them
-        assert "search_members" not in schema["description"]
-        assert "member_info" not in schema["description"]
 
     @patch("tools.discord_tool._discord_request")
     def test_no_message_content_adds_warning_note(self, mock_req, monkeypatch):
@@ -841,41 +1113,54 @@ class TestDynamicSchema:
             lambda: {"discord": {"server_actions": ""}},
         )
         mock_req.return_value = {"flags": 1 << 14}  # only GUILD_MEMBERS
-        schema = get_dynamic_schema()
+        _detect_capabilities("tok")  # warm cache — schema builds are non-blocking
+        schema = get_dynamic_schema_core()
         assert "MESSAGE_CONTENT" in schema["description"]
         # But fetch_messages is still available
         actions = schema["parameters"]["properties"]["action"]["enum"]
         assert "fetch_messages" in actions
 
     @patch("tools.discord_tool._discord_request")
-    def test_config_allowlist_narrows_schema(self, mock_req, monkeypatch):
+    def test_config_allowlist_narrows_admin_schema(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
             "hermes_cli.config.load_config",
             lambda: {"discord": {"server_actions": "list_guilds,list_channels"}},
         )
         mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
-        schema = get_dynamic_schema()
+        schema = get_dynamic_schema_admin()
         actions = schema["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "list_channels"]
-        # Manifest description should only show allowed ones (check for
-        # the signature marker, which is specific to manifest lines)
         assert "list_guilds()" in schema["description"]
         assert "add_role(" not in schema["description"]
-        assert "create_thread(" not in schema["description"]
 
     @patch("tools.discord_tool._discord_request")
-    def test_empty_allowlist_with_valid_values_hides_tool(self, mock_req, monkeypatch):
+    def test_empty_allowlist_with_valid_values_hides_tools(self, mock_req, monkeypatch):
         """If the allowlist resolves to zero valid actions (e.g. all names
-        were typos), get_dynamic_schema returns None so the tool is dropped
-        entirely rather than showing an empty enum."""
+        were typos), get_dynamic_schema returns None so the tool is dropped."""
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
             "hermes_cli.config.load_config",
             lambda: {"discord": {"server_actions": "typo_one,typo_two"}},
         )
         mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
-        assert get_dynamic_schema() is None
+        assert get_dynamic_schema_core() is None
+        assert get_dynamic_schema_admin() is None
+
+    @patch("tools.discord_tool._discord_request")
+    def test_backward_compat_wrapper(self, mock_req, monkeypatch):
+        """get_dynamic_schema() should delegate to get_dynamic_schema_core()."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
+        schema = get_dynamic_schema()
+        assert schema is not None
+        assert schema["name"] == "discord"
+        actions = set(schema["parameters"]["properties"]["action"]["enum"])
+        assert actions == set(_CORE_ACTIONS.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -890,7 +1175,7 @@ class TestRuntimeAllowlistEnforcement:
             "hermes_cli.config.load_config",
             lambda: {"discord": {"server_actions": "list_guilds"}},
         )
-        result = json.loads(discord_server(action="add_role", guild_id="1", user_id="2", role_id="3"))
+        result = json.loads(discord_admin_handler(action="add_role", guild_id="1", user_id="2", role_id="3"))
         assert "error" in result
         assert "disabled by config" in result["error"]
         mock_req.assert_not_called()
@@ -903,7 +1188,7 @@ class TestRuntimeAllowlistEnforcement:
             lambda: {"discord": {"server_actions": "list_guilds"}},
         )
         mock_req.return_value = []
-        result = json.loads(discord_server(action="list_guilds"))
+        result = json.loads(discord_admin_handler(action="list_guilds"))
         assert "guilds" in result
 
 
@@ -930,7 +1215,7 @@ class Test403Enrichment:
             lambda: {"discord": {"server_actions": ""}},
         )
         mock_req.side_effect = DiscordAPIError(403, '{"message":"Missing Permissions"}')
-        result = json.loads(discord_server(
+        result = json.loads(discord_admin_handler(
             action="add_role", guild_id="1", user_id="2", role_id="3",
         ))
         assert "error" in result
@@ -944,7 +1229,7 @@ class Test403Enrichment:
             lambda: {"discord": {"server_actions": ""}},
         )
         mock_req.side_effect = DiscordAPIError(500, "server error")
-        result = json.loads(discord_server(action="list_guilds"))
+        result = json.loads(discord_admin_handler(action="list_guilds"))
         assert "500" in result["error"]
         assert "MANAGE_ROLES" not in result["error"]
 
@@ -956,15 +1241,23 @@ class Test403Enrichment:
 class TestModelToolsIntegration:
     def setup_method(self):
         _reset_capability_cache()
+        from model_tools import _clear_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
     def teardown_method(self):
         _reset_capability_cache()
+        from model_tools import _clear_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
     @patch("tools.discord_tool._discord_request")
-    def test_discord_server_schema_rebuilt_by_get_tool_definitions(
+    def test_discord_admin_schema_rebuilt_by_get_tool_definitions(
         self, mock_req, monkeypatch,
     ):
-        """When model_tools.get_tool_definitions runs with discord_server
+        """When model_tools.get_tool_definitions runs with discord_admin
         available, it should replace the static schema with the dynamic one."""
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
@@ -976,16 +1269,16 @@ class TestModelToolsIntegration:
 
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
-        discord_tool = next(
-            (t for t in tools if t.get("function", {}).get("name") == "discord_server"),
+        discord_admin_tool = next(
+            (t for t in tools if t.get("function", {}).get("name") == "discord_admin"),
             None,
         )
-        assert discord_tool is not None, "discord_server should be in the schema"
-        actions = discord_tool["function"]["parameters"]["properties"]["action"]["enum"]
+        assert discord_admin_tool is not None, "discord_admin should be in the schema"
+        actions = discord_admin_tool["function"]["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "server_info"]
 
     @patch("tools.discord_tool._discord_request")
-    def test_discord_server_dropped_when_allowlist_empties_it(
+    def test_discord_tools_dropped_when_allowlist_empties_them(
         self, mock_req, monkeypatch,
     ):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
@@ -998,4 +1291,6 @@ class TestModelToolsIntegration:
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
         names = [t.get("function", {}).get("name") for t in tools]
+        assert "discord" not in names
+        assert "discord_admin" not in names
         assert "discord_server" not in names

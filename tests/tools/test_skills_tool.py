@@ -44,6 +44,18 @@ description: Description for {name}.
     return skill_dir
 
 
+def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Path:
+    """Create a category symlink under skills_dir pointing outside the tree."""
+    external_category = linked_root / category
+    external_category.mkdir(parents=True, exist_ok=True)
+    symlink_path = skills_dir / category
+    try:
+        symlink_path.symlink_to(external_category, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+    return external_category
+
+
 # ---------------------------------------------------------------------------
 # _parse_frontmatter
 # ---------------------------------------------------------------------------
@@ -255,6 +267,46 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    def test_skips_nested_virtualenv_dependency_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "real-skill")
+            typer_skill = (
+                tmp_path
+                / "bring"
+                / "scripts"
+                / ".venv"
+                / "lib"
+                / "python3.13"
+                / "site-packages"
+                / "typer"
+                / ".agents"
+                / "skills"
+                / "typer"
+            )
+            typer_skill.mkdir(parents=True)
+            (typer_skill / "SKILL.md").write_text(
+                "---\nname: typer\ndescription: Should not be discovered.\n---\n",
+                encoding="utf-8",
+            )
+
+            skills = _find_all_skills()
+
+        assert [skill["name"] for skill in skills] == ["real-skill"]
+
+    def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            skills = _find_all_skills()
+
+        assert [s["name"] for s in skills] == ["knowledge-brain"]
+        assert skills[0]["category"] == "linked"
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -288,6 +340,23 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
 
+    def test_category_filter_finds_symlinked_category(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skills_list(category="linked")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["categories"] == ["linked"]
+        assert result["skills"][0]["name"] == "knowledge-brain"
+
 
 # ---------------------------------------------------------------------------
 # skill_view
@@ -303,6 +372,90 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
+
+    def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
+        # The on-disk directory ("alias-dir") differs from the skill's
+        # frontmatter name ("real-skill-name"). skills_list() exposes the
+        # frontmatter name, so skill_view(name) must resolve it too.
+        skill_dir = tmp_path / "alias-dir"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: real-skill-name\n"
+            "description: A skill whose directory name differs from its name.\n"
+            "---\n\n"
+            "# real-skill-name\n\n"
+            "Step 1: Do the thing.\n"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            raw = skill_view("real-skill-name")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Step 1" in result["content"]
+
+    def test_skill_view_applies_template_vars(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={"template_vars": True, "inline_shell": False},
+            ),
+        ):
+            skill_dir = _make_skill(
+                tmp_path,
+                "templated",
+                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh in ${HERMES_SESSION_ID}",
+            )
+            raw = skill_view("templated", task_id="session-123")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
+        assert "${HERMES_SKILL_DIR}" not in result["content"]
+
+    def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={
+                    "template_vars": True,
+                    "inline_shell": True,
+                    "inline_shell_timeout": 5,
+                },
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "dynamic",
+                body="Current date: !`printf 2026-04-24`",
+            )
+            raw = skill_view("dynamic")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Current date: 2026-04-24" in result["content"]
+        assert "!`printf 2026-04-24`" not in result["content"]
+
+    def test_skill_view_leaves_inline_shell_literal_when_disabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={"template_vars": True, "inline_shell": False},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "static",
+                body="Current date: !`printf SHOULD_NOT_RUN`",
+            )
+            raw = skill_view("static")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Current date: !`printf SHOULD_NOT_RUN`" in result["content"]
+        assert "Current date: SHOULD_NOT_RUN" not in result["content"]
 
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -368,6 +521,35 @@ class TestSkillView:
         assert result["related_skills_available"] == ["reuse-helper"]
         assert result["related_skills_missing"] == ["missing-helper"]
 
+    def test_view_related_environment_gated_skill_is_loadable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("agent.skill_utils._detect_environment", lambda env: False)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "kanban-helper",
+                frontmatter_extra="environments: [kanban]\n",
+            )
+            _make_skill(
+                tmp_path,
+                "tagged",
+                frontmatter_extra=(
+                    "related_skills: [kanban-helper, missing-helper]\n"
+                ),
+            )
+            listed_skills = _find_all_skills()
+            raw = skill_view("tagged")
+
+        listed_names = {skill["name"] for skill in listed_skills}
+        assert "kanban-helper" not in listed_names
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["related_skills_available"] == ["kanban-helper"]
+        assert result["related_skills_missing"] == ["missing-helper"]
+
     def test_view_nonexistent_skills_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nope"):
             raw = skill_view("anything")
@@ -402,6 +584,35 @@ class TestSkillView:
             raw = skill_view("active-skill")
         result = json.loads(raw)
         assert result["success"] is True
+
+    def test_view_finds_skill_in_symlinked_category_dir(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skill_view("knowledge-brain")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "knowledge-brain"
+
+    def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "zeta", category="z-cat")
+            _make_skill(tmp_path, "alpha", category="a-cat")
+            _make_skill(tmp_path, "beta", category="a-cat")
+
+            list_result = json.loads(skills_list())
+            view_result = json.loads(skill_view("missing-skill"))
+
+        assert view_result["success"] is False
+        assert view_result["available_skills"] == [
+            skill["name"] for skill in list_result["skills"]
+        ]
 
 
 class TestSkillViewSecureSetupOnLoad:
@@ -954,3 +1165,251 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestSkillViewCollisionDetection:
+    """Regression tests for skill_view name collision handling.
+
+    When a skill name resolves to multiple paths across the local skills
+    dir and external_dirs, skill_view must refuse to guess. Silent
+    shadowing — where ``/skills`` shows the local version but
+    ``skill_view`` loads the external one — is the bug class this guards
+    against. Reproduces with `skills.external_dirs` registered in
+    config.yaml and a same-name skill nested under a category locally.
+
+    Adapted from a regression suite originally proposed by @polkn in PR
+    #6136 (which used local-first precedence). The collision-refusal
+    behavior preserves the same protection without silently picking a
+    side, and gives the user an actionable hint (use the categorized
+    path) to recover.
+    """
+
+    def _patch_dirs(self, local_dir, external_dirs):
+        """Patch SKILLS_DIR (module-level) and get_external_skills_dirs at source."""
+        return (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=list(external_dirs),
+            ),
+        )
+
+    def test_nested_local_collides_with_top_level_external(self, tmp_path):
+        """The original bug scenario: nested local + top-level external,
+        same name. Now refuses with both paths surfaced."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "explore-codebase",
+            category="foundations/runtime",
+            body="LOCAL VERSION",
+        )
+        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("explore-codebase")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Ambiguous skill name 'explore-codebase'" in result["error"]
+        assert "matches" in result
+        assert len(result["matches"]) == 2
+        # Both paths surfaced
+        assert any("foundations/runtime" in p for p in result["matches"])
+        assert any("external" in p for p in result["matches"])
+        assert "hint" in result
+
+    def test_top_level_local_collides_with_external(self, tmp_path):
+        """Top-level local + top-level external with the same name also
+        refuses — same-name shadowing is ambiguous regardless of nesting."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "shared-name", body="LOCAL VERSION")
+        _make_skill(external_dir, "shared-name", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("shared-name")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 2
+
+    def test_collision_resolvable_via_categorized_path(self, tmp_path):
+        """User can recover from a collision by passing the full
+        categorized path — the bare name is ambiguous, the path is not."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "explore-codebase",
+            category="foundations/runtime",
+            body="LOCAL VERSION",
+        )
+        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("foundations/runtime/explore-codebase")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+
+    def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
+        """Supporting reference docs named <skill>.md are not skills.
+
+        A real-world regression had creative/sketch/SKILL.md become
+        unloadable because another skill carried
+        references/styles/sketch.md. Support files are loaded via
+        skill_view(skill, file_path=...), not as bare skill names.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "article-illustrator", category="creative")
+        support_file = (
+            local_dir
+            / "creative"
+            / "article-illustrator"
+            / "references"
+            / "styles"
+            / "sketch.md"
+        )
+        support_file.parent.mkdir(parents=True, exist_ok=True)
+        support_file.write_text("# Sketch style support doc\n")
+        _make_skill(local_dir, "sketch", category="creative", body="REAL SKETCH SKILL")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("sketch")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["path"] == "creative/sketch/SKILL.md"
+        assert "REAL SKETCH SKILL" in result["content"]
+
+    def test_reference_package_skill_md_is_not_active_skill(self, tmp_path):
+        """Curator-preserved package SKILL.md files under references stay data.
+
+        Umbrella consolidations may preserve an old skill as
+        references/old-skill-package/SKILL.md. That package must not appear in
+        skills_list/system prompts and must not resolve as skill_view("old-skill").
+        The package can still be opened explicitly through the umbrella's
+        file_path progressive-disclosure channel.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "umbrella", category="creative", body="UMBRELLA")
+        package = (
+            local_dir
+            / "creative"
+            / "umbrella"
+            / "references"
+            / "old-skill-package"
+        )
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "SKILL.md").write_text(
+            "---\nname: old-skill\ndescription: Preserved old skill.\n---\n\nOLD BODY\n"
+        )
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            names = {skill["name"] for skill in _find_all_skills()}
+            old_raw = skill_view("old-skill")
+            direct_package_raw = skill_view("creative/umbrella/references/old-skill-package")
+            package_raw = skill_view(
+                "umbrella", file_path="references/old-skill-package/SKILL.md"
+            )
+
+        assert "umbrella" in names
+        assert "old-skill" not in names
+        old_result = json.loads(old_raw)
+        assert old_result["success"] is False
+        assert "not found" in old_result["error"]
+        direct_package_result = json.loads(direct_package_raw)
+        assert direct_package_result["success"] is False
+        assert "not found" in direct_package_result["error"]
+        package_result = json.loads(package_raw)
+        assert package_result["success"] is True
+        assert "OLD BODY" in package_result["content"]
+
+    def test_external_skill_resolves_when_no_collision(self, tmp_path):
+        """External-only skills still resolve normally when there's no
+        local skill of the same name."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(external_dir, "external-only", body="EXTERNAL BODY")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("external-only")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "EXTERNAL BODY" in result["content"]
+
+    def test_two_externals_same_name_also_refuse(self, tmp_path):
+        """Collision detection is symmetric — two external dirs with
+        same-name skills also trigger the refusal."""
+        local_dir = tmp_path / "local"
+        ext_a = tmp_path / "ext_a"
+        ext_b = tmp_path / "ext_b"
+        local_dir.mkdir()
+        ext_a.mkdir()
+        ext_b.mkdir()
+
+        _make_skill(ext_a, "pr", body="EXT_A VERSION")
+        _make_skill(ext_b, "pr", body="EXT_B VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [ext_a, ext_b])
+        with p1, p2:
+            raw = skill_view("pr")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 2
+
+    def test_local_only_skill_loads_normally(self, tmp_path):
+        """Sanity: a single local skill (no external collision) loads
+        without any error."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "my-skill",
+            category="foundations/runtime",
+            body="LOCAL BODY",
+        )
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("my-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "LOCAL BODY" in result["content"]

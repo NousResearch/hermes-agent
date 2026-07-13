@@ -2,7 +2,14 @@ export interface ActiveTool {
   context?: string
   id: string
   name: string
+  verboseArgs?: string
   startedAt?: number
+}
+
+export interface TodoItem {
+  content: string
+  id: string
+  status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 
 export interface ActivityItem {
@@ -11,20 +18,80 @@ export interface ActivityItem {
   tone: 'error' | 'info' | 'warn'
 }
 
+export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
+
 export interface SubagentProgress {
+  apiCalls?: number
+  costUsd?: number
+  depth: number
   durationSeconds?: number
+  filesRead?: string[]
+  filesWritten?: string[]
   goal: string
   id: string
   index: number
+  inputTokens?: number
+  iteration?: number
+  model?: string
   notes: string[]
-  status: 'completed' | 'failed' | 'interrupted' | 'running'
+  outputTail?: SubagentOutputEntry[]
+  outputTokens?: number
+  parentId: null | string
+  reasoningTokens?: number
+  startedAt?: number
+  status: SubagentStatus
   summary?: string
   taskCount: number
   thinking: string[]
+  toolCount: number
   tools: string[]
+  toolsets?: string[]
+}
+
+export interface SubagentOutputEntry {
+  isError: boolean
+  preview: string
+  tool: string
+}
+
+export interface SubagentNode {
+  aggregate: SubagentAggregate
+  children: SubagentNode[]
+  item: SubagentProgress
+}
+
+export interface SubagentAggregate {
+  activeCount: number
+  costUsd: number
+  descendantCount: number
+  filesTouched: number
+  hotness: number
+  inputTokens: number
+  maxDepthFromHere: number
+  outputTokens: number
+  totalDuration: number
+  totalTools: number
+}
+
+export interface DelegationStatus {
+  active: {
+    depth?: number
+    goal?: string
+    model?: null | string
+    parent_id?: null | string
+    started_at?: number
+    status?: string
+    subagent_id?: string
+    tool_count?: number
+  }[]
+  max_concurrent_children?: number
+  max_spawn_depth?: number
+  paused: boolean
 }
 
 export interface ApprovalReq {
+  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  allowPermanent?: boolean
   command: string
   description: string
 }
@@ -46,7 +113,7 @@ export interface ClarifyReq {
 
 export interface Msg {
   info?: SessionInfo
-  kind?: 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData
   role: Role
   text: string
@@ -54,14 +121,27 @@ export interface Msg {
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
+  todos?: TodoItem[]
+  todoIncomplete?: boolean
+  todoCollapsedByDefault?: boolean
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
+// Per-section overrides for the agent details accordion.  Resolution order
+// at lookup time is: explicit `display.sections.<name>` → built-in
+// SECTION_DEFAULTS → global `details_mode`.  Today the built-in defaults
+// expand `thinking`/`tools` and hide `activity`; `subagents` falls through
+// to the global mode.  Any explicit value still wins for that one section.
+export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
+export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
+
 export interface McpServerStatus {
   connected: boolean
+  disabled?: boolean
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
   name: string
   tools: number
   transport: string
@@ -69,10 +149,17 @@ export interface McpServerStatus {
 
 export interface SessionInfo {
   cwd?: string
+  fast?: boolean
+  install_warning?: string
+  lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  profile_name?: string
+  reasoning_effort?: string
   release_date?: string
+  service_tier?: string
   skills: Record<string, string[]>
+  system_prompt?: string
   tools: Record<string, string[]>
   update_behind?: number | null
   update_command?: string
@@ -81,13 +168,18 @@ export interface SessionInfo {
 }
 
 export interface Usage {
+  active_subagents?: number
   calls: number
+  compressions?: number
   context_max?: number
   context_percent?: number
   context_used?: number
+  cost_status?: string
   cost_usd?: number
+  dev_credits_spent_micros?: number
   input: number
   output: number
+  reasoning?: number
   total: number
 }
 

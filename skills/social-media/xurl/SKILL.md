@@ -1,7 +1,7 @@
 ---
 name: xurl
-description: Interact with X/Twitter via xurl, the official X API CLI. Use for posting, replying, quoting, searching, timelines, mentions, likes, reposts, bookmarks, follows, DMs, media upload, and raw v2 endpoint access.
-version: 1.0.0
+description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
+version: 1.1.1
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -38,7 +38,7 @@ Critical rules when operating inside an agent/LLM session:
 
 - **Never** read, print, parse, summarize, upload, or send `~/.xurl` to LLM context.
 - **Never** ask the user to paste credentials/tokens into chat.
-- The user must fill `~/.xurl` with secrets manually on their own machine.
+- The user must fill `~/.xurl` with secrets manually on their own machine. In Docker, this must be the `~` seen by Hermes tool subprocesses; see the Docker note below.
 - **Never** recommend or execute auth commands with inline secrets in agent sessions.
 - **Never** use `--verbose` / `-v` in agent sessions — it can expose auth headers/tokens.
 - To verify credentials exist, only use: `xurl auth status`.
@@ -90,18 +90,39 @@ These steps must be performed by the user directly, NOT by the agent, because th
    ```bash
    xurl auth apps add my-app --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
    ```
-5. Authenticate:
+5. Authenticate (specify `--app` to bind the token to your app):
    ```bash
-   xurl auth oauth2
+   xurl auth oauth2 --app my-app
    ```
    (This opens a browser for the OAuth 2.0 PKCE flow.)
-6. Verify:
+
+   If X returns a `UsernameNotFound` error or 403 on the post-OAuth `/2/users/me` lookup, pass your handle explicitly (xurl v1.1.0+):
+   ```bash
+   xurl auth oauth2 --app my-app YOUR_USERNAME
+   ```
+   This binds the token to your handle and skips the broken `/2/users/me` call.
+6. Set the app as default so all commands use it:
+   ```bash
+   xurl auth default my-app
+   ```
+7. Verify:
    ```bash
    xurl auth status
    xurl whoami
    ```
 
 After this, the agent can use any command below without further setup. OAuth 2.0 tokens auto-refresh.
+
+> **Common pitfall:** If you omit `--app my-app` from `xurl auth oauth2`, the OAuth token is saved to the built-in `default` app profile — which has no client-id or client-secret. Commands will fail with auth errors even though the OAuth flow appeared to succeed. If you hit this, re-run `xurl auth oauth2 --app my-app` and `xurl auth default my-app`.
+
+> **Docker HOME pitfall:** In the official Hermes Docker layout, `/opt/data` is `HERMES_HOME`, but Hermes tool subprocesses use `/opt/data/home` as `HOME`. That means `~/.xurl` resolves to `/opt/data/home/.xurl` for Hermes-run `xurl` commands, not `/opt/data/.xurl`. Run the user setup with the same HOME:
+> ```bash
+> HOME=/opt/data/home xurl auth apps add my-app --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
+> HOME=/opt/data/home xurl auth oauth2 --app my-app YOUR_USERNAME
+> HOME=/opt/data/home xurl auth default my-app YOUR_USERNAME
+> HOME=/opt/data/home xurl auth status
+> ```
+> If `HOME=/opt/data xurl auth status` succeeds but `HOME=/opt/data/home xurl auth status` shows no apps or tokens, Hermes tool calls will not see the credentials.
 
 ---
 
@@ -169,6 +190,15 @@ xurl read https://x.com/user/status/1234567890
 xurl search "golang"
 xurl search "from:elonmusk" -n 20
 xurl search "#buildinpublic lang:en" -n 15
+```
+
+For X Articles, use raw API mode instead of the `read` shortcut. `xurl read`
+expects a post ID or post URL; do not put `read` before a `/2/tweets/...`
+endpoint. Request the `article` tweet field and ingest `data.article.plain_text`
+from the JSON response:
+
+```bash
+xurl --app APP_NAME '/2/tweets/2057909493250539891?expansions=author_id,attachments.media_keys,referenced_tweets.id&tweet.fields=created_at,lang,public_metrics,context_annotations,entities,possibly_sensitive,conversation_id,in_reply_to_user_id,referenced_tweets,article'
 ```
 
 ### Users, Timeline, Mentions
@@ -359,11 +389,27 @@ xurl --app staging /2/users/me             # one-off against staging
 ## Agent Workflow
 
 1. Verify prerequisites: `xurl --help` and `xurl auth status`.
-2. If auth is missing, stop and direct the user to the "One-Time User Setup" section — do NOT attempt to register apps or pass secrets yourself.
-3. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
-4. Confirm the target post/user and the user's intent before any write action (post, reply, like, repost, DM, follow, block, delete).
-5. Use JSON output directly — every response is already structured.
-6. Never paste `~/.xurl` contents back into the conversation.
+2. **Check default app has credentials.** Parse the `auth status` output. The default app is marked with `▸`. If the default app shows `oauth2: (none)` but another app has a valid oauth2 user, tell the user to run `xurl auth default <that-app>` to fix it. This is the most common setup mistake — the user added an app with a custom name but never set it as default, so xurl keeps trying the empty `default` profile.
+3. If auth is missing entirely, stop and direct the user to the "One-Time User Setup" section — do NOT attempt to register apps or pass secrets yourself.
+4. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
+5. Confirm the target post/user and the user's intent before any write action (post, reply, like, repost, DM, follow, block, delete).
+6. Use JSON output directly — every response is already structured.
+7. Never paste `~/.xurl` contents back into the conversation.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Auth errors after successful OAuth flow | Token saved to `default` app (no client-id/secret) instead of your named app | `xurl auth oauth2 --app my-app` then `xurl auth default my-app` |
+| `unauthorized_client` during OAuth | App type set to "Native App" in X dashboard | Change to "Web app, automated app or bot" in User Authentication Settings |
+| `UsernameNotFound` or 403 on `/2/users/me` right after OAuth | X not returning username reliably from `/2/users/me` | Re-run `xurl auth oauth2 --app my-app YOUR_USERNAME` (xurl v1.1.0+) to pass the handle explicitly |
+| 401 on every request | Token expired or wrong default app | Check `xurl auth status` — verify `▸` points to an app with oauth2 tokens |
+| `client-forbidden` / `client-not-enrolled` | X platform enrollment issue | Dashboard → Apps → Manage → Move to "Pay-per-use" package → Production environment |
+| `CreditsDepleted` | $0 balance on X API | Buy credits (min $5) in Developer Console → Billing |
+| `media processing failed` on image upload | Default category is `amplify_video` | Add `--category tweet_image --media-type image/png` |
+| Two "Client Secret" values in X dashboard | UI bug — first is actually Client ID | Confirm on the "Keys and tokens" page; ID ends in `MTpjaQ` |
 
 ---
 
@@ -374,7 +420,7 @@ xurl --app staging /2/users/me             # one-off against staging
 - **Token refresh:** OAuth 2.0 tokens auto-refresh. Nothing to do.
 - **Multiple apps:** Each app has isolated credentials/tokens. Switch with `xurl auth default` or `--app`.
 - **Multiple accounts per app:** Select with `-u / --username`, or set a default with `xurl auth default APP USER`.
-- **Token storage:** `~/.xurl` is YAML. Never read or send this file to LLM context.
+- **Token storage:** `~/.xurl` is YAML. In Docker, use the Hermes subprocess HOME (`/opt/data/home` in the official image) so tokens land under `/opt/data/home/.xurl`. Never read or send this file to LLM context.
 - **Cost:** X API access is typically paid for meaningful usage. Many failures are plan/permission problems, not code problems.
 
 ---

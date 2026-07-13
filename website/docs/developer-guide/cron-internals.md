@@ -102,9 +102,74 @@ tick()
 
 ### Gateway Integration
 
-In gateway mode, the scheduler tick is integrated into the gateway's main event loop. The gateway calls `scheduler.tick()` on its periodic maintenance cycle, which runs alongside message handling.
+In gateway mode, the cron **trigger** (the part that decides *when* a due job
+fires — "Axis B") is selected through a pluggable `CronScheduler` provider. The
+gateway calls `resolve_cron_scheduler()` (`cron/scheduler_provider.py`) and runs
+the resolved provider's `start()` in a dedicated background thread, alongside a
+separate gateway-housekeeping thread.
+
+The active provider is chosen by the `cron.provider` config key:
+
+- **empty (default)** → the built-in `InProcessCronScheduler`, which runs the
+  historical in-process loop calling `scheduler.tick()` every 60 seconds. This
+  is byte-identical to the pre-provider behavior.
+- **a named provider** (e.g. `chronos`, a managed-cron provider for
+  scale-to-zero deployments) → discovered from `plugins/cron/<name>/` or
+  `$HERMES_HOME/plugins/<name>/`.
+
+If a named provider is missing, fails to load, or reports `is_available() ==
+False`, the resolver falls back to the built-in with a warning — **cron is
+never left without a trigger.** The built-in provider lives in core
+(`cron/scheduler_provider.py`), not in `plugins/`, so the fallback can't be
+accidentally removed.
+
+What "firing" *means* (job execution + delivery) is unchanged and shared by all
+providers — it stays in `scheduler.run_job()` / `scheduler._deliver_result()`.
+A provider only controls the trigger, never execution.
 
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
+
+### Managed cron (Chronos) for scale-to-zero
+
+Hosted gateways can run the **Chronos** provider (`cron.provider: chronos`)
+instead of the built-in ticker. Chronos lets an idle gateway **scale to zero**
+and still fire cron jobs: rather than a 60-second in-process loop (which would
+keep the process awake), it asks Nous infrastructure to arm exactly **one
+managed one-shot per job at that job's real next-fire time**. At fire time Nous
+calls the gateway back over an authenticated webhook (`POST /api/cron/fire`);
+the gateway runs the job through the same `run_one_job` path as the built-in,
+then re-arms the next one-shot. Between fires the process can be fully stopped —
+it wakes only on a genuine fire, never on a periodic timer.
+
+The flow (the managed scheduler is provided by Nous; the agent holds no
+scheduler credentials):
+
+```
+create/update a cron job
+  → Chronos asks Nous to arm a one-shot at the job's next_run_at
+      (authenticated with the agent's existing Nous token)
+  → at fire time Nous calls the gateway: POST {callback_url}/api/cron/fire
+      (authenticated with a short-lived, purpose-scoped Nous-minted JWT)
+  → the gateway verifies the token, claims the job (store compare-and-set so
+    multi-replica deployments fire at-most-once), runs it, and re-arms the next
+    one-shot
+```
+
+Config (all non-secret; on hosted agents Nous sets these at provision time):
+
+| key | meaning |
+|---|---|
+| `cron.provider` | `chronos` to activate (empty = built-in ticker) |
+| `cron.chronos.portal_url` | Nous base URL (arming + the fire-token issuer) |
+| `cron.chronos.callback_url` | the gateway's own public base URL for inbound fires |
+| `cron.chronos.expected_audience` | this agent's fire-token audience |
+| `cron.chronos.nas_jwks_url` | key set for verifying the inbound fire token |
+
+If Chronos is misconfigured or the agent isn't logged into Nous,
+`resolve_cron_scheduler()` falls back to the built-in ticker (logged warning) —
+cron never loses its trigger. Recurring jobs re-arm after each fire; `repeat`-N
+jobs stop cleanly when the count is exhausted (no orphaned one-shot). The full
+agent↔Nous wire contract lives in `docs/chronos-managed-cron-contract.md`.
 
 ### Fresh Session Isolation
 
@@ -141,12 +206,14 @@ import requests, json
 # Print summary to stdout — agent analyzes and reports
 ```
 
-The script timeout defaults to 120 seconds. `_get_script_timeout()` resolves the limit through a three-layer chain:
+The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` resolves the limit through a three-layer chain:
 
 1. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
 2. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`
 3. **Config** — `cron.script_timeout_seconds` in `config.yaml` (read via `load_config()`)
-4. **Default** — 120 seconds
+4. **Default** — 3600 seconds (1 hour)
+
+This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
 ### Provider Recovery
 
@@ -159,30 +226,38 @@ This mirrors the gateway's behavior — without it, cron agents would fail on ra
 
 ## Delivery Model
 
-Cron job results can be delivered to any supported platform:
+Cron job results can be delivered to any supported platform.
+
+A bare platform name (`slack`, `telegram`, …) delivers to that platform's configured **home channel**. To target a **specific** destination instead, append a target after a colon: `platform:<target>`. The target is resolved at fire time (not when the job is created), so a job can name a destination on a platform that isn't connected yet and start delivering once it comes online.
+
+Most platforms also accept an optional thread/topic as a third segment: `platform:<chat_id>:<thread_id>`.
 
 | Target | Syntax | Example |
 |--------|--------|---------|
 | Origin chat | `origin` | Deliver to the chat where the job was created |
 | Local file | `local` | Save to `~/.hermes/cron/output/` |
-| Telegram | `telegram` or `telegram:<chat_id>` | `telegram:-1001234567890` |
-| Discord | `discord` or `discord:#channel` | `discord:#engineering` |
-| Slack | `slack` | Deliver to Slack home channel |
-| WhatsApp | `whatsapp` | Deliver to WhatsApp home |
-| Signal | `signal` | Deliver to Signal |
-| Matrix | `matrix` | Deliver to Matrix home room |
-| Mattermost | `mattermost` | Deliver to Mattermost home |
-| Email | `email` | Deliver via email |
-| SMS | `sms` | Deliver via SMS |
-| Home Assistant | `homeassistant` | Deliver to HA conversation |
-| DingTalk | `dingtalk` | Deliver to DingTalk |
-| Feishu | `feishu` | Deliver to Feishu |
-| WeCom | `wecom` | Deliver to WeCom |
-| Weixin | `weixin` | Deliver to Weixin (WeChat) |
-| BlueBubbles | `bluebubbles` | Deliver to iMessage via BlueBubbles |
-| QQ Bot | `qqbot` | Deliver to QQ (Tencent) via Official API v2 |
+| Telegram | `telegram`, `telegram:<chat_id>`, `telegram:<chat_id>:<thread_id>`, `telegram:@username` | `telegram:-1001234567890:17585` |
+| Discord | `discord`, `discord:#channel`, `discord:<channel_id>`, `discord:<channel_id>:<thread_id>` | `discord:#engineering` |
+| Slack | `slack`, `slack:#channel`, `slack:<channel_id>`, `slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
+| Matrix | `matrix`, `matrix:<!room_id:server>`, `matrix:<@user:server>` | `matrix:!abc123:example.org` |
+| Feishu | `feishu`, `feishu:<chat_id>`, `feishu:<chat_id>:<thread_id>` | `feishu:oc_abc123def` |
+| WhatsApp | `whatsapp`, `whatsapp:<jid>`, `whatsapp:+<E.164>` | `whatsapp:123456@g.us` |
+| Signal | `signal`, `signal:group:<id>`, `signal:+<E.164>` | `signal:group:aBcD==` |
+| SMS | `sms`, `sms:+<E.164>` | `sms:+<E.164 number>` |
+| Email | `email`, `email:<address>` | `email:alerts@example.com` |
+| Weixin | `weixin`, `weixin:<wxid>` | `weixin:wxid_abc123` |
+| Mattermost | `mattermost` or `mattermost:<channel_id>` | Bare name delivers to Mattermost home |
+| Home Assistant | `homeassistant` or `homeassistant:<conversation>` | Bare name delivers to HA conversation |
+| DingTalk | `dingtalk` or `dingtalk:<chat_id>` | Bare name delivers to DingTalk |
+| WeCom | `wecom` or `wecom:<chat_id>` | Bare name delivers to WeCom |
+| BlueBubbles | `bluebubbles` or `bluebubbles:<chat_guid>` | Bare name delivers to iMessage via BlueBubbles |
+| QQ Bot | `qqbot` or `qqbot:<chat_id>` | Bare name delivers to QQ (Tencent) via Official API v2 |
 
-For Telegram topics, use the format `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`).
+Platforms in the first group have explicit, validated target syntax — named channels (`#channel`), topics/threads, room/user IDs, group IDs, or phone numbers. The remaining platforms accept the generic `platform:<chat_id>` form (the value after the colon is used verbatim as the destination ID); a bare platform name always delivers to the home channel.
+
+**Named channels** (`slack:#engineering`, `discord:#engineering`, or a friendly name like `slack:engineering`) are resolved against the channel directory the gateway builds from connected adapters, so the gateway must have discovered the channel for name resolution to succeed; raw IDs (`slack:C0123ABCD45`) always work.
+
+For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`). For **Slack threads**, the third segment is the parent message's `thread_ts` (e.g., `slack:C0123ABCD45:1700000000.000100`), so it only applies when replying under an existing message.
 
 ### Response Wrapping
 
@@ -205,7 +280,7 @@ Cron-run sessions have the `cronjob` toolset disabled. This prevents:
 
 ## Locking
 
-The scheduler uses file-based locking to prevent overlapping ticks from executing the same due-job batch twice. This is important in gateway mode where multiple maintenance cycles could overlap if a previous tick takes longer than the tick interval.
+The scheduler uses cross-process file-based locking (`fcntl.flock` on Unix, `msvcrt.locking` on Windows) to prevent overlapping ticks from executing the same due-job batch twice — even between the gateway's in-process ticker and a standalone `hermes cron` / manual `tick()` call. If the lock cannot be acquired, `tick()` returns 0 immediately.
 
 ## CLI Interface
 
@@ -223,6 +298,6 @@ hermes cron remove <job_id>         # Delete a job
 
 ## Related Docs
 
-- [Cron Feature Guide](/docs/user-guide/features/cron)
+- [Cron Feature Guide](/user-guide/features/cron)
 - [Gateway Internals](./gateway-internals.md)
 - [Agent Loop Internals](./agent-loop.md)

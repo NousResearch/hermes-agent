@@ -159,6 +159,9 @@ export const hu: Translations = {
     failedToDeleteSelected: "Nem sikerült törölni a kijelölt munkameneteket",
     resumeInChat: "Folytatás a csevegésben",
     newChat: "Új csevegés",
+    copyId: "Munkamenet-azonosító másolása",
+    idCopied: "Munkamenet-azonosító másolva",
+    copyIdFailed: "Nem sikerült a munkamenet-azonosító másolása",
     previousPage: "Előző oldal",
     nextPage: "Következő oldal",
     roles: {

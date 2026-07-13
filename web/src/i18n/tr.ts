@@ -159,6 +159,9 @@ export const tr: Translations = {
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
     newChat: "Yeni sohbet",
+    copyId: "Oturum ID'sini kopyala",
+    idCopied: "Oturum ID'si kopyalandı",
+    copyIdFailed: "Oturum ID'si kopyalanamadı",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
     roles: {

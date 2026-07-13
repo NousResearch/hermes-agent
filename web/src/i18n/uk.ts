@@ -159,6 +159,9 @@ export const uk: Translations = {
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
     newChat: "Новий чат",
+    copyId: "Скопіювати ID сесії",
+    idCopied: "ID сесії скопійовано",
+    copyIdFailed: "Не вдалося скопіювати ID сесії",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
     roles: {

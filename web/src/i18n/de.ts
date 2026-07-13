@@ -159,6 +159,9 @@ export const de: Translations = {
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
     newChat: "Neuer Chat",
+    copyId: "Sitzungs-ID kopieren",
+    idCopied: "Sitzungs-ID kopiert",
+    copyIdFailed: "Sitzungs-ID konnte nicht kopiert werden",
     previousPage: "Vorherige Seite",
     nextPage: "Nächste Seite",
     roles: {

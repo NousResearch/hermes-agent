@@ -157,6 +157,9 @@ export const zh: Translations = {
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
     newChat: "新对话",
+    copyId: "复制会话 ID",
+    idCopied: "已复制会话 ID",
+    copyIdFailed: "复制会话 ID 失败",
     previousPage: "上一页",
     nextPage: "下一页",
     roles: {

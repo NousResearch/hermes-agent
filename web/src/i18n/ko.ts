@@ -159,6 +159,9 @@ export const ko: Translations = {
     failedToDeleteSelected: "선택한 세션 삭제에 실패했습니다",
     resumeInChat: "채팅에서 다시 시작",
     newChat: "새 채팅",
+    copyId: "세션 ID 복사",
+    idCopied: "세션 ID가 복사되었습니다",
+    copyIdFailed: "세션 ID 복사에 실패했습니다",
     previousPage: "이전 페이지",
     nextPage: "다음 페이지",
     roles: {

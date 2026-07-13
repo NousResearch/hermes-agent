@@ -631,6 +631,7 @@ def _build_anthropic_client_with_bearer_hook(
     base_url: str = None,
     timeout: float = None,
     *,
+    default_headers: Dict[str, str] = None,
     drop_context_1m_beta: bool = False,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
@@ -648,6 +649,11 @@ def _build_anthropic_client_with_bearer_hook(
     ``AnthropicError`` at construction if neither ``api_key`` nor
     ``auth_token`` is set — but the hook overrides it per-request so
     the placeholder value never reaches Azure.
+
+    If *default_headers* is provided, these are merged with headers from
+    the matching ``custom_providers[].extra_headers`` entry so callable-token
+    clients (e.g. Azure Foundry Entra ID) also receive configured custom
+    headers.
     """
     _anthropic_sdk = _get_anthropic_sdk()
     if _anthropic_sdk is None:
@@ -698,6 +704,22 @@ def _build_anthropic_client_with_bearer_hook(
     )
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Merge provider-level extra_headers (upstream contract) and caller-supplied
+    # default_headers (propagated from main_runtime) so callable-token clients
+    # also receive configured custom headers.
+    _carried_headers: Dict[str, str] = {}
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        _carried_headers = get_custom_provider_extra_headers(normalized_base_url or "")
+    except Exception:
+        pass
+    if default_headers:
+        _carried_headers = merge_default_headers(_carried_headers, default_headers)
+    if _carried_headers:
+        kwargs["default_headers"] = merge_default_headers(
+            kwargs.get("default_headers"), _carried_headers,
+        )
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
@@ -754,6 +776,7 @@ def build_anthropic_client(
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
+            default_headers=default_headers,
             drop_context_1m_beta=drop_context_1m_beta,
         )
 
@@ -762,7 +785,16 @@ def build_anthropic_client(
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
-    custom_headers = get_model_custom_headers()
+    # Read provider-level extra_headers (upstream contract) and also fall back
+    # to model.custom_headers for backward compat with pre-existing configs.
+    # Both are merged with caller-supplied default_headers.
+    _provider_headers = {}
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        _provider_headers = get_custom_provider_extra_headers(normalized_base_url or "")
+    except Exception:
+        pass
+    custom_headers = merge_default_headers(get_model_custom_headers(), _provider_headers)
     if default_headers:
         custom_headers = merge_default_headers(custom_headers, default_headers)
     if normalized_base_url:
@@ -798,10 +830,14 @@ def build_anthropic_client(
         # to be recognized as a valid Coding Agent. Without it, returns 403.
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
         kwargs["api_key"] = api_key
-        kwargs["default_headers"] = {
-            "User-Agent": "claude-code/0.1.0",
-            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
-        }
+        kwargs["default_headers"] = merge_default_headers(
+            {
+                "User-Agent": "claude-code/0.1.0",
+                **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} ),
+            },
+            custom_headers,
+            default_headers,
+        )
     elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints

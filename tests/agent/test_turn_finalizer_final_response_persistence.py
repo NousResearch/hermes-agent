@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any
 
 from agent.turn_finalizer import finalize_turn
 
@@ -30,7 +31,10 @@ class FakeAgent:
         self._skill_nudge_interval = 0
         self._iters_since_skill = 0
         self.valid_tool_names = []
-        self.persisted_messages = None
+        self.persisted_messages: list[dict[str, Any]] | None = None
+        self._persist_user_message_idx: int | None = None
+        self._persist_user_message_override: Any = None
+        self._persist_user_message_timestamp: float | None = None
 
     def _handle_max_iterations(self, messages, api_call_count):
         raise AssertionError("not expected")
@@ -56,9 +60,10 @@ class FakeAgent:
         self.persisted_messages = [dict(message) for message in messages]
 
     def _apply_persist_user_message_override(self, messages):
-        from run_agent import AIAgent
-
-        return AIAgent._apply_persist_user_message_override(self, messages)
+        idx = self._persist_user_message_idx
+        override = self._persist_user_message_override
+        if idx is not None and override is not None:
+            messages[idx]["content"] = override
 
     def _file_mutation_verifier_enabled(self):
         return False
@@ -104,6 +109,7 @@ def test_finalizer_restores_clean_api_local_text_before_return(monkeypatch):
         _turn_exit_reason="text_response(finish_reason=stop)",
     )
 
+    assert agent.persisted_messages is not None
     assert agent.persisted_messages[0]["content"] == "clean prompt"
     assert result["messages"][0]["content"] == "clean prompt"
 
@@ -144,6 +150,7 @@ def test_finalizer_restores_clean_api_local_multimodal_before_return(monkeypatch
         _turn_exit_reason="text_response(finish_reason=stop)",
     )
 
+    assert agent.persisted_messages is not None
     assert agent.persisted_messages[0]["content"] == clean_content
     assert result["messages"][0]["content"] == clean_content
 

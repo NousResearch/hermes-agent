@@ -28,6 +28,7 @@ from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 import rich
+from rich.text import Text
 
 
 _PROVIDER_ENV_HINTS = (
@@ -176,17 +177,25 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
 
 
 def check_ok(text: str, detail: str = ""):
-    rich.print(f"  {rich_color('✓', RichColors.GREEN)} {text}" + (f" {rich_color(detail, RichColors.DIM)}" if detail else ""))
+    msg = ["  ", rich_color('✓', RichColors.GREEN), " ", text]
+    if detail:
+        msg.extend([" ", rich_color(detail, RichColors.DIM)])
+    rich.print(Text.assemble(*msg))
 
 def check_warn(text: str, detail: str = ""):
-    rich.print(f"  {rich_color('⚠', RichColors.YELLOW)} {text}" + (f" {rich_color(detail, RichColors.DIM)}" if detail else ""))
+    msg = ["  ", rich_color('⚠', RichColors.YELLOW), " ", text]
+    if detail:
+        msg.extend([" ", rich_color(detail, RichColors.DIM)])
+    rich.print(Text.assemble(*msg))
 
 def check_fail(text: str, detail: str = ""):
-    rich.print(f"  {rich_color('✗', RichColors.RED)} {text}" + (f" {rich_color(detail, RichColors.DIM)}" if detail else ""))
+    msg = ["  ", rich_color('✗', RichColors.RED), " ", text]
+    if detail:
+        msg.extend([" ", rich_color(detail, RichColors.DIM)])
+    rich.print(Text.assemble(*msg))
 
 def check_info(text: str):
-    rich.print(f"    {rich_color('→', RichColors.CYAN)} {text}")
-
+    rich.print(Text.assemble("    ", rich_color('→', RichColors.CYAN), text))
 
 def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
@@ -578,7 +587,7 @@ def run_doctor(args):
                 # check_fail header so it reads as a single section.
                 for line in full_remediation_text(hit):
                     if line:
-                        rich.print(f"    {rich_color(line, RichColors.YELLOW)}")
+                        rich.print(Text.assemble("    ", rich_color(line, RichColors.YELLOW)))
                     else:
                         rich.print()
                 # Funnel into the action list so the summary block surfaces it
@@ -2125,8 +2134,7 @@ def run_doctor(args):
 
     # Print a single status line so users see something happening, then
     # fan out. ``\r`` clears it once the first real result line lands.
-    rich.print(f"  {rich_color(f'Running {len(_probes)} connectivity checks in parallel…', RichColors.DIM)}",
-          end="", flush=True)
+    rich.print(Text.assemble("  ", rich_color(f'Running {len(_probes)} connectivity checks in parallel…', RichColors.DIM)), end="", flush=True)
 
     # Disable boto3's EC2 instance-metadata-service probe for the duration
     # of the parallel block. boto's default credential chain tries

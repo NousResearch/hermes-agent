@@ -1,7 +1,6 @@
 import io
 import pytest
 from unittest.mock import patch
-from argparse import Namespace
 from rich.console import Console
 
 from hermes_cli.doctor import check_ok, check_warn, check_fail, check_info, _section
@@ -9,18 +8,19 @@ from hermes_cli.doctor import check_ok, check_warn, check_fail, check_info, _sec
 
 @pytest.fixture
 def capture_console():
-    """Fixture to intercept global rich.print calls and return clean strings instantly.
+    """Fixture to intercept global rich.print calls and return strings with ANSI rendering.
 
-    This uses an in-memory StringIO buffer to bypass asynchronous/context-manager
-    race conditions entirely.
+    This uses an in-memory StringIO buffer and forces terminal colors to test
+    rich styling bypass asynchronous/context-manager race conditions entirely.
     """
     string_io = io.StringIO()
-    test_console = Console(file=string_io, force_terminal=False, color_system=None, width=80)
+    test_console = Console(file=string_io, force_terminal=True, color_system="truecolor", width=80)
 
     def mock_rich_print(*args, **kwargs):
         test_console.print(*args, **kwargs)
 
-    with patch("rich.print", side_effect=mock_rich_print):
+    with patch("rich.print", side_effect=mock_rich_print), \
+        patch("hermes_cli.colors.should_use_color", return_value=True):
         yield lambda: string_io.getvalue()
 
 
@@ -35,6 +35,7 @@ def test_check_ok_without_detail(capture_console):
     output = capture_console()
     assert "System healthy" in output
     assert "✓" in output
+    assert "\x1b[" in output  # Verify rich rendering (colors/styling) is applied
 
 
 def test_check_ok_with_detail(capture_console):
@@ -45,6 +46,7 @@ def test_check_ok_with_detail(capture_console):
     assert "System healthy" in output
     assert "v1.0.0" in output
     assert "✓" in output
+    assert "\x1b[" in output  # Verify rich rendering
 
 
 def test_check_warn(capture_console):
@@ -55,6 +57,7 @@ def test_check_warn(capture_console):
     assert "High memory usage" in output
     assert "(85%)" in output
     assert "⚠" in output
+    assert "\x1b[" in output  # Verify rich rendering
 
 
 def test_check_fail(capture_console):
@@ -65,6 +68,7 @@ def test_check_fail(capture_console):
     assert "Missing config" in output
     assert "config.yaml not found" in output
     assert "✗" in output
+    assert "\x1b[" in output  # Verify rich rendering
 
 
 def test_check_info(capture_console):
@@ -74,6 +78,7 @@ def test_check_info(capture_console):
     output = capture_console()
     assert "Run setup command" in output
     assert "→" in output
+    assert "\x1b[" in output  # Verify rich rendering
 
 
 # ==============================================================================
@@ -87,3 +92,4 @@ def test_section_formatting(capture_console):
     output = capture_console()
     assert "System Requirements" in output
     assert "◆" in output
+    assert "\x1b[" in output  # Verify rich rendering

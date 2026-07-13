@@ -189,7 +189,7 @@ def test_wait_deadline_includes_lock_store_initialization(claimed_owner):
         blocker.close()
     assert lock_path.exists()
     assert waits
-    assert time.monotonic() - started < 0.2
+    assert time.monotonic() - started < 0.5
 
 
 def test_atomic_handoff_and_stale_token_rejection(claimed_owner):

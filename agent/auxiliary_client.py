@@ -6297,6 +6297,44 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _unwrap_custom_provider_response(response: Any) -> Optional[Any]:
+    """Unwrap a custom-provider response envelope stored in model_extra.
+
+    Some providers (e.g. api.cline.bot) wrap the OpenAI-compatible ChatCompletion
+    payload in an envelope like ``{"data": {choices: [...], ...}, "success": true}``.
+    The OpenAI SDK parses this via ``model_construct``, producing a ChatCompletion
+    with ``choices=None`` because ``model_extra`` contains the ``data`` dict while
+    the top-level ``choices`` was never present. The real response lives at
+    ``model_extra["data"]``.
+
+    Returns the unwrapped ChatCompletion if a ``data`` wrapper was detected,
+    or ``None`` if the response is already in standard shape.
+
+    See #63408.
+    """
+    # Use duck-typing: check for model_extra attribute (Pydantic v2 extra fields).
+    # ChatCompletion is NOT imported at module top (lazy-load pattern), so avoid
+    # isinstance which would require a lazy import for the type check alone.
+    if not hasattr(response, "model_extra"):
+        return None
+    try:
+        extra = response.model_extra
+    except Exception:
+        return None
+    if not isinstance(extra, dict):
+        return None
+    inner_data = extra.get("data")
+    if not isinstance(inner_data, dict):
+        return None
+    # The inner dict must contain the fields that make a valid ChatCompletion.
+    # If even after unwrapping it doesn't, let normal validation handle the error.
+    try:
+        from openai.types.chat import ChatCompletion as _CC
+        return _CC.model_validate(inner_data)
+    except Exception:
+        return None
+
+
 def _validate_llm_response(response: Any, task: str = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -6310,6 +6348,14 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    # Unwrap custom-provider response wrappers (e.g. {"data": {choices: [...], ...}, "success": true}).
+    # Some providers (api.cline.bot) wrap the OpenAI-compatible payload in an envelope. The OpenAI SDK
+    # parses this into a ChatCompletion with choices=None and the real data in model_extra["data"].
+    # Detect and unwrap it before validation. See #63408.
+    unwrapped = _unwrap_custom_provider_response(response)
+    if unwrapped is not None:
+        response = unwrapped
+
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:

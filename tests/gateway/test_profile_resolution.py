@@ -8,6 +8,7 @@ import pytest
 
 from gateway.session import SessionSource
 from gateway.run import GatewayRunner
+from gateway.profile_routing import ProfileRoute
 
 
 @pytest.fixture
@@ -28,6 +29,22 @@ def discord_source():
         platform=MagicMock(value="discord"),
         chat_id="123456",
         guild_id="789",
+        thread_id=None,
+        parent_chat_id=None,
+    )
+
+
+@pytest.fixture
+def telegram_source():
+    """Create a basic Telegram SessionSource for testing.
+
+    Telegram (like Slack/Feishu/etc.) has no ``guild_id`` — only ``chat_id``.
+    Used to prove profile routing is platform-generic, not Discord-only.
+    """
+    return SessionSource(
+        platform=MagicMock(value="telegram"),
+        chat_id="-1001234567890",
+        guild_id=None,
         thread_id=None,
         parent_chat_id=None,
     )
@@ -255,3 +272,62 @@ class TestRoutingConsultation:
                 
                 # Should NOT have called routing
                 mock_runner._profile_name_for_source.assert_not_called()
+
+
+class TestNonDiscordProfileRouting:
+    """Profile routing must be platform-generic, not Discord-only.
+
+    Regression coverage for the ``gateway_runner`` injection gap: previously
+    only Discord's adapter pre-declared ``gateway_runner``, so only Discord
+    ever had ``build_source`` call ``_profile_name_for_source``. Telegram /
+    Feishu / Slack / etc. silently fell through to the default profile. These
+    tests pin the resolution half for a non-Discord platform (Telegram).
+    """
+
+    def test_telegram_route_resolves(self, mock_runner, telegram_source):
+        """A configured Telegram route resolves to its profile via the real
+        ``_profile_name_for_source`` (bound onto the mock runner)."""
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="tg", platform="telegram", profile="tg-profile",
+                         chat_id="-1001234567890"),
+        ]
+        telegram_source.profile = None
+
+        assert mock_runner._profile_name_for_source(telegram_source) == "tg-profile"
+
+    def test_telegram_no_route_returns_none(self, mock_runner, telegram_source):
+        """With no matching Telegram route, resolution returns None (caller
+        falls back to the default/active profile)."""
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="dc", platform="discord", profile="dc-profile",
+                         chat_id="123456"),
+        ]
+        telegram_source.profile = None
+
+        assert mock_runner._profile_name_for_source(telegram_source) is None
+
+
+class TestGatewayRunnerInjection:
+    """``BasePlatformAdapter`` declares ``gateway_runner`` so the gateway's
+    unconditional injection reaches every platform adapter — the foundation
+    that makes the routing in TestNonDiscordProfileRouting reachable at runtime.
+    """
+
+    def test_base_adapter_declares_gateway_runner(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        # Class-level attribute exists and defaults to None.
+        assert hasattr(BasePlatformAdapter, "gateway_runner")
+        assert BasePlatformAdapter.gateway_runner is None
+
+    def test_subclass_inherits_gateway_runner(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        class _ToyAdapter(BasePlatformAdapter):
+            pass
+
+        # No manual declaration — yet the attribute is inherited from the base,
+        # so the gateway's ``adapter.gateway_runner = self`` injection reaches
+        # every adapter, not just the ones that pre-declared it (Discord).
+        assert hasattr(_ToyAdapter, "gateway_runner")
+        assert _ToyAdapter.gateway_runner is None

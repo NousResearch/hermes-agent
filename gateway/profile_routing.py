@@ -80,10 +80,14 @@ class ProfileRoute:
         parent_chat_id: Optional[str] = None,
     ) -> bool:
         """Return True if this route matches the given source fields.
-        
-        Supports hierarchical matching for Discord forums:
+
+        All configured discriminators are matched conjunctively (AND): every
+        discriminator that the route declares must hold. ``chat_id`` supports
+        hierarchical matching for Discord forums/threads:
         - Direct channel match: chat_id == route.chat_id
         - Thread in channel: parent_chat_id == route.chat_id
+        A route declaring both ``guild_id`` and ``chat_id`` requires both to
+        match (a chat match alone does not satisfy a guild constraint).
         """
         if not self.enabled:
             return False
@@ -91,20 +95,8 @@ class ProfileRoute:
             return False
         if self.thread_id and self.thread_id != thread_id:
             return False
-        
-        # Hierarchical chat_id matching
-        if self.chat_id:
-            # Direct match
-            if self.chat_id == chat_id:
-                return True
-            # Parent match (thread or direct child)
-            if self.chat_id == parent_chat_id:
-                return True
-        
-        # If chat_id was specified but didn't match any level, fail
-        if self.chat_id:
+        if self.chat_id and self.chat_id != chat_id and self.chat_id != parent_chat_id:
             return False
-        
         if self.guild_id and self.guild_id != guild_id:
             return False
         return True

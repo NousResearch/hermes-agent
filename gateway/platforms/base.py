@@ -2353,6 +2353,16 @@ class BasePlatformAdapter(ABC):
     # generic seam; Slack is merely the first consumer).
     supports_inchannel_continuable: bool = False
 
+    # Back-reference to the running ``GatewayRunner``, injected by
+    # ``gateway/run.py`` after the adapter is created. Adapters consume it via
+    # ``getattr(self, "gateway_runner", None)`` for cross-platform delivery and
+    # — critically — for inbound profile routing: ``build_source`` resolves the
+    # target profile through ``runner._profile_name_for_source(...)``. Declaring
+    # it on the base (rather than only on adapters that happen to pre-declare
+    # it) means EVERY platform adapter receives the injection, so profile
+    # routing is platform-generic instead of Discord-only.
+    gateway_runner = None  # type: ignore[assignment]  # set by gateway/run.py
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform

@@ -433,7 +433,10 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
-        provider = getattr(state.agent, "provider", None)
+        provider = (
+            getattr(state.agent, "_original_provider", None)
+            or getattr(state.agent, "provider", None)
+        )
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
         if isinstance(provider, str) and provider.strip():
@@ -654,6 +657,16 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        # Preserve the original requested provider (e.g. "custom:anthropic") so
+        # _persist() can store it and _restore() can re-resolve the correct
+        # custom_providers entry.  agent.provider is the normalized form (e.g.
+        # "custom") which is insufficient for looking up the named entry.
+        try:
+            agent._original_provider = (
+                runtime.get("requested_provider") or requested_provider or config_provider
+            )
+        except NameError:
+            pass  # runtime never assigned — exception above
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the
         # editor/session cwd instead of the Hermes daemon's process cwd.

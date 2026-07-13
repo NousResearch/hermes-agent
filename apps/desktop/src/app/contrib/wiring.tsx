@@ -409,15 +409,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // A profile switch/create drops to a fresh new-session draft so the
   // previously open session doesn't bleed across contexts. Skip initial value.
   const freshSessionRequest = useStore($freshSessionRequest)
-  const lastFreshRef = useRef(freshSessionRequest)
+  const lastFreshTokenRef = useRef(freshSessionRequest?.token ?? 0)
 
   useEffect(() => {
-    if (freshSessionRequest === lastFreshRef.current) {
+    if (!freshSessionRequest || freshSessionRequest.token === lastFreshTokenRef.current) {
       return
     }
 
-    lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
+    lastFreshTokenRef.current = freshSessionRequest.token
+    const { workspaceTarget } = freshSessionRequest
+
+    startFreshSessionDraft(workspaceTarget === undefined ? undefined : { workspaceTarget })
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's

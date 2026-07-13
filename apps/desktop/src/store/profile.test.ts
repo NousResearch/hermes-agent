@@ -19,9 +19,19 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
-  await import('./profile')
+const {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profiles,
+  $showAllProfiles,
+  ensureGatewayProfile,
+  newSessionInProfile,
+  prewarmProfileBackend,
+  refreshProfiles,
+  selectProfile
+} = await import('./profile')
 
+const { $projectScope, ALL_PROJECTS } = await import('./project-scope')
 const { $connection } = await import('./session')
 const { queryClient } = await import('@/lib/query-client')
 const { getProfiles } = await import('@/hermes')
@@ -50,6 +60,8 @@ beforeEach(() => {
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $showAllProfiles.set(false)
+  $projectScope.set(ALL_PROJECTS)
   $connection.set(localConn())
   $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
@@ -150,6 +162,41 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     openGatewayForProfile.mockRejectedValueOnce(new Error('spawn failed'))
 
     expect(() => prewarmProfileBackend('warm-failing')).not.toThrow()
+  })
+})
+
+describe('profile switch project isolation', () => {
+  it('clears the prior project scope and detaches the fresh draft before swapping gateways', () => {
+    $activeGatewayProfile.set('learning')
+    $projectScope.set('p_learning_ops')
+    const before = $freshSessionRequest.get()?.token ?? 0
+
+    selectProfile('default')
+
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    expect($freshSessionRequest.get()).toEqual({ token: before + 1, workspaceTarget: null })
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('default')
+  })
+
+  it('keeps the current project when the active profile is reselected', () => {
+    $projectScope.set('p_default_ops')
+    const before = $freshSessionRequest.get()
+
+    selectProfile('default')
+
+    expect($projectScope.get()).toBe('p_default_ops')
+    expect($freshSessionRequest.get()).toBe(before)
+  })
+
+  it('detaches a per-profile new session from the previously entered project', () => {
+    $projectScope.set('p_learning_ops')
+    const before = $freshSessionRequest.get()?.token ?? 0
+
+    newSessionInProfile('health')
+
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    expect($freshSessionRequest.get()).toEqual({ token: before + 1, workspaceTarget: null })
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('health')
   })
 })
 

@@ -639,12 +639,18 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
         processed = run_one_job(job)
-        refreshed = get_job(job_id) or {}
-        ok = refreshed.get("last_status") == "ok"
+        refreshed = get_job(job_id)
+        if refreshed is None and processed:
+            # One-shot jobs (repeat=1) are auto-removed by mark_job_run after
+            # a successful completion.  Absence after a processed run means the
+            # job completed and was cleaned up — not a failure.
+            return {"claimed": True, "success": True, "error": None}
+        _r = refreshed or {}
+        ok = _r.get("last_status") == "ok"
         return {
             "claimed": True,
             "success": bool(processed and ok),
-            "error": refreshed.get("last_error"),
+            "error": _r.get("last_error"),
         }
 
     except Exception as e:

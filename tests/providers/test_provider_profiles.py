@@ -1,7 +1,26 @@
 """Tests for the provider module registry and profiles."""
 
-from providers import get_provider_profile, _REGISTRY
+import pytest
+import providers
+from providers import get_provider_profile, _ALIASES, _REGISTRY, register_provider
 from providers.base import ProviderProfile, OMIT_TEMPERATURE
+
+
+@pytest.fixture()
+def provider_registry_snapshot():
+    """Restore provider registry globals after tests that mutate registration state."""
+    registry = dict(_REGISTRY)
+    aliases = dict(_ALIASES)
+    discovered = providers._discovered
+    providers._discovered = True
+    try:
+        yield
+    finally:
+        _REGISTRY.clear()
+        _REGISTRY.update(registry)
+        _ALIASES.clear()
+        _ALIASES.update(aliases)
+        providers._discovered = discovered
 
 
 class TestRegistry:
@@ -21,6 +40,57 @@ class TestRegistry:
 
     def test_unknown_provider_returns_none(self):
         assert get_provider_profile("nonexistent-provider") is None
+
+    def test_duplicate_name_warns(self, caplog, provider_registry_snapshot):
+        existing = ProviderProfile(name="existing")
+        replacement = ProviderProfile(name="existing", base_url="https://new.example")
+        _REGISTRY[existing.name] = existing
+
+        with caplog.at_level("WARNING", logger="providers"):
+            register_provider(replacement)
+
+        assert "Provider 'existing' is being re-registered" in caplog.text
+        assert get_provider_profile("existing") is replacement
+
+    def test_duplicate_alias_warns(self, caplog, provider_registry_snapshot):
+        existing = ProviderProfile(name="existing")
+        replacement = ProviderProfile(name="replacement", aliases=("shared",))
+        _REGISTRY[existing.name] = existing
+        _ALIASES["shared"] = existing.name
+
+        with caplog.at_level("WARNING", logger="providers"):
+            register_provider(replacement)
+
+        assert "Alias 'shared' is being re-registered" in caplog.text
+        assert get_provider_profile("shared") is replacement
+
+    def test_provider_name_matching_existing_alias_warns_and_wins(
+        self, caplog, provider_registry_snapshot
+    ):
+        existing = ProviderProfile(name="existing")
+        replacement = ProviderProfile(name="alias-name")
+        _REGISTRY[existing.name] = existing
+        _ALIASES["alias-name"] = existing.name
+
+        with caplog.at_level("WARNING", logger="providers"):
+            register_provider(replacement)
+
+        assert "Provider name 'alias-name' conflicts with an existing alias" in caplog.text
+        assert "alias-name" not in _ALIASES
+        assert get_provider_profile("alias-name") is replacement
+
+    def test_alias_matching_existing_provider_name_warns_and_redirects_lookup(
+        self, caplog, provider_registry_snapshot
+    ):
+        existing = ProviderProfile(name="existing")
+        replacement = ProviderProfile(name="replacement", aliases=("existing",))
+        _REGISTRY[existing.name] = existing
+
+        with caplog.at_level("WARNING", logger="providers"):
+            register_provider(replacement)
+
+        assert "Alias 'existing' for provider 'replacement' conflicts" in caplog.text
+        assert get_provider_profile("existing") is replacement
 
     def test_all_providers_have_name(self):
         get_provider_profile("nvidia")  # trigger discovery

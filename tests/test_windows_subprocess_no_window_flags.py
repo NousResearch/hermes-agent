@@ -399,3 +399,26 @@ def test_tui_slash_worker_hides_python_window(monkeypatch):
 
     assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_tui_slash_worker_decodes_subprocess_streams_as_utf8(monkeypatch):
+    from tui_gateway import server
+
+    captured = []
+
+    class _Proc:
+        stdin = SimpleNamespace()
+        stdout = []
+        stderr = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: SimpleNamespace(start=lambda: None))
+
+    server._SlashWorker("session-key", "model-x")
+
+    assert captured[0][1]["encoding"] == "utf-8"
+    assert captured[0][1]["errors"] == "replace"

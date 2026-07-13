@@ -309,6 +309,7 @@ def init_agent(
     thinking_callback: callable = None,
     reasoning_callback: callable = None,
     clarify_callback: callable = None,
+    clarify_cancel_callback: callable = None,
     read_terminal_callback: callable = None,
     step_callback: callable = None,
     stream_delta_callback: callable = None,
@@ -556,6 +557,7 @@ def init_agent(
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback
     agent.clarify_callback = clarify_callback
+    agent.clarify_cancel_callback = clarify_cancel_callback
     agent.read_terminal_callback = read_terminal_callback
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback

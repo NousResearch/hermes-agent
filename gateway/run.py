@@ -18710,6 +18710,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             agent.clarify_callback = _clarify_callback_sync
 
+            def _cancel_clarify_sync() -> None:
+                from tools import clarify_gateway as _clarify_cancel_mod
+
+                _clarify_cancel_mod.clear_session(session_key or "")
+
+            agent.clarify_cancel_callback = _cancel_clarify_sync
+
             # Show assistant thinking between tool calls — independent of
             # tool_progress mode. Mattermost needs an explicit per-platform
             # opt-in so global scratch-text display does not leak into threads.

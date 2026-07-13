@@ -211,6 +211,7 @@ class CodexAppServerSession:
         clarify_callback: Optional[
             Callable[[str, Optional[list[str]]], str]
         ] = None,
+        clarify_cancel_callback: Optional[Callable[[], None]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
@@ -240,6 +241,7 @@ class CodexAppServerSession:
         )
         self._approval_callback = approval_callback
         self._clarify_callback = clarify_callback
+        self._clarify_cancel_callback = clarify_cancel_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
@@ -1077,6 +1079,11 @@ class CodexAppServerSession:
     ) -> tuple[str, Any]:
         """Run the blocking Hermes UI callback without pinning the turn loop."""
         assert self._clarify_callback is not None
+        if self._clarify_cancel_callback is None:
+            return (
+                "unavailable",
+                RuntimeError("Hermes clarify callback has no cancellation hook"),
+            )
         outcome: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
 
         def _worker() -> None:
@@ -1087,24 +1094,39 @@ class CodexAppServerSession:
             else:
                 outcome.put(("result", value))
 
-        threading.Thread(
+        worker = threading.Thread(
             target=_worker,
             name="codex-request-user-input",
             daemon=True,
-        ).start()
+        )
+        worker.start()
+
+        def _cancel_worker(kind: str) -> tuple[str, Any]:
+            try:
+                self._clarify_cancel_callback()
+            except Exception as exc:
+                logger.exception("clarify cancellation callback raised")
+                return ("cancel_failed", exc)
+            worker.join(timeout=0.2)
+            if worker.is_alive():
+                return (
+                    "cancel_failed",
+                    RuntimeError("Hermes clarify callback did not stop after cancellation"),
+                )
+            return (kind, None)
 
         while True:
             if self._interrupt_event.is_set():
-                return ("cancelled", None)
+                return _cancel_worker("cancelled")
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return ("timeout", None)
+                    return _cancel_worker("timeout")
                 wait_for = min(0.05, remaining)
             else:
                 wait_for = 0.05
             if self._client is None or not self._client.is_alive():
-                return ("transport_error", None)
+                return _cancel_worker("transport_error")
             try:
                 return outcome.get(timeout=wait_for)
             except queue.Empty:
@@ -1252,6 +1274,13 @@ class CodexAppServerSession:
                     rendered = label.strip()
                     if isinstance(description, str) and description.strip():
                         rendered = f"{rendered}: {description.strip()}"
+                    if rendered in canonical_choices:
+                        self._client.respond_error(
+                            rid,
+                            code=-32602,
+                            message="Duplicate rendered request_user_input option",
+                        )
+                        return
                     rendered_choices.append(rendered)
                     canonical_choices[rendered] = label.strip()
                 choices = rendered_choices or None
@@ -1278,6 +1307,14 @@ class CodexAppServerSession:
                         "transport_error": (
                             -32603,
                             "Hermes user-input transport stopped",
+                        ),
+                        "unavailable": (
+                            -32603,
+                            "Hermes user-input UI is not cancellable",
+                        ),
+                        "cancel_failed": (
+                            -32603,
+                            "Hermes user-input UI failed to cancel",
                         ),
                     }[outcome_kind]
                     self._request_user_input_responses[request_key] = (

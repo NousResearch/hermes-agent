@@ -1403,6 +1403,14 @@ def test_status_callback_accepts_single_message_argument():
     )
 
 
+def test_clarify_cancel_callback_releases_only_its_session():
+    with patch("tui_gateway.server._clear_pending") as clear_pending:
+        cb = server._agent_cbs("sid")["clarify_cancel_callback"]
+        cb()
+
+    clear_pending.assert_called_once_with("sid")
+
+
 def test_resolve_model_uses_inference_model_env(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", " anthropic/claude-sonnet-4.6\n")

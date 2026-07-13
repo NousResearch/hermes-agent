@@ -108,6 +108,8 @@ class FakeClient:
 
 
 def make_session(client: FakeClient, **kwargs) -> CodexAppServerSession:
+    if kwargs.get("clarify_callback") is not None:
+        kwargs.setdefault("clarify_cancel_callback", lambda: None)
     return CodexAppServerSession(
         cwd="/tmp",
         client_factory=lambda **kw: client,
@@ -253,6 +255,42 @@ class TestLifecycle:
             "answers": {"target": {"answers": ["Staging"]}},
         })]
 
+    def test_request_user_input_rejects_duplicate_rendered_option_labels(self):
+        client = FakeClient()
+        seen = []
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": [
+                    {"label": "Deploy", "description": "now"},
+                    {"label": "Deploy: now", "description": ""},
+                ],
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Duplicate rendered request_user_input option"
+        )]
+
     @pytest.mark.parametrize("reply_method, callback_raises", [
         ("respond", False),
         ("respond_error", True),
@@ -316,6 +354,40 @@ class TestLifecycle:
             "codex_home": None,
             "extra_args": ["--enable", "default_mode_request_user_input"],
         }]
+
+    def test_request_user_input_without_cancel_hook_fails_closed(self):
+        client = FakeClient()
+        seen = []
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": None,
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s = CodexAppServerSession(
+            cwd="/tmp",
+            client_factory=lambda **kwargs: client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32603, "Hermes user-input UI is not cancellable"
+        )]
 
 
     def test_duplicate_request_user_input_is_replayed_without_reprompt(self):
@@ -570,13 +642,22 @@ class TestLifecycle:
         )
         entered = threading.Event()
         release = threading.Event()
+        cancel_called = threading.Event()
 
         def clarify_callback(question, choices):
             entered.set()
             release.wait(timeout=1.0)
             return "late answer"
 
-        s = make_session(client, clarify_callback=clarify_callback)
+        def cancel_clarify_callback():
+            cancel_called.set()
+            release.set()
+
+        s = make_session(
+            client,
+            clarify_callback=clarify_callback,
+            clarify_cancel_callback=cancel_clarify_callback,
+        )
         if cancel_mode == "interrupt":
             def interrupt_after_prompt():
                 assert entered.wait(timeout=0.5)
@@ -587,11 +668,18 @@ class TestLifecycle:
         started = time.monotonic()
         try:
             result = s.run_turn("ask me", turn_timeout=0.1)
+            live_callback_threads = [
+                thread
+                for thread in threading.enumerate()
+                if thread.name == "codex-request-user-input" and thread.is_alive()
+            ]
         finally:
             release.set()
 
         assert time.monotonic() - started < 0.5
         assert result.interrupted is True
+        assert cancel_called.is_set()
+        assert live_callback_threads == []
         if cancel_mode == "deadline":
             assert result.should_retire is True
             assert "turn timed out after 0.1s" in result.error

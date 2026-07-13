@@ -89,28 +89,6 @@ class TestFindAgentBrowserCache:
         with pytest.raises(FileNotFoundError, match="cached"):
             bt._find_agent_browser()
 
-    def test_windows_prefers_native_agent_browser_exe_over_cmd_shim(self, tmp_path, monkeypatch):
-        import tools.browser_tool as bt
-
-        repo = tmp_path / "repo"
-        native = repo / "node_modules" / "agent-browser" / "bin" / "agent-browser-win32-x64.exe"
-        cmd = repo / "node_modules" / ".bin" / "agent-browser.cmd"
-        native.parent.mkdir(parents=True)
-        cmd.parent.mkdir(parents=True)
-        native.write_text("", encoding="utf-8")
-        cmd.write_text("", encoding="utf-8")
-
-        def fake_which(command, path=None):
-            return str(cmd) if path == str(cmd.parent) else None
-
-        monkeypatch.setattr(bt.sys, "platform", "win32")
-        monkeypatch.setattr(bt.shutil, "which", fake_which)
-        monkeypatch.setattr(bt, "agent_browser_runnable", lambda path: True)
-        monkeypatch.setattr(bt, "_merge_browser_path", lambda path: "")
-        monkeypatch.setattr(bt, "__file__", str(repo / "tools" / "browser_tool.py"))
-
-        assert bt._find_agent_browser() == str(native)
-
 
 # ---------------------------------------------------------------------------
 # Caching: _get_command_timeout

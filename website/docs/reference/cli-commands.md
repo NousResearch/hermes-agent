@@ -46,6 +46,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
+| `hermes whatsapp-cloud` | Configure the official Meta WhatsApp Business Cloud API adapter (Business account + public webhook required). Distinct from `hermes whatsapp` (Baileys personal-account bridge). |
 | `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
 | `hermes auth` | Manage credentials — add, list, remove, reset, status, logout. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
@@ -55,6 +56,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
+| `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
@@ -78,10 +80,12 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes computer-use` | Install or check the cua-driver backend (macOS Computer Use). |
+| `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
+| `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
 | `hermes version` | Show version information. |
@@ -113,7 +117,7 @@ Common options:
 | `--pass-session-id` | Pass the session ID into the system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
-| `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). Use to isolate whether a problem comes from your setup or from Hermes itself. |
+| `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, shell hooks, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). Use to isolate whether a problem comes from your setup or from Hermes itself. |
 | `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
 | `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 90, or `agent.max_turns` in config). |
 
@@ -226,6 +230,7 @@ Subcommands:
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
+| `migrate-legacy` | Remove legacy `hermes.service` units left over from pre-rename installs. Profile units (`hermes-gateway-<profile>.service`) and unrelated services are never touched. Flags: `--dry-run`, `-y`/`--yes`. |
 | `enroll` | Experimental: enroll this gateway with a relay connector and save relay credentials for connector-backed platforms. |
 
 Options:
@@ -235,7 +240,7 @@ Options:
 | `--all` | On `start` / `restart` / `stop`: act on **every profile's** gateway, not just the active `HERMES_HOME`. Useful if you run multiple profiles side-by-side and want to restart them all after `hermes update`. |
 | `--no-supervise` | On `run`: inside the s6-overlay Docker image, opt out of auto-supervision and use pre-s6 foreground semantics — gateway runs as the container's main process with no auto-restart. No-op outside the s6 image. Equivalent to setting `HERMES_GATEWAY_NO_SUPERVISE=1`. |
 
-`hermes gateway enroll` accepts `--token`, `--connector-url`, and `--gateway-id`. It exchanges the enrollment token with the connector and writes the resulting `GATEWAY_RELAY_ID`, `GATEWAY_RELAY_SECRET`, `GATEWAY_RELAY_DELIVERY_KEY`, and optional `GATEWAY_RELAY_URL` values to the active profile's `.env`.
+`hermes gateway enroll` accepts `--token`, `--connector-url`, `--gateway-id`, and `--wake-url`. It exchanges the enrollment token with the connector and writes the resulting `GATEWAY_RELAY_ID`, `GATEWAY_RELAY_SECRET`, `GATEWAY_RELAY_DELIVERY_KEY`, optional `GATEWAY_RELAY_URL`, and (when `--wake-url` is given) `GATEWAY_RELAY_WAKE_URL` values to the active profile's `.env`.
 
 :::tip WSL users
 Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
@@ -613,6 +618,28 @@ All actions are also available as a slash command in the gateway (`/kanban …`)
 
 For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see `docs/hermes-kanban-v1-spec.pdf` in the repository or the [Kanban user guide](/user-guide/features/kanban).
 
+## `hermes project`
+
+```bash
+hermes project <create|list|show|add-folder|remove-folder|rename|set-primary|use|archive|restore|bind-board>
+```
+
+Projects are human-named workspaces that can span multiple folders / repos. They anchor desktop session grouping and, when bound to a kanban board, give tasks a deterministic worktree + branch convention. State is per-profile.
+
+| Subcommand | Description |
+|------------|-------------|
+| `create` | Create a new project. |
+| `list` (alias `ls`) | List projects. |
+| `show` | Show a project's details. |
+| `add-folder` | Add a folder / repo to a project. |
+| `remove-folder` | Remove a folder from a project. |
+| `rename` | Rename a project. |
+| `set-primary` | Set the primary folder. |
+| `use` | Set the active project. |
+| `archive` | Archive a project (recoverable). |
+| `restore` | Restore an archived project. |
+| `bind-board` | Bind a kanban board to this project. |
+
 ## `hermes webhook`
 
 ```bash
@@ -644,6 +671,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
 | `--secret` | Custom HMAC secret. Auto-generated if omitted. |
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
+| `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |
 
 Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
 
@@ -745,11 +773,13 @@ Upload a debug report (system info + recent logs) to a paste service and get a s
 |--------|-------------|
 | `--lines <N>` | Number of log lines to include per log file (default: 200). |
 | `--expire <days>` | Paste expiry in days (default: 7). |
+| `--nous` | Upload to Nous-internal diagnostics storage instead of a public paste service. Use this when Nous support asks for a private diagnostic bundle. |
 | `--local` | Print the report locally instead of uploading. |
+| `--no-redact` | Disable upload-time secret redaction. By default, uploads are redacted. |
 
-The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), and redacted API key status. Keys are always redacted — no secrets are uploaded.
+The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), and redacted API key status. By default, uploads are redacted so secrets are not included.
 
-Paste services tried in order: paste.rs, dpaste.com.
+Default uploads use public paste services tried in order: paste.rs, dpaste.com. `--nous` uploads the same debug bundle to private Nous diagnostics storage instead; the returned viewer link is for the Nous team and auto-deletes after 14 days.
 
 ### Examples
 
@@ -757,6 +787,7 @@ Paste services tried in order: paste.rs, dpaste.com.
 hermes debug share              # Upload debug report, print URL
 hermes debug share --lines 500  # Include more log lines
 hermes debug share --expire 30  # Keep paste for 30 days
+hermes debug share --nous       # Upload a private diagnostics bundle for Nous support
 hermes debug share --local      # Print report to terminal (no upload)
 ```
 
@@ -1034,7 +1065,7 @@ hermes skills inspect official/security/1password
 hermes skills inspect skills-sh/vercel-labs/json-render/json-render-react
 hermes skills install official/migration/openclaw-migration
 hermes skills install skills-sh/anthropics/skills/pdf --force
-hermes skills install https://sharethis.chat/SKILL.md                     # Direct URL (single-file SKILL.md)
+hermes skills install https://sharethis.chat/SKILL.md                     # Direct URL (+ referenced support files)
 hermes skills install https://example.com/SKILL.md --name my-skill        # Override name when frontmatter has none
 hermes skills check
 hermes skills update
@@ -1052,7 +1083,7 @@ Notes:
 - `--source skills-sh` searches the public `skills.sh` directory.
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
 - `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
-- Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
+- Passing an `http(s)://…/*.md` URL installs `SKILL.md` plus explicitly referenced files under `references/`, `templates/`, `scripts/`, `assets/`, and `examples/`. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
 ## `hermes bundles`
 
@@ -1259,7 +1290,7 @@ Provider plugin selections are saved to `config.yaml`:
 
 General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
 
-See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
+See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../developer-guide/plugins/index.md).
 
 ## `hermes tools`
 
@@ -1299,6 +1330,27 @@ of the update if cua-driver is on PATH, so most users will not need to
 call `--upgrade` manually. Use it when upstream ships a fix you want
 right now without waiting for the next Hermes update.
 
+## `hermes pets`
+
+```bash
+hermes pets <list|install|select|show|off|scale|remove|doctor>
+```
+
+[Petdex](https://github.com/crafter-station/petdex) is a public gallery of animated sprite pets for coding agents. Install one and Hermes shows it reacting to agent activity across the CLI, TUI, and desktop app.
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | Browse the petdex gallery. |
+| `install` | Install a pet from the gallery. |
+| `select` | Set the active pet (writes `display.pet.*`). |
+| `show` | Animate the active pet in the terminal. |
+| `off` | Disable the pet display. |
+| `scale` | Resize the pet everywhere (`display.pet.scale`). |
+| `remove` | Delete an installed pet. |
+| `doctor` | Check pet setup + terminal graphics support. |
+
+You can also generate a brand-new pet from a text description with the `/hatch` slash command. See [Pets](../user-guide/features/pets.md).
+
 ## `hermes sessions`
 
 ```bash
@@ -1313,7 +1365,8 @@ Subcommands:
 | `browse` | Interactive session picker with search and resume. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |
-| `prune` | Delete old sessions. |
+| `prune` | Delete sessions matching filters: time bounds `--older-than`/`--newer-than`/`--before`/`--after` (durations like `5h`/`2d`, bare days, or ISO timestamps); attributes `--source`, `--title`, `--model`, `--provider`, `--branch`, `--end-reason`, `--user`, `--chat-id`, `--chat-type`, `--cwd`; numeric bounds `--min/--max-messages`, `--min/--max-tokens`, `--min/--max-cost`, `--min/--max-tool-calls`; plus `--include-archived`, `--dry-run`, `--yes`. Default: older than 90 days. |
+| `archive` | Bulk-archive (soft-hide, no deletion) sessions matching the same filters as `prune`. Requires at least one filter. |
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
 
@@ -1379,23 +1432,42 @@ hermes claw migrate --preset user-data --overwrite
 hermes claw migrate --source /home/user/old-openclaw
 ```
 
+## `hermes serve`
+
+```bash
+hermes serve [options]
+```
+
+Start the Hermes **backend server** — the JSON-RPC/WebSocket gateway the [desktop app](/user-guide/desktop) and remote clients connect to. It is the same server `hermes dashboard` runs, but **headless**: it never opens a browser UI. The desktop app launches its own `hermes serve` backend; use this command directly when you want a headless backend on a remote host. Accepts the same `--host` / `--port` / `--insecure` / `--skip-build` / `--stop` / `--status` options as `hermes dashboard` below (a non-loopback bind engages the same auth gate). Requires the `[web]` extra; the embedded Chat socket additionally needs `[pty]` on a POSIX host.
+
 ## `hermes dashboard`
 
 ```bash
 hermes dashboard [options]
 ```
 
-Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"` (FastAPI + Uvicorn). The embedded browser Chat tab is always available and additionally needs the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`) plus a POSIX PTY environment such as Linux, macOS, or WSL2. See [Web Dashboard](/user-guide/features/web-dashboard) for full documentation.
+Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. (For a headless backend with no browser UI — e.g. what the desktop app spawns — use [`hermes serve`](#hermes-serve) above.) Requires `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"` (FastAPI + Uvicorn). The embedded browser Chat tab is always available and additionally needs the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`) plus a POSIX PTY environment such as Linux, macOS, or WSL2. See [Web Dashboard](/user-guide/features/web-dashboard) for full documentation.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--port` | `9119` | Port to run the web server on |
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
-| `--insecure` | off | Allow binding to non-localhost hosts. Exposes dashboard credentials on the network; use only behind trusted network controls. |
+| `--insecure` | off | **Deprecated / no-op.** Formerly bypassed auth on a non-loopback bind. Since the June 2026 hardening a public bind *always* requires an auth provider (password or OAuth). Bind `127.0.0.1` and tunnel to keep it local. |
+| `--skip-build` | off | Skip the web UI build step and serve the existing `dist` directly. Useful for non-interactive contexts (Windows Scheduled Tasks, CI) where npm isn't available. Pre-build with `cd web && npm run build`. |
 | `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. |
 | `--stop` | — | Stop running `hermes dashboard` processes and exit. |
 | `--status` | — | List running `hermes dashboard` processes and exit. |
+
+### `hermes dashboard register`
+
+Register this install as a self-hosted dashboard with your Nous Portal account. Creates an OAuth client, writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` into `~/.hermes/.env`, and prints how to engage the login gate. Requires being logged in (`hermes setup`).
+
+| Option | Description |
+|--------|-------------|
+| `--name` | Human-readable label for the dashboard (default: auto-generated). |
+| `--redirect-uri` | Public HTTPS OAuth redirect URI (e.g. `https://hermes.example.com/auth/callback`). Omit for localhost-only use. |
+| `--portal-url` | Override the Nous Portal base URL for registration (default: the portal you logged into). Also settable via `HERMES_DASHBOARD_PORTAL_URL`. |
 
 ```bash
 # Default — opens browser to http://127.0.0.1:9119

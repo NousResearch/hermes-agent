@@ -4,6 +4,7 @@ import { $connection } from '@/store/session'
 
 import {
   desktopDefaultCwd,
+  desktopFileDiff,
   desktopGitRoot,
   readDesktopDir,
   readDesktopFileDataUrl,
@@ -37,6 +38,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path === '/api/fs/default-cwd') {
     return { cwd: '/backend/project', branch: 'main' }
+  }
+
+  if (path.startsWith('/api/git/file-diff?')) {
+    return { diff: 'remote diff' }
   }
 
   throw new Error(`unexpected path ${path}`)
@@ -107,6 +112,23 @@ describe('desktop filesystem facade', () => {
     expect(gitRoot).not.toHaveBeenCalled()
   })
 
+  it('targets the active profile backend so a remote profile never reads local disk', async () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    await readDesktopDir('/srv/project')
+    await desktopDefaultCwd()
+
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+  })
+
+  it('routes file diffs through backend git in remote mode', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(desktopFileDiff('/repo', 'src/a b.ts')).resolves.toBe('remote diff')
+    expect(api).toHaveBeenCalledWith({ path: '/api/git/file-diff?path=%2Frepo&file=src%2Fa%20b.ts' })
+  })
+
   it('uses the registered in-app directory picker in remote mode', async () => {
     const remoteSelect = vi.fn(async () => ['/remote/project'])
     $connection.set({ mode: 'remote' } as never)
@@ -120,15 +142,25 @@ describe('desktop filesystem facade', () => {
     expect(selectPaths).not.toHaveBeenCalled()
   })
 
-  it('does not treat the remote directory picker as a general file picker', async () => {
+  it('uses the local Electron picker for remote file selection', async () => {
     const remoteSelect = vi.fn(async () => ['/remote/project'])
     $connection.set({ mode: 'remote' } as never)
     setDesktopFsRemotePicker({ selectPaths: remoteSelect })
 
-    await expect(selectDesktopPaths({ directories: false, multiple: false })).resolves.toEqual([])
-    await expect(selectDesktopPaths({ directories: true, multiple: true })).resolves.toEqual([])
+    await expect(selectDesktopPaths({ directories: false, multiple: false })).resolves.toEqual(['/local'])
 
+    expect(selectPaths).toHaveBeenCalledWith({ directories: false, multiple: false })
     expect(remoteSelect).not.toHaveBeenCalled()
+  })
+
+  it('limits the remote picker to single-directory selection', async () => {
+    const remoteSelect = vi.fn(async () => ['/remote/project'])
+    $connection.set({ mode: 'remote' } as never)
+    setDesktopFsRemotePicker({ selectPaths: remoteSelect })
+
+    await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/remote/project'])
+
+    expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
     expect(selectPaths).not.toHaveBeenCalled()
   })
 })

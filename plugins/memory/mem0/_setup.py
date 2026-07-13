@@ -67,6 +67,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     flags: dict[str, str] = {
         "mode": "",
         "api_key": "",
+        "host": "",
         "oss_llm": "openai",
         "oss_llm_key": "",
         "oss_llm_model": "",
@@ -90,6 +91,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     flag_map = {
         "--mode": "mode",
         "--api-key": "api_key",
+        "--host": "host",
         "--oss-llm": "oss_llm",
         "--oss-llm-key": "oss_llm_key",
         "--oss-llm-model": "oss_llm_model",
@@ -230,7 +232,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
         {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
         {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-        {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+        {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
     ]
 
     existing_config = {}
@@ -293,6 +295,24 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         return
 
     provider_config["mode"] = "platform"
+    # Clear any stale self-hosted host: routing checks ``host`` before platform
+    # (see _create_backend), so leaving it would silently keep routing to the
+    # self-hosted server even though the user just chose platform mode. Set it
+    # to "" rather than pop() — save_config merges into the existing mem0.json
+    # (existing.update), so a popped key would survive; an empty value overwrites
+    # it and reads as falsy at routing time.
+    provider_config["host"] = ""
+    # The json-file clear above can't help when the host comes from the
+    # environment: _load_config() seeds ``host`` from MEM0_HOST, and the
+    # docs tell self-hosted users to put MEM0_HOST in ~/.hermes/.env. Warn
+    # so the user knows platform mode won't take effect until it's removed.
+    if os.environ.get("MEM0_HOST", "").strip():
+        print(
+            "\n  ⚠ MEM0_HOST is set in your environment "
+            f"({os.environ['MEM0_HOST']}). It overrides platform mode — "
+            "remove it from ~/.hermes/.env (or unset it) or Hermes will keep "
+            "routing to the self-hosted server."
+        )
 
     from hermes_cli.config import save_config
     config["memory"]["provider"] = "mem0"
@@ -305,12 +325,108 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     if env_writes:
         _write_env(Path(hermes_home) / ".env", env_writes)
 
-    print(f"\n  Memory provider: mem0")
-    print(f"  Activation saved to config.yaml")
-    print(f"  Provider config saved")
+    print("\n  Memory provider: mem0")
+    print("  Activation saved to config.yaml")
+    print("  Provider config saved")
     if env_writes:
-        print(f"  API keys saved to .env")
-    print(f"\n  Start a new session to activate.\n")
+        print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
+
+
+def _check_selfhosted_server(host: str) -> None:
+    """Best-effort reachability check for a self-hosted Mem0 server (non-fatal)."""
+    import urllib.error
+    import urllib.request as _urlreq
+
+    try:
+        req = _urlreq.Request(f"{host.rstrip('/')}/docs", method="GET")
+        _urlreq.urlopen(req, timeout=5)
+        print(f"  ✓ Mem0 server reachable at {host}")
+    except urllib.error.HTTPError:
+        # Any HTTP response (401/403/404) still means something is listening.
+        print(f"  ✓ Mem0 server responding at {host}")
+    except Exception:
+        print(f"  ⚠ Could not reach {host} — check the URL and that the server is running.")
+
+
+def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
+    """Self-hosted mode setup — point at an existing Mem0 dashboard server.
+
+    For users already running the Dockerized Mem0 FastAPI server: stores the
+    server URL (behavioral -> mem0.json) and an optional API key
+    (secret -> .env as MEM0_API_KEY).
+    """
+    existing_config = {}
+    config_path = Path(hermes_home) / "mem0.json"
+    if config_path.exists():
+        try:
+            existing_config = json.loads(config_path.read_text())
+        except Exception:
+            pass
+
+    provider_config = dict(existing_config)
+
+    print("\n  Configuring mem0 (self-hosted server):\n")
+
+    host = flags.get("host") or _prompt(
+        "Mem0 server URL (e.g. http://localhost:8888)",
+        default=provider_config.get("host") or None,
+    )
+    if not host:
+        print("  Error: a server URL is required for self-hosted mode.", file=sys.stderr)
+        return
+    host = host.rstrip("/")
+
+    env_writes: dict[str, str] = {}
+    if flags.get("api_key"):
+        env_writes["MEM0_API_KEY"] = flags["api_key"]
+    else:
+        existing_key = os.environ.get("MEM0_API_KEY", "")
+        if existing_key:
+            masked = f"...{existing_key[-4:]}" if len(existing_key) > 4 else "set"
+            val = _prompt(f"Server API key (current: {masked}, blank to keep)", secret=True)
+        else:
+            val = _prompt("Server API key (blank if AUTH_DISABLED)", secret=True)
+        if val:
+            env_writes["MEM0_API_KEY"] = val
+
+    user_id = flags.get("user_id") or _prompt(
+        "User identifier", default=provider_config.get("user_id") or "hermes-user"
+    )
+    agent_id = _prompt("Agent identifier", default=provider_config.get("agent_id") or "hermes")
+
+    if flags.get("dry_run"):
+        print(f"\n  [dry-run] Would save config: host={host}, user_id={user_id}, agent_id={agent_id}")
+        if env_writes:
+            print("  [dry-run] Would write API key to .env")
+        _check_selfhosted_server(host)
+        print("  [dry-run] No files written.\n")
+        return
+
+    provider_config["mode"] = "platform"  # routing: oss > host > platform; host wins
+    provider_config["host"] = host
+    provider_config["user_id"] = user_id
+    provider_config["agent_id"] = agent_id
+
+    from hermes_cli.config import save_config
+    config["memory"]["provider"] = "mem0"
+    save_config(config)
+
+    from plugins.memory.mem0 import Mem0MemoryProvider
+    provider = Mem0MemoryProvider()
+    provider.save_config(provider_config, hermes_home)
+
+    if env_writes:
+        _write_env(Path(hermes_home) / ".env", env_writes)
+
+    _check_selfhosted_server(host)
+    print("\n  Memory provider: mem0 (self-hosted)")
+    print(f"  Server: {host}")
+    print("  Activation saved to config.yaml")
+    print("  Provider config saved")
+    if env_writes:
+        print("  API key saved to .env")
+    print("\n  Start a new session to activate.\n")
 
 
 def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -358,14 +474,14 @@ def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     save_config(config)
 
     _run_connectivity_checks(oss_config)
-    print(f"\n  ✓ Mem0 configured (OSS mode)")
+    print("\n  ✓ Mem0 configured (OSS mode)")
     print(f"    LLM:      {oss_config['llm']['provider']} ({oss_config['llm']['config'].get('model', '')})")
     print(f"    Embedder: {oss_config['embedder']['provider']} ({oss_config['embedder']['config'].get('model', '')})")
     print(f"    Vector:   {vector_id}")
     if env_writes:
-        print(f"    API keys saved to .env")
-    print(f"    Config saved to mem0.json")
-    print(f"    Provider set in config.yaml")
+        print("    API keys saved to .env")
+    print("    Config saved to mem0.json")
+    print("    Provider set in config.yaml")
     print("\n  Start a new session to activate.\n")
 
 
@@ -417,7 +533,7 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
                 _wait_for_port(host, port, timeout=15)
                 ok, _ = _check_pgvector(host, port)
                 if ok:
-                    print(f"  ✓ PostgreSQL container restarted")
+                    print("  ✓ PostgreSQL container restarted")
                     return None
         except Exception:
             pass
@@ -522,8 +638,7 @@ def _ensure_ollama(models: list[str]) -> bool:
             print(f"  Pulling '{model}'... (this may take a few minutes)")
             try:
                 subprocess.run([ollama_bin or "ollama", "pull", model], timeout=600,
-                               stdin=subprocess.DEVNULL,
-                               creationflags=windows_hide_flags())
+                               stdin=subprocess.DEVNULL)
                 print(f"  ✓ Model '{model}' pulled")
             except Exception as e:
                 print(f"  Warning: Could not pull '{model}': {e}")
@@ -712,14 +827,14 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
     save_config(config)
 
     _run_connectivity_checks(oss_config)
-    print(f"\n  ✓ Mem0 configured (OSS mode)")
+    print("\n  ✓ Mem0 configured (OSS mode)")
     print(f"    LLM:      {oss_config['llm']['provider']} ({oss_config['llm']['config'].get('model', '')})")
     print(f"    Embedder: {oss_config['embedder']['provider']} ({oss_config['embedder']['config'].get('model', '')})")
     print(f"    Vector:   {vector_id}")
     if env_writes:
-        print(f"    API keys saved to .env")
-    print(f"    Config saved to mem0.json")
-    print(f"    Provider set in config.yaml")
+        print("    API keys saved to .env")
+    print("    Config saved to mem0.json")
+    print("    Provider set in config.yaml")
     print("\n  Start a new session to activate.\n")
 
 
@@ -829,10 +944,10 @@ def _check_min_dep_version() -> None:
 def post_setup(hermes_home: str, config: dict) -> None:
     """Entry point called by hermes memory setup framework.
 
-    Only intercepts when OSS mode is requested (via --mode oss flag or
-    interactive picker). For platform mode, returns without action so the
-    framework's schema-based flow handles it (preserving the original
-    platform onboarding experience).
+    Routes on --mode (platform / selfhosted / oss); with no flag it shows an
+    interactive picker with all three modes. Platform keeps the framework's
+    original schema-based onboarding; selfhosted points at an existing Mem0
+    server; oss builds a local SDK config.
     """
     _check_min_dep_version()
     flags = parse_flags(sys.argv[1:])
@@ -842,6 +957,10 @@ def post_setup(hermes_home: str, config: dict) -> None:
         _setup_oss(hermes_home, config, flags)
         return
 
+    if flags["mode"] in ("selfhosted", "self-hosted"):
+        _setup_selfhosted(hermes_home, config, flags)
+        return
+
     if flags["mode"] == "platform":
         _setup_platform(hermes_home, config, flags)
         return
@@ -849,10 +968,13 @@ def post_setup(hermes_home: str, config: dict) -> None:
     # No --mode flag: show interactive picker
     mode_items = [
         ("Platform", "Mem0 Cloud API (lightweight, just needs an API key)"),
+        ("Self-hosted server", "Connect to an existing self-hosted Mem0 server (Docker/FastAPI)"),
         ("Open Source", "Run Mem0 locally (self-hosted LLM + vector store)"),
     ]
     mode_idx = _curses_select("  Select mode", mode_items, 0)
     if mode_idx == 1:
+        _setup_selfhosted(hermes_home, config, flags)
+    elif mode_idx == 2:
         flags["_mode_from_flag"] = False
         _setup_oss(hermes_home, config, flags)
     else:

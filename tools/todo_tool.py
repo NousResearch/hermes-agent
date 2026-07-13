@@ -30,6 +30,11 @@ VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 # task description, and active lists are a handful of items, not hundreds.
 MAX_TODO_CONTENT_CHARS = 4000
 MAX_TODO_ITEMS = 256
+# Upper bound on a single todo tool-result payload accepted during history
+# hydration. The gateway/API server replays caller-supplied conversation
+# history to rebuild the store, so an oversized forged result is dropped
+# before it is parsed and re-injected (see AIAgent._hydrate_todo_store).
+MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
 
 

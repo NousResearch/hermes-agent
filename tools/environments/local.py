@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from hermes_cli import _subprocess_compat
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -25,19 +25,74 @@ def _msys_to_windows_path(cwd: str) -> str:
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
     ``subprocess.Popen(..., cwd=...)`` can find it.
 
+    Also accepts the Cygwin (``/cygdrive/c/...``) and WSL-mount
+    (``/mnt/c/...``) spellings of a drive root. Multi-segment POSIX paths
+    like ``/home/x`` or ``/tmp/foo`` are left untouched.
+
     No-ops on non-Windows hosts or for paths that aren't in MSYS form.
     Returns the input unchanged when no translation applies. This is
     idempotent — calling it on an already-Windows path returns it as-is.
     """
     if not _IS_WINDOWS or not cwd:
         return cwd
-    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
-    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root),
+    # plus /cygdrive/<letter>/... and /mnt/<letter>/... variants.
+    m = re.match(r'^/(?:(?:cygdrive|mnt)/)?([a-zA-Z])(/.*)?$', cwd)
     if not m:
         return cwd
+    # Reject /cygdrive or /mnt with no drive letter — the optional group above
+    # already requires the letter. Multi-char first segments (/home, /tmp)
+    # fail the single-letter capture and fall through as no-ops.
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
+def _windows_to_msys_path(cwd: str) -> str:
+    """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
+    MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
+
+    No-ops on non-Windows hosts or for paths that aren't drive-qualified
+    native Windows paths. Returns the input unchanged when no translation
+    applies.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).lower()
+    tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
+    return f"/{drive}/{tail}" if tail else f"/{drive}/"
+
+
+def _bash_safe_path(path: str) -> str:
+    """Return *path* in a form safe to embed in a Git Bash script.
+
+    Native ``C:\\Users\\x`` / ``C:/Users/x`` → ``/c/Users/x`` via
+    :func:`_windows_to_msys_path`. Mixed MSYS leftovers
+    (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
+    bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
+    failure class. No-op off Windows and for empty input.
+
+    ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
+    Python compatibility; those still need the ``/c/...`` rewrite —
+    MSYS argument conversion treats ``C:/...`` as a Windows path and
+    can corrupt the login-shell ``drivers\\etc`` lookup.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    path = _windows_to_msys_path(path)
+    if "\\" in path:
+        path = path.replace("\\", "/")
+    return path
+
+
+def _quote_bash_path(path: str) -> str:
+    """Quote *path* for safe interpolation into a Git Bash script on Windows."""
+    import shlex
+
+    return shlex.quote(_bash_safe_path(path))
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -134,9 +189,12 @@ def _build_provider_env_blocklist() -> frozenset:
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
         "GOOGLE_API_KEY",
+        # Path to a GCP service-account JSON, not a bare key, so
+        # OPTIONAL_ENV_VARS marks it password=False and the loop above skips it.
+        "VERTEX_CREDENTIALS_PATH",
+        "GOOGLE_APPLICATION_CREDENTIALS",
         "DEEPSEEK_API_KEY",
         "MISTRAL_API_KEY",
         "GROQ_API_KEY",
@@ -186,7 +244,20 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "GATEWAY_RELAY_ID",
+        "GATEWAY_RELAY_SECRET",
+        "GATEWAY_RELAY_DELIVERY_KEY",
     })
+    # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
+    # owned by the user's Claude Code install (subscription OAuth), not a
+    # Hermes-managed inference credential — Claude subscription auth is not a
+    # working Hermes provider path.  Stripping it broke agent-spawned
+    # ``claude`` CLIs: the child fell through to the shared macOS Keychain /
+    # ``~/.claude/.credentials.json`` store and, on auth failure, cleared it,
+    # logging the user out of their interactive Claude sessions (#55878).
+    # It arrives via the registry loop above (anthropic api_key_env_vars),
+    # so remove it explicitly.
+    blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
     return frozenset(blocked)
 
 
@@ -205,6 +276,51 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
 
 
+def _is_hermes_internal_secret(key: str) -> bool:
+    """Return True for Hermes-internal secrets injected under *dynamic* names.
+
+    ``_HERMES_PROVIDER_ENV_BLOCKLIST`` is name-based and derived from the
+    provider/tool registries, but the gateway and CLI also inject secrets into
+    ``os.environ`` at runtime under names no static registry knows about:
+
+    - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
+      side-LLM credentials bridged from ``config.yaml[auxiliary]`` by
+      ``gateway/run.py`` and ``cli.py`` (vision, web_extract, approval,
+      compression, and any plugin-registered auxiliary task). These are
+      separate, often higher-spend API keys plus base URLs that may point at
+      private endpoints; a model-authored shell command must never see them.
+    - ``GATEWAY_RELAY_*_SECRET`` / ``GATEWAY_RELAY_*_KEY`` /
+      ``GATEWAY_RELAY_*_TOKEN`` — relay-auth material provisioned by the
+      gateway (``GATEWAY_RELAY_SECRET``, ``GATEWAY_RELAY_DELIVERY_KEY``).
+      These are Tier-1 gateway secrets, like the messaging bot tokens in
+      ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
+      (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
+      and remain visible.
+
+    ``code_execution_tool.py`` already catches these via substring matching on
+    ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
+    blocklist did not, which is the leak this predicate closes.
+
+    This is the single source of truth for "Hermes-internal dynamic secret"
+    across every spawn path — the terminal ``_make_run_env`` /
+    ``_sanitize_subprocess_env`` filters, the Docker passthrough filter, and the
+    non-terminal :func:`hermes_subprocess_env` helper all call it, so the
+    dynamic patterns are stripped **unconditionally** regardless of
+    ``env_passthrough`` skill registration or ``inherit_credentials``. Nothing
+    a model-driving CLI legitimately needs matches these patterns.
+    """
+    upper = key.upper()
+    if upper.startswith("AUXILIARY_") and (
+        upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
+    ):
+        return True
+    if upper.startswith("GATEWAY_RELAY_") and (
+        upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
+    ):
+        return True
+    return False
+
+
 def _inject_context_hermes_home(env: dict) -> None:
     """Bridge the context-local Hermes home override into subprocess env."""
     try:
@@ -215,6 +331,53 @@ def _inject_context_hermes_home(env: dict) -> None:
             env["HERMES_HOME"] = value
     except Exception:
         pass
+
+
+def _inject_session_context_env(env: dict) -> None:
+    """Bridge gateway session ContextVars into a subprocess environment dict.
+
+    ContextVars don't propagate to child processes, so the live session vars
+    (HERMES_SESSION_*) are bridged onto the child env here.
+
+    🔴 Cross-session leak guard. The session vars also have a process-global
+    os.environ mirror (written last-writer-wins as a CLI/cron fallback, never
+    cleared). Under a concurrent multi-session host (the messaging gateway, ACP
+    adapter, API server, TUI) that global belongs to *whichever turn wrote it
+    last* — NOT necessarily this task. A subprocess spawned from a task whose
+    ContextVar is _UNSET (e.g. a sibling message task that never bound, or one
+    that inherited another session's context) would otherwise inherit the
+    FOREIGN global and act on another session's identity.
+
+    So once the session-context machinery is engaged in this process (any host
+    has called set_session_vars), the session vars are ContextVar-authoritative:
+    - ContextVar set (incl. explicitly-empty "") → that value wins, overriding
+      any stale snapshot/global value.
+    - ContextVar _UNSET → STRIP the var from the child env rather than inherit
+      the possibly-foreign process-global.
+    In a pure single-process CLI/one-shot that never engaged the session-context
+    system there is no concurrency to leak across, so the inherited fallback is
+    kept. See gateway/session_context.session_context_engaged and
+    tests/tools/test_local_env_session_leak.py.
+    """
+    try:
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            session_context_engaged,
+        )
+    except Exception:
+        return
+
+    _engaged = session_context_engaged()
+    for var_name, var in _VAR_MAP.items():
+        value = var.get()
+        if value is not _UNSET:
+            # Explicitly bound (including "") — authoritative for this task.
+            env[var_name] = "" if value is None else str(value)
+        elif _engaged:
+            # Unset for THIS task while a concurrent host is engaged: drop any
+            # inherited global so a sibling session's value can't leak in.
+            env.pop(var_name, None)
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
@@ -229,13 +392,19 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
+        if _is_hermes_internal_secret(key):
+            continue
         if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_hermes_internal_secret(real_key):
+                continue
             sanitized[real_key] = value
+        elif _is_hermes_internal_secret(key):
+            continue
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
@@ -244,10 +413,138 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
 
+    # Same cross-session leak guard as _make_run_env, for the background/PTY
+    # spawn path (process_registry.spawn_local builds env via this function).
+    _inject_session_context_env(sanitized)
+
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
 
+    _apply_windows_msys_bash_env_defaults(sanitized)
+
     return sanitized
+
+
+# Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
+# even when the caller opts into credential inheritance for a model-driving
+# CLI (claude / codex / gemini).  These are not LLM provider credentials; no
+# legitimate child Hermes spawns needs them, and they are the highest-value
+# secrets to keep out of a compromised dependency's reach (gateway bot tokens,
+# GitHub auth, remote-compute tokens, dashboard session secret).  The set is a
+# narrow subset of _HERMES_PROVIDER_ENV_BLOCKLIST; provider keys are handled by
+# the conditional Tier-2 strip in hermes_subprocess_env().
+_ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
+    # GitHub auth
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY_PATH",
+    "GITHUB_APP_INSTALLATION_ID",
+    # Gateway / messaging bot tokens and access control
+    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
+    "SLACK_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "SLACK_SIGNING_SECRET",
+    "GATEWAY_ALLOWED_USERS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    # Gateway relay auth — the ID/secret/delivery-key triplet the gateway
+    # provisions and persists to the 0600 .env. Stripped unconditionally on
+    # EVERY spawn surface (terminal + model-driving CLIs) so it can't drift
+    # between paths: _SECRET / _DELIVERY_KEY are also matched by
+    # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
+    # enumerated here to stay stripped on the inherit_credentials=True path
+    # (codex / copilot), which skips the Tier-2 blocklist.
+    "GATEWAY_RELAY_ID",
+    "GATEWAY_RELAY_SECRET",
+    "GATEWAY_RELAY_DELIVERY_KEY",
+    "HASS_TOKEN",
+    "EMAIL_PASSWORD",
+    "HERMES_DASHBOARD_SESSION_TOKEN",
+    # Remote-compute / infrastructure secrets
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+    "DAYTONA_API_KEY",
+})
+
+
+def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+    """Build a sanitized environment dict for a spawned subprocess.
+
+    Centralized helper for the **non-terminal** spawn surface (browser,
+    ACP/CLI executors, computer-use driver, dep-ensure, TUI Node host,
+    detached gateway).  Use this instead of copying ``os.environ`` directly
+    so strip-by-default is the uniform policy across every spawn site, with a
+    single source of truth (``_HERMES_PROVIDER_ENV_BLOCKLIST``).  The terminal
+    / execute_code path keeps using :func:`_sanitize_subprocess_env`, which is
+    skill-aware (``env_passthrough``); this helper is for spawns that have no
+    skill-passthrough concept.
+
+    Two-tier stripping:
+
+    * **Tier 1 (always):** ``_ALWAYS_STRIP_KEYS`` — gateway bot tokens, GitHub
+      auth, and remote-compute secrets are removed regardless of
+      ``inherit_credentials``.  No child Hermes spawns legitimately needs them.
+    * **Tier 2 (conditional):** the rest of ``_HERMES_PROVIDER_ENV_BLOCKLIST``
+      (LLM provider API keys, tool secrets) is removed unless the caller passes
+      ``inherit_credentials=True``.
+
+    Pass ``inherit_credentials=True`` **only** when the child legitimately
+    needs LLM provider credentials — a user-blessed ``claude`` / ``codex`` /
+    ``gemini`` CLI executor, or the TUI Node host that makes model calls.  The
+    flag is grep-able for audit: ``grep -rn 'inherit_credentials=True'`` lists
+    every spawn site that still receives provider credentials.
+
+    Callers that need a *specific* non-provider secret (e.g. the browser worker
+    needs ``BROWSERBASE_API_KEY`` / ``FIRECRAWL_API_KEY``) should call with
+    ``inherit_credentials=False`` and copy just those keys back from
+    ``os.environ`` into the returned dict.
+    """
+    env = os.environ.copy()
+
+    # Tier 1 — always strip.
+    for key in _ALWAYS_STRIP_KEYS:
+        env.pop(key, None)
+    # Internal routing hints and Hermes-internal dynamic secrets
+    # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
+    # ``GATEWAY_RELAY_*`` relay-auth material) must never reach a child,
+    # regardless of ``inherit_credentials`` — a model-driving CLI has no
+    # legitimate use for them. See :func:`_is_hermes_internal_secret`.
+    for key in list(env):
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+        elif _is_hermes_internal_secret(key):
+            env.pop(key, None)
+
+    if not inherit_credentials:
+        # Tier 2 — strip provider/tool credentials unless explicitly inherited.
+        for key in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            env.pop(key, None)
+
+    # Windows UTF-8 safety for spawned processes (#31420).
+    env.setdefault("PYTHONUTF8", "1")
+
+    _inject_context_hermes_home(env)
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(env)
+
+    # Active-venv markers must not clobber another project's environment.
+    for _marker in _ACTIVE_VENV_MARKER_VARS:
+        env.pop(_marker, None)
+
+    _apply_windows_msys_bash_env_defaults(env)
+
+    # Cross-session leak guard, same as the terminal spawn paths: this helper
+    # copies os.environ, whose HERMES_SESSION_* mirror is a last-writer-wins
+    # global under a concurrent multi-session host. A caller that re-binds the
+    # session identity explicitly (slash_worker/ACP via --session-key argv) is
+    # unaffected — bound ContextVars win here — but a caller that spawns without
+    # re-binding (e.g. tui_gateway cli.exec) would otherwise inherit a FOREIGN
+    # session's identity. Strip _UNSET session vars when engaged so that can't
+    # happen; single uniform policy across every spawn surface.
+    _inject_session_context_env(env)
+
+    return env
 
 
 def _find_bash() -> str:
@@ -284,10 +581,10 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
+    # Check known Git for Windows install locations before PATH lookup.
+    # On machines with both WSL and Git for Windows, shutil.which("bash")
+    # may return WSL's bash (which doesn't understand Windows paths and
+    # will fail silently).  Explicit Git-for-Windows paths avoid that.
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -295,6 +592,10 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found:
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
@@ -486,6 +787,29 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     return ":".join(ordered_entries)
 
 
+def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
+    """Disable MSYS argument path conversion for Git Bash subprocesses.
+
+    Git Bash rewrites arguments that look like Unix paths (``/FO``, ``/TN``,
+    ``/Create``) into ``C:/.../git/FO``-style paths, which breaks native
+    Windows commands such as ``tasklist``, ``schtasks``, and ``wmic``.  Hermes
+    runs terminal commands through bash on Windows, so set the standard MSYS
+    opt-out by default.  Users who need conversion can override in their env.
+    Refs #56700.
+
+    ``MSYS_NO_PATHCONV`` is honored by Git for Windows bash only.  MSYS2-proper
+    and Cygwin bash (which ``_find_bash`` can still return via the final
+    ``shutil.which`` fallback) ignore it and honor ``MSYS2_ARG_CONV_EXCL``
+    instead, so set both.  ``*`` disables all argv conversion — the semantic
+    equivalent of ``MSYS_NO_PATHCONV=1``.  Also fixes ``cmd /c`` mangling
+    (#56147).
+    """
+    if not _IS_WINDOWS:
+        return
+    env.setdefault("MSYS_NO_PATHCONV", "1")
+    env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
+
+
 def _path_env_key(run_env: dict) -> str | None:
     """Return the PATH env key to update without altering Windows casing.
 
@@ -516,7 +840,11 @@ def _make_run_env(env: dict) -> dict:
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_hermes_internal_secret(real_key):
+                continue
             run_env[real_key] = v
+        elif _is_hermes_internal_secret(k):
+            continue
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     path_key = _path_env_key(run_env)
@@ -532,19 +860,15 @@ def _make_run_env(env: dict) -> dict:
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
 
-    # Inject ContextVar-based session vars into subprocess env.
-    # ContextVars don't propagate to child processes, so we bridge them here.
-    try:
-        from gateway.session_context import _UNSET, _VAR_MAP
-        for var_name, var in _VAR_MAP.items():
-            value = var.get()
-            if value is not _UNSET and value:
-                run_env[var_name] = value
-    except Exception:
-        pass
+    # Bridge ContextVar-based session vars into the subprocess env (with the
+    # cross-session leak guard — strips _UNSET vars when a concurrent host is
+    # engaged so a sibling session's os.environ mirror can't leak in).
+    _inject_session_context_env(run_env)
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
+
+    _apply_windows_msys_bash_env_defaults(run_env)
 
     return run_env
 
@@ -694,6 +1018,15 @@ class LocalEnvironment(BaseEnvironment):
 
         return "/tmp"
 
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        """Use native paths for Python, but Git Bash-friendly paths for cd."""
+        return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
+
+    def _quote_shell_path(self, path: str) -> str:
+        """Rewrite native/mixed Windows paths before quoting for Git Bash."""
+        return _quote_bash_path(path)
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
@@ -738,7 +1071,9 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
-        proc = _subprocess_compat.popen(
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
+        proc = subprocess.Popen(
             args,
             text=True,
             env=run_env,
@@ -749,6 +1084,7 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True,
             cwd=_popen_cwd,
+            **_popen_kwargs,
         )
         if not _IS_WINDOWS:
             try:
@@ -795,7 +1131,16 @@ class LocalEnvironment(BaseEnvironment):
 
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                try:
+                    from gateway.status import terminate_pid
+
+                    terminate_pid(proc.pid, force=True)
+                except Exception:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=2.0)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             else:
                 try:
                     pgid = os.getpgid(proc.pid)
@@ -890,3 +1235,14 @@ class LocalEnvironment(BaseEnvironment):
                 os.unlink(f)
             except OSError:
                 pass
+        # Remove any orphaned atomic-write temp snapshots (snap.tmp.<bashpid>)
+        # a failed/interrupted mv could have left behind (#38249).
+        try:
+            import glob
+            for tmp in glob.glob(f"{self._snapshot_path}.tmp.*"):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        except Exception:
+            pass

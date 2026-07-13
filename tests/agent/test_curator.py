@@ -263,6 +263,94 @@ def test_new_skill_without_last_used_not_immediately_archived(curator_env):
     assert (skills_dir / "fresh").exists()
 
 
+def _backdate(u, name: str, days: int, *, use_count: int = 1):
+    """Write an agent-created usage record whose activity is *days* old."""
+    ts = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    data = u.load_usage()
+    data[name] = u._empty_record()
+    data[name]["created_by"] = "agent"
+    data[name]["created_at"] = ts
+    data[name]["last_used_at"] = ts if use_count else None
+    data[name]["last_activity_at"] = ts if use_count else None
+    data[name]["use_count"] = use_count
+    u.save_usage(data)
+
+
+def test_cron_referenced_skill_is_not_archived(curator_env, monkeypatch):
+    """A skill referenced by a cron job must survive inactivity archival even
+    when its activity is well past archive_after_days. The scheduler only
+    bumps usage when a job fires, so paused / infrequent / far-future jobs
+    would otherwise have their skills aged out from under them."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "cron-dep")
+    _write_skill(skills_dir, "orphan")
+    _backdate(u, "cron-dep", 200)
+    _backdate(u, "orphan", 200)
+
+    # Pretend a (paused/infrequent) cron job references "cron-dep" only.
+    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: {"cron-dep"})
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("cron-dep")["state"] == "active"  # protected
+    assert (skills_dir / "cron-dep").exists()
+    assert u.get_record("orphan")["state"] == "archived"  # control
+    assert counts["archived"] == 1
+
+
+def test_unused_skill_not_archived_before_stale_floor(curator_env):
+    """A never-used skill (use_count == 0) younger than stale_after_days must
+    not be marked stale or archived — absence of use is not evidence of
+    staleness when the skill simply hasn't had its trigger come up yet."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "young-unused")
+    _backdate(u, "young-unused", 10, use_count=0)  # < 30d stale floor
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("young-unused")["state"] == "active"
+    assert counts["archived"] == 0
+    assert counts["marked_stale"] == 0
+
+
+def test_unused_skill_archived_past_archive_window(curator_env):
+    """The use=0 floor only protects YOUNG skills — a never-used skill older
+    than archive_after_days still archives (no perpetual reprieve)."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "old-unused")
+    _backdate(u, "old-unused", 200, use_count=0)
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("old-unused")["state"] == "archived"
+    assert counts["archived"] == 1
+
+
+def test_candidate_list_marks_cron_referenced_skills(curator_env, monkeypatch):
+    """The LLM review candidate list flags cron-referenced skills so the
+    review pass knows not to prune them."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "cron-dep")
+    _write_skill(skills_dir, "plain")
+    _backdate(u, "cron-dep", 1)
+    _backdate(u, "plain", 1)
+    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: {"cron-dep"})
+
+    listing = c._render_candidate_list()
+    cron_line = next(l for l in listing.splitlines() if l.startswith("- cron-dep"))
+    plain_line = next(l for l in listing.splitlines() if l.startswith("- plain"))
+    assert "cron=yes" in cron_line
+    assert "cron=no" in plain_line
+
+
 def test_manual_skill_is_not_auto_archived(curator_env):
     """Manual skills can have usage records, but without the agent-created
     marker they must stay out of curator transitions."""
@@ -986,6 +1074,25 @@ def test_review_runtime_strips_blank_aux_credentials(curator_env):
     assert binding.explicit_base_url is None
 
 
+def test_review_runtime_carries_auxiliary_extra_body(curator_env):
+    curator = curator_env["curator"]
+    cfg = {
+        "auxiliary": {
+            "curator": {
+                "provider": "custom",
+                "model": "local-mini",
+                "extra_body": {"slot_flag": "slot-value"},
+            },
+        },
+    }
+
+    binding = curator._resolve_review_runtime(cfg)
+
+    assert binding.request_overrides == {
+        "extra_body": {"slot_flag": "slot-value"}
+    }
+
+
 def test_review_runtime_ignores_auxiliary_credentials_when_using_main(curator_env):
     """Falling through to main model must not pick up stray auxiliary.curator secrets."""
     curator = curator_env["curator"]
@@ -1185,3 +1292,153 @@ def test_review_fork_runs_under_background_review_origin(curator_env, monkeypatc
         "'background_review' — the skill_manage background-review write "
         "guard would not fire (GH-47688 regression)"
     )
+
+
+def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatch):
+    """Curator must pass credential_pool + request_overrides from resolve_runtime_provider."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+
+    fake_pool = object()
+    fake_overrides = {"extra_body": {"store": False}}
+    captured = {}
+
+    def _fake_resolve_runtime_provider(**kwargs):
+        return {
+            "provider": "custom",
+            "api_key": "pool-token",
+            "base_url": "https://hyper.charm.land/v1",
+            "api_mode": "chat_completions",
+            "credential_pool": fake_pool,
+            "request_overrides": fake_overrides,
+        }
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            captured["kwargs"] = kwargs
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 0
+            self._skill_nudge_interval = 0
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _fake_resolve_runtime_provider,
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured["kwargs"]["credential_pool"] is fake_pool
+    assert captured["kwargs"]["request_overrides"] == fake_overrides
+
+
+def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "real-model-id",
+            "api_key": "test-key",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+            "max_output_tokens": 1234,
+        },
+    )
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert captured["model"] == "real-model-id"
+    assert captured["max_tokens"] == 1234
+
+
+def test_review_fork_merges_slot_extra_body_over_runtime(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "auxiliary": {
+                "curator": {
+                    "provider": "custom:gateway",
+                    "model": "gateway",
+                    "extra_body": {"shared": "slot", "slot_only": True},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "api_key": "test-key",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+            "request_overrides": {
+                "extra_body": {"shared": "runtime", "runtime_only": True},
+                "service_tier": "priority",
+            },
+        },
+    )
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert captured["request_overrides"] == {
+        "extra_body": {
+            "shared": "slot",
+            "runtime_only": True,
+            "slot_only": True,
+        },
+        "service_tier": "priority",
+    }

@@ -3,6 +3,19 @@
 Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|error} to stdout.
 """
 
+# Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory
+# from shadowing Hermes's own top-level modules.  This worker is spawned as
+# ``-m tui_gateway.slash_worker`` and inherits the user's CWD, so the ``import
+# cli`` below would otherwise resolve ``utils`` to a colliding local package
+# and crash the child in a retry loop (issue #51286).  ``hermes_bootstrap``
+# lives at the repo root, so importing it is safe before the guard runs (its
+# name won't collide with a user package), and it owns the canonical
+# path-hardening logic shared with the other entry points — #51693 added the
+# guard to ``entry.py``/``acp_adapter/entry.py`` but missed this child.
+import hermes_bootstrap
+
+hermes_bootstrap.harden_import_path()
+
 import argparse
 import contextlib
 import io
@@ -52,6 +65,27 @@ def _is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
         return True
 
 
+def _prepare_slash_worker_runtime() -> None:
+    """Start bounded MCP discovery before HermesCLI snapshots tools.
+
+    Each slash_worker child is its own process — the parent ``hermes serve``
+    discovery thread does not populate this registry (issue #61891).
+    """
+    import logging
+
+    from hermes_cli.mcp_startup import (
+        start_background_mcp_discovery,
+        wait_for_mcp_discovery,
+    )
+
+    logger = logging.getLogger(__name__)
+    start_background_mcp_discovery(
+        logger=logger,
+        thread_name="slash-worker-mcp-discovery",
+    )
+    wait_for_mcp_discovery()
+
+
 def _start_parent_death_watchdog(original_ppid, parent_create_time) -> None:
     def _loop():
         while not _is_orphaned(original_ppid, parent_create_time):
@@ -89,18 +123,17 @@ def _run(cli: HermesCLI, command: str) -> str:
         if old is not None:
             cli_mod._cprint = old
 
-    return buf.getvalue().rstrip()
+    # Desktop chat bubbles render plain text, not ANSI. A worker-routed command
+    # that emits Rich color (e.g. /journey building its own Console, which picks
+    # up truecolor from the gateway's inherited COLORTERM) would otherwise leak
+    # raw escapes; strip them at the single choke point. (The TUI opens /journey
+    # as an overlay, so it never travels this path.)
+    from tools.ansi_strip import strip_ansi
+
+    return strip_ansi(buf.getvalue().rstrip())
 
 
 def main():
-    # Stdio worker spawned by the gateway: drop any console a uv pythonw→python
-    # re-exec auto-allocated. No-op on POSIX.
-    try:
-        import hermes_bootstrap
-        hermes_bootstrap.detach_orphan_console()
-    except Exception:
-        pass
-
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
@@ -117,6 +150,7 @@ def main():
     except psutil.Error:
         parent_create_time = 0.0
     _start_parent_death_watchdog(orig_ppid, parent_create_time)
+    _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)

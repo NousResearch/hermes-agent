@@ -85,6 +85,23 @@ This isn't a quality bar — it's a coupling-and-maintenance decision. Memory pr
 
 ---
 
+## Third-Party Product Integrations: Ship as a Standalone Plugin
+
+The same rule extends to **any plugin that integrates someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins, and similar third-party integrations. **These do not land in this repo.**
+
+The reason is maintenance load, not quality. Every external product absorbed into the core tree becomes ours to keep working against a fast-moving codebase, for a backend we don't own and can't control. Hermes ships a lot and the core moves quickly; coupling third-party products into it creates an open-ended burden on the maintainers.
+
+Publish these as a **standalone plugin repo** instead:
+
+- Implement the relevant ABC and use the existing plugin discovery path (`~/.hermes/plugins/`, project `.hermes/plugins/`, or a pip entry point) — see [Build a Hermes Plugin](https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin)
+- Register lifecycle hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), and CLI subcommands (`ctx.register_cli_command`) through the surface we already expose — no core changes needed
+- If your plugin needs a capability the framework doesn't expose, that's a feature request to **widen the generic plugin surface** (a new hook or `ctx` method) — never special-case your plugin in core
+- Promote it in the [Nous Research Discord](https://discord.gg/NousResearch) `#plugins-skills-and-skins` channel so users can find and install it
+
+A well-built third-party-product plugin can clear automated review and still be closed for this reason — it's a placement decision, not a verdict on the code. PRs that add such a directory under `plugins/` will be closed with a pointer to publish it as its own repo.
+
+---
+
 ## Development Setup
 
 ### Prerequisites
@@ -92,7 +109,7 @@ This isn't a quality bar — it's a coupling-and-maintenance decision. Memory pr
 | Requirement | Notes |
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
-| **Python 3.11+** | uv will install it if missing |
+| **Python 3.11–3.13** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
@@ -132,13 +149,20 @@ this way, make sure you run the `hermes` entrypoint from this venv; running the
 system `python3 -m hermes_cli.main` can pick up unrelated system Python
 packages.
 
+Create the venv **outside** the cloned source tree. A venv that lives inside
+the directory the agent operates from can be wiped by a relative-path command
+the agent runs against its own checkout (`rm -rf venv`, `uv venv venv`, etc.),
+which silently destroys the running runtime mid-session. Keeping it outside the
+tree means no relative path from the workspace resolves to it.
+
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Create venv with Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
+# Create venv with Python 3.11, OUTSIDE the source tree
+uv venv ~/.hermes/venvs/hermes-dev --python 3.11
+export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
@@ -818,31 +842,6 @@ that touches the OS, assume *any* platform can hit your code path.
     helpers and never cross them. See `hermes_cli/gateway_windows.py::
     _quote_cmd_script_arg` and `_quote_schtasks_arg` for the reference
     pair.
-
-17. **Every `subprocess` call that spawns a console program needs a
-    no-window flag on Windows — and CI now enforces it.** A bare
-    `subprocess.run(["git", ...])` / `Popen(...)` of a console app flashes a
-    cmd window on Windows unless the child either inherits the parent's stdio
-    (output is captured/redirected) or is spawned with a no-window
-    creationflag. This was the single biggest source of "terminal popups"
-    bug reports. Use the helpers in `hermes_cli/_subprocess_compat.py` (both
-    no-op on POSIX):
-    ```python
-    from hermes_cli._subprocess_compat import (
-        windows_hide_flags, windows_detach_popen_kwargs,
-    )
-    # short-lived / captured spawn:
-    subprocess.run(cmd, creationflags=windows_hide_flags())
-    # detached background daemon:
-    subprocess.Popen(cmd, **windows_detach_popen_kwargs())
-    ```
-    `scripts/check-windows-footguns.py` flags any subprocess call that can
-    create a new console (AST-based, output-redirection-aware). Calls that
-    capture/redirect output, use `check_output`, or run a POSIX-only program
-    (`launchctl`, `systemctl`, `brew`, …) are exempt automatically — no
-    annotation needed. If a visible window is genuinely intended (interactive
-    editor/terminal launch, foreground re-exec), add `# windows-footgun: ok`
-    on the call line.
 
 ### Testing cross-platform
 

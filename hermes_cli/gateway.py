@@ -12,12 +12,20 @@ import shlex
 import shutil
 import signal
 import subprocess
-from hermes_cli._subprocess_compat import windows_hide_flags
 import sys
 import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+# Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
+# when running under UV's bundled Python which ships a minimal PATH (#3849).
+if os.name == "posix":
+    _sys_dirs = {"/bin", "/usr/bin", "/usr/sbin", "/sbin"}
+    _path_dirs = set(os.environ.get("PATH", "").split(os.pathsep))
+    _missing = _sys_dirs - _path_dirs
+    if _missing:
+        os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -181,7 +189,11 @@ def _get_parent_pid(pid: int) -> int | None:
         pass
     except Exception:
         return None
-    # Fallback: shell out to ps (POSIX only — bare ``ps`` doesn't exist on Windows).
+    # Fallback: shell out to ps (POSIX only).  Git Bash installs ``ps.exe`` on
+    # Windows; running it from the windowless desktop/gateway backend flashes a
+    # console, and psutil above is the authoritative Windows path anyway.
+    if is_windows():
+        return None
     if not shutil.which("ps"):
         return None
     try:
@@ -380,35 +392,23 @@ def _scan_gateway_pids(
 
     try:
         if is_windows():
-            try:
-                import psutil  # type: ignore
-
-                for proc in psutil.process_iter(["pid", "cmdline"]):
-                    pid = int(proc.info.get("pid") or 0)
-                    if pid == os.getpid() or pid in exclude_pids:
-                        continue
-                    command = " ".join(proc.info.get("cmdline") or [])
-                    if _matches_gateway_runtime(command) and (
-                        all_profiles or _matches_current_profile(command)
-                    ):
-                        _append_unique_pid(pids, pid, exclude_pids)
-                return _filter_venv_launcher_stubs(pids) if len(pids) > 1 else pids
-            except Exception:
-                pass
-
-            from hermes_cli import _subprocess_compat
-
             # Prefer wmic when present (fast, stable output format).  On
             # modern Windows 11 / Win 10 late builds, wmic has been
             # removed as part of the WMIC deprecation — fall back to
             # PowerShell's Get-CimInstance.  Any OSError here (FileNotFoundError
             # on missing wmic) trips the fallback.
+            # Hide the console window: this scan runs inside the windowless
+            # pythonw.exe gateway/desktop backend, so a bare wmic/powershell
+            # spawn would flash a conhost window on every watchdog probe.
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            _no_window = {"creationflags": windows_hide_flags()}
             wmic_path = shutil.which("wmic")
             used_fallback = False
             result = None
             if wmic_path is not None:
                 try:
-                    result = _subprocess_compat.run(
+                    result = subprocess.run(
                         [
                             wmic_path,
                             "process",
@@ -421,6 +421,7 @@ def _scan_gateway_pids(
                         encoding="utf-8",
                         errors="ignore",
                         timeout=10,
+                        **_no_window,
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     result = None
@@ -439,13 +440,14 @@ def _scan_gateway_pids(
                     "}"
                 )
                 try:
-                    result = _subprocess_compat.run(
+                    result = subprocess.run(
                         [powershell, "-NoProfile", "-Command", ps_cmd],
                         capture_output=True,
                         text=True,
                         encoding="utf-8",
                         errors="ignore",
                         timeout=15,
+                        **_no_window,
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     return []
@@ -936,6 +938,32 @@ def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
     return parsed
 
 
+def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
+    """Read ``HERMES_HOME`` from the on-disk unit file (not ``systemctl show``).
+
+    Prefer the file when refreshing/comparing: under ``sudo``, ``systemctl``
+    may be slow/unavailable in tests, and the on-disk unit is what
+    ``systemd_unit_is_current`` / ``refresh_systemd_unit_if_needed`` already
+    compare against.
+    """
+    unit_path = get_systemd_unit_path(system=system)
+    if not unit_path.exists():
+        return None
+    try:
+        text = unit_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Environment="):
+            continue
+        body = stripped[len("Environment=") :].strip().strip('"')
+        if body.startswith("HERMES_HOME="):
+            value = body.split("=", 1)[1].strip().strip('"')
+            return value or None
+    return None
+
+
 def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
     """When acting on a system-scope unit, adopt its ``HERMES_HOME``.
 
@@ -947,8 +975,11 @@ def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
     """
     if not system:
         return
-    env = _read_systemd_unit_environment(system=True)
-    unit_home = env.get("HERMES_HOME", "").strip()
+    # Prefer the on-disk unit (source of truth for refresh/compare). Fall
+    # back to ``systemctl show`` for units that only exist in the manager.
+    unit_home = (_hermes_home_from_systemd_unit_file(system=True) or "").strip()
+    if not unit_home:
+        unit_home = _read_systemd_unit_environment(system=True).get("HERMES_HOME", "").strip()
     if not unit_home:
         return
     current = os.environ.get("HERMES_HOME", "").strip()
@@ -2284,11 +2315,33 @@ def _default_system_service_user() -> str | None:
 
 
 def prompt_linux_gateway_install_scope() -> str | None:
+    # A boot-time system service has to be created by root (writing the unit to
+    # /etc/systemd/system). We only offer that scope when the session is already
+    # root — a non-root user is never handed a "re-run yourself under sudo"
+    # recipe, since that just funnels them into a system install they can't
+    # actually perform from here. Non-root sessions get the user service.
+    is_root = os.geteuid() == 0  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
+    if not is_root:
+        choice = prompt_choice(
+            "  Choose how the gateway should run in the background:",
+            [
+                "User service (no sudo; best for laptops/dev boxes; may need linger after logout)",
+                "Skip service install for now",
+            ],
+            default=0,
+        )
+        if choice == 0:
+            print_info(
+                "  Tip: for a boot-time system service, re-run setup as root "
+                "(e.g. from a root shell or `sudo -i`)."
+            )
+        return {0: "user", 1: None}[choice]
+
     choice = prompt_choice(
         "  Choose how the gateway should run in the background:",
         [
             "User service (no sudo; best for laptops/dev boxes; may need linger after logout)",
-            "System service (starts on boot; requires sudo; still runs as your user)",
+            "System service (starts on boot; runs as your chosen user)",
             "Skip service install for now",
         ],
         default=0,
@@ -2304,18 +2357,13 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
     if scope == "system":
         run_as_user = _default_system_service_user()
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
+            # Unreachable from the wizard: prompt_linux_gateway_install_scope()
+            # only offers "system" to root sessions. Defensive guard for any
+            # direct caller — we do NOT print a self-elevation recipe.
             print_warning(
-                "  System service install requires sudo, so Hermes can't create it from this user session."
+                "  System service install requires root. Re-run setup from a "
+                "root shell, or install a user service instead: hermes gateway install"
             )
-            if run_as_user:
-                print_info(
-                    f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}"
-                )
-            else:
-                print_info(
-                    "  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>"
-                )
-            print_info("  Then start it with: sudo hermes gateway start --system")
             return scope, False
 
         if not run_as_user:
@@ -2645,7 +2693,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries = _build_service_path_dirs()
     resolved_node = shutil.which("node")
     if resolved_node:
-        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        # Use the directory where ``node`` is *found on PATH*, NOT the
+        # symlink's resolved target. ``~/.local/bin/node`` is often a symlink
+        # into a specific profile's node install (e.g. profiles/jarvis/node/
+        # bin/node); calling .resolve() here would chase that symlink and bake
+        # one profile's node path into *every* profile's service unit. That
+        # cross-profile leak makes systemd_unit_is_current() perpetually false,
+        # so each gateway rewrites its unit + daemon-reload on every boot. Using
+        # the symlink's own parent keeps the generated unit profile-agnostic.
+        resolved_node_dir = str(Path(resolved_node).parent)
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
 
@@ -2708,6 +2764,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
@@ -2741,6 +2798,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
@@ -2797,6 +2855,24 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
 
 
 def systemd_unit_is_current(system: bool = False) -> bool:
+    # ── HERMES_HOME sync chokepoint ──────────────────────────────────────
+    # Every path that compares OR regenerates the unit funnels through here:
+    # ``refresh_systemd_unit_if_needed`` gates on this before rewriting, and
+    # ``systemd_status`` / ``systemd_install`` call it directly. Doing the
+    # sync here — and ONLY here — enforces the invariant "the operator's
+    # pinned HERMES_HOME is adopted before any compare/regenerate" at a single
+    # site, so a future callsite cannot regress it by forgetting to pre-sync.
+    #
+    # Under ``sudo hermes gateway … --system``, HERMES_HOME is often stripped
+    # and falls back to ``/root/.hermes``. Adopting the unit's pinned home
+    # first makes TimeoutStopSec / WorkingDirectory / HERMES_HOME comparisons
+    # use the real operator config — otherwise start/restart "refresh" rewrites
+    # a correct unit from root's defaults and ``status`` keeps warning forever.
+    # ``_sync_...`` is idempotent (early-returns once os.environ matches), so
+    # the mutation persists for callers that read runtime state after this
+    # (e.g. ``systemd_restart``'s post-refresh get_running_pid / drain-timeout).
+    _sync_hermes_home_from_systemd_unit(system=system)
+
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
         return False
@@ -2878,7 +2954,14 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
     unit_path = get_systemd_unit_path(system=system)
-    if not unit_path.exists() or systemd_unit_is_current(system=system):
+    if not unit_path.exists():
+        return False
+
+    # The gate below funnels through ``systemd_unit_is_current``, which is the
+    # single HERMES_HOME-sync chokepoint (adopts the unit's pinned home before
+    # any compare/regenerate). No separate pre-sync needed here — and the env
+    # mutation it performs persists for the regenerate path below.
+    if systemd_unit_is_current(system=system):
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
@@ -3044,6 +3127,7 @@ def systemd_install(
     system: bool = False,
     run_as_user: str | None = None,
     enable_on_startup: bool = True,
+    non_interactive: bool = False,
 ):
     if system:
         _require_root_for_system_service("install")
@@ -3057,12 +3141,21 @@ def systemd_install(
         print()
         print_legacy_unit_warning()
         print()
-        if prompt_yes_no("Remove the legacy unit(s) before installing?", True):
+        if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
             remove_legacy_hermes_units(interactive=False)
             print()
 
     unit_path = get_systemd_unit_path(system=system)
     scope_flag = " --system" if system else ""
+
+    # Existing system units already pin HERMES_HOME; adopt it before any
+    # regenerate. This pre-sync is NOT redundant with the systemd_unit_is_current
+    # chokepoint: the ``--force`` path below skips the is_current gate and calls
+    # generate_systemd_unit() directly (line ~3172), so without this a
+    # ``sudo hermes gateway install --system --force`` would bake /root/.hermes
+    # into an already-correct unit. Keep it to protect that bypass path.
+    if unit_path.exists():
+        _sync_hermes_home_from_systemd_unit(system=system)
 
     if unit_path.exists() and not force:
         if not systemd_unit_is_current(system=system):
@@ -3139,7 +3232,7 @@ def _require_service_installed(action: str, system: bool = False) -> None:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
         scope_flag = " --system" if system else ""
-        print(f"✗ Gateway service is not installed")
+        print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         sys.exit(1)
 
@@ -3154,6 +3247,9 @@ def systemd_start(system: bool = False):
         # Raises UserSystemdUnavailableError with a remediation message.
         _preflight_user_systemd()
     _require_service_installed("start", system=system)
+    # HERMES_HOME sync happens inside refresh_systemd_unit_if_needed's
+    # systemd_unit_is_current gate (the single chokepoint), and the unit is
+    # guaranteed to exist here by _require_service_installed, so the gate runs.
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
@@ -3194,8 +3290,12 @@ def systemd_restart(system: bool = False):
     else:
         _preflight_user_systemd()
     _require_service_installed("restart", system=system)
+    # HERMES_HOME sync happens inside refresh_systemd_unit_if_needed's
+    # systemd_unit_is_current gate (the single chokepoint). The unit exists
+    # here (_require_service_installed), so the gate runs and its os.environ
+    # mutation persists for the get_running_pid / drain-timeout reads below —
+    # no separate pre-sync needed.
     refresh_systemd_unit_if_needed(system=system)
-    _sync_hermes_home_from_systemd_unit(system=system)
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
@@ -3295,8 +3395,6 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         return
-
-    _sync_hermes_home_from_systemd_unit(system=system)
 
     if has_conflicting_systemd_units():
         print_systemd_scope_conflict_warning()
@@ -3404,7 +3502,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         ]
         if full:
             log_cmd.append("-l")
-        subprocess.run(log_cmd, timeout=10, creationflags=windows_hide_flags())
+        subprocess.run(log_cmd, timeout=10)
 
 
 # =============================================================================
@@ -3496,10 +3594,18 @@ def _launchd_domain() -> str:
 # the target domain, so start/restart should re-bootstrap the plist and retry.
 _LAUNCHD_JOB_UNLOADED_EXIT_CODES = frozenset({3, 113, 125})
 
-# When even a fresh bootstrap can't manage the domain, launchctl returns 5
-# ("Input/output error") or a persistent 125. On those hosts launchd cannot
-# supervise the gateway at all, so we degrade to a detached background process
-# (the documented `nohup hermes gateway run` workaround). See #23387.
+# launchctl returns 5 ("Input/output error") or a persistent 125 in two very
+# different situations, so exit 5 is NOT on its own proof the domain is broken:
+#   1. The target label is still *registered* in the domain (a stale load from
+#      an interrupted restart / a bootout that didn't settle). This is
+#      recoverable — boot the stale label out and bootstrap again. See #42914.
+#   2. The domain genuinely can't manage services (macOS 26+, neither
+#      `gui/<uid>` nor `user/<uid>` supports service management). Here launchd
+#      cannot supervise the gateway at all and we degrade to a detached
+#      background process (the `nohup hermes gateway run` workaround). See #23387.
+# `_launchctl_bootstrap()` disambiguates by trying the bootout+retry (case 1)
+# first; only when that retry ALSO returns 5/125 do callers treat the domain as
+# unsupported (case 2) via `_launchctl_domain_unsupported`.
 _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
 
 
@@ -3516,6 +3622,135 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
     unavailable" and degrade gracefully to a detached process.
     """
     return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
+
+
+# `launchctl bootstrap` returns this when the target label is *already*
+# registered in the domain — a stale load left by an interrupted restart or a
+# bootout that didn't fully settle. EIO here means "already loaded", which is
+# recoverable, NOT that the domain is unmanageable; only when a bootout + retry
+# also fails is the domain genuinely unsupported.
+_LAUNCHCTL_BOOTSTRAP_EIO = 5
+
+
+def _launchctl_bootstrap(
+    domain: str, plist_path, label: str, *, timeout: int = 30
+) -> None:
+    """Bootstrap a launchd job, recovering from a stale already-loaded label.
+
+    On modern macOS, ``launchctl bootstrap`` of a label that is still
+    registered in ``domain`` fails with ``5: Input/output error`` (EIO). That
+    is the *already loaded* case — distinct from the domain being unmanageable,
+    which callers handle via :func:`_launchctl_domain_unsupported`. A leftover
+    registration from an interrupted restart leaves the job
+    loaded-but-not-running, so the next bootstrap hits EIO; without this retry
+    we misclassify it as "launchd cannot manage this macOS version" and degrade
+    to a detached process, silently losing auto-start and crash-restart.
+
+    Recover by booting the stale label out and bootstrapping once more. If the
+    retry still fails, the ``CalledProcessError`` propagates so callers apply
+    their domain-unsupported fallback for a genuinely broken domain.
+    """
+    try:
+        subprocess.run(
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            check=True,
+            timeout=timeout,
+        )
+        return
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode != _LAUNCHCTL_BOOTSTRAP_EIO:
+            raise
+        # Stale registration — drop the leftover label and bootstrap once more.
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            check=False,
+            timeout=timeout,
+        )
+        subprocess.run(
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            check=True,
+            timeout=timeout,
+        )
+
+
+def _launchd_reload_log_path() -> Path:
+    """Path the launchd reload watchdog tails for persistent-orphan detection."""
+    return get_hermes_home() / "logs" / "launchd-reload.log"
+
+
+def _append_launchd_reload_log(message: str) -> None:
+    """Append a timestamped line to the launchd reload log (best-effort)."""
+    path = _launchd_reload_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime as _dt
+
+        stamp = _dt.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] {message}\n")
+    except OSError:
+        pass
+
+
+def _launchctl_label_registered(label: str) -> bool:
+    """True when ``launchctl list <label>`` reports the job as registered."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            check=False,
+            timeout=10,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _retry_launchctl_bootstrap_until_registered(
+    domain: str, plist_path, label: str, *, deadline: float
+) -> bool:
+    """Bootstrap with retry until the label is registered or ``deadline`` passes.
+
+    Wraps :func:`_launchctl_bootstrap` (which already recovers the EIO
+    "already loaded" case) in a wall-clock retry loop for the *transient*
+    failure mode: under high load or a launchd race the bootstrap can fail
+    even after ``bootout`` already tore down the prior registration, leaving
+    the service orphaned from ``KeepAlive`` supervision. The reported incident
+    happened during a graceful drain (default ``agent.restart_drain_timeout``
+    = 180s), so a fixed ~10s window is too short — retry until ``deadline``.
+
+    Both ``CalledProcessError`` and ``TimeoutExpired`` are treated as
+    retryable: a ``bootstrap`` that times out after ``bootout`` still leaves
+    the service unloaded, so it must be retried, not allowed to escape. On
+    each failure a timestamped line is appended to the reload log; success is
+    confirmed with ``launchctl list`` (not merely a zero bootstrap exit).
+    Returns True once the label is registered, False if the deadline is hit.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            _launchctl_bootstrap(domain, plist_path, label, timeout=30)
+            if _launchctl_label_registered(label):
+                return True
+            _append_launchd_reload_log(
+                f"bootstrap attempt {attempt} exited 0 but {domain}/{label} "
+                f"is not registered (launchctl list) — retrying"
+            )
+        except subprocess.CalledProcessError as exc:
+            _append_launchd_reload_log(
+                f"bootstrap attempt {attempt} failed (rc={exc.returncode}) "
+                f"for {domain}/{label} — retrying"
+            )
+        except subprocess.TimeoutExpired:
+            _append_launchd_reload_log(
+                f"bootstrap attempt {attempt} timed out for {domain}/{label} "
+                f"— retrying"
+            )
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(2)
 
 
 # ── launchd unsupported marker ─────────────────────────────────────────────
@@ -3657,7 +3892,13 @@ def generate_launchd_plist() -> str:
     priority_dirs = _build_service_path_dirs()
     resolved_node = shutil.which("node")
     if resolved_node:
-        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        # Use the directory where ``node`` is *found on PATH*, NOT the symlink's
+        # resolved target. ``~/.local/bin/node`` is often a symlink into a
+        # specific profile's node install; calling .resolve() would chase it and
+        # bake one profile's path into every profile's service definition,
+        # breaking profile isolation and causing perpetual unit rewrites. See
+        # the matching fix in generate_systemd_unit().
+        resolved_node_dir = str(Path(resolved_node).parent)
         if resolved_node_dir not in priority_dirs:
             priority_dirs.append(resolved_node_dir)
     sane_path = ":".join(
@@ -3785,11 +4026,42 @@ def refresh_launchd_plist_if_needed() -> bool:
         # Delegate to a new session: `start_new_session=True` detaches the
         # helper from the gateway's process group, so the bootout that kills
         # the gateway (and us) does not kill the helper before it bootstraps.
+        #
+        # The bootstrap is retried up to 5 times with verification: under
+        # high load (loadavg observed >= 9) or a launchd race, the bootout
+        # can succeed (removing the service from launchd) while the
+        # follow-up bootstrap fails silently. Without retry+verify the
+        # service stays unregistered — KeepAlive can't revive a service
+        # launchd no longer knows about, so the gateway stays dark until a
+        # manual `launchctl bootstrap`. Failures append a timestamped line
+        # to ~/.hermes/logs/launchd-reload.log, which the health watchdog
+        # can tail to detect a persistent orphan. See hermes-restart
+        # rootcause handoff (2026-06-26 incident).
+        reload_log_path = get_hermes_home() / "logs" / "launchd-reload.log"
+        try:
+            reload_log_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        # Retry until launchctl LISTS the label (not merely a zero bootstrap
+        # exit) or the drain window elapses. The failure happens while the old
+        # gateway is still draining (default agent.restart_drain_timeout=180s),
+        # so a fixed ~10s window is too short — bound by that budget instead.
+        _reload_budget = int(max(30.0, _get_restart_drain_timeout()))
         reload_script = (
             f"sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
             f"sleep 1; "
-            f"launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null"
+            f"_deadline=$(($(date +%s) + {_reload_budget})); "
+            f"while :; do "
+            f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null; "
+            f"  if launchctl list {shlex.quote(label)} >/dev/null 2>&1; then break; fi; "
+            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] bootstrap not yet registered for {shlex.quote(target)} — retrying\" >> {shlex.quote(str(reload_log_path))}; "
+            f"  if [ $(date +%s) -ge $_deadline ]; then break; fi; "
+            f"  sleep 2; "
+            f"done; "
+            f"if ! launchctl list {shlex.quote(label)} >/dev/null 2>&1; then "
+            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after {_reload_budget}s of retries\" >> {shlex.quote(str(reload_log_path))}; "
+            f"fi"
         )
         try:
             subprocess.Popen(
@@ -3807,17 +4079,39 @@ def refresh_launchd_plist_if_needed() -> bool:
         )
         return True
 
-    # Bootout/bootstrap so launchd picks up the new definition
+    # Bootout/bootstrap so launchd picks up the new definition. The reported
+    # incident (2026-06-26) happened when bootout succeeded but bootstrap
+    # failed silently under load (loadavg 9.48) during a graceful /restart
+    # drain, leaving the service unregistered — KeepAlive can't revive a job
+    # launchd no longer knows about. Retry the bootstrap (via the shared
+    # _launchctl_bootstrap EIO-recovery helper) until the label is actually
+    # registered or the drain window elapses, verify with `launchctl list`,
+    # and log exhaustion so the reload watchdog can detect a persistent orphan.
     subprocess.run(
         ["launchctl", "bootout", target],
         check=False,
         timeout=90,
     )
-    subprocess.run(
-        ["launchctl", "bootstrap", domain, str(plist_path)],
-        check=False,
-        timeout=30,
-    )
+    # Size the retry window to the restart drain timeout (default 180s), not a
+    # fixed ~10s: the failure mode occurs while the old gateway is still
+    # draining, so a short window can exhaust before launchd settles.
+    _reload_budget = max(30.0, _get_restart_drain_timeout())
+    _deadline = time.monotonic() + _reload_budget
+    if not _retry_launchctl_bootstrap_until_registered(
+        domain, plist_path, label, deadline=_deadline
+    ):
+        _append_launchd_reload_log(
+            f"FAILED launchd reload of {target} — service NOT registered after "
+            f"retrying for {int(_reload_budget)}s (refresh ran outside gateway "
+            f"process tree)"
+        )
+        logger.error(
+            "launchd reload of %s failed — service not registered after %ds of "
+            "retries; see %s",
+            target,
+            int(_reload_budget),
+            _launchd_reload_log_path(),
+        )
     print(
         "↻ Updated gateway launchd service definition to match the current Hermes install"
     )
@@ -3845,10 +4139,8 @@ def launchd_install(force: bool = False):
     plist_path.write_text(new_plist)
 
     try:
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
+        _launchctl_bootstrap(
+            _launchd_domain(), plist_path, get_launchd_label(), timeout=30
         )
     except subprocess.CalledProcessError as e:
         if not _launchctl_domain_unsupported(e.returncode):
@@ -3896,11 +4188,7 @@ def launchd_start():
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(new_plist, encoding="utf-8")
         try:
-            subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
-                timeout=30,
-            )
+            _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(
                 ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
                 check=True,
@@ -3928,11 +4216,7 @@ def launchd_start():
         # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
         try:
-            subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
-                timeout=30,
-            )
+            _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(
                 ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
                 check=True,
@@ -4081,6 +4365,16 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:
+            # Restart is the one path where the job is almost always still
+            # registered (we just drained it), so a plain bootstrap would hit
+            # EIO on the common case. Boot the stale label out first — cheaper
+            # and clearer here than routing through _launchctl_bootstrap's
+            # bootstrap-first/retry-on-EIO flow. See #23387, #42914.
+            subprocess.run(
+                ["launchctl", "bootout", target],
+                check=False,
+                timeout=90,
+            )
             subprocess.run(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
                 check=True,
@@ -4262,16 +4556,29 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         if not pid or not _pid_exists(pid):
             return
 
-        # (c) default config has multiplexing on
-        cfg_path = default_root / "config.yaml"
-        if not cfg_path.exists():
-            return
-        with open(cfg_path, encoding="utf-8") as f:
-            cfg = _yaml.safe_load(f) or {}
-        multiplex = bool(
-            cfg.get("multiplex_profiles")
-            or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
-        )
+        # (c) multiplexing is on for the default gateway. Precedence mirrors
+        # gateway.config: the GATEWAY_MULTIPLEX_PROFILES env override wins over
+        # config.yaml when set to a recognized value, so a hosted gateway that
+        # forces multiplex on via env (with no multiplex_profiles in config.yaml)
+        # still trips this guard. A blank/unrecognized env value falls through
+        # to config.yaml.
+        from gateway.config import _env_multiplex_profiles_override
+
+        env_multiplex = _env_multiplex_profiles_override()
+        if env_multiplex is False:
+            return  # explicitly forced OFF by the operator env override
+        if env_multiplex is True:
+            multiplex = True
+        else:
+            cfg_path = default_root / "config.yaml"
+            if not cfg_path.exists():
+                return
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+            multiplex = bool(
+                cfg.get("multiplex_profiles")
+                or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
+            )
         if not multiplex:
             return
     except Exception:
@@ -6268,13 +6575,31 @@ def _gateway_command_inner(args):
                     "  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'"
                 )
                 print()
-            start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
-            start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
+            # Honor CLI flags (--start-now / --no-start-now, --start-on-login /
+            # --no-start-on-login).  When not provided, prompt interactively or
+            # fall back to True for non-TTY / headless contexts (SSH, CI, pipes).
+            non_interactive = not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty())
+            _sn = getattr(args, "start_now", None)
+            if _sn is not None:
+                start_now = _sn
+            elif not non_interactive:
+                start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
+            else:
+                start_now = True
+
+            _sol = getattr(args, "start_on_login", None)
+            if _sol is not None:
+                start_on_login = _sol
+            elif not non_interactive:
+                start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
+            else:
+                start_on_login = True
             systemd_install(
                 force=force,
                 system=system,
                 run_as_user=run_as_user,
                 enable_on_startup=start_on_login,
+                non_interactive=non_interactive,
             )
             if start_now:
                 systemd_start(system=system)
@@ -6650,6 +6975,7 @@ def _gateway_command_inner(args):
             # path that can be reaped with the old gateway process.  If the
             # Windows backend raises, intentionally preserve the existing
             # generic failure fallback below.
+            service_configured = gateway_windows.is_installed()
             try:
                 gateway_windows.restart()
                 return

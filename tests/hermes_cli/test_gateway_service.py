@@ -113,7 +113,7 @@ class TestSystemdServiceRefresh:
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,ExecMainStatus,MainPID"],
             ["systemctl", "--user", "reset-failed", gateway_cli.get_service_name()],
-            ["systemctl", "--user", "restart", gateway_cli.get_service_name()],
+            ["systemctl", "--user", "--no-block", "restart", gateway_cli.get_service_name()],
             ("wait", False, None),
         ]
 
@@ -741,6 +741,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
@@ -777,7 +778,10 @@ class TestGatewaySystemServiceRouting:
 
         assert ("graceful", 654, 17.0) in calls
         assert any(call[0] == "reset-failed" for call in calls)
-        assert any(call[0] == "restart" for call in calls)
+        assert (
+            "restart",
+            ["systemctl", "--user", "--no-block", "restart", gateway_cli.get_service_name()],
+        ) in calls
         assert ("wait", False, 654) in calls
         out = capsys.readouterr().out.lower()
         assert "restarting gracefully" in out
@@ -856,7 +860,7 @@ class TestGatewaySystemServiceRouting:
                 return SimpleNamespace(stdout="ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\nMainPID=0\n", stderr="", returncode=0)
             if args[0] == "reset-failed":
                 return SimpleNamespace(stdout="", stderr="", returncode=0)
-            if args[0] == "restart":
+            if args[0] == "--no-block" and args[1] == "restart":
                 raise subprocess.CalledProcessError(
                     1,
                     ["systemctl", "--user", *args],
@@ -868,7 +872,7 @@ class TestGatewaySystemServiceRouting:
 
         gateway_cli.systemd_restart()
 
-        assert ["restart", gateway_cli.get_service_name()] in calls
+        assert ["--no-block", "restart", gateway_cli.get_service_name()] in calls
         out = capsys.readouterr().out.lower()
         assert "rate-limited by systemd" in out
         assert "reset-failed" in out

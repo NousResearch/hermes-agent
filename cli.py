@@ -12219,6 +12219,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
+            # Store last reasoning for /reasoning reveal post-hoc replay.
+            if result:
+                self._last_reasoning = result.get("last_reasoning")
+
             if response and not response_previewed:
                 # Use skin engine for label/color with fallback
                 try:

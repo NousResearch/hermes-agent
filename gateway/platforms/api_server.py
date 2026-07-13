@@ -3052,17 +3052,29 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
-                # If the agent produced a final_response but no text
-                # deltas were streamed (e.g. some providers only emit
-                # the full response at the end), emit a single fallback
-                # delta so Responses clients still receive a live text part.
+                # Surface flagged agent failures (failed=True, or
+                # completed=False with an error) as response.failed even when
+                # partial text was already streamed. Previously
+                # `result.get("error") and not final_response_text` could
+                # never fire for retry-exhausted failures (final_response
+                # carries the error text, so final_response_text was always
+                # truthy), masking mid-stream stalls as response.completed
+                # with zero usage. Mirrors the /v1/chat/completions handling.
+                _r_failed = bool(result.get("failed")) if isinstance(result, dict) else False
+                _r_completed = bool(result.get("completed", True)) if isinstance(result, dict) else True
+                _r_err = result.get("error") if isinstance(result, dict) else None
                 agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
-                if agent_final and not final_text_parts:
-                    await _emit_text_delta(agent_final)
-                if agent_final and not final_response_text:
-                    final_response_text = agent_final
-                if isinstance(result, dict) and result.get("error") and not final_response_text:
-                    agent_error = _redact_api_error_text(result["error"])
+                if _r_failed or (not _r_completed and _r_err):
+                    agent_error = _redact_api_error_text(_r_err or agent_final or "agent run failed")
+                else:
+                    # If the agent produced a final_response but no text
+                    # deltas were streamed (e.g. some providers only emit
+                    # the full response at the end), emit a single fallback
+                    # delta so Responses clients still receive a live text part.
+                    if agent_final and not final_text_parts:
+                        await _emit_text_delta(agent_final)
+                    if agent_final and not final_response_text:
+                        final_response_text = agent_final
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = _redact_api_error_text(e)

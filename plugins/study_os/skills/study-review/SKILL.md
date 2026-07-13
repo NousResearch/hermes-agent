@@ -1,36 +1,55 @@
 ---
 name: study-review
-description: Run StudyOS spaced repetition reviews.
+description: Run flexible StudyOS spaced-repetition reviews.
 platforms: [linux, macos, windows]
 ---
 
 # StudyOS Review
 
-Use this skill for 复习, daily review, and 艾宾浩斯 spaced repetition. Before
-long project-specific reasoning, call `study_prompt_context(intent="reviewing")`.
-Treat fragments as turn-local context only; never mutate system prompts
-mid-conversation.
+Use for 复习, daily review, 艾宾浩斯 drills, and spaced repetition. Load turn-local
+context with `study_activity(resource="prompt_context", action="load",
+data={"intent":"reviewing"})`; never mutate system prompts.
 
-## Daily 艾宾浩斯 Workflow
+## Queue
 
-1. Load review preferences with `study_read_note(note=".StudyOS/study_profile.md",
-   include_body=true)` when available.
-2. Find due examples with `study_due_reviews()`.
-3. For each due example, read the problem using `study_read_note`.
-4. Ask the user for their solution before judging.
-5. Be strict: missed conditions, concept confusion, or invalid reasoning fail.
-6. Record the result with `study_record_review`.
-7. On failure, also log a 错题 with `study_log_error`.
-8. Summarize reviewed count, pass/fail count, weak concepts, and next actions.
+Call `study_activity(resource="review", action="due", data=...)`. Default:
+`{"review_state":"due","sort":"priority","limit":10}`. Do not broaden
+the user's requested scope without asking.
 
-## New Material
+Combine selectors (categories are ANDed):
 
-For first-time learning, use `study_learning_queue`, update concept
-`learning_state` with `study_update_concept_state`, and log sessions with
-`study_log_session`.
+- Selected questions: `notes:["course/examples/a.md"]`
+- Topic: `subjects:[...]`, `tags:[...]`, `concepts:[...]`
+- Difficulty: `difficulties:["easy","hard"]`
+- Level: `review_levels:[0,1]`, `min_review_level`, `max_review_level`
+- State: `review_state:"due"` (default), `"new"`, `"reviewed"`, or `"all"`
+  (targeted non-due practice).
+- Multi-value topic matching: `match:"any"` (default) or `"all"`.
+- Order: `priority`, `oldest`, `newest`, `difficulty_asc`, `difficulty_desc`,
+  or `title`.
 
-## Memory
+For ambiguity, give the queue count and ask one scope question. For an empty
+selection, report filters and offer to relax one constraint; never switch to all.
 
-After daily or weekly review, call `study_sync_memory` and pass returned
-entries to the memory tool when that tool is available. This preserves weak
-concepts, due counts, and last sync time across sessions.
+## Loop
+
+1. Read one selected note with `study_activity(resource="note", action="read",
+   data={"note":"...","include_body":true})`. Present only its question.
+   Never reveal a solution, hint, or grade before the answer. Give a minimal
+   hint only when requested and increment `hints_used`.
+2. Grade after the answer as `correct`, `partial`, or `incorrect`; point out
+   missing conditions/invalid reasoning and give a concise correction. Missing
+   a required condition is not fully correct.
+3. Ask for self-confidence (1-5) if absent, then record exactly once:
+
+   `study_activity(resource="review", action="submit", project_id="...",
+   data={"note":"...","response":"...","result":"correct|partial|incorrect",
+   "duration_seconds":0,"self_confidence":1-5,"hints_used":0,"diagnoses":[]})`
+
+   `review.submit` atomically saves the attempt and advances spacing. Do not
+   pair `attempt.record` with `review.record` for the same answer.
+4. Continue only if submission succeeds. If it fails, say the result was not
+   recorded and retry it; do not move on or invent a count.
+5. End with attempted/correct/partial/incorrect counts, weak concepts, and one
+   next action. Call `study_activity(resource="memory", action="sync")` when
+   available.

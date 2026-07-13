@@ -1970,6 +1970,33 @@ export interface Translations {
     noNewConcepts: string
     noNewExamples: string
     conceptGraph: string
+    startReview: string
+    agentReview: string
+    agentReviewThis: string
+    agentReviewDesc: string
+    agentReviewSelected: string
+    selectedReviews: string
+    selectAllFiltered: string
+    clearSelection: string
+    selectReviewItem: string
+    loadingReview: string
+    remaining: string
+    backToList: string
+    yourAnswer: string
+    answerPlaceholder: string
+    confidence: string
+    revealAnswer: string
+    referenceAnswer: string
+    noReferenceAnswer: string
+    selfGrade: string
+    incorrect: string
+    partial: string
+    correct: string
+    reviewRecorded: string
+    nextReview: string
+    sessionComplete: string
+    sessionCompleteDesc: string
+    selectProjectForReview: string
   }
 
   prompts: {

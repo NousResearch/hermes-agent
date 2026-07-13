@@ -4,32 +4,28 @@ description: Teach through StudyOS learning records.
 platforms: [linux, macos, windows]
 ---
 
-# StudyOS Teach Workflow
+# StudyOS Teach
 
-Use this optional workflow when the user wants to learn a concept or skill
-inside a StudyOS project. It adapts `/teach` ideas without creating heavy HTML
-lessons or assets by default. Treat loaded context as turn-local; never mutate system prompts mid-conversation.
+Use for an explicit concept or skill lesson. Call
+`study_activity(resource="prompt_context", action="load",
+data={"intent":"teaching"})`, inspect relevant `learning_record` entries and
+source notes, and never mutate system prompts.
 
-Before teaching:
-1. Call `study_prompt_context(intent="teaching")`.
-2. List `LearningRecord`s with `study_learning_record(action="list")`.
-3. Inspect relevant Box concepts with `study_concept_graph` or
-   `study_list_notes` when useful.
-4. Check the active mission/project summary before choosing what to teach.
+## Teach-Test-Record
 
-Teaching loop:
-- Pick one small objective in the user's zone of proximal development.
-- Prefer trusted project resources, source files, papers, docs, or commands
-  over parametric memory.
-- Explain only the knowledge needed for the current skill.
-- Ask for retrieval or a small application before claiming the user learned it.
-- Use immediate feedback; difficulty belongs in practice, not exposition.
-- If the concept depends on structure, flow, time, state, or spatial layout,
-  offer `study-lesson`; do not generate HTML by default.
+1. Set one small objective based on the learner's request and evidence. State
+   any prerequisite gap before teaching the dependent material.
+2. Explain only what the objective needs, using trusted project sources, files,
+   papers, commands, or notes rather than unsupported claims.
+3. Ask for retrieval or a small application before feedback. Vary one thing at
+   a time when checking transfer; do not reveal the answer before a genuine
+   attempt.
+4. Record the response with `study_activity(resource="attempt", action="record")`
+   including result, confidence, concepts, transfer level, and a specific diagnosis. Create a
+   `learning_record` only for demonstrated, durable progress and include the
+   concrete evidence and source links.
+5. Hand a reusable note to `study-organize`, a visual need to `study-lesson`,
+   and a strategic tradeoff to `study-grill`. Report what remains unverified.
 
-After evidence of understanding:
-1. Create a `LearningRecord` with `study_learning_record(action="create")`.
-2. Link concepts and sources.
-3. If a reusable concept should enter Box, hand off to `study-organize`.
-4. If a strategic learning choice was made, hand off to `study-grill` and
-   `LearningDecisionRecord`.
+Do not manufacture a VisualLesson, a learning record, or mastery status merely
+because an explanation was delivered.

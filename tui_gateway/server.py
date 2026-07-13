@@ -11274,9 +11274,16 @@ def _(rid, params: dict) -> dict:
         try:
             from agent.skill_commands import scan_skill_commands
 
+            bucket = "Skills"
+            if bucket not in cat_map:
+                cat_map[bucket] = []
+                cat_order.append(bucket)
             for k, info in sorted(scan_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
-                all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
+                desc = d[:120] + ("…" if len(d) > 120 else "")
+                pair = [k, desc]
+                all_pairs.append(pair)
+                cat_map[bucket].append(pair)
                 skill_count += 1
         except Exception as e:
             warning = f"skill discovery unavailable: {e}"

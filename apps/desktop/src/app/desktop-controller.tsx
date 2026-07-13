@@ -46,12 +46,7 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import {
-  $activeGatewayProfile,
-  $freshSessionRequest,
-  $profileScope,
-  refreshActiveProfile
-} from '../store/profile'
+import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
@@ -177,7 +172,7 @@ function sessionMessagesSignature(messages: SessionMessage[]): string {
   for (const m of messages) {
     hash = hashString(hash, m.role)
     hash = hashString(hash, String(m.timestamp ?? ''))
-    hash = hashString(hash, typeof m.content === 'string' ? m.content : JSON.stringify(m.content) ?? '')
+    hash = hashString(hash, typeof m.content === 'string' ? m.content : (JSON.stringify(m.content) ?? ''))
   }
 
   return `${messages.length}:${hash}`
@@ -1139,7 +1134,13 @@ export function DesktopController() {
 
       {studyOpen && (
         <Suspense fallback={null}>
-          <StudyView onClose={closeOverlayToPreviousRoute} />
+          <StudyView
+            onClose={closeOverlayToPreviousRoute}
+            onStartAgentReview={async prompt => {
+              closeOverlayToPreviousRoute()
+              await submitText(prompt)
+            }}
+          />
         </Suspense>
       )}
     </>

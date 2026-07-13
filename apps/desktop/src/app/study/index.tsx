@@ -27,6 +27,7 @@ const ReviewView = lazy(async () => ({ default: (await import('./review')).Revie
 
 interface StudyViewProps {
   onClose?: () => void
+  onStartAgentReview?: (prompt: string) => void | Promise<void>
 }
 
 function formatDateTime(value: string): string {
@@ -126,7 +127,7 @@ function ScheduleButton({
   )
 }
 
-export function StudyView({ onClose }: StudyViewProps) {
+export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
   const { t } = useI18n()
   const projects = useStore($studyProjects)
   const schedules = useStore($studySchedules)
@@ -221,7 +222,9 @@ export function StudyView({ onClose }: StudyViewProps) {
               <p className="mt-1 text-sm text-muted-foreground">{t.study.subtitle}</p>
             </div>
             <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t.study.projectList}</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {t.study.projectList}
+              </div>
               {projects.map(project => (
                 <ProjectButton
                   active={project.project_id === selectedProjectId}
@@ -230,10 +233,14 @@ export function StudyView({ onClose }: StudyViewProps) {
                   project={project}
                 />
               ))}
-              {configured && projects.length === 0 && <div className="text-sm text-muted-foreground">{t.study.noProjects}</div>}
+              {configured && projects.length === 0 && (
+                <div className="text-sm text-muted-foreground">{t.study.noProjects}</div>
+              )}
             </div>
             <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t.study.scheduleList}</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {t.study.scheduleList}
+              </div>
               {schedules.map(schedule => (
                 <ScheduleButton
                   active={schedule.schedule_id === selectedScheduleId}
@@ -242,7 +249,9 @@ export function StudyView({ onClose }: StudyViewProps) {
                   schedule={schedule}
                 />
               ))}
-              {selectedProjectId && schedules.length === 0 && <div className="text-sm text-muted-foreground">{t.study.noSchedules}</div>}
+              {selectedProjectId && schedules.length === 0 && (
+                <div className="text-sm text-muted-foreground">{t.study.noSchedules}</div>
+              )}
             </div>
           </div>
         </OverlaySidebar>
@@ -266,7 +275,9 @@ export function StudyView({ onClose }: StudyViewProps) {
             <div className="mb-6 rounded-3xl border bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--primary)_20%,transparent),transparent_32%),var(--card)] p-6 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">{selectedProject.domain_pack}</div>
+                  <div className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
+                    {selectedProject.domain_pack}
+                  </div>
                   <h2 className="mt-2 text-3xl font-semibold tracking-tight">{selectedProject.title}</h2>
                 </div>
                 <div className="rounded-full border bg-background/70 px-3 py-1 text-xs font-medium text-muted-foreground">
@@ -284,9 +295,7 @@ export function StudyView({ onClose }: StudyViewProps) {
             <button
               className={cn(
                 'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
-                activeTab === 'calendar'
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-muted-foreground hover:text-foreground'
+                activeTab === 'calendar' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
               )}
               onClick={() => setActiveTab('calendar')}
               type="button"
@@ -296,9 +305,7 @@ export function StudyView({ onClose }: StudyViewProps) {
             <button
               className={cn(
                 'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
-                activeTab === 'review'
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-muted-foreground hover:text-foreground'
+                activeTab === 'review' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
               )}
               onClick={() => setActiveTab('review')}
               type="button"
@@ -309,53 +316,55 @@ export function StudyView({ onClose }: StudyViewProps) {
           {activeTab === 'calendar' && (
             <>
               {selectedSchedule && scheduleValidation?.ok === false && (
-            <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-5">
-              <h3 className="font-semibold">{t.study.invalidSchedule}</h3>
-              <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-                {scheduleValidation.errors.map(error => (
-                  <li key={error}>{error}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {selectedSchedule && scheduleValidation?.ok === true && (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <h3 className="text-2xl font-semibold">{selectedSchedule.title}</h3>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {t.study.range}: {selectedSchedule.range.start} → {selectedSchedule.range.end} · {t.study.timezone}:{' '}
-                    {selectedSchedule.timezone}
-                  </p>
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  {selectedSchedule.events.length} {t.study.events}
-                </div>
-              </div>
-              {groupEvents(selectedSchedule.events).map(([month, weeks]) => (
-                <section className="rounded-3xl border bg-card/70 p-4" key={month}>
-                  <h4 className="text-lg font-semibold">{month}</h4>
-                  <div className="mt-4 space-y-4">
-                    {weeks.map(([week, events]) => (
-                      <div className="grid gap-3 md:grid-cols-[5rem_1fr]" key={`${month}-${week}`}>
-                        <div className="pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{week}</div>
-                        <div className="space-y-3">
-                          {events.map(event => (
-                            <EventCard event={event} key={event.id} project={selectedProject} />
-                          ))}
-                        </div>
-                      </div>
+                <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-5">
+                  <h3 className="font-semibold">{t.study.invalidSchedule}</h3>
+                  <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                    {scheduleValidation.errors.map(error => (
+                      <li key={error}>{error}</li>
                     ))}
+                  </ul>
+                </div>
+              )}
+              {selectedSchedule && scheduleValidation?.ok === true && (
+                <div className="space-y-5">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <h3 className="text-2xl font-semibold">{selectedSchedule.title}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {t.study.range}: {selectedSchedule.range.start} → {selectedSchedule.range.end} ·{' '}
+                        {t.study.timezone}: {selectedSchedule.timezone}
+                      </p>
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {selectedSchedule.events.length} {t.study.events}
+                    </div>
                   </div>
-                </section>
-              ))}
-            </div>
-          )}
-          </>
+                  {groupEvents(selectedSchedule.events).map(([month, weeks]) => (
+                    <section className="rounded-3xl border bg-card/70 p-4" key={month}>
+                      <h4 className="text-lg font-semibold">{month}</h4>
+                      <div className="mt-4 space-y-4">
+                        {weeks.map(([week, events]) => (
+                          <div className="grid gap-3 md:grid-cols-[5rem_1fr]" key={`${month}-${week}`}>
+                            <div className="pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                              {week}
+                            </div>
+                            <div className="space-y-3">
+                              {events.map(event => (
+                                <EventCard event={event} key={event.id} project={selectedProject} />
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              )}
+            </>
           )}
           {activeTab === 'review' && (
             <Suspense fallback={<PageLoader label={t.study.loading} />}>
-              <ReviewView />
+              <ReviewView onStartAgentReview={onStartAgentReview} />
             </Suspense>
           )}
         </OverlayMain>

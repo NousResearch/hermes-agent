@@ -6,47 +6,33 @@ platforms: [linux, macos, windows]
 
 # StudyOS Planning
 
-Use this skill for project setup, curriculum planning, learning schedules, and
-schedule_adjustment. Before long project-specific reasoning, call
-`study_prompt_context(intent="planning")` or
-`study_prompt_context(intent="schedule_adjustment")`. Treat fragments as
-turn-local context only; never mutate system prompts mid-conversation.
+Use for setup, curriculum, schedules, and schedule changes. Call
+`study_activity(resource="project", action="status")`, then call
+`study_activity(resource="prompt_context", action="load", data={"intent":"planning"})`
+or `"schedule_adjustment"`; never mutate system prompts.
 
-## Workflow
+## Plan Before Persisting
 
-1. Confirm or initialize the active project with `study_project`.
-2. Identify the project shape: `exam-vault`, `engineering-repo`,
-   `skill-vault`, or `hybrid`.
-3. For 考研, use the `study-kaoyan` domain pack and initialize with
-   `domain_pack="kaoyan.v1"` unless the user provides a different project.
-4. For engineering or skills, use `domain_pack="engineering.v1"` with
-   codebases, benchmarks, or artifacts.
-5. Build or inspect standardized curriculum JSON with `study_create_curriculum`
-   and `study_list_curricula`.
-6. Generate schedules as `study_schedule.v1` JSON only.
-7. Validate with `study_schedule(action="validate")` before saving.
-8. Save with `study_schedule(action="save")`; desktop reads persisted JSON.
+1. Read the active project, existing curricula, and relevant schedules. For a
+   schedule change, read the target schedule before proposing replacements.
+2. Identify the project shape: `exam-vault`, `engineering-repo`, `skill-vault`,
+   or `hybrid`. Use `kaoyan.v1` only for 考研; use `engineering.v1` for
+   codebase- or artifact-driven learning.
+3. Turn the request into observable objectives, prerequisites, source anchors,
+   a realistic time budget, and a review/checkpoint. Do not fill unknown dates,
+   scores, or availability with invented facts.
+4. Present a compact proposed curriculum or schedule when the user has not yet
+   asked to save it. When saving is requested, call `study_activity` with
+   `curriculum.create`, then `schedule.validate`, then `schedule.save` using the
+   same `study_schedule.v1` object.
+5. Report the artifact paths and conflicts/assumptions. Never claim a desktop
+   calendar changed until `schedule.save` succeeds.
 
-## Curriculum
+## Constraints
 
-Curriculum files are the source of truth for what to learn. Generate them from
-textbook and exercise book structure, not from inconsistent review notes.
-
-For engineering projects, curriculum entries can come from repos, papers, docs,
-commands, benchmarks, or artifact roadmaps. Each names the skill and source.
-
-Required curriculum thinking:
-- Extract 考点 from definitions, theorems, formulas, and problem variants.
-- Map each 考点 to representative problems.
-- Record prerequisites so `study_concept_graph` can order learning.
-- Keep `curriculum` topic names stable because schedules can reference them.
-
-## Schedule Contract
-
-Schedules must be valid `study_schedule.v1` artifacts. Events must include
-timezone offsets, fall inside the schedule range, and have
-`duration_minutes == end - start`. Unknown fields are allowed for future use,
-but desktop rendering ignores them.
-
-Use read-only calendar assumptions: no drag/drop, no edit controls, and no
-natural-language parsing in the desktop UI.
+Curriculum is the source of truth for what to learn; keep topic names stable
+because schedules reference them. Map 考点 or engineering skills to source
+material, representative practice, and prerequisites. Schedule events need a
+timezone, must be inside the range, and require
+`duration_minutes == end - start`. Do not create a schedule merely to answer a
+planning question.

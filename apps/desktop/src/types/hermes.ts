@@ -138,6 +138,7 @@ export interface StudySchedulesResponse {
 
 export interface StudyReviewItem {
   path: string
+  subject: string | null
   title: string
   review_level: number
   review_count: number
@@ -153,17 +154,58 @@ export interface StudyReviewDueResponse {
   configured: boolean
   date: string
   count: number
+  subjects: string[]
   due: StudyReviewItem[]
+}
+
+export interface StudyReviewDetail {
+  item: StudyReviewItem & {
+    frontmatter: Record<string, unknown>
+    patterns: string[]
+  }
+  prompt_markdown: string
+  answer_markdown: string | null
+  has_answer: boolean
+}
+
+export type StudyReviewResult = 'correct' | 'partial' | 'incorrect'
+
+export interface StudyReviewSubmission {
+  project_id: string
+  note: string
+  response: string
+  result: StudyReviewResult
+  duration_seconds: number
+  self_confidence: number
+  transfer_level?: string
+  diagnoses?: Array<Record<string, unknown>>
+  detail?: string
+  session_id?: string
+}
+
+export interface StudyReviewSubmissionResponse {
+  attempt: {
+    attempt_id: string
+    item_id: string
+    result: StudyReviewResult
+    score: number
+    [key: string]: unknown
+  }
+  review: {
+    path: string
+    title: string
+    next_review_at: string
+    review_level: { old: number; new: number }
+    review_count: { old: number; new: number }
+  }
+  completed_today_increment: number
 }
 
 export interface StudyReviewStatsResponse {
   total: number
   by_level: Record<string, number>
   progress: number
-  concept_stats: Record<
-    string,
-    { avg: number; min: number; max: number; count: number; due: number }
-  >
+  concept_stats: Record<string, { avg: number; min: number; max: number; count: number; due: number }>
   review_streak: number
   due_count: number
   cached: boolean

@@ -369,6 +369,14 @@ def _iter_markdown_notes(
     return out
 
 
+def _note_subject(note: dict[str, Any]) -> str | None:
+    """Return the top-level course folder for a note, when it has one."""
+    parts = Path(str(note.get("path") or "")).parts
+    if len(parts) < 2 or parts[0].startswith("."):
+        return None
+    return parts[0]
+
+
 _CN_NORMALIZE_RE = re.compile(r"[的与和之]")
 
 def _normalize_cn(text: str) -> str:
@@ -1136,38 +1144,130 @@ def _is_due(note: dict[str, Any], today: date) -> bool:
         return True
 
 
+def _review_filter_values(args: dict[str, Any], key: str) -> set[str]:
+    """Read a review selector as normalized non-empty strings.
+
+    Single-value selectors retain their compact form while multi-selectors use
+    an array.  Silently ignoring malformed selector values would make a review
+    scope broader than the user requested, so reject those at the boundary.
+    """
+    value = args.get(key)
+    if value is None:
+        return set()
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+        raise ValueError(f"{key} must be a string or an array of strings")
+    return {item.strip().casefold() for item in values if item.strip()}
+
+
+def _review_filter_ints(args: dict[str, Any], key: str) -> set[int]:
+    value = args.get(key)
+    if value is None:
+        return set()
+    values = [value] if isinstance(value, int) and not isinstance(value, bool) else value
+    if not isinstance(values, list) or not all(isinstance(item, int) and not isinstance(item, bool) for item in values):
+        raise ValueError(f"{key} must be an integer or an array of integers")
+    if any(item < 0 or item > 5 for item in values):
+        raise ValueError(f"{key} values must be between 0 and 5")
+    return set(values)
+
+
 # ---------------------------------------------------------------------------
 # study_due_reviews
 # ---------------------------------------------------------------------------
 
 def handle_study_due_reviews(args: dict[str, Any], **_kwargs) -> str:
-    """List examples due for spaced-repetition review, sorted by priority."""
+    """List review examples using explicit, composable queue selectors."""
     try:
         vault = resolve_vault_path(args.get("vault_path"))
         limit = _limit_from(args, default=30)
         today = date.today()
-        subject = str(args.get("subject") or "").strip()
-        folder = str(args.get("folder") or "examples").strip()
+        raw_folder = args.get("folder")
+        folder = str(raw_folder).strip() if raw_folder is not None else None
+        subjects_filter = _review_filter_values(args, "subjects")
+        if args.get("subject") is not None:
+            subjects_filter.update(_review_filter_values(args, "subject"))
+        notes_filter = _review_filter_values(args, "notes")
+        notes_filter.update(_review_filter_values(args, "paths"))
+        tags_filter = _review_filter_values(args, "tags")
+        concepts_filter = _review_filter_values(args, "concepts")
+        difficulties_filter = _review_filter_values(args, "difficulties")
+        review_levels_filter = _review_filter_ints(args, "review_levels")
+        match_mode = str(args.get("match") or "any").strip().lower()
+        if match_mode not in {"any", "all"}:
+            raise ValueError("match must be 'any' or 'all'")
+        review_state = str(args.get("review_state") or "due").strip().lower()
+        if review_state not in {"due", "all", "new", "reviewed"}:
+            raise ValueError("review_state must be due, all, new, or reviewed")
+        sort_by = str(args.get("sort") or "priority").strip().lower()
+        if sort_by not in {"priority", "oldest", "newest", "difficulty_asc", "difficulty_desc", "title"}:
+            raise ValueError("sort must be priority, oldest, newest, difficulty_asc, difficulty_desc, or title")
+        min_level = args.get("min_review_level")
+        max_level = args.get("max_review_level")
+        if min_level is not None and (not isinstance(min_level, int) or isinstance(min_level, bool) or not 0 <= min_level <= 5):
+            raise ValueError("min_review_level must be an integer from 0 to 5")
+        if max_level is not None and (not isinstance(max_level, int) or isinstance(max_level, bool) or not 0 <= max_level <= 5):
+            raise ValueError("max_review_level must be an integer from 0 to 5")
+        if min_level is not None and max_level is not None and min_level > max_level:
+            raise ValueError("min_review_level cannot exceed max_review_level")
 
         due: list[dict[str, Any]] = []
+        subjects: set[str] = set()
         warnings: list[str] = []
+        # A StudyOS vault may contain one course or multiple top-level course
+        # folders (for example OS/examples and 计组/examples).  Scanning only a
+        # root-level examples/ directory silently empties the review queue for
+        # the latter layout.  An explicitly supplied folder remains scoped.
         for path in _iter_markdown_notes(vault, folder=folder):
             note, note_warnings = parse_note(path, vault, include_body=False)
             warnings.extend(note_warnings)
             if note.get("layer") != "example":
                 continue
-            if not _is_due(note, today):
-                continue
-            if subject:
-                tags = {t.lstrip("#").casefold() for t in note.get("tags", [])}
-                concepts = {c.casefold() for c in note.get("concepts", [])}
-                s = subject.casefold()
-                if s not in tags and not any(s in c for c in concepts):
-                    continue
+            note_subject = _note_subject(note)
+            if note_subject:
+                subjects.add(note_subject)
 
             state = _read_review_state(note)
             fm = note.get("frontmatter", {})
             rl = int(fm.get("review_level", 0))
+            is_due = _is_due(note, today)
+            if review_state == "due" and not is_due:
+                continue
+            if review_state == "new" and state["review_count"] != 0:
+                continue
+            if review_state == "reviewed" and state["review_count"] == 0:
+                continue
+
+            note_tags = {str(tag).lstrip("#").casefold() for tag in note.get("tags", [])}
+            note_concepts = {str(concept).casefold() for concept in note.get("concepts", [])}
+            subject_matches = {
+                value
+                for value in subjects_filter
+                if value == (note_subject or "").casefold()
+                or value in note_tags
+                or any(value in concept for concept in note_concepts)
+            }
+            if subjects_filter and (subject_matches != subjects_filter if match_mode == "all" else not subject_matches):
+                continue
+            if notes_filter and note["path"].casefold() not in notes_filter:
+                continue
+            if tags_filter and (not tags_filter <= note_tags if match_mode == "all" else not tags_filter & note_tags):
+                continue
+            concept_matches = {
+                value for value in concepts_filter if any(value in concept for concept in note_concepts)
+            }
+            if concepts_filter and (concept_matches != concepts_filter if match_mode == "all" else not concept_matches):
+                continue
+            difficulty = str(fm.get("difficulty") or "").casefold()
+            if difficulties_filter and difficulty not in difficulties_filter:
+                continue
+            if review_levels_filter and rl not in review_levels_filter:
+                continue
+            if min_level is not None and rl < min_level:
+                continue
+            if max_level is not None and rl > max_level:
+                continue
+
             due.append({
                 "path": note["path"],
                 "title": note["title"],
@@ -1178,21 +1278,34 @@ def handle_study_due_reviews(args: dict[str, Any], **_kwargs) -> str:
                 "concepts": note.get("concepts", []),
                 "tags": note.get("tags", []),
                 "difficulty": fm.get("difficulty"),
+                "subject": _note_subject(note),
             })
-            if len(due) >= limit:
-                break
 
-        # Sort: lowest review_level first, then oldest last_reviewed_at
-        def _sort_key(d: dict[str, Any]) -> tuple[int, str]:
-            return (d["review_level"], d["last_reviewed_at"] or "0000-00-00")
-
-        due.sort(key=_sort_key)
-
+        difficulty_rank = {"easy": 1, "medium": 2, "hard": 3}
+        if sort_by == "priority":
+            due.sort(key=lambda item: (item["review_level"], item["last_reviewed_at"] or "0000-00-00", item["path"]))
+        elif sort_by == "oldest":
+            due.sort(key=lambda item: (item["last_reviewed_at"] or "0000-00-00", item["path"]))
+        elif sort_by == "newest":
+            due.sort(key=lambda item: (item["last_reviewed_at"] or "0000-00-00", item["path"]), reverse=True)
+        elif sort_by.startswith("difficulty_"):
+            due.sort(
+                key=lambda item: (difficulty_rank.get(str(item["difficulty"]).casefold(), 2), item["path"]),
+                reverse=sort_by == "difficulty_desc",
+            )
+        else:
+            due.sort(key=lambda item: (item["title"].casefold(), item["path"]))
         return _ok({
             "vault_path": str(vault),
             "date": today.isoformat(),
-            "count": len(due),
-            "due": due,
+            "count": min(len(due), limit),
+            "subjects": sorted(subjects),
+            "due": due[:limit],
+            "selection": {
+                "review_state": review_state,
+                "sort": sort_by,
+                "match": match_mode,
+            },
         }, warnings)
     except Exception as exc:
         return _err("DUE_REVIEWS_FAILED", str(exc))
@@ -1294,13 +1407,24 @@ def handle_study_record_review(args: dict[str, Any], **_kwargs) -> str:
 # ---------------------------------------------------------------------------
 
 STUDY_DUE_REVIEWS_SCHEMA = {
-    "description": "List example notes due for spaced-repetition review, sorted by priority (lowest review_level first, oldest last_reviewed_at first). Uses Ebbinghaus intervals × review_level weight.",
+    "description": "Build a review queue from example notes. Defaults to due items and priority order (lowest review_level, then oldest review). Select explicitly by note paths, subjects/tags/concepts, difficulty, level, review state, and order.",
     "parameters": {
         "type": "object",
         "properties": {
             "vault_path": _VAULT_PROP,
             "folder": {"type": "string", "description": "Folder to scan. Defaults to 'examples'."},
-            "subject": {"type": "string", "description": "Filter by subject (matches tags or concepts case-insensitively)."},
+            "subject": {"type": "string", "description": "Backward-compatible single subject selector; matches subject, tag, or concept case-insensitively."},
+            "subjects": {"type": "array", "items": {"type": "string"}, "description": "Subject selectors. Combined with other selector types using AND."},
+            "notes": {"type": "array", "items": {"type": "string"}, "description": "Exact vault-relative example paths. Use for a user-selected question set."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Tag selectors without #."},
+            "concepts": {"type": "array", "items": {"type": "string"}, "description": "Concept selectors; matches a concept name case-insensitively."},
+            "difficulties": {"type": "array", "items": {"type": "string"}, "description": "Difficulty values, such as easy, medium, or hard."},
+            "review_levels": {"type": "array", "items": {"type": "integer"}, "description": "Exact review levels (0-5)."},
+            "min_review_level": {"type": "integer", "description": "Inclusive minimum review level (0-5)."},
+            "max_review_level": {"type": "integer", "description": "Inclusive maximum review level (0-5)."},
+            "review_state": {"type": "string", "enum": ["due", "all", "new", "reviewed"], "description": "due is default; all permits targeted practice of non-due items."},
+            "match": {"type": "string", "enum": ["any", "all"], "description": "How multiple values in subjects/tags/concepts match; default any."},
+            "sort": {"type": "string", "enum": ["priority", "oldest", "newest", "difficulty_asc", "difficulty_desc", "title"], "description": "Queue order; default priority."},
             "limit": {"type": "integer", "description": "Maximum due notes to return (default 30)."},
         },
     },

@@ -8592,13 +8592,14 @@ async def get_study_due_reviews(subject: str = "", level: Optional[int] = None, 
     """
     vault = _study_resolve_vault()
     if vault is None:
-        return {"vault_path": None, "configured": False, "date": "", "count": 0, "due": []}
+        return {"vault_path": None, "configured": False, "date": "", "count": 0, "subjects": [], "due": []}
 
     from datetime import date as _date
 
     from plugins.study_os.tools import (
         _is_due,
         _iter_markdown_notes,
+        _note_subject,
         _read_review_state,
         parse_note,
     )
@@ -8609,16 +8610,20 @@ async def get_study_due_reviews(subject: str = "", level: Optional[int] = None, 
     level_q = level if level is not None else None
 
     due: list[dict[str, Any]] = []
-    for path in _iter_markdown_notes(vault, folder="examples"):
+    subjects: set[str] = set()
+    for path in _iter_markdown_notes(vault):
         note, _ = parse_note(path, vault, include_body=False)
         if note.get("layer") != "example":
             continue
         if not _is_due(note, today):
             continue
+        note_subject = _note_subject(note)
+        if note_subject:
+            subjects.add(note_subject)
         if subject_q:
             tags = {t.lstrip("#").casefold() for t in note.get("tags", [])}
             concepts = {c.casefold() for c in note.get("concepts", [])}
-            if subject_q not in tags and not any(subject_q in c for c in concepts):
+            if subject_q != (note_subject or "").casefold() and subject_q not in tags and not any(subject_q in c for c in concepts):
                 continue
 
         fm = note.get("frontmatter", {})
@@ -8638,20 +8643,78 @@ async def get_study_due_reviews(subject: str = "", level: Optional[int] = None, 
                 "concepts": note.get("concepts", []),
                 "tags": note.get("tags", []),
                 "difficulty": fm.get("difficulty"),
+                "subject": _note_subject(note),
             }
         )
-        if len(due) >= limit:
-            break
 
     due.sort(key=lambda d: (d["review_level"], d["last_reviewed_at"] or "0000-00-00"))
+    due = due[:limit]
 
     return {
         "vault_path": str(vault),
         "configured": True,
         "date": today.isoformat(),
         "count": len(due),
+        "subjects": sorted(subjects),
         "due": due,
     }
+
+
+class StudyReviewDetailRequest(BaseModel):
+    note: str
+
+
+class StudyReviewSubmissionRequest(BaseModel):
+    project_id: str
+    note: str
+    response: str
+    result: str
+    duration_seconds: int
+    self_confidence: int
+    transfer_level: str = "execution"
+    diagnoses: Optional[List[Dict[str, Any]]] = None
+    detail: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+def _study_review_envelope(raw: str) -> Dict[str, Any]:
+    try:
+        envelope = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="StudyOS returned invalid JSON") from exc
+    if envelope.get("ok"):
+        return envelope["data"]
+    error = envelope.get("error", {})
+    code = str(error.get("code") or "STUDY_REVIEW_FAILED")
+    status = 404 if code in {"NOTE_NOT_FOUND", "PROJECT_NOT_FOUND", "NOT_FOUND"} else 400
+    raise HTTPException(status_code=status, detail=error)
+
+
+@app.post("/api/study/review/detail")
+async def post_study_review_detail(body: StudyReviewDetailRequest):
+    """Read one example note with its answer separated for deliberate reveal."""
+    vault = _study_resolve_vault()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+    from plugins.study_os.learning import handle_study_review_detail
+
+    return _study_review_envelope(
+        handle_study_review_detail({"vault_path": str(vault), "note": body.note})
+    )
+
+
+@app.post("/api/study/review/attempt")
+async def post_study_review_attempt(body: StudyReviewSubmissionRequest):
+    """Record one attempt and advance its review state as one operation."""
+    vault = _study_resolve_vault()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+    from plugins.study_os.learning import handle_study_review_submission
+
+    payload = body.model_dump(exclude_none=True)
+    payload["vault_path"] = str(vault)
+    payload["diagnoses"] = payload.get("diagnoses", [])
+    return _study_review_envelope(handle_study_review_submission(payload))
 
 
 @app.get("/api/study/review/stats")

@@ -4,31 +4,20 @@ description: Create visual StudyOS lesson artifacts.
 platforms: [linux, macos, windows]
 ---
 
-# StudyOS VisualLesson Workflow
+# StudyOS VisualLesson
 
-Use this optional workflow when a learning topic needs a diagram, timeline,
-state machine, spatial layout, or lightweight interaction. Treat loaded context
-as turn-local; never mutate system prompts mid-conversation.
+Use only when a requested lesson needs structure, flow, time, state, spatial
+layout, or interaction. Call `study_activity(resource="prompt_context",
+action="load", data={"intent":"teaching"})`; never mutate system prompts.
 
-Do not create HTML by default. Use a VisualLesson only when at least one is
-true:
-- the concept depends on structure, flow, time, or state,
-- the user asks to draw or visualize it,
-- the artifact will be reviewed more than once,
-- the page can become a reusable teaching reference.
-
-For `exam-vault` projects, never create VisualLesson artifacts during routine
-整理, 复习, weekly assessment, or 错题 remediation. Use them only for explicit
-visualization requests or genuinely visual/structural concepts.
-
-Before creating:
-1. Call `study_prompt_context(intent="teaching")`.
-2. Read relevant Box notes or concept graph if they exist.
-3. Keep the lesson focused on one small objective.
-
-Create with `study_lesson(action="create")`. Store complete HTML only under
-`.StudyOS/projects/<project_id>/lessons/`. Link concepts and sources in
-metadata. Do not duplicate Box; link to Box concepts instead.
-
-If the user demonstrates understanding after using the lesson, record that with
-`study_learning_record(action="create")`.
+1. Read relevant concept notes and sources; define one visual learning
+   objective and explain why text alone is insufficient.
+2. Do not create HTML for routine 整理, 复习, weekly assessment, or 错题 repair.
+   Prefer an existing note, explanation, or small probe unless a reusable visual
+   artifact is justified.
+3. For an accepted artifact, call `study_activity(resource="lesson",
+   action="create")` with one complete HTML document, rationale, linked concepts,
+   and source links. Read it back and report both HTML and metadata paths.
+4. If the learner demonstrates something after using it, record that separate
+   evidence through `attempt` or `learning_record`; viewing a lesson is not
+   evidence of understanding.

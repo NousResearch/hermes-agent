@@ -5,6 +5,7 @@ import type { StudyReviewItem, StudyReviewStatsResponse, StudyProfile } from '@/
 export type ReviewLoadState = 'idle' | 'loading' | 'ready' | 'error'
 
 export const $reviewDueItems = atom<StudyReviewItem[]>([])
+export const $reviewSubjects = atom<string[]>([])
 export const $reviewStats = atom<StudyReviewStatsResponse | null>(null)
 export const $reviewLoadState = atom<ReviewLoadState>('idle')
 export const $reviewError = atom<null | string>(null)
@@ -36,18 +37,21 @@ export const $filteredDueItems = computed(
     items.filter(item => {
       if (subject) {
         const s = subject.toLowerCase()
+        const matchesSubject = item.subject?.toLowerCase() === s
         const matchesTag = item.tags?.some(t => t.toLowerCase() === s)
         const matchesConcept = item.concepts?.some(c => c.toLowerCase().includes(s))
-        if (!matchesTag && !matchesConcept) return false
+        if (!matchesSubject && !matchesTag && !matchesConcept) return false
       }
       if (level !== null && item.review_level !== level) return false
       return true
     })
 )
 
-export const $allTags = computed($reviewDueItems, items => {
+export const $allTags = computed([$reviewDueItems, $reviewSubjects], (items, subjects) => {
   const tagSet = new Set<string>()
+  for (const subject of subjects) tagSet.add(subject)
   for (const item of items) {
+    if (item.subject) tagSet.add(item.subject)
     for (const tag of item.tags || []) tagSet.add(tag)
     for (const concept of item.concepts || []) tagSet.add(concept)
   }
@@ -56,6 +60,7 @@ export const $allTags = computed($reviewDueItems, items => {
 
 export function resetReviewState(): void {
   $reviewDueItems.set([])
+  $reviewSubjects.set([])
   $reviewStats.set(null)
   $reviewLoadState.set('idle')
   $reviewError.set(null)

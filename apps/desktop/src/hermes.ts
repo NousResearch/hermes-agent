@@ -53,18 +53,17 @@ import type {
   SkillInfo,
   StarmapGraph,
   StatusResponse,
-  StudyConceptNode,
-  StudyLearningItem,
   StudyProfile,
   StudyProject,
   StudyProjectsResponse,
   StudyReviewConceptsResponse,
+  StudyReviewDetail,
   StudyReviewDueResponse,
-  StudyReviewItem,
   StudyReviewQueueResponse,
   StudyReviewStatsResponse,
+  StudyReviewSubmission,
+  StudyReviewSubmissionResponse,
   StudySchedule,
-  StudyScheduleSummary,
   StudySchedulesResponse,
   ToolsetConfig,
   ToolsetInfo,
@@ -181,13 +180,16 @@ export type {
   StudyProject,
   StudyProjectsResponse,
   StudyReviewConceptsResponse,
+  StudyReviewDetail,
   StudyReviewDueResponse,
   StudyReviewItem,
   StudyReviewQueueResponse,
   StudyReviewStatsResponse,
+  StudyReviewSubmission,
+  StudyReviewSubmissionResponse,
   StudySchedule,
-  StudyScheduleSummary,
   StudySchedulesResponse,
+  StudyScheduleSummary,
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,
@@ -821,12 +823,38 @@ export function getStudyReviewDue(params?: {
   limit?: number
 }): Promise<StudyReviewDueResponse> {
   const search = new URLSearchParams()
-  if (params?.subject) search.set('subject', params.subject)
-  if (params?.level !== undefined) search.set('level', String(params.level))
-  if (params?.limit !== undefined) search.set('limit', String(params.limit))
+
+  if (params?.subject) {
+    search.set('subject', params.subject)
+  }
+
+  if (params?.level !== undefined) {
+    search.set('level', String(params.level))
+  }
+
+  if (params?.limit !== undefined) {
+    search.set('limit', String(params.limit))
+  }
   const qs = search.toString()
+
   return window.hermesDesktop.api<StudyReviewDueResponse>({
     path: `/api/study/review/due${qs ? `?${qs}` : ''}`
+  })
+}
+
+export function getStudyReviewDetail(note: string): Promise<StudyReviewDetail> {
+  return window.hermesDesktop.api<StudyReviewDetail>({
+    path: '/api/study/review/detail',
+    method: 'POST',
+    body: { note }
+  })
+}
+
+export function submitStudyReviewAttempt(submission: StudyReviewSubmission): Promise<StudyReviewSubmissionResponse> {
+  return window.hermesDesktop.api<StudyReviewSubmissionResponse>({
+    path: '/api/study/review/attempt',
+    method: 'POST',
+    body: submission
   })
 }
 
@@ -836,14 +864,18 @@ export function getStudyReviewStats(): Promise<StudyReviewStatsResponse> {
   })
 }
 
-export function getStudyReviewQueue(params?: {
-  state?: string
-  limit?: number
-}): Promise<StudyReviewQueueResponse> {
+export function getStudyReviewQueue(params?: { state?: string; limit?: number }): Promise<StudyReviewQueueResponse> {
   const search = new URLSearchParams()
-  if (params?.state) search.set('state', params.state)
-  if (params?.limit !== undefined) search.set('limit', String(params.limit))
+
+  if (params?.state) {
+    search.set('state', params.state)
+  }
+
+  if (params?.limit !== undefined) {
+    search.set('limit', String(params.limit))
+  }
   const qs = search.toString()
+
   return window.hermesDesktop.api<StudyReviewQueueResponse>({
     path: `/api/study/review/queue${qs ? `?${qs}` : ''}`
   })

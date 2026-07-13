@@ -4,33 +4,24 @@ description: Bridge grilling sessions into StudyOS decisions.
 platforms: [linux, macos, windows]
 ---
 
-# StudyOS Grill Workflow
+# StudyOS Grill
 
-Use this optional workflow when the user asks to grill, stress-test, or sharpen
-a learning plan inside a StudyOS project. This skill composes `/grilling`; it
-does not replace it. Treat loaded context as turn-local; never mutate system prompts mid-conversation.
+Use for a strategic learning decision, not routine planning, 整理, 复习,
+assessment, or 错题 repair. Call `study_activity(resource="prompt_context",
+action="load", data={"intent":"planning"})` and inspect existing `decision`
+records; never mutate system prompts.
 
-Do not use this workflow for routine planning, problem 整理, daily 复习, weekly
-assessment, or 错题 remediation. In `exam-vault` projects, use it only for
-strategic study decisions such as scope boundaries, priority tradeoffs, or
-whether to change the learning system itself.
+## Decision Flow
 
-Before the interview:
-1. Call `study_prompt_context(intent="planning")` for the active project.
-2. List existing LearningDecisionRecords with `study_decision(action="list")`.
-3. Inspect relevant concepts with `study_concept_graph` or `study_list_notes`
-   when the question depends on existing Box knowledge.
-
-During the interview, follow `/grilling`: ask one question at a time, provide
-your recommended answer, and explore code or notes instead of asking when the
-answer is discoverable.
-
-After a stable decision:
-1. Create a `LearningDecisionRecord` with `study_decision(action="create")`.
-2. Link relevant Box concepts via `linked_concepts`.
-3. Link source files, notes, repos, commands, or papers via `linked_sources`.
-4. Do not write Box notes directly unless the user also asks to organize the
-   resulting concept; hand that off to `study-organize`.
-
-Boundary: StudyOS stores project state and decisions. `/grilling` owns the
-interview protocol. Box stores reusable knowledge objects.
+1. Define the decision, its owner, deadline, constraints, and reversible versus
+   irreversible consequences. Search project notes or source material before
+   asking the learner for discoverable facts.
+2. Follow `/grilling`: ask one high-leverage question at a time, state a
+   recommendation with reasoning, and compare concrete options rather than
+   producing motivational prose.
+3. Persist with `study_activity(resource="decision", action="create")` only
+   after a stable decision is accepted. Include options, consequences, concepts,
+   sources, and linked sessions. Do not write one for an open brainstorm.
+4. Hand reusable knowledge to `study-organize`; route the resulting action plan
+   to `study-plan`. Report the decision id or say clearly that nothing was
+   persisted.

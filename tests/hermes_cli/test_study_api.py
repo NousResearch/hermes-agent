@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -108,6 +109,22 @@ def _write_fixture_vault(vault: Path) -> None:
     )
 
 
+def _write_due_example(path: Path, title: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\n"
+        f"title: {title}\n"
+        "type: example\n"
+        "review_level: 0\n"
+        "review_count: 0\n"
+        "tags:\n"
+        "  - 408\n"
+        "---\n\n"
+        f"# {title}\n",
+        encoding="utf-8",
+    )
+
+
 def test_study_projects_unconfigured_vault(monkeypatch, tmp_path: Path):
     missing = tmp_path / "missing"
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(missing))
@@ -156,6 +173,29 @@ def test_study_api_lists_and_reads_schedule(monkeypatch, tmp_path: Path):
         client.close()
 
 
+def test_study_review_due_discovers_examples_in_subject_folders(monkeypatch, tmp_path: Path):
+    vault = tmp_path / "408"
+    vault.mkdir()
+    _write_due_example(vault / "OS" / "examples" / "process.md", "进程")
+    _write_due_example(vault / "计组" / "examples" / "cache.md", "Cache")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+    client, pa, ph = _client()
+    try:
+        response = _get(client, "/api/study/review/due")
+
+        assert response.status_code == 200
+        assert response.json()["count"] == 2
+        assert {item["path"] for item in response.json()["due"]} == {
+            "OS/examples/process.md",
+            "计组/examples/cache.md",
+        }
+        assert {item["subject"] for item in response.json()["due"]} == {"OS", "计组"}
+        assert response.json()["subjects"] == ["OS", "计组"]
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+
 def test_study_api_rejects_path_traversal(monkeypatch, tmp_path: Path):
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -183,3 +223,40 @@ def test_study_api_missing_schedule_returns_404(monkeypatch, tmp_path: Path):
     finally:
         _restore(pa, ph)
         client.close()
+
+
+def test_study_review_runner_endpoints_share_one_submission_contract(monkeypatch, tmp_path: Path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write_fixture_vault(vault)
+    note = vault / "math" / "examples" / "derivative.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "---\ntitle: 导数\ntype: example\nreview_level: 1\nreview_count: 0\n"
+        "concepts: [导数]\n---\n\n# 导数\n\n求导。\n\n## 答案\n\n使用定义。\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    detail = asyncio.run(
+        web_server.post_study_review_detail(
+            web_server.StudyReviewDetailRequest(note="math/examples/derivative.md")
+        )
+    )
+    submitted = asyncio.run(
+        web_server.post_study_review_attempt(
+            web_server.StudyReviewSubmissionRequest(
+                project_id="kaoyan-2027",
+                note="math/examples/derivative.md",
+                response="按定义求导",
+                result="correct",
+                duration_seconds=42,
+                self_confidence=4,
+            )
+        )
+    )
+
+    assert detail["prompt_markdown"].endswith("求导。")
+    assert detail["answer_markdown"].startswith("## 答案")
+    assert submitted["attempt"]["response"] == "按定义求导"
+    assert submitted["review"]["review_level"] == {"old": 1, "new": 2}

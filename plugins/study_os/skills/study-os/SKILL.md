@@ -6,46 +6,41 @@ platforms: [linux, macos, windows]
 
 # StudyOS Router
 
-Use this router for StudyOS help from an Obsidian vault. StudyOS writes only
-under `.StudyOS/`.
+StudyOS keeps durable project evidence under `.StudyOS/`. Use
+`study_activity(resource, action, data)` for project state and records; use
+`study_coach` only for conclusions grounded in recorded attempts.
 
-Before project-specific reasoning, call `study_prompt_context` with the matching
-intent and project. Treat fragments as turn-local context only; never mutate system prompts mid-conversation.
+## Shared Flow
 
-## Intent Map
+1. Check `study_activity(resource="project", action="status")`. Initialize a
+   project only when the user asks to set one up; do not create a project for a
+   one-off explanation.
+2. Load turn-local context with `prompt_context.load` and the matching intent.
+   Never mutate system prompts.
+3. Read existing notes, schedules, records, or attempts before proposing a
+   change. State unknowns rather than inventing learner history.
+4. Perform one focused learning action. Persist only requested or completed
+   outcomes, then report what was read, written, and left unchanged.
 
-| Intent | Route |
+## Route
+
+| Request | Intent and skill |
 | --- | --- |
-| `planning`, `schedule_adjustment` | `study-plan` |
-| `organizing` | `study-organize` |
-| `reviewing` | `study-review` |
-| `teaching` | `study-teach` |
-| `assessment`, `error_analysis` | `study-assessment` |
-| `kaoyan.v1` / `engineering.v1` | domain pack |
+| Plan or reschedule | `planning` / `schedule_adjustment`: `study-plan` |
+| Organize a problem or note | `organizing`: `study-organize` |
+| Recall, drill, or spaced review | `reviewing`: `study-review` |
+| Teach or practice a concept | `teaching`: `study-teach` |
+| Exam, weekly, or error diagnosis | `assessment` / `error_analysis`: `study-assessment` |
 
-## Workspace Types
+Use `study-kaoyan` for `kaoyan.v1` and `study-engineering` for
+`engineering.v1`. Use `study-lesson` only for a requested or genuinely visual
+concept; use `study-grill` only for a strategic decision.
 
-Classify the active project first:
+## Evidence Rules
 
-- `exam-vault`: exams, problem sets, 错题, review.
-- `engineering-repo`: source repo as learning surface.
-- `skill-vault`: concepts, references, records.
-- `hybrid`: repo exploration plus lightweight vault.
-
-## Routing Rules
-
-- 考研 init: `study_project(action="init", domain_pack="kaoyan.v1")`.
-- Engineering init explicitly: `domain_pack="engineering.v1"`,
-  `workspace_type="hybrid"`.
-- If the user gives a problem and says 整理, use `study-organize`.
-- Learn concept: `study-teach`; `study-lesson` only for explicit visualization
-  or structural/temporal/stateful concepts.
-- Grill decision: `study-grill`; never routine planning, 整理, 复习, or 错题.
-- If the user says 复习 or a daily review job fires, use `study-review`.
-- If the user asks for weekly, mock, exam, or 错题 analysis, use `study-assessment`.
-- If the user asks for textbook/course/curriculum planning, use `study-plan`.
-
-## Safety
-
-- Desktop calendars render only persisted `study_schedule.v1` JSON artifacts.
-- Do not parse chat prose into desktop events or mutate schedules in UI.
+Record an `attempt` only after a learner response or other concrete evidence.
+Do not infer mastery from fluent chat, review counts, or plans. Candidate
+pattern changes are not applied automatically. Persist an accepted conclusion
+as a `learning_record` (LearningRecord), a strategic choice as a `decision`
+(LearningDecisionRecord), and a completed schedule only after it validates. Desktop calendars read saved
+`study_schedule.v1` artifacts.

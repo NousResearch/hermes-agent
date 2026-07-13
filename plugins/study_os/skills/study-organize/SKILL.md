@@ -6,41 +6,27 @@ platforms: [linux, macos, windows]
 
 # StudyOS Organize
 
-Use this skill when the user gives a problem and asks to 整理, analyze, study,
-or make notes. Before long project-specific reasoning, call
-`study_prompt_context(intent="organizing")`. Treat fragments as turn-local
-context only; never mutate system prompts mid-conversation.
+Use when the user asks to 整理, analyze, or turn a problem into notes. Call
+`study_activity(resource="prompt_context", action="load",
+data={"intent":"organizing"})`; never mutate system prompts.
 
-## Single-Problem 整理 Workflow
+## Evidence-First Organization
 
-Trigger words include 整理, 分析一下这道题, 研究一下, 帮我看看这道题,
-做笔记, and 总结一下.
+1. Read the problem source. Extract candidate concepts, conditions, reusable
+   triggers, solution invariants, and likely failure points.
+2. Search before writing: call `study_activity(resource="note", action="list")`
+   for concept/pattern matches, read the closest notes, then call `note.extract`
+   for links and aliases.
+3. Decide explicitly: reuse an existing concept, improve one incomplete note,
+   create a concept note, create a pattern note, or keep this as a standalone
+   explanation. Do not create `/examples/` unless the user asks to add a
+   reviewable problem.
+4. On a requested write, use the normal file workflow under the vault. Preserve
+   existing frontmatter and links, avoid duplicate concepts/patterns, then read
+   the saved note back to verify its path, type, concepts, and links.
+5. Summarize the source, concepts/patterns found, files changed, and unresolved
+   ambiguity. Do not claim a concept is mastered just because it was organized.
 
-1. Explore before writing. Call `study_concept_graph()` to inspect existing
-   concepts and isolated nodes.
-2. Extract candidate concepts and reusable problem-type signals from the
-   problem statement.
-3. Search concepts with `study_list_notes(layer="concept", search_body=true,
-   normalize=true)`.
-4. Search problem patterns with `study_list_notes(layer="pattern",
-   search_body=true, normalize=true)`.
-5. For each candidate concept, call `study_concept_graph(concept="...")` to
-   inspect prerequisites, dependents, exercised examples, and review levels.
-6. Read likely matches with `study_read_note(include_body=true)`.
-7. Use `study_extract_concepts` on related notes to avoid duplicate or isolated
-   notes.
-
-## Write Decisions
-
-- Create or update `/Box/` concept notes only when the concept is missing or
-  incomplete.
-- Create `/Box/题型/题型：...` notes only when the problem has a reusable trigger
-  signal and solution routine.
-- Do not create `/examples/` files unless the user explicitly asks to add the
-  problem to the example library.
-- Do not rename existing notes just for style.
-
-## User Summary
-
-Report concepts, problem patterns, prerequisite/dependent relationships, and
-key 易错点. Make clear what was found, created, updated, or deliberately skipped.
+Create a pattern only when it has a stable recognition signal, required
+conditions, and a reusable solution routine. Prefer links to existing Box notes
+over copying their explanation.

@@ -9,11 +9,23 @@ from typing import Any
 
 PROJECT_SCHEMA_VERSION = "study_project.v1"
 SCHEDULE_SCHEMA_VERSION = "study_schedule.v1"
+ATTEMPT_SCHEMA_VERSION = "study_attempt.v1"
+PATTERN_PROPOSAL_SCHEMA_VERSION = "study_pattern_proposal.v1"
 
 PROJECT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 SCHEDULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATETIME_WITH_OFFSET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z)$")
+
+ATTEMPT_RESULTS = {"correct", "partial", "incorrect", "abandoned"}
+TRANSFER_LEVELS = {
+    "recall",
+    "recognition",
+    "execution",
+    "explanation",
+    "near_transfer",
+    "far_transfer",
+}
 
 DEFAULT_PROMPT_POLICY: dict[str, Any] = {
     "base_max_chars": 2000,
@@ -183,6 +195,97 @@ def validate_study_schedule(
     _validate_events(schedule.get("events"), errors, range_start=range_start, range_end=range_end, project=project)
 
     return (False, errors) if errors else (True, schedule)
+
+
+def validate_study_attempt(data: Any) -> tuple[bool, dict[str, Any] | list[str]]:
+    """Validate one immutable learning attempt event."""
+
+    errors: list[str] = []
+    attempt = _require_mapping(data, "attempt", errors)
+    if attempt is None:
+        return False, errors
+
+    if attempt.get("schema_version") != ATTEMPT_SCHEMA_VERSION:
+        errors.append(f"schema_version must be {ATTEMPT_SCHEMA_VERSION}")
+    for key in ("attempt_id", "project_id", "item_id", "response", "result"):
+        _require_string(attempt, key, errors)
+    project_id = attempt.get("project_id")
+    if isinstance(project_id, str) and not PROJECT_ID_RE.match(project_id):
+        errors.append("project_id must match ^[a-z0-9][a-z0-9-]{2,63}$")
+    _parse_datetime(attempt.get("occurred_at"), "occurred_at", errors)
+
+    if attempt.get("result") not in ATTEMPT_RESULTS:
+        errors.append(f"result must be one of: {', '.join(sorted(ATTEMPT_RESULTS))}")
+    score = attempt.get("score")
+    if not isinstance(score, (int, float)) or isinstance(score, bool) or not 0 <= score <= 1:
+        errors.append("score must be a number from 0 to 1")
+    duration = attempt.get("duration_seconds")
+    if duration is not None and (not isinstance(duration, int) or isinstance(duration, bool) or duration < 0):
+        errors.append("duration_seconds must be a non-negative integer")
+    hints = attempt.get("hints_used")
+    if hints is not None and (not isinstance(hints, int) or isinstance(hints, bool) or hints < 0):
+        errors.append("hints_used must be a non-negative integer")
+    confidence = attempt.get("self_confidence")
+    if confidence is not None and (
+        not isinstance(confidence, int) or isinstance(confidence, bool) or not 1 <= confidence <= 5
+    ):
+        errors.append("self_confidence must be an integer from 1 to 5")
+    evaluator_confidence = attempt.get("evaluator_confidence")
+    if evaluator_confidence is not None and (
+        not isinstance(evaluator_confidence, (int, float))
+        or isinstance(evaluator_confidence, bool)
+        or not 0 <= evaluator_confidence <= 1
+    ):
+        errors.append("evaluator_confidence must be a number from 0 to 1")
+    transfer_level = attempt.get("transfer_level")
+    if transfer_level is not None and transfer_level not in TRANSFER_LEVELS:
+        errors.append(f"transfer_level must be one of: {', '.join(sorted(TRANSFER_LEVELS))}")
+
+    for key in ("concepts", "patterns"):
+        value = attempt.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+            errors.append(f"{key} must be an array of non-empty strings")
+    diagnoses = attempt.get("diagnoses", [])
+    if not isinstance(diagnoses, list):
+        errors.append("diagnoses must be an array")
+    else:
+        for index, diagnosis in enumerate(diagnoses):
+            path = f"diagnoses[{index}]"
+            if not isinstance(diagnosis, dict):
+                errors.append(f"{path} must be an object")
+                continue
+            for key in ("kind", "evidence"):
+                if not isinstance(diagnosis.get(key), str) or not diagnosis[key].strip():
+                    errors.append(f"{path}.{key} must be a non-empty string")
+
+    return (False, errors) if errors else (True, attempt)
+
+
+def validate_pattern_proposal(data: Any) -> tuple[bool, dict[str, Any] | list[str]]:
+    """Validate a versioned, evidence-backed problem-pattern proposal."""
+
+    errors: list[str] = []
+    proposal = _require_mapping(data, "proposal", errors)
+    if proposal is None:
+        return False, errors
+    if proposal.get("schema_version") != PATTERN_PROPOSAL_SCHEMA_VERSION:
+        errors.append(f"schema_version must be {PATTERN_PROPOSAL_SCHEMA_VERSION}")
+    for key in ("proposal_id", "project_id", "title", "change_type", "status", "rationale"):
+        _require_string(proposal, key, errors)
+    project_id = proposal.get("project_id")
+    if isinstance(project_id, str) and not PROJECT_ID_RE.match(project_id):
+        errors.append("project_id must match ^[a-z0-9][a-z0-9-]{2,63}$")
+    if proposal.get("change_type") not in {"create", "supplement", "split", "merge", "demote"}:
+        errors.append("change_type must be create, supplement, split, merge, or demote")
+    if proposal.get("status") not in {"candidate", "accepted", "rejected"}:
+        errors.append("status must be candidate, accepted, or rejected")
+    evidence_ids = proposal.get("evidence_attempt_ids")
+    if not isinstance(evidence_ids, list) or not evidence_ids or any(
+        not isinstance(item, str) or not item.strip() for item in evidence_ids
+    ):
+        errors.append("evidence_attempt_ids must be a non-empty string array")
+    _parse_datetime(proposal.get("created_at"), "created_at", errors)
+    return (False, errors) if errors else (True, proposal)
 
 
 def _validate_phases(value: Any, errors: list[str]) -> None:

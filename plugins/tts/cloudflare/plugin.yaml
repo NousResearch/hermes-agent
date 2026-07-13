@@ -1,0 +1,8 @@
+name: cloudflare
+version: 1.0.0
+description: "Cloudflare Workers AI Aura TTS backend (Deepgram Aura voices). Free tier with generous limits."
+author: NousResearch
+kind: backend
+requires_env:
+  - CLOUDFLARE_API_TOKEN
+  - CLOUDFLARE_ACCOUNT_ID

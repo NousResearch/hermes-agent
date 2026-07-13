@@ -862,6 +862,35 @@ class TestHandleVoiceCommandReal:
                     for c in mock_cp.call_args_list)
 
 
+class TestToggleVoiceTtsReal:
+    """Tests TTS-only output toggle behavior.
+
+    TTS output is decoupled from voice mode (microphone/STT) so users can
+    enable spoken assistant responses without input audio libraries.
+    """
+
+    @patch("cli._cprint")
+    @patch("tools.tts_tool.check_tts_requirements", return_value=True)
+    def test_tts_toggle_does_not_require_voice_mode(self, _check, mock_cp):
+        cli = _make_voice_cli(_voice_mode=False, _voice_tts=False)
+
+        cli._toggle_voice_tts()
+
+        assert cli._voice_tts is True
+        assert any("Voice TTS enabled" in str(call) for call in mock_cp.call_args_list)
+        assert not any("Enable voice mode first" in str(call) for call in mock_cp.call_args_list)
+
+    @patch("cli._cprint")
+    def test_tts_toggle_off_does_not_require_voice_mode(self, mock_cp):
+        cli = _make_voice_cli(_voice_mode=False, _voice_tts=True)
+
+        cli._toggle_voice_tts()
+
+        assert cli._voice_tts is False
+        assert cli._voice_tts_done.is_set()
+        assert any("Voice TTS disabled" in str(call) for call in mock_cp.call_args_list)
+
+
 class TestEnableVoiceModeReal:
     """Tests _enable_voice_mode with real CLI instance."""
 

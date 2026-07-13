@@ -13375,8 +13375,10 @@ def _(rid, params: dict) -> dict:
       off also tears down any active continuous recording loop. Does NOT
       start recording on its own; recording is driven by ``voice.record``
       (Ctrl+B) after mode is on, matching cli.py's enable/Ctrl+B split.
-    * ``tts`` — toggle speech-output of agent replies. Requires mode on
-      (mirrors CLI's _toggle_voice_tts guard).
+    * ``tts`` — toggle speech-output of agent replies. TTS output does
+      not require voice mode (microphone/STT); keep it independent so
+      users can hear responses without input audio libraries (mirrors
+      CLI's ``_toggle_voice_tts``).
     """
     action = params.get("action", "status")
 
@@ -13440,8 +13442,10 @@ def _(rid, params: dict) -> dict:
         )
 
     if action == "tts":
-        if not _voice_mode_enabled():
-            return _err(rid, 4014, "enable voice mode first: /voice on")
+        # TTS output is independent of voice mode (microphone/STT) — mirrors
+        # cli.py's _toggle_voice_tts, which no longer gates on _voice_mode.
+        # Users can enable spoken replies in environments without input
+        # audio libraries.
         new_value = not _voice_tts_enabled()
         # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
         os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
@@ -13452,7 +13456,7 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {
-                "enabled": True,
+                "enabled": _voice_mode_enabled(),
                 "record_key": _voice_record_key(),
                 "tts": new_value,
             },

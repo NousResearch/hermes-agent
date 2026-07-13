@@ -888,6 +888,28 @@ def _has_any_command_tts_provider(tts_config: Optional[Dict[str, Any]] = None) -
     return False
 
 
+def _has_any_plugin_tts_provider() -> bool:
+    """Return True when any plugin-registered TTS provider is available.
+
+    Checks the plugin TTS registry (issue #30398) for providers whose
+    ``is_available()`` returns True.  This makes ``check_tts_requirements``
+    plugin-aware so a configured plugin backend (e.g. Cloudflare Workers AI)
+    satisfies the TTS availability check without a vendor-specific entry
+    in the built-in probe list.
+    """
+    try:
+        from agent.tts_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        for provider in list_providers():
+            if provider.is_available():
+                return True
+    except Exception:  # noqa: BLE001 — discovery failure is non-fatal
+        pass
+    return False
+
+
 # ===========================================================================
 # ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
 # ===========================================================================
@@ -2471,13 +2493,16 @@ def check_tts_requirements() -> bool:
 
     Edge TTS needs no API key and is the default, so if the package
     is installed, TTS is available. A user-declared command provider
-    also satisfies the requirement.
+    or a plugin-registered provider also satisfies the requirement.
 
     Returns:
         bool: True if at least one provider can work.
     """
     # Any configured command provider counts as available.
     if _has_any_command_tts_provider():
+        return True
+    # Any available plugin-registered provider counts as available.
+    if _has_any_plugin_tts_provider():
         return True
     try:
         _import_edge_tts()

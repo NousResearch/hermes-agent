@@ -4106,6 +4106,61 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_compress_rewrites_db_history_and_syncs_agent_state(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.rewrites = []
+
+        def replace_messages(self, target, messages):
+            self.rewrites.append((target, list(messages)))
+
+    db = _FakeDB()
+    compressed = [{"role": "assistant", "content": "compressed handoff"}]
+    agent = types.SimpleNamespace(
+        session_id="rotated-id",
+        _last_flushed_db_idx=99,
+        _session_messages=[{"role": "user", "content": "stale"}],
+    )
+    server._sessions["sid"] = _session(
+        agent=agent,
+        history=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "follow-up"},
+            {"role": "assistant", "content": "answer"},
+        ],
+        session_key="old-key",
+    )
+
+    def _fake_compress(session, focus_topic=None, **_kw):
+        with session["history_lock"]:
+            session["history"] = list(compressed)
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        return 3, {"total": 42}
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda _s: None)
+
+    try:
+        with patch("tui_gateway.server._emit"):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "session.compress",
+                    "params": {"session_id": "sid"},
+                }
+            )
+
+        assert resp["result"]["removed"] == 3
+        assert db.rewrites == [("rotated-id", compressed)]
+        assert agent._last_flushed_db_idx == len(compressed)
+        assert agent._session_messages == compressed
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
     from tools.approval import get_current_session_key
 
@@ -4889,7 +4944,20 @@ def test_session_undo_rejects_while_running():
 
 def test_session_undo_allowed_when_idle():
     """Regression guard: when not running, /undo still works."""
+    class _FakeDB:
+        def __init__(self):
+            self.rewrites = []
+
+        def replace_messages(self, target, messages):
+            self.rewrites.append((target, list(messages)))
+
+    db = _FakeDB()
+    agent = types.SimpleNamespace(
+        _last_flushed_db_idx=99,
+        _session_messages=[{"role": "assistant", "content": "stale"}],
+    )
     server._sessions["sid"] = _session(
+        agent=agent,
         running=False,
         history=[
             {"role": "user", "content": "hi"},
@@ -4897,12 +4965,65 @@ def test_session_undo_allowed_when_idle():
         ],
     )
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
-        )
+        with patch("tui_gateway.server._get_db", lambda: db):
+            resp = server.handle_request(
+                {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+            )
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert resp["result"]["removed"] == 2
         assert server._sessions["sid"]["history"] == []
+        assert db.rewrites == [("session-key", [])]
+        assert agent._last_flushed_db_idx == 0
+        assert agent._session_messages == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_rollback_restore_rewrites_db_history_and_syncs_agent_state():
+    class _FakeDB:
+        def __init__(self):
+            self.rewrites = []
+
+        def replace_messages(self, target, messages):
+            self.rewrites.append((target, list(messages)))
+
+    class _Mgr:
+        enabled = True
+
+        def restore(self, cwd, target, file_path=None):
+            return {"success": True}
+
+    db = _FakeDB()
+    agent = types.SimpleNamespace(
+        _checkpoint_mgr=_Mgr(),
+        _last_flushed_db_idx=99,
+        _session_messages=[{"role": "assistant", "content": "stale"}],
+    )
+    server._sessions["sid"] = _session(
+        agent=agent,
+        history=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ],
+    )
+    try:
+        with patch("tui_gateway.server._get_db", lambda: db), patch(
+            "tui_gateway.server._resolve_checkpoint_hash",
+            lambda mgr, cwd, ref: "resolved-hash",
+        ):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "rollback.restore",
+                    "params": {"session_id": "sid", "hash": "abc"},
+                }
+            )
+        assert resp["result"]["success"] is True
+        assert resp["result"]["history_removed"] == 2
+        assert server._sessions["sid"]["history"] == []
+        assert db.rewrites == [("session-key", [])]
+        assert agent._last_flushed_db_idx == 0
+        assert agent._session_messages == []
     finally:
         server._sessions.pop("sid", None)
 

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -5,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
+const FILE_CHUNK_READ_MAX_BYTES = 8 * 1024 * 1024
+const FILE_UPLOAD_SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
@@ -21,6 +24,17 @@ function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   }
 
   return fallback
+}
+
+function normalizeFileChunkReadRange(offset, maxBytes) {
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw ipcPathError('EINVAL', 'File attachment upload failed: offset must be a non-negative safe integer.')
+  }
+  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)) {
+    throw ipcPathError('EINVAL', 'File attachment upload failed: maxBytes must be a positive safe integer.')
+  }
+
+  return { maxBytes, offset }
 }
 
 function encryptDesktopSecret(value, safeStorageApi) {
@@ -302,11 +316,171 @@ async function resolveReadableFileForIpc(
   return { realPath, resolvedPath, stat }
 }
 
+async function readFileChunkForIpc(filePath, offset, maxBytes = FILE_CHUNK_READ_MAX_BYTES) {
+  const range = normalizeFileChunkReadRange(offset, maxBytes)
+  const readLimit = Math.min(range.maxBytes ?? FILE_CHUNK_READ_MAX_BYTES, FILE_CHUNK_READ_MAX_BYTES)
+  const { realPath } = await resolveReadableFileForIpc(filePath, {
+    purpose: 'File attachment upload'
+  })
+  const handle = await fs.promises.open(realPath, 'r')
+
+  try {
+    const before = await handle.stat()
+
+    if (!before.isFile()) {
+      throw ipcPathError('EINVAL', 'File attachment upload failed: only regular files can be read.')
+    }
+    if (!Number.isSafeInteger(before.size)) {
+      throw ipcPathError('EFBIG', 'File attachment upload failed: file size exceeds the safe integer range.')
+    }
+
+    const remaining = Math.max(0, before.size - range.offset)
+    const requested = Math.min(readLimit, remaining)
+    const buffer = Buffer.alloc(requested)
+    const { bytesRead } = requested > 0 ? await handle.read(buffer, 0, requested, range.offset) : { bytesRead: 0 }
+    const after = await handle.stat()
+    const sameFile = before.dev === after.dev && before.ino === after.ino
+    const unchanged = sameFile && before.size === after.size && before.mtimeMs === after.mtimeMs
+
+    if (!unchanged) {
+      throw ipcPathError('ESTALE', 'File attachment upload failed: the file changed while it was being read.')
+    }
+
+    return {
+      buffer: buffer.subarray(0, bytesRead),
+      byteSize: after.size,
+      bytesRead,
+      done: range.offset + bytesRead >= after.size,
+      fileId: `${after.dev}:${after.ino}`,
+      mtimeMs: after.mtimeMs,
+      realPath
+    }
+  } finally {
+    await handle.close()
+  }
+}
+
+function fileSnapshotIdentity(stat) {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`
+}
+
+async function resolveFileSnapshotRoot(snapshotRoot) {
+  const root = path.resolve(String(snapshotRoot || ''))
+  await fs.promises.mkdir(root, { mode: 0o700, recursive: true })
+  const rootStat = await fs.promises.lstat(root)
+
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw ipcPathError('EINVAL', 'File attachment snapshot failed: unsafe snapshot directory.')
+  }
+
+  return root
+}
+
+async function createFileSnapshotForIpc(filePath, snapshotRoot) {
+  const root = await resolveFileSnapshotRoot(snapshotRoot)
+  const { realPath } = await resolveReadableFileForIpc(filePath, {
+    maxBytes: FILE_UPLOAD_SNAPSHOT_MAX_BYTES,
+    purpose: 'File attachment snapshot'
+  })
+  const snapshotPath = path.join(root, `${randomUUID()}.snapshot`)
+  let sourceHandle
+  let snapshotHandle
+
+  try {
+    sourceHandle = await fs.promises.open(realPath, 'r')
+    snapshotHandle = await fs.promises.open(snapshotPath, 'wx', 0o600)
+    const before = await sourceHandle.stat()
+
+    if (!before.isFile() || !Number.isSafeInteger(before.size)) {
+      throw ipcPathError('EINVAL', 'File attachment snapshot failed: source is not a regular bounded file.')
+    }
+
+    const buffer = Buffer.alloc(Math.min(1024 * 1024, Math.max(1, before.size)))
+    let offset = 0
+    while (offset < before.size) {
+      const requested = Math.min(buffer.length, before.size - offset)
+      const { bytesRead } = await sourceHandle.read(buffer, 0, requested, offset)
+      if (bytesRead <= 0) {
+        throw ipcPathError('ESTALE', 'File attachment snapshot failed: source changed while being copied.')
+      }
+      let written = 0
+      while (written < bytesRead) {
+        const result = await snapshotHandle.write(buffer, written, bytesRead - written, offset + written)
+        if (result.bytesWritten <= 0) {
+          throw ipcPathError('EIO', 'File attachment snapshot failed: snapshot write was incomplete.')
+        }
+        written += result.bytesWritten
+      }
+      offset += bytesRead
+    }
+
+    const overflow = Buffer.alloc(1)
+    const extra = await sourceHandle.read(overflow, 0, 1, before.size)
+    const after = await sourceHandle.stat()
+    if (extra.bytesRead !== 0 || fileSnapshotIdentity(after) !== fileSnapshotIdentity(before)) {
+      throw ipcPathError('ESTALE', 'File attachment snapshot failed: source changed while being copied.')
+    }
+
+    await snapshotHandle.sync()
+    const snapshotStat = await snapshotHandle.stat()
+    if (!snapshotStat.isFile() || snapshotStat.size !== before.size) {
+      throw ipcPathError('EIO', 'File attachment snapshot failed: snapshot size mismatch.')
+    }
+
+    return {
+      byteSize: snapshotStat.size,
+      fileId: `${snapshotStat.dev}:${snapshotStat.ino}`,
+      mtimeMs: snapshotStat.mtimeMs,
+      path: snapshotPath
+    }
+  } catch (error) {
+    try {
+      await fs.promises.unlink(snapshotPath)
+    } catch (cleanupError) {
+      if (cleanupError?.code !== 'ENOENT') {
+        throw ipcPathError('EIO', 'File attachment snapshot failed and its partial snapshot could not be removed.')
+      }
+    }
+    throw error
+  } finally {
+    await snapshotHandle?.close()
+    await sourceHandle?.close()
+  }
+}
+
+async function releaseFileSnapshotForIpc(snapshotPath, snapshotRoot) {
+  const root = await resolveFileSnapshotRoot(snapshotRoot)
+  const candidate = path.resolve(String(snapshotPath || ''))
+  if (path.dirname(candidate).toLowerCase() !== root.toLowerCase() || !/^[0-9a-f-]{36}\.snapshot$/i.test(path.basename(candidate))) {
+    throw ipcPathError('EINVAL', 'File attachment snapshot cleanup failed: invalid snapshot path.')
+  }
+
+  let stat
+  try {
+    stat = await fs.promises.lstat(candidate)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return true
+    }
+    throw error
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw ipcPathError('EINVAL', 'File attachment snapshot cleanup failed: unsafe snapshot file.')
+  }
+  await fs.promises.unlink(candidate)
+  return true
+}
+
 export {
+  createFileSnapshotForIpc,
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  FILE_CHUNK_READ_MAX_BYTES,
+  normalizeFileChunkReadRange,
+  readFileChunkForIpc,
   rejectUnsafePathSyntax,
+  releaseFileSnapshotForIpc,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,

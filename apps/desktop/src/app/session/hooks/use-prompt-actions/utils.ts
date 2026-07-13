@@ -1,5 +1,6 @@
 import type { AppendMessage } from '@assistant-ui/react'
 
+import type { HermesReadFileChunkResult } from '@/global'
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
@@ -115,6 +116,58 @@ export function imageFilenameFromPath(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).pop() || 'image.png'
 }
 
+export const FILE_ATTACH_CHUNK_BYTES = 8 * 1024 * 1024
+export const FILE_ATTACH_REQUEST_TIMEOUT_MS = 120_000
+export const FILE_ATTACH_RETRY_DELAYS_MS = [500, 1_500] as const
+
+export function isTransientFileAttachError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /request timed out|websocket.*(?:closed|disconnect|not connected)|connection.*(?:closed|reset|lost|refused)|network error|ECONNRESET|ECONNABORTED|ETIMEDOUT/i.test(
+    message
+  )
+}
+
+export async function withFileAttachRetry<T>(
+  call: () => Promise<T>,
+  retryDelays: readonly number[] = FILE_ATTACH_RETRY_DELAYS_MS
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await call()
+    } catch (error) {
+      if (!isTransientFileAttachError(error) || attempt >= retryDelays.length) {
+        throw error
+      }
+
+      const retryDelay = Math.max(0, Number(retryDelays[attempt]) || 0)
+      if (retryDelay > 0) {
+        await delay(retryDelay)
+      }
+    }
+  }
+}
+
+export async function readFileChunkBase64ForAttach(
+  filePath: string,
+  offset: number,
+  maxBytes = FILE_ATTACH_CHUNK_BYTES
+): Promise<HermesReadFileChunkResult | null> {
+  const reader = window.hermesDesktop?.readFileChunkBase64
+
+  if (!reader) {
+    return null
+  }
+
+  const chunk = await reader(filePath, offset, maxBytes)
+
+  if (!chunk || typeof chunk.base64 !== 'string' || typeof chunk.bytesRead !== 'number') {
+    return null
+  }
+
+  return chunk
+}
+
 // Remote gateway: the local composer-image file lives on THIS machine's disk,
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
@@ -151,6 +204,16 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
 // through unchanged.
 export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   const message = err instanceof Error ? err.message : String(err)
+
+  if (
+    /(?:method not found|unknown method).*file\.attach\.(?:begin|chunk|finish|cancel)|file\.attach\.(?:begin|chunk|finish|cancel).*(?:method not found|unknown method)/i.test(
+      message
+    )
+  ) {
+    return new Error(
+      'The remote Hermes backend is too old for large-file uploads. Update the backend and try again.'
+    )
+  }
 
   if (!/too large/i.test(message)) {
     return err instanceof Error ? err : new Error(message)

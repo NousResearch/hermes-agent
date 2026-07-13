@@ -85,9 +85,13 @@ import {
 import { gitRootForIpc } from './git-root'
 import { addWorktree, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops'
 import {
+  createFileSnapshotForIpc,
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret as encryptDesktopSecretStrict,
+  FILE_CHUNK_READ_MAX_BYTES,
+  readFileChunkForIpc,
+  releaseFileSnapshotForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
@@ -95,6 +99,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { createRendererHealthReporter } from './renderer-health'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -800,6 +805,7 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+const rendererHealth = createRendererHealthReporter()
 let hermesProcess = null
 let connectionPromise = null
 // True while connection-config:apply soft-rehomes the primary — suppresses the
@@ -7307,6 +7313,9 @@ function createWindow() {
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
+    if (details?.reason !== 'clean-exit') {
+      rendererHealth.fail(`render-process-gone:${details?.reason || 'unknown'}`)
+    }
 
     if (details?.reason === 'crashed' || details?.reason === 'oom') {
       const now = Date.now()
@@ -7335,7 +7344,15 @@ function createWindow() {
     }
   })
 
-  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+  mainWindow.webContents.on('unresponsive', () => {
+    rendererHealth.fail('renderer-unresponsive')
+    rememberLog('[renderer] webContents became unresponsive')
+  })
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _url, isMainFrame) => {
+    if (isMainFrame) {
+      rendererHealth.fail(`did-fail-load:${errorCode}:${errorDescription}`)
+    }
+  })
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
   // is (event, messageDetails); the deprecated positional shape is
@@ -7369,6 +7386,15 @@ function createWindow() {
     startHermes().catch(error => rememberLog(error.stack || error.message))
   })
 }
+
+// The updater trusts only an explicit handshake from the primary React tree.
+// Secondary session and pet-overlay webContents cannot mark startup healthy.
+ipcMain.on('hermes:renderer-ready', event => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    return
+  }
+  rendererHealth.ready()
+})
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
@@ -7987,6 +8013,18 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   return true
 })
 
+function fileUploadSnapshotRoot() {
+  return path.join(app.getPath('temp'), 'hermes-desktop-upload-snapshots')
+}
+
+ipcMain.handle('hermes:createFileUploadSnapshot', async (_event, filePath) =>
+  createFileSnapshotForIpc(filePath, fileUploadSnapshotRoot())
+)
+
+ipcMain.handle('hermes:releaseFileUploadSnapshot', async (_event, snapshotPath) =>
+  releaseFileSnapshotForIpc(snapshotPath, fileUploadSnapshotRoot())
+)
+
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   const { resolvedPath } = await resolveReadableFileForIpc(filePath, {
     maxBytes: DATA_URL_READ_MAX_BYTES,
@@ -7996,6 +8034,28 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   const data = await fs.promises.readFile(resolvedPath)
 
   return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
+})
+
+ipcMain.handle('hermes:readFileChunkBase64', async (_event, payload: any = {}) => {
+  const filePath = typeof payload === 'string' ? payload : payload?.filePath
+  const offset = typeof payload === 'object' ? payload?.offset ?? 0 : 0
+  const maxBytes =
+    typeof payload === 'object' && payload?.maxBytes !== undefined
+      ? payload.maxBytes
+      : FILE_CHUNK_READ_MAX_BYTES
+  const chunk = await readFileChunkForIpc(filePath, offset, maxBytes)
+
+  return {
+    base64: chunk.buffer.toString('base64'),
+    byteSize: chunk.byteSize,
+    bytesRead: chunk.bytesRead,
+    done: chunk.done,
+    fileId: chunk.fileId,
+    mimeType: mimeTypeForPath(chunk.realPath),
+    mtimeMs: chunk.mtimeMs,
+    name: path.basename(chunk.realPath),
+    path: chunk.realPath
+  }
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
@@ -9062,6 +9122,15 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  const snapshotRoot = fileUploadSnapshotRoot()
+  try {
+    fs.rmSync(snapshotRoot, { force: true, recursive: true })
+    fs.mkdirSync(snapshotRoot, { mode: 0o700, recursive: true })
+  } catch (error) {
+    rememberLog(`File upload snapshot startup cleanup failed: ${error.message}`)
+    throw error
+  }
+
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {
@@ -9140,6 +9209,11 @@ app.on('before-quit', () => {
 
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+  try {
+    fs.rmSync(fileUploadSnapshotRoot(), { force: true, recursive: true })
+  } catch (error) {
+    rememberLog(`File upload snapshot cleanup failed during quit: ${error.message}`)
+  }
 
   // Kill open PTYs before environment teardown to avoid the node-pty#904
   // ThreadSafeFunction SIGABRT race.

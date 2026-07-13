@@ -41,6 +41,17 @@ export interface FileAttachResponse {
   name?: string
 }
 
+export interface FileAttachBeginResponse {
+  upload_id?: string
+  received?: number
+  max_chunk_bytes?: number
+}
+
+export interface FileAttachChunkResponse {
+  upload_id?: string
+  received?: number
+}
+
 export interface SlashExecResponse {
   output?: string
   warning?: string

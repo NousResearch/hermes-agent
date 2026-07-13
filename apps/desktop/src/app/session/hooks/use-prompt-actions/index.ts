@@ -5,6 +5,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
+import { REQUIRED_BACKEND_CONTRACT } from '@/lib/backend-contract'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
@@ -27,6 +28,8 @@ import { clearSessionTodos } from '@/store/todos'
 
 import type {
   ClientSessionState,
+  FileAttachBeginResponse,
+  FileAttachChunkResponse,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
@@ -41,22 +44,223 @@ import {
   appendText,
   blobToDataUrl,
   delay,
+  FILE_ATTACH_CHUNK_BYTES,
+  FILE_ATTACH_REQUEST_TIMEOUT_MS,
   friendlyRemoteAttachError,
   type GatewayRequest,
   inlineErrorMessage,
   isSessionBusyError,
   isSessionNotFoundError,
+  readFileChunkBase64ForAttach,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
   type SubmitTextOptions,
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal,
+  withFileAttachRetry,
   withSessionBusyRetry
 } from './utils'
 
 interface HandoffResult {
   ok: boolean
   error?: string
+}
+
+async function uploadRemoteFileAttachmentInChunks(
+  path: string,
+  label: string,
+  opts: { requestGateway: GatewayRequest; sessionId: string }
+): Promise<FileAttachResponse> {
+  const { requestGateway, sessionId } = opts
+  const desktop = window.hermesDesktop
+  const reader = desktop?.readFileChunkBase64
+  const createSnapshot = desktop?.createFileUploadSnapshot
+  const releaseSnapshot = desktop?.releaseFileUploadSnapshot
+
+  let capabilities: { contract?: number; request_id_cancel?: boolean }
+  try {
+    capabilities = await requestGateway(
+      'file.attach.capabilities',
+      { session_id: sessionId },
+      FILE_ATTACH_REQUEST_TIMEOUT_MS
+    )
+  } catch {
+    throw new Error('Remote gateway does not support safe request-id cancellation. Update the backend and try again.')
+  }
+  const capabilityContract = capabilities.contract
+  if (
+    typeof capabilityContract !== 'number' ||
+    !Number.isSafeInteger(capabilityContract) ||
+    capabilityContract < REQUIRED_BACKEND_CONTRACT ||
+    capabilities.request_id_cancel !== true
+  ) {
+    throw new Error('Remote gateway does not support safe request-id cancellation. Update the backend and try again.')
+  }
+
+  if (!reader) {
+    const dataUrl = await readFileDataUrlForAttach(path)
+
+    if (!dataUrl) {
+      throw new Error(`Could not read ${label}`)
+    }
+
+    return requestGateway<FileAttachResponse>(
+      'file.attach',
+      {
+        data_url: dataUrl,
+        name: label,
+        path,
+        session_id: sessionId
+      },
+      FILE_ATTACH_REQUEST_TIMEOUT_MS
+    )
+  }
+
+  if (!createSnapshot || !releaseSnapshot) {
+    throw new Error('Hermes Desktop cannot create an immutable upload snapshot. Update the desktop and try again.')
+  }
+
+  let requestId: string | null = null
+  let uploadId: string | null = null
+  let snapshotPath: string | null = null
+
+  try {
+    const snapshot = await createSnapshot(path)
+    if (!snapshot || typeof snapshot.path !== 'string' || !snapshot.path) {
+      throw new Error(`Could not create an immutable upload snapshot for ${label}`)
+    }
+    snapshotPath = snapshot.path
+    const probe = await readFileChunkBase64ForAttach(snapshotPath, 0, 1)
+
+    if (
+      !probe ||
+      !Number.isSafeInteger(probe.byteSize) ||
+      probe.byteSize < 0 ||
+      typeof probe.fileId !== 'string' ||
+      !probe.fileId ||
+      !Number.isFinite(probe.mtimeMs)
+    ) {
+      throw new Error(`Could not read ${label}`)
+    }
+
+    const expectedByteSize = probe.byteSize
+    const expectedFileId = probe.fileId
+    const expectedMtimeMs = probe.mtimeMs
+    requestId = crypto.randomUUID()
+    const begin = await withFileAttachRetry(() =>
+      requestGateway<FileAttachBeginResponse>(
+        'file.attach.begin',
+        {
+          name: label,
+          path,
+          request_id: requestId,
+          session_id: sessionId,
+          size: expectedByteSize
+        },
+        FILE_ATTACH_REQUEST_TIMEOUT_MS
+      )
+    )
+    uploadId = begin.upload_id || null
+
+    if (!uploadId) {
+      throw new Error(`Could not start upload for ${label}`)
+    }
+
+    const serverChunkBytes = Number(begin.max_chunk_bytes)
+    const chunkBytes =
+      Number.isFinite(serverChunkBytes) && serverChunkBytes > 0
+        ? Math.min(Math.floor(serverChunkBytes), FILE_ATTACH_CHUNK_BYTES)
+        : FILE_ATTACH_CHUNK_BYTES
+    let offset = 0
+
+    for (;;) {
+      const chunk = await readFileChunkBase64ForAttach(snapshotPath, offset, chunkBytes)
+
+      if (!chunk) {
+        throw new Error(`Could not read ${label}`)
+      }
+
+      if (
+        !Number.isSafeInteger(chunk.bytesRead) ||
+        chunk.bytesRead < 0 ||
+        chunk.bytesRead > chunkBytes ||
+        typeof chunk.done !== 'boolean' ||
+        chunk.byteSize !== expectedByteSize ||
+        chunk.fileId !== expectedFileId ||
+        chunk.mtimeMs !== expectedMtimeMs
+      ) {
+        throw new Error(`${label} changed while it was being uploaded. Please try again.`)
+      }
+
+      if (offset + chunk.bytesRead > expectedByteSize || (chunk.bytesRead > 0 && !chunk.base64)) {
+        throw new Error(`Could not read ${label}`)
+      }
+
+      if (chunk.bytesRead > 0) {
+        const progress = await withFileAttachRetry(() =>
+          requestGateway<FileAttachChunkResponse>(
+            'file.attach.chunk',
+            {
+              content_base64: chunk.base64,
+              offset,
+              session_id: sessionId,
+              upload_id: uploadId
+            },
+            FILE_ATTACH_REQUEST_TIMEOUT_MS
+          )
+        )
+        const received = Number(progress.received)
+        const expectedReceived = offset + chunk.bytesRead
+
+        if (!Number.isSafeInteger(received) || received !== expectedReceived) {
+          throw new Error(`Remote gateway returned invalid upload progress for ${label}`)
+        }
+
+        offset = received
+      }
+
+      if (chunk.done) {
+        if (offset !== expectedByteSize) {
+          throw new Error(`${label} changed while it was being uploaded. Please try again.`)
+        }
+
+        break
+      }
+
+      if (offset >= expectedByteSize || chunk.bytesRead === 0) {
+        throw new Error(`Could not read ${label}`)
+      }
+    }
+
+    return withFileAttachRetry(() =>
+      requestGateway<FileAttachResponse>(
+        'file.attach.finish',
+        {
+          session_id: sessionId,
+          upload_id: uploadId
+        },
+        FILE_ATTACH_REQUEST_TIMEOUT_MS
+      )
+    )
+  } catch (err) {
+    if (uploadId || requestId) {
+      await withFileAttachRetry(() =>
+        requestGateway(
+          'file.attach.cancel',
+          uploadId
+            ? { session_id: sessionId, upload_id: uploadId }
+            : { request_id: requestId, session_id: sessionId },
+          FILE_ATTACH_REQUEST_TIMEOUT_MS
+        )
+      ).catch(() => undefined)
+    }
+
+    throw err
+  } finally {
+    if (snapshotPath) {
+      await releaseSnapshot(snapshotPath).catch(() => undefined)
+    }
+  }
 }
 
 /**
@@ -119,26 +323,21 @@ export async function uploadComposerAttachment(
   }
 
   // Non-image file.
-  let dataUrl: string | null = null
+  let result: FileAttachResponse
 
   if (remote) {
     try {
-      dataUrl = await readFileDataUrlForAttach(path)
+      result = await uploadRemoteFileAttachmentInChunks(path, label, { requestGateway, sessionId })
     } catch (err) {
       throw friendlyRemoteAttachError(err, label)
     }
-
-    if (!dataUrl) {
-      throw new Error(`Could not read ${label}`)
-    }
+  } else {
+    result = await requestGateway<FileAttachResponse>('file.attach', {
+      name: label,
+      path,
+      session_id: sessionId
+    })
   }
-
-  const result = await requestGateway<FileAttachResponse>('file.attach', {
-    name: label,
-    path,
-    session_id: sessionId,
-    ...(dataUrl ? { data_url: dataUrl } : {})
-  })
 
   if (!result.attached || !result.ref_text) {
     throw new Error(result.message || `Could not attach ${label}`)

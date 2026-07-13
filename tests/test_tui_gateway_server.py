@@ -1,3 +1,6 @@
+import base64
+import concurrent.futures
+import contextlib
 import json
 import os
 import subprocess
@@ -5,6 +8,7 @@ import sys
 import threading
 import time
 import types
+import uuid
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +19,16 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
+
+
+@pytest.fixture(autouse=True)
+def _reset_file_attach_disk_reservations_between_tests():
+    """Tests often pop sessions directly; production uses teardown to release them."""
+    with server._file_attach_disk_reservation_lock:
+        server._file_attach_disk_reservations.clear()
+    yield
+    with server._file_attach_disk_reservation_lock:
+        server._file_attach_disk_reservations.clear()
 
 
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
@@ -1754,7 +1768,7 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
 
     assert agent.model == "gpt-5.5"
     assert captured["fallback_model"] == fallback_chain
-    assert captured["platform"] == "tui"
+    assert captured["platform"] == "desktop"
 
 
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
@@ -2332,7 +2346,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
 
     assert created == [
-        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
+        {"key": "k1", "source": "desktop", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
     ]
 
 
@@ -2372,7 +2386,7 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
     assert created == [
-        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": None}
+        {"key": "k1", "source": "desktop", "model": "test-model", "model_config": None, "cwd": None}
     ]
 
 
@@ -4297,6 +4311,2090 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         server._sessions.pop("sid", None)
 
 
+def test_file_attach_data_url_rejects_partial_destination_write(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+    original_open = server._open_exclusive_attachment_file
+
+    class _ShortWriteHandle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def write(self, payload):
+            return self._handle.write(payload[:1])
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    def short_write_open(path):
+        handle = original_open(path)
+        if path.name == "partial.bin":
+            return _ShortWriteHandle(handle)
+        return handle
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_open_exclusive_attachment_file", short_write_open)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "partial-write",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "name": "partial.bin",
+                    "data_url": "data:application/octet-stream;base64,QUJDRA==",
+                },
+            }
+        )
+
+        assert "incomplete" in response["error"]["message"]
+        assert not (
+            workspace / ".hermes" / "desktop-attachments" / "partial.bin"
+        ).exists()
+        with server._file_attach_disk_reservation_lock:
+            assert not server._file_attach_disk_reservations
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_data_url_partial_write_cleanup_failure_is_quarantined(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+    original_open = server._open_exclusive_attachment_file
+    original_unlink = Path.unlink
+
+    class _ShortWriteHandle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def write(self, payload):
+            return self._handle.write(payload[:1])
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    def short_write_open(path):
+        handle = original_open(path)
+        if path.name == "partial-locked.bin":
+            return _ShortWriteHandle(handle)
+        return handle
+
+    def fail_partial_unlink(path, *args, **kwargs):
+        if path.name == "partial-locked.bin":
+            raise PermissionError("locked one-shot cleanup")
+        return original_unlink(path, *args, **kwargs)
+
+    def fail_partial_handle_delete(_handle):
+        raise PermissionError("locked one-shot handle cleanup")
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_open_exclusive_attachment_file", short_write_open)
+    monkeypatch.setattr(Path, "unlink", fail_partial_unlink)
+    if os.name == "nt":
+        monkeypatch.setattr(server, "_mark_open_attachment_for_delete", fail_partial_handle_delete)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "partial-cleanup",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "name": "partial-locked.bin",
+                    "data_url": "data:application/octet-stream;base64,QUJDRA==",
+                },
+            }
+        )
+        partial = workspace / ".hermes" / "desktop-attachments" / "partial-locked.bin"
+
+        assert "cleanup" in response["error"]["message"].lower()
+        assert partial.exists()
+        assert len(server._file_attach_cleanup_quarantine) == 1
+        assert len(server._file_attach_disk_reservations) == 1
+    finally:
+        monkeypatch.setattr(server, "_open_exclusive_attachment_file", original_open)
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        server._sessions.pop("sid", None)
+        server._retry_file_attach_cleanup_quarantine()
+
+
+def test_file_attach_sanitizes_windows_reserved_and_oversized_names():
+    assert server._sanitize_attachment_name("CON.txt") == "_CON.txt"
+    assert server._sanitize_attachment_name("nul") == "_nul"
+
+    sanitized = server._sanitize_attachment_name(("a" * 300) + ".pptx")
+    assert len(sanitized) <= 180
+    assert sanitized.endswith(".pptx")
+
+
+def test_file_attach_capabilities_require_request_id_cancel_contract(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "capabilities",
+                "method": "file.attach.capabilities",
+                "params": {"session_id": "sid"},
+            }
+        )
+
+        assert server.DESKTOP_BACKEND_CONTRACT == 5
+        assert response["result"] == {
+            "contract": 5,
+            "request_id_cancel": True,
+        }
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_max_chunk_bytes_honors_per_employee_env(monkeypatch):
+    monkeypatch.setenv("HERMES_FILE_ATTACH_MAX_CHUNK_BYTES", "524288")
+    assert server._file_attach_max_chunk_bytes() == 524288
+
+    monkeypatch.setenv("HERMES_FILE_ATTACH_MAX_CHUNK_BYTES", "not-a-number")
+    assert server._file_attach_max_chunk_bytes() == 8 * 1024 * 1024
+
+    monkeypatch.setenv("HERMES_FILE_ATTACH_MAX_CHUNK_BYTES", "1")
+    assert server._file_attach_max_chunk_bytes() == 64 * 1024
+
+
+def test_file_attach_begin_rejects_declared_size_over_limit(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_file_attach_max_total_bytes", lambda: 10)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "too-big.bin", "size": 11},
+            }
+        )
+
+        assert "error" in resp
+        assert "maximum file size" in resp["error"]["message"]
+        upload_dir = workspace / ".hermes" / "desktop-attachments" / ".uploads"
+        assert not upload_dir.exists() or not any(upload_dir.iterdir())
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_chunk_rejects_undeclared_total_over_limit(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_file_attach_max_total_bytes", lambda: 10)
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "unknown-size.bin"},
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        resp = server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": "MDEyMzQ1Njc4OTA=",
+                },
+            }
+        )
+
+        assert "error" in resp
+        assert "maximum file size" in resp["error"]["message"]
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        assert Path(upload["path"]).stat().st_size == 0
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_chunk_rejects_oversized_base64_before_decode(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_file_attach_max_chunk_bytes", lambda: 4)
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "oversized.bin"},
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+
+        def _must_not_decode(_content):
+            raise AssertionError("decoder must not run for an oversized encoded chunk")
+
+        monkeypatch.setattr(server, "_decode_attachment_data_url", _must_not_decode)
+        resp = server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": "A" * 100,
+                },
+            }
+        )
+
+        assert "error" in resp
+        assert "encoded chunk too large" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_legacy_file_attach_rejects_data_url_over_total_limit(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_file_attach_max_total_bytes", lambda: 10)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "legacy",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "name": "legacy-too-big.bin",
+                    "data_url": "data:application/octet-stream;base64,MDEyMzQ1Njc4OTA=",
+                },
+            }
+        )
+
+        assert "error" in resp
+        assert "maximum file size" in resp["error"]["message"]
+        target = workspace / ".hermes" / "desktop-attachments" / "legacy-too-big.bin"
+        assert not target.exists()
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_legacy_file_attach_rejects_when_disk_capacity_is_insufficient(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_file_attach_available_bytes", lambda _path: 5)
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 0)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "legacy-no-space",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "name": "legacy.bin",
+                    "data_url": "data:application/octet-stream;base64,MDEyMzQ1Njc4OQ==",
+                },
+            }
+        )
+
+        assert "free disk space" in response["error"]["message"]
+        target = workspace / ".hermes" / "desktop-attachments" / "legacy.bin"
+        assert not target.exists()
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_begin_rejects_when_disk_capacity_is_insufficient(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    monkeypatch.setattr(server, "_file_attach_available_bytes", lambda _path: 5)
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 0)
+    response = server.handle_request(
+        {
+            "id": "begin-no-space",
+            "method": "file.attach.begin",
+            "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "big.bin", "size": 10},
+        }
+    )
+
+    assert "free disk space" in response["error"]["message"]
+    assert not list(workspace.rglob("*.part"))
+
+
+def test_file_attach_begin_reserves_disk_capacity_across_sessions(
+    monkeypatch, tmp_path
+):
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+    server._sessions["sid-a"] = _session(cwd=str(workspace_a))
+    server._sessions["sid-b"] = _session(cwd=str(workspace_b))
+    monkeypatch.setattr(server, "_file_attach_available_bytes", lambda _path: 6)
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 2)
+    request_a = str(uuid.uuid4())
+    request_b = str(uuid.uuid4())
+
+    try:
+        first = server.handle_request(
+            {
+                "id": "begin-a",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_a,
+                    "session_id": "sid-a",
+                    "name": "a.bin",
+                    "size": 4,
+                },
+            }
+        )
+        assert first["result"]["upload_id"] == uuid.UUID(request_a).hex
+
+        blocked = server.handle_request(
+            {
+                "id": "begin-b-blocked",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_b,
+                    "session_id": "sid-b",
+                    "name": "b.bin",
+                    "size": 4,
+                },
+            }
+        )
+        assert "free disk space" in blocked["error"]["message"]
+
+        cancelled = server.handle_request(
+            {
+                "id": "cancel-a",
+                "method": "file.attach.cancel",
+                "params": {"session_id": "sid-a", "request_id": request_a},
+            }
+        )
+        assert cancelled["result"]["cancelled"] is True
+
+        accepted = server.handle_request(
+            {
+                "id": "begin-b-accepted",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_b,
+                    "session_id": "sid-b",
+                    "name": "b.bin",
+                    "size": 4,
+                },
+            }
+        )
+        assert accepted["result"]["upload_id"] == uuid.UUID(request_b).hex
+    finally:
+        for sid in ("sid-a", "sid-b"):
+            session = server._sessions.pop(sid, None)
+            if session is not None:
+                server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_chunk_rechecks_all_volume_reservations_when_free_space_drops(
+    monkeypatch, tmp_path
+):
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+    server._sessions["sid-a"] = _session(cwd=str(workspace_a))
+    server._sessions["sid-b"] = _session(cwd=str(workspace_b))
+    available = 100
+    monkeypatch.setattr(server, "_file_attach_available_bytes", lambda _path: available)
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 10)
+
+    try:
+        upload_ids = []
+        for sid in ("sid-a", "sid-b"):
+            begin = server.handle_request(
+                {
+                    "id": f"begin-{sid}",
+                    "method": "file.attach.begin",
+                    "params": {
+                        "request_id": str(uuid.uuid4()),
+                        "session_id": sid,
+                        "name": f"{sid}.bin",
+                        "size": 40,
+                    },
+                }
+            )
+            upload_ids.append(begin["result"]["upload_id"])
+
+        available = 70
+        chunk = server.handle_request(
+            {
+                "id": "chunk-a",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid-a",
+                    "upload_id": upload_ids[0],
+                    "offset": 0,
+                    "content_base64": "QQ==",
+                },
+            }
+        )
+
+        assert "free disk space" in chunk["error"]["message"]
+        upload = server._sessions["sid-a"]["_desktop_file_uploads"][upload_ids[0]]
+        assert Path(upload["path"]).stat().st_size == 0
+        with server._file_attach_disk_reservation_lock:
+            assert sum(
+                int(entry.get("remaining") or 0)
+                for entry in server._file_attach_disk_reservations.values()
+            ) == 80
+    finally:
+        for sid in ("sid-a", "sid-b"):
+            session = server._sessions.pop(sid, None)
+            if session is not None:
+                server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_begin_reservation_is_atomic_across_concurrent_sessions(
+    monkeypatch, tmp_path
+):
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+    server._sessions["sid-a"] = _session(cwd=str(workspace_a))
+    server._sessions["sid-b"] = _session(cwd=str(workspace_b))
+    monkeypatch.setattr(server, "_file_attach_available_bytes", lambda _path: 6)
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 2)
+    start = threading.Barrier(2)
+
+    def begin(sid, name):
+        start.wait()
+        return server.handle_request(
+            {
+                "id": f"begin-{sid}",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": sid,
+                    "name": name,
+                    "size": 4,
+                },
+            }
+        )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(
+                pool.map(
+                    lambda args: begin(*args),
+                    (("sid-a", "a.bin"), ("sid-b", "b.bin")),
+                )
+            )
+        assert sum("result" in response for response in results) == 1
+        assert sum(
+            "free disk space" in response.get("error", {}).get("message", "")
+            for response in results
+        ) == 1
+    finally:
+        for sid in ("sid-a", "sid-b"):
+            session = server._sessions.pop(sid, None)
+            if session is not None:
+                server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_begin_registration_rollback_failure_is_quarantined(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = _session(cwd=str(workspace))
+    server._sessions["sid"] = session
+    original_unlink = Path.unlink
+
+    class _FailSetUploads(dict):
+        def __setitem__(self, key, value):
+            raise RuntimeError("upload state registration failed")
+
+    uploads = _FailSetUploads()
+
+    def fail_part_unlink(path, *args, **kwargs):
+        if path.suffix == ".part":
+            raise PermissionError("locked begin rollback cleanup")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(server, "_file_attach_uploads", lambda _session: uploads)
+    monkeypatch.setattr(Path, "unlink", fail_part_unlink)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "begin-locked.bin",
+                    "size": 4,
+                },
+            }
+        )
+
+        assert "cleanup" in response["error"]["message"].lower()
+        assert len(server._file_attach_cleanup_quarantine) == 1
+        assert len(server._file_attach_disk_reservations) == 1
+        quarantined = next(iter(server._file_attach_cleanup_quarantine.values()))
+        assert Path(quarantined["path"]).exists()
+    finally:
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        server._sessions.pop("sid", None)
+        server._retry_file_attach_cleanup_quarantine()
+
+
+def test_file_attach_cancel_unlink_failure_retains_upload_and_reservation(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    request_id = str(uuid.uuid4())
+    original_unlink = Path.unlink
+
+    def fail_part_unlink(path, *args, **kwargs):
+        if path.suffix == ".part":
+            raise PermissionError("locked cleanup")
+        return original_unlink(path, *args, **kwargs)
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_id,
+                    "session_id": "sid",
+                    "name": "locked.bin",
+                    "size": 4,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        temp_path = Path(upload["path"])
+        reservation_token = upload["disk_reservation_token"]
+        monkeypatch.setattr(Path, "unlink", fail_part_unlink)
+
+        cancelled = server.handle_request(
+            {
+                "id": "cancel",
+                "method": "file.attach.cancel",
+                "params": {"session_id": "sid", "upload_id": upload_id},
+            }
+        )
+
+        assert "cleanup" in cancelled["error"]["message"].lower()
+        assert temp_path.exists()
+        assert server._sessions["sid"]["_desktop_file_uploads"][upload_id] is upload
+        assert reservation_token in server._file_attach_disk_reservations
+    finally:
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        session = server._sessions.pop("sid", None)
+        if session is not None:
+            server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_stale_reap_unlink_failure_retains_upload_and_reservation(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = _session(cwd=str(workspace))
+    server._sessions["sid"] = session
+    original_unlink = Path.unlink
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "stale.bin",
+                    "size": 4,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        upload = session["_desktop_file_uploads"][upload_id]
+        reservation_token = upload["disk_reservation_token"]
+        upload["updated_at"] = 0
+
+        def fail_part_unlink(path, *args, **kwargs):
+            if path.suffix == ".part":
+                raise PermissionError("locked stale cleanup")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_part_unlink)
+        server._reap_stale_file_attach_uploads(session, now=time.time() + 10_000)
+
+        assert session["_desktop_file_uploads"][upload_id] is upload
+        assert reservation_token in server._file_attach_disk_reservations
+    finally:
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        server._sessions.pop("sid", None)
+        server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_session_cleanup_unlink_failure_quarantines_ownership(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = _session(cwd=str(workspace))
+    server._sessions["sid"] = session
+    original_unlink = Path.unlink
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "teardown.bin",
+                    "size": 4,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        upload = session["_desktop_file_uploads"][upload_id]
+        reservation_token = upload["disk_reservation_token"]
+
+        def fail_part_unlink(path, *args, **kwargs):
+            if path.suffix == ".part":
+                raise PermissionError("locked teardown cleanup")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_part_unlink)
+        server._cleanup_file_attach_uploads(session)
+
+        assert upload_id not in session.get("_desktop_file_uploads", {})
+        assert server._file_attach_cleanup_quarantine[reservation_token] is upload
+        assert reservation_token in server._file_attach_disk_reservations
+    finally:
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        server._sessions.pop("sid", None)
+        server._cleanup_file_attach_uploads(session)
+        server._retry_file_attach_cleanup_quarantine()
+
+
+def test_file_attach_cancel_accepts_request_id_and_tombstones_it(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    request_id = str(uuid.uuid4())
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_id,
+                    "session_id": "sid",
+                    "name": "orphan.bin",
+                    "size": 4,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        temp_path = Path(server._sessions["sid"]["_desktop_file_uploads"][upload_id]["path"])
+
+        cancelled = server.handle_request(
+            {
+                "id": "cancel",
+                "method": "file.attach.cancel",
+                "params": {"session_id": "sid", "request_id": request_id},
+            }
+        )
+        assert cancelled["result"] == {"cancelled": True}
+        assert not temp_path.exists()
+
+        replay = server.handle_request(
+            {
+                "id": "begin-replay",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_id,
+                    "session_id": "sid",
+                    "name": "orphan.bin",
+                    "size": 4,
+                },
+            }
+        )
+        assert "request_id already cancelled" in replay["error"]["message"]
+    finally:
+        session = server._sessions.pop("sid", None)
+        if session is not None:
+            server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_cancel_tombstone_blocks_later_begin(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    request_id = str(uuid.uuid4())
+
+    try:
+        cancelled = server.handle_request(
+            {
+                "id": "cancel-first",
+                "method": "file.attach.cancel",
+                "params": {"session_id": "sid", "request_id": request_id},
+            }
+        )
+        assert cancelled["result"] == {"cancelled": True}
+
+        replay = server.handle_request(
+            {
+                "id": "begin-late",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_id,
+                    "session_id": "sid",
+                    "name": "late.bin",
+                    "size": 1,
+                },
+            }
+        )
+        assert "request_id already cancelled" in replay["error"]["message"]
+        assert not list(workspace.rglob("*.part"))
+    finally:
+        session = server._sessions.pop("sid", None)
+        if session is not None:
+            server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_begin_releases_reservation_when_temp_creation_fails(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    original_touch = Path.touch
+
+    def fail_part_touch(path, *args, **kwargs):
+        if path.suffix == ".part":
+            raise PermissionError("denied")
+        return original_touch(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "touch", fail_part_touch)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "denied.bin",
+                    "size": 4,
+                },
+            }
+        )
+        assert "denied" in response["error"]["message"]
+        assert server._file_attach_disk_reservations == {}
+    finally:
+        session = server._sessions.pop("sid", None)
+        if session is not None:
+            server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_cancel_tombstones_are_bounded(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    try:
+        for index in range(65):
+            response = server.handle_request(
+                {
+                    "id": f"cancel-{index}",
+                    "method": "file.attach.cancel",
+                    "params": {
+                        "session_id": "sid",
+                        "request_id": str(uuid.uuid4()),
+                    },
+                }
+            )
+            assert response["result"]["cancelled"] is True
+        assert len(server._file_attach_cancelled_requests(server._sessions["sid"])) == 64
+    finally:
+        session = server._sessions.pop("sid", None)
+        if session is not None:
+            server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_finish_publish_rollback_failure_tracks_all_owned_paths(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    original_unlink = Path.unlink
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "publish-locked.bin",
+                    "size": 4,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        temp_path = Path(upload["path"])
+        reservation_token = upload["disk_reservation_token"]
+        chunk = server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": "QUJDRA==",
+                },
+            }
+        )
+        assert chunk["result"]["received"] == 4
+        candidate = workspace / ".hermes" / "desktop-attachments" / "publish-locked.bin"
+
+        def fail_publish_unlink(path, *args, **kwargs):
+            if path == temp_path or path == candidate:
+                raise PermissionError(f"locked publish cleanup: {path.name}")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_publish_unlink)
+        finish = server.handle_request(
+            {
+                "id": "finish",
+                "method": "file.attach.finish",
+                "params": {"session_id": "sid", "upload_id": upload_id},
+            }
+        )
+
+        assert "cleanup" in finish["error"]["message"].lower()
+        assert temp_path.exists()
+        assert candidate.exists()
+        assert str(candidate) in upload.get("cleanup_paths", [])
+        assert reservation_token in server._file_attach_disk_reservations
+
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        cancel = server.handle_request(
+            {
+                "id": "cancel",
+                "method": "file.attach.cancel",
+                "params": {"session_id": "sid", "upload_id": upload_id},
+            }
+        )
+        assert cancel["result"]["cancelled"] is True
+        assert not temp_path.exists()
+        assert not candidate.exists()
+        assert reservation_token not in server._file_attach_disk_reservations
+    finally:
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        session = server._sessions.pop("sid", None)
+        if session is not None:
+            server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_finish_releases_unused_unknown_size_reservation(
+    monkeypatch, tmp_path
+):
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+    server._sessions["sid-a"] = _session(cwd=str(workspace_a))
+    server._sessions["sid-b"] = _session(cwd=str(workspace_b))
+    monkeypatch.setattr(server, "_file_attach_available_bytes", lambda _path: 6)
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 2)
+    monkeypatch.setattr(server, "_file_attach_max_total_bytes", lambda: 4)
+    request_a = str(uuid.uuid4())
+    request_b = str(uuid.uuid4())
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin-a",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_a,
+                    "session_id": "sid-a",
+                    "name": "short.bin",
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        chunk = server.handle_request(
+            {
+                "id": "chunk-a",
+                "method": "file.attach.chunk",
+                "params": {
+                    "content_base64": base64.b64encode(b"x").decode("ascii"),
+                    "offset": 0,
+                    "session_id": "sid-a",
+                    "upload_id": upload_id,
+                },
+            }
+        )
+        assert chunk["result"]["received"] == 1
+
+        still_blocked = server.handle_request(
+            {
+                "id": "begin-b-blocked",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_b,
+                    "session_id": "sid-b",
+                    "name": "b.bin",
+                    "size": 4,
+                },
+            }
+        )
+        assert "free disk space" in still_blocked["error"]["message"]
+
+        finished = server.handle_request(
+            {
+                "id": "finish-a",
+                "method": "file.attach.finish",
+                "params": {"session_id": "sid-a", "upload_id": upload_id},
+            }
+        )
+        assert finished["result"]["attached"] is True
+
+        accepted = server.handle_request(
+            {
+                "id": "begin-b-accepted",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": request_b,
+                    "session_id": "sid-b",
+                    "name": "b.bin",
+                    "size": 4,
+                },
+            }
+        )
+        assert accepted["result"]["upload_id"] == uuid.UUID(request_b).hex
+    finally:
+        for sid in ("sid-a", "sid-b"):
+            session = server._sessions.pop(sid, None)
+            if session is not None:
+                server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_chunk_rejects_when_disk_fills_after_begin(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    available = iter((1000, 0))
+    monkeypatch.setattr(
+        server, "_file_attach_available_bytes", lambda _path: next(available)
+    )
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 0)
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "disk-fill.bin", "size": 4},
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        response = server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": "dGVzdA==",
+                },
+            }
+        )
+
+        assert "free disk space" in response["error"]["message"]
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        assert Path(upload["path"]).stat().st_size == 0
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_chunk_rejects_temp_hardlink_identity_swap_before_write(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    victim = tmp_path / "outside-workspace-victim.bin"
+    victim.write_bytes(b"")
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    upload = None
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "identity-swap.bin",
+                    "size": 4,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        temp_path = Path(upload["path"])
+        temp_path.unlink()
+        os.link(victim, temp_path)
+
+        chunk = server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": base64.b64encode(b"evil").decode("ascii"),
+                },
+            }
+        )
+
+        assert chunk["error"]["code"] == 5028
+        assert "identity" in chunk["error"]["message"].lower()
+        assert victim.read_bytes() == b""
+    finally:
+        if isinstance(upload, dict):
+            server._release_upload_disk_reservation(upload)
+            Path(str(upload.get("path") or "")).unlink(missing_ok=True)
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_chunk_retry_is_idempotent_but_rejects_changed_bytes(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "retry.txt", "size": 5},
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        chunk_params = {
+            "session_id": "sid",
+            "upload_id": upload_id,
+            "offset": 0,
+            "content_base64": "aGVsbG8=",
+        }
+
+        first = server.handle_request(
+            {"id": "chunk-1", "method": "file.attach.chunk", "params": chunk_params}
+        )
+        retry = server.handle_request(
+            {"id": "chunk-2", "method": "file.attach.chunk", "params": chunk_params}
+        )
+        changed = server.handle_request(
+            {
+                "id": "chunk-3",
+                "method": "file.attach.chunk",
+                "params": {**chunk_params, "content_base64": "d29ybGQ="},
+            }
+        )
+
+        assert first["result"]["received"] == 5
+        assert retry["result"]["received"] == 5
+        assert retry["result"]["duplicate"] is True
+        assert "error" in changed
+        assert "unexpected offset" in changed["error"]["message"]
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        assert Path(upload["path"]).read_bytes() == b"hello"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_chunk_partial_write_truncate_failure_retains_ownership(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    original_open = Path.open
+
+    class _ShortWriteFailTruncateHandle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._handle.__exit__(*args)
+
+        def write(self, payload):
+            return self._handle.write(payload[:1])
+
+        def truncate(self, _size):
+            raise PermissionError("locked chunk rollback")
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    def fail_chunk_rollback_open(path, mode="r", *args, **kwargs):
+        handle = original_open(path, mode, *args, **kwargs)
+        if path.suffix == ".part" and mode == "r+b":
+            return _ShortWriteFailTruncateHandle(handle)
+        return handle
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "chunk-locked.bin",
+                    "size": 4,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        reservation_token = upload["disk_reservation_token"]
+        temp_path = Path(upload["path"])
+        monkeypatch.setattr(Path, "open", fail_chunk_rollback_open)
+
+        response = server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": "QUJDRA==",
+                },
+            }
+        )
+
+        assert "error" in response, response
+        assert "cleanup" in response["error"]["message"].lower()
+        assert temp_path.stat().st_size == 1
+        assert upload["received"] == 0
+        assert server._sessions["sid"]["_desktop_file_uploads"][upload_id] is upload
+        assert reservation_token in server._file_attach_disk_reservations
+    finally:
+        monkeypatch.setattr(Path, "open", original_open)
+        session = server._sessions.pop("sid", None)
+        if session is not None:
+            server._cleanup_file_attach_uploads(session)
+
+
+def test_file_attach_session_teardown_removes_incomplete_temp_file(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    begin = server.handle_request(
+        {
+            "id": "begin",
+            "method": "file.attach.begin",
+            "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "abandoned.bin"},
+        }
+    )
+    upload_id = begin["result"]["upload_id"]
+    temp_path = Path(server._sessions["sid"]["_desktop_file_uploads"][upload_id]["path"])
+    assert temp_path.exists()
+    assert len(server._file_attach_disk_reservations) == 1
+
+    assert server._close_session_by_id("sid", end_reason="test") is True
+    assert not temp_path.exists()
+    assert server._file_attach_disk_reservations == {}
+
+
+def test_file_attach_rejects_symlinked_attachment_root(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    hermes_dir = workspace / ".hermes"
+    hermes_dir.mkdir()
+    attachment_root = hermes_dir / "desktop-attachments"
+    try:
+        attachment_root.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "legacy",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "name": "escape.bin",
+                    "data_url": "data:application/octet-stream;base64,eA==",
+                },
+            }
+        )
+        assert "unsafe attachment directory" in response["error"]["message"]
+        assert not (outside / "escape.bin").exists()
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_begin_rejects_symlinked_upload_root(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    attachment_root = workspace / ".hermes" / "desktop-attachments"
+    attachment_root.mkdir(parents=True)
+    upload_root = attachment_root / ".uploads"
+    try:
+        upload_root.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "escape.bin",
+                    "size": 1,
+                },
+            }
+        )
+        assert "unsafe attachment directory" in response["error"]["message"]
+        assert not list(outside.iterdir())
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_rejects_windows_junction_attachment_root(tmp_path):
+    if os.name != "nt":
+        pytest.skip("Windows junction test")
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    hermes_dir = workspace / ".hermes"
+    hermes_dir.mkdir()
+    attachment_root = hermes_dir / "desktop-attachments"
+    created = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(attachment_root), str(outside)],
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction unavailable: {created.stderr or created.stdout}")
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "legacy",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "name": "junction-escape.bin",
+                    "data_url": "data:application/octet-stream;base64,eA==",
+                },
+            }
+        )
+        assert "unsafe attachment directory" in response["error"]["message"]
+        assert not (outside / "junction-escape.bin").exists()
+    finally:
+        server._sessions.pop("sid", None)
+        with contextlib.suppress(OSError):
+            attachment_root.rmdir()
+
+
+def test_atomic_attachment_write_cleans_up_if_root_is_swapped_after_precheck(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "workspace" / ".hermes" / "desktop-attachments"
+    outside = tmp_path / "outside"
+    root.mkdir(parents=True)
+    outside.mkdir()
+    original_open = server._open_exclusive_attachment_file
+    swapped = False
+
+    def swap_then_open(path):
+        nonlocal swapped
+        if not swapped and path.parent == root:
+            swapped = True
+            root.rmdir()
+            root.symlink_to(outside, target_is_directory=True)
+        return original_open(path)
+
+    monkeypatch.setattr(server, "_open_exclusive_attachment_file", swap_then_open)
+    with pytest.raises(ValueError, match="unsafe attachment"):
+        server._write_unique_attachment(
+            root, "escape.bin", 1, lambda handle: handle.write(b"x")
+        )
+    assert swapped is True
+    assert not (outside / "escape.bin").exists()
+
+
+def test_atomic_attachment_write_cleanup_stays_bound_to_open_file_after_destination_swap(
+    tmp_path,
+):
+    root = tmp_path / "workspace" / ".hermes" / "desktop-attachments"
+    displaced_root = root.with_name("desktop-attachments-displaced")
+    displaced_file = root / "race-displaced.bin"
+    root.mkdir(parents=True)
+    replacement_payload = b"do-not-delete-replacement"
+
+    def swap_destination_then_fail(handle):
+        assert handle.write(b"x") == 1
+        candidate = root / "race.bin"
+        if os.name == "nt":
+            candidate.rename(displaced_file)
+        else:
+            root.rename(displaced_root)
+            root.mkdir()
+        candidate.write_bytes(replacement_payload)
+        raise OSError("forced write failure after destination swap")
+
+    with pytest.raises(OSError, match="forced write failure after destination swap"):
+        server._write_unique_attachment(root, "race.bin", 1, swap_destination_then_fail)
+
+    assert (root / "race.bin").read_bytes() == replacement_payload
+    displaced_partial = displaced_file if os.name == "nt" else displaced_root / "race.bin"
+    if os.name == "nt":
+        assert not displaced_partial.exists()
+    else:
+        assert displaced_partial.read_bytes() == b"x"
+
+
+def test_atomic_attachment_write_rejects_replacement_before_success(tmp_path):
+    root = tmp_path / "workspace" / ".hermes" / "desktop-attachments"
+    displaced_file = root / "race-displaced.bin"
+    root.mkdir(parents=True)
+    replacement_payload = b"do-not-publish-replacement"
+
+    def swap_destination_then_return(handle):
+        assert handle.write(b"x") == 1
+        candidate = root / "race.bin"
+        candidate.rename(displaced_file)
+        candidate.write_bytes(replacement_payload)
+        return 1
+
+    with pytest.raises(OSError, match="attachment destination identity changed after open"):
+        server._write_unique_attachment(root, "race.bin", 1, swap_destination_then_return)
+
+    assert (root / "race.bin").read_bytes() == replacement_payload
+    if os.name == "nt":
+        assert not displaced_file.exists()
+    else:
+        assert displaced_file.read_bytes() == b"x"
+
+
+def test_atomic_attachment_publish_quarantines_identity_swap_without_deleting_replacement(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "workspace" / ".hermes" / "desktop-attachments"
+    root.mkdir(parents=True)
+    temp_path = root / "upload.part"
+    temp_path.write_bytes(b"complete")
+    displaced_file = root / "published-displaced.bin"
+    replacement_payload = b"do-not-delete-published-replacement"
+    original_link = os.link
+
+    def link_then_swap(source, destination, *args, **kwargs):
+        original_link(source, destination, *args, **kwargs)
+        candidate = Path(destination)
+        candidate.rename(displaced_file)
+        candidate.write_bytes(replacement_payload)
+
+    monkeypatch.setattr(os, "link", link_then_swap)
+    with pytest.raises(server._FileAttachCleanupError, match="identity changed"):
+        server._publish_unique_attachment(temp_path, root, "published.bin")
+
+    assert (root / "published.bin").read_bytes() == replacement_payload
+    assert temp_path.read_bytes() == b"complete"
+    assert displaced_file.read_bytes() == b"complete"
+
+
+def test_deferred_attachment_cleanup_rejects_quarantined_path_identity_swap(tmp_path):
+    root = tmp_path / "workspace" / ".hermes" / "desktop-attachments"
+    root.mkdir(parents=True)
+    primary = root / ".uploads" / "owned.part"
+    primary.parent.mkdir()
+    primary.write_bytes(b"primary")
+    candidate = root / "owned.bin"
+    candidate.write_bytes(b"owned")
+    primary_stat = os.lstat(primary)
+    candidate_stat = os.lstat(candidate)
+    upload = {
+        "path": str(primary),
+        "path_identity": [int(primary_stat.st_dev), int(primary_stat.st_ino)],
+        "cleanup_paths": [str(candidate)],
+        "cleanup_path_identities": {
+            str(candidate): [int(candidate_stat.st_dev), int(candidate_stat.st_ino)]
+        },
+    }
+    displaced = root / "owned-original.bin"
+    candidate.rename(displaced)
+    candidate.write_bytes(b"replacement")
+
+    assert server._unlink_file_attach_temp(upload) is False
+    assert candidate.read_bytes() == b"replacement"
+    assert displaced.read_bytes() == b"owned"
+    assert not primary.exists()
+    assert "identity" in str(upload.get("cleanup_error", "")).lower()
+
+    primary.write_bytes(b"new-primary")
+    candidate.unlink()
+    displaced.rename(candidate)
+    assert server._unlink_file_attach_temp(upload) is True
+    assert primary.read_bytes() == b"new-primary"
+    assert not candidate.exists()
+
+
+def test_atomic_attachment_write_does_not_unlink_when_exclusive_open_fails(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "workspace" / ".hermes" / "desktop-attachments"
+    root.mkdir(parents=True)
+    candidate = root / "protected.txt"
+    unlink_calls = []
+
+    def fail_open(path):
+        raise PermissionError("denied before create")
+
+    def record_unlink(self, *args, **kwargs):
+        unlink_calls.append(self)
+
+    monkeypatch.setattr(server, "_open_exclusive_attachment_file", fail_open)
+    monkeypatch.setattr(Path, "unlink", record_unlink)
+    with pytest.raises(PermissionError, match="denied before create"):
+        server._write_unique_attachment(root, candidate.name, 0, lambda handle: 0)
+    assert unlink_calls == []
+
+
+def test_file_attach_begin_requires_idempotency_key(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {"session_id": "sid", "name": "missing-key.bin"},
+            }
+        )
+        assert response["error"]["code"] == 5028
+        assert "request_id required" in response["error"]["message"]
+        assert server._sessions["sid"].get("_desktop_file_uploads", {}) == {}
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_begin_retry_recovers_state_without_consuming_slot(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setenv("HERMES_FILE_ATTACH_MAX_ACTIVE_UPLOADS", "1")
+    request_id = str(uuid.uuid4())
+    params = {
+        "request_id": request_id,
+        "session_id": "sid",
+        "name": "retry.bin",
+        "size": 5,
+    }
+
+    try:
+        first = server.handle_request(
+            {"id": "begin-1", "method": "file.attach.begin", "params": params}
+        )
+        upload_id = first["result"]["upload_id"]
+        chunk = server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": base64.b64encode(b"hello").decode("ascii"),
+                },
+            }
+        )
+        assert chunk["result"]["received"] == 5
+        retry = server.handle_request(
+            {"id": "begin-2", "method": "file.attach.begin", "params": params}
+        )
+        assert retry["result"]["upload_id"] == upload_id
+        assert retry["result"]["received"] == 5
+        assert retry["result"]["duplicate"] is True
+        assert len(server._sessions["sid"]["_desktop_file_uploads"]) == 1
+
+        mismatched = server.handle_request(
+            {
+                "id": "begin-mismatch",
+                "method": "file.attach.begin",
+                "params": {**params, "name": "different.bin"},
+            }
+        )
+        assert mismatched["error"]["code"] == 5028
+        assert "different upload" in mismatched["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_begin_limits_active_uploads_and_cancel_releases_slot(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_file_attach_max_active_uploads", lambda: 2)
+
+    try:
+        upload_ids = []
+        for index in range(2):
+            begin = server.handle_request(
+                {
+                    "id": f"begin-{index}",
+                    "method": "file.attach.begin",
+                    "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": f"file-{index}.bin"},
+                }
+            )
+            upload_ids.append(begin["result"]["upload_id"])
+
+        rejected = server.handle_request(
+            {
+                "id": "begin-rejected",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "third.bin"},
+            }
+        )
+        assert "error" in rejected
+        assert "too many active uploads" in rejected["error"]["message"]
+
+        server.handle_request(
+            {
+                "id": "cancel",
+                "method": "file.attach.cancel",
+                "params": {"session_id": "sid", "upload_id": upload_ids[0]},
+            }
+        )
+        accepted = server.handle_request(
+            {
+                "id": "begin-accepted",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "replacement.bin"},
+            }
+        )
+        assert "error" not in accepted
+    finally:
+        server._close_session_by_id("sid", end_reason="test")
+
+
+def test_file_attach_begin_reaps_idle_upload_before_applying_active_limit(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_file_attach_max_active_uploads", lambda: 1)
+    monkeypatch.setattr(server, "_file_attach_stale_seconds", lambda: 60.0)
+
+    try:
+        first = server.handle_request(
+            {
+                "id": "begin-old",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "old.bin"},
+            }
+        )
+        old_id = first["result"]["upload_id"]
+        old_upload = server._sessions["sid"]["_desktop_file_uploads"][old_id]
+        old_path = Path(old_upload["path"])
+        old_upload["updated_at"] = time.time() - 61
+
+        replacement = server.handle_request(
+            {
+                "id": "begin-new",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "new.bin"},
+            }
+        )
+
+        assert "error" not in replacement
+        assert old_id not in server._sessions["sid"]["_desktop_file_uploads"]
+        assert not old_path.exists()
+    finally:
+        server._close_session_by_id("sid", end_reason="test")
+
+
+def test_file_attach_concurrent_begin_cannot_bypass_active_limit(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_file_attach_max_active_uploads", lambda: 1)
+    original_upload_dir = server._desktop_attachment_upload_dir
+    barrier = threading.Barrier(2)
+
+    def _synchronized_upload_dir(session):
+        try:
+            barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        return original_upload_dir(session)
+
+    monkeypatch.setattr(server, "_desktop_attachment_upload_dir", _synchronized_upload_dir)
+
+    def _begin(index):
+        return server.handle_request(
+            {
+                "id": f"begin-{index}",
+                "method": "file.attach.begin",
+                "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": f"race-{index}.bin"},
+            }
+        )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(_begin, range(2)))
+
+        assert sum("result" in response for response in responses) == 1
+        assert sum("error" in response for response in responses) == 1
+        assert len(server._sessions["sid"]["_desktop_file_uploads"]) == 1
+    finally:
+        server._close_session_by_id("sid", end_reason="test")
+
+
+def test_file_attach_concurrent_chunks_cannot_write_same_offset(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    begin = server.handle_request(
+        {
+            "id": "begin",
+            "method": "file.attach.begin",
+            "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "chunk-race.bin"},
+        }
+    )
+    upload_id = begin["result"]["upload_id"]
+    original_decode = server._decode_attachment_data_url
+    barrier = threading.Barrier(2)
+
+    def _synchronized_decode(content):
+        try:
+            barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        return original_decode(content)
+
+    monkeypatch.setattr(server, "_decode_attachment_data_url", _synchronized_decode)
+
+    def _chunk(index):
+        content = "aGVsbG8=" if index == 0 else "d29ybGQ="
+        return server.handle_request(
+            {
+                "id": f"chunk-{index}",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": content,
+                },
+            }
+        )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(_chunk, range(2)))
+
+        assert sum("result" in response for response in responses) == 1
+        assert sum("error" in response for response in responses) == 1
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        assert Path(upload["path"]).stat().st_size == 5
+    finally:
+        server._close_session_by_id("sid", end_reason="test")
+
+
+def test_file_attach_finish_cannot_race_with_cancel(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    begin = server.handle_request(
+        {
+            "id": "begin",
+            "method": "file.attach.begin",
+            "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "finish-race.txt", "size": 5},
+        }
+    )
+    upload_id = begin["result"]["upload_id"]
+    server.handle_request(
+        {
+            "id": "chunk",
+            "method": "file.attach.chunk",
+            "params": {
+                "session_id": "sid",
+                "upload_id": upload_id,
+                "offset": 0,
+                "content_base64": "aGVsbG8=",
+            },
+        }
+    )
+    original_publish = server._publish_unique_attachment
+    finish_entered = threading.Event()
+
+    def _blocked_publish(temp_path, root, name):
+        finish_entered.set()
+        time.sleep(0.2)
+        return original_publish(temp_path, root, name)
+
+    monkeypatch.setattr(server, "_publish_unique_attachment", _blocked_publish)
+
+    def _finish():
+        return server.handle_request(
+            {
+                "id": "finish",
+                "method": "file.attach.finish",
+                "params": {"session_id": "sid", "upload_id": upload_id},
+            }
+        )
+
+    def _cancel():
+        assert finish_entered.wait(timeout=1)
+        return server.handle_request(
+            {
+                "id": "cancel",
+                "method": "file.attach.cancel",
+                "params": {"session_id": "sid", "upload_id": upload_id},
+            }
+        )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            finish_future = pool.submit(_finish)
+            cancel_future = pool.submit(_cancel)
+            finish = finish_future.result()
+            cancel = cancel_future.result()
+
+        assert "error" not in finish
+        assert finish["result"]["attached"] is True
+        assert cancel["result"] == {"cancelled": False, "completed": True}
+        assert Path(finish["result"]["path"]).read_bytes() == b"hello"
+    finally:
+        server._close_session_by_id("sid", end_reason="test")
+
+
+def test_file_attach_teardown_waits_for_inflight_chunk(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    begin = server.handle_request(
+        {
+            "id": "begin",
+            "method": "file.attach.begin",
+            "params": {"request_id": str(uuid.uuid4()), "session_id": "sid", "name": "teardown-race.bin"},
+        }
+    )
+    upload_id = begin["result"]["upload_id"]
+    temp_path = Path(server._sessions["sid"]["_desktop_file_uploads"][upload_id]["path"])
+    original_decode = server._decode_attachment_data_url
+    chunk_entered = threading.Event()
+
+    def _blocked_decode(content):
+        chunk_entered.set()
+        time.sleep(0.2)
+        return original_decode(content)
+
+    monkeypatch.setattr(server, "_decode_attachment_data_url", _blocked_decode)
+
+    def _chunk():
+        return server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": "aGVsbG8=",
+                },
+            }
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        chunk_future = pool.submit(_chunk)
+        assert chunk_entered.wait(timeout=1)
+        close_future = pool.submit(server._close_session_by_id, "sid", end_reason="test")
+        chunk = chunk_future.result()
+        closed = close_future.result()
+
+    assert "error" not in chunk
+    assert chunk["result"]["received"] == 5
+    assert closed is True
+    assert not temp_path.exists()
+
+
+def test_file_attach_chunked_upload_finalizes_into_session_workspace(monkeypatch, tmp_path):
+    """Remote large-file path: upload chunks instead of a single 16 MB data_url."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.delenv("HERMES_FILE_ATTACH_MAX_CHUNK_BYTES", raising=False)
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "size": 11,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        assert begin["result"]["received"] == 0
+        assert begin["result"]["max_chunk_bytes"] >= 1024 * 1024
+
+        first = server.handle_request(
+            {
+                "id": "chunk-1",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": "aGVsbG8=",
+                },
+            }
+        )
+        assert first["result"]["received"] == 5
+
+        second = server.handle_request(
+            {
+                "id": "chunk-2",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 5,
+                    "content_base64": "IHdvcmxk",
+                },
+            }
+        )
+        assert second["result"]["received"] == 11
+
+        finish = server.handle_request(
+            {
+                "id": "finish",
+                "method": "file.attach.finish",
+                "params": {"session_id": "sid", "upload_id": upload_id},
+            }
+        )
+
+        stored = workspace / ".hermes" / "desktop-attachments" / "report.txt"
+        assert finish["result"]["attached"] is True
+        assert finish["result"]["uploaded"] is True
+        assert finish["result"]["path"] == str(stored)
+        assert finish["result"]["ref_text"] == "@file:.hermes/desktop-attachments/report.txt"
+        assert stored.read_text(encoding="utf-8") == "hello world"
+        assert upload_id not in server._sessions["sid"].get("_desktop_file_uploads", {})
+
+        finish_retry = server.handle_request(
+            {
+                "id": "finish-retry",
+                "method": "file.attach.finish",
+                "params": {"session_id": "sid", "upload_id": upload_id},
+            }
+        )
+        assert finish_retry["result"] == finish["result"]
+        assert [path.name for path in stored.parent.glob("report*.txt")] == ["report.txt"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_concurrent_finish_across_sessions_never_overwrites(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    server._sessions["sid-a"] = _session(cwd=str(workspace))
+    server._sessions["sid-b"] = _session(cwd=str(workspace))
+
+    uploads = []
+    try:
+        for session_id, payload in (("sid-a", b"alpha"), ("sid-b", b"bravo")):
+            begin = server.handle_request(
+                {
+                    "id": f"begin-{session_id}",
+                    "method": "file.attach.begin",
+                    "params": {
+                        "request_id": str(uuid.uuid4()),
+                        "session_id": session_id,
+                        "name": "same.txt",
+                        "size": len(payload),
+                    },
+                }
+            )
+            upload_id = begin["result"]["upload_id"]
+            chunk = server.handle_request(
+                {
+                    "id": f"chunk-{session_id}",
+                    "method": "file.attach.chunk",
+                    "params": {
+                        "session_id": session_id,
+                        "upload_id": upload_id,
+                        "offset": 0,
+                        "content_base64": base64.b64encode(payload).decode("ascii"),
+                    },
+                }
+            )
+            assert chunk["result"]["received"] == len(payload)
+            uploads.append((session_id, upload_id, payload))
+
+        barrier = threading.Barrier(2)
+        real_link = server.os.link
+
+        def synchronized_link(source, target, *args, **kwargs):
+            if Path(target).name == "same.txt":
+                barrier.wait(timeout=10)
+            return real_link(source, target, *args, **kwargs)
+
+        monkeypatch.setattr(server.os, "link", synchronized_link)
+
+        def finish(item):
+            session_id, upload_id, payload = item
+            response = server.handle_request(
+                {
+                    "id": f"finish-{session_id}",
+                    "method": "file.attach.finish",
+                    "params": {"session_id": session_id, "upload_id": upload_id},
+                }
+            )
+            return response, payload
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(finish, uploads))
+
+        paths = [Path(response["result"]["path"]) for response, _ in results]
+        assert len(set(paths)) == 2
+        assert {path.name for path in paths} == {"same.txt", "same-2.txt"}
+        for (response, expected), path in zip(results, paths, strict=True):
+            assert "error" not in response
+            assert path.read_bytes() == expected
+    finally:
+        server._sessions.pop("sid-a", None)
+        server._sessions.pop("sid-b", None)
+
+
+def test_file_attach_chunked_upload_cancel_removes_temp_file(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    request_id = str(uuid.uuid4())
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {"request_id": request_id, "session_id": "sid", "name": "cancel.txt"},
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        temp_path = workspace / ".hermes" / "desktop-attachments" / ".uploads" / f"{upload_id}.part"
+        assert temp_path.exists()
+
+        cancel = server.handle_request(
+            {
+                "id": "cancel",
+                "method": "file.attach.cancel",
+                "params": {"session_id": "sid", "upload_id": upload_id},
+            }
+        )
+
+        assert cancel["result"]["cancelled"] is True
+        assert not temp_path.exists()
+        assert upload_id not in server._sessions["sid"].get("_desktop_file_uploads", {})
+        delayed_begin = server.handle_request(
+            {
+                "id": "delayed-begin",
+                "method": "file.attach.begin",
+                "params": {"request_id": request_id, "session_id": "sid", "name": "cancel.txt"},
+            }
+        )
+        assert delayed_begin["error"]["code"] == 5028
+        assert "already cancelled" in delayed_begin["error"]["message"]
+        assert not temp_path.exists()
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, tmp_path):
     """Local case: gateway can see the file but it's outside the workspace → copy in."""
     workspace = tmp_path / "workspace"
@@ -4325,6 +6423,164 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
         assert resp["result"]["uploaded"] is True
         assert resp["result"]["ref_text"] == "@file:.hermes/desktop-attachments/outside.txt"
         assert stored.read_text(encoding="utf-8") == "outside workspace"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_rejects_gateway_visible_source_that_grows_after_reservation(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "growing.bin"
+    source.write_bytes(b"1234")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_file_attach_max_total_bytes", lambda: 8)
+    monkeypatch.setattr(server, "_file_attach_available_bytes", lambda _path: 100)
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 0)
+    original_reserve = server._reserve_file_attach_disk_space
+
+    def reserve_then_grow(path, amount):
+        token = original_reserve(path, amount)
+        source.write_bytes(b"1234567890ABCD")
+        return token
+
+    monkeypatch.setattr(server, "_reserve_file_attach_disk_space", reserve_then_grow)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "growing-source",
+                "method": "file.attach",
+                "params": {"session_id": "sid", "path": str(source)},
+            }
+        )
+
+        assert "changed while being copied" in response["error"]["message"]
+        assert not (
+            workspace / ".hermes" / "desktop-attachments" / "growing.bin"
+        ).exists()
+        with server._file_attach_disk_reservation_lock:
+            assert not server._file_attach_disk_reservations
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_source_copy_partial_write_cleanup_failure_is_quarantined(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source-locked.bin"
+    source.write_bytes(b"ABCD")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+    original_open = server._open_exclusive_attachment_file
+    original_unlink = Path.unlink
+
+    class _ShortWriteHandle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def write(self, payload):
+            return self._handle.write(payload[:1])
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    def short_target_open(path):
+        handle = original_open(path)
+        if path.name == source.name:
+            return _ShortWriteHandle(handle)
+        return handle
+
+    def fail_target_unlink(path, *args, **kwargs):
+        if path.name == source.name and path.parent.name == "desktop-attachments":
+            raise PermissionError("locked source-copy cleanup")
+        return original_unlink(path, *args, **kwargs)
+
+    def fail_target_handle_delete(_handle):
+        raise PermissionError("locked source-copy handle cleanup")
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_open_exclusive_attachment_file", short_target_open)
+    monkeypatch.setattr(Path, "unlink", fail_target_unlink)
+    if os.name == "nt":
+        monkeypatch.setattr(server, "_mark_open_attachment_for_delete", fail_target_handle_delete)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "source-partial-cleanup",
+                "method": "file.attach",
+                "params": {"session_id": "sid", "path": str(source), "name": source.name},
+            }
+        )
+        partial = workspace / ".hermes" / "desktop-attachments" / source.name
+
+        assert "cleanup" in response["error"]["message"].lower()
+        assert partial.exists()
+        assert len(server._file_attach_cleanup_quarantine) == 1
+        assert len(server._file_attach_disk_reservations) == 1
+    finally:
+        monkeypatch.setattr(server, "_open_exclusive_attachment_file", original_open)
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        server._sessions.pop("sid", None)
+        server._retry_file_attach_cleanup_quarantine()
+
+
+def test_file_attach_rejects_same_size_source_rewrite_after_reservation(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "rewritten.bin"
+    source.write_bytes(b"good")
+    initial_stat = source.stat()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_file_attach_available_bytes", lambda _path: 100)
+    monkeypatch.setattr(server, "_file_attach_free_space_reserve_bytes", lambda: 0)
+    original_reserve = server._reserve_file_attach_disk_space
+
+    def reserve_then_rewrite(path, amount):
+        token = original_reserve(path, amount)
+        source.write_bytes(b"evil")
+        os.utime(
+            source,
+            ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns + 1_000_000_000),
+        )
+        return token
+
+    monkeypatch.setattr(server, "_reserve_file_attach_disk_space", reserve_then_rewrite)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "rewritten-source",
+                "method": "file.attach",
+                "params": {"session_id": "sid", "path": str(source)},
+            }
+        )
+
+        assert "changed while being copied" in response["error"]["message"]
+        assert not (
+            workspace / ".hermes" / "desktop-attachments" / "rewritten.bin"
+        ).exists()
+        with server._file_attach_disk_reservation_lock:
+            assert not server._file_attach_disk_reservations
     finally:
         server._sessions.pop("sid", None)
 
@@ -5871,6 +8127,7 @@ def test_session_create_lazy_info_reports_desktop_contract(monkeypatch):
     info = resp["result"]["info"]
 
     assert info["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+    assert server.DESKTOP_BACKEND_CONTRACT == 5
 
     server._sessions.pop(resp["result"]["session_id"], None)
 

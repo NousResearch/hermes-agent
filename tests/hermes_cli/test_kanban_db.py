@@ -3686,6 +3686,29 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
 
     assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"
 
+
+def test_dispatch_combined_caps_leaves_remaining_slot_spawnable(
+    kanban_home, all_assignees_spawnable,
+):
+    """When both max_spawn and max_in_progress are set and 1 of 2 slots is used, spawn 1 more."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        kb.claim_task(conn, running)
+        kb.create_task(conn, title="next", assignee="bob")
+        kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=2,
+            max_in_progress=2,
+        )
+
+    assert len(spawns) == 1, f"expected 1 spawn (1 running of 2 cap), got {len(spawns)}"
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

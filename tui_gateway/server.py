@@ -649,6 +649,15 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             pass
 
     if agent is not None and history and hasattr(agent, "commit_memory_session"):
+        # Opt-in boundary review at TUI session close
+        # (memory.review_on_session_end, #31597) — same boundary moment as
+        # the memory commit below, sharing its history snapshot.
+        try:
+            from agent.background_review import maybe_spawn_boundary_review
+
+            maybe_spawn_boundary_review(agent, history, trigger="session_end")
+        except Exception:
+            pass
         try:
             agent.commit_memory_session(history)
         except Exception:
@@ -4799,6 +4808,24 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
+    # Opt-in boundary review (memory.review_on_reset, #31597): the reset below
+    # replaces the agent and clears history — review the conversation being
+    # discarded first, snapshotting history under its lock. Uses the OLD
+    # agent so the review inherits the runtime the conversation actually ran on.
+    _old_agent = session.get("agent")
+    if _old_agent is not None:
+        try:
+            from agent.background_review import maybe_spawn_boundary_review
+
+            _lock = session.get("history_lock")
+            if _lock is not None:
+                with _lock:
+                    _old_history = list(session.get("history") or [])
+            else:
+                _old_history = list(session.get("history") or [])
+            maybe_spawn_boundary_review(_old_agent, _old_history, trigger="reset")
+        except Exception:
+            pass
     tokens = _set_session_context(session["session_key"])
     try:
         # /new is a full conversation boundary: session-scoped runtime

@@ -579,6 +579,19 @@ memory:
   # For exit/reset, only fires if the session had at least this many user turns.
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
+  # Background memory review at session boundaries (#31597). Complements
+  # nudge_interval (which fires mid-conversation) by firing an out-of-band
+  # background review thread at natural boundaries; unlike flush_min_turns
+  # (an inline turn), the review never blocks the conversation or shutdown.
+  # All default to false -- opt in per boundary. Only active when memory is
+  # enabled.
+  review_on_reset: false        # /new, /reset (CLI, TUI, and gateway)
+  review_on_session_end: false  # CLI exit (bounded ~10s join), TUI session
+                                # close, gateway session expiry
+  review_on_compression: false  # After a SUCCESSFUL compression, with a
+                                # snapshot of the pre-compression transcript;
+                                # aborted / no-op compressions never fire
+
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================

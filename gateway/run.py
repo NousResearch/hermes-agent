@@ -8432,6 +8432,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _cached_agent is None:
                             _cached_agent = self._running_agents.get(key)
                         if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
+                            # Opt-in boundary review on session expiry
+                            # (memory.review_on_session_end, #31597): the session
+                            # is being permanently finalized — review its
+                            # transcript before the agent's resources are torn
+                            # down. The review fork uses its own clients, so the
+                            # off-loop cleanup below cannot race it.
+                            try:
+                                from agent.background_review import (
+                                    maybe_spawn_boundary_review,
+                                )
+
+                                _exp_msgs = getattr(
+                                    _cached_agent, "_session_messages", None
+                                )
+                                maybe_spawn_boundary_review(
+                                    _cached_agent,
+                                    _exp_msgs if isinstance(_exp_msgs, list) else [],
+                                    trigger="session_end",
+                                )
+                            except Exception:
+                                pass
                             await self._cleanup_agent_resources_off_loop(
                                 _cached_agent, context="session expiry"
                             )

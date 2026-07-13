@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist"
+    "build": "node scripts/build.js"
   },
   "sideEffects": true,
   "main": "./index.js",

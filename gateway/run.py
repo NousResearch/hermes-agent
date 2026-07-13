@@ -14840,7 +14840,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message_id = data.get("message_id")
             user_id = data.get("user_id")
 
-            if not platform_str or not chat_id or not user_id or not chat_type:
+            if not platform_str or not chat_id or not chat_type:
                 logger.debug(
                     "Restart notification skipped: stale marker missing routing identity"
                 )

@@ -457,6 +457,72 @@ async def test_send_restart_notification_skips_stale_marker_missing_identity(tmp
 
 
 @pytest.mark.asyncio
+async def test_send_restart_notification_allows_identityless_authorized_group(
+    tmp_path, monkeypatch
+):
+    """Chat-scoped authorization supports group markers without a user ID."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100123")
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100123",
+        "chat_type": "group",
+    }))
+
+    runner, adapter = make_restart_runner()
+    real_authorize = gateway_run.GatewayRunner._is_user_authorized.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+    runner._is_user_authorized = MagicMock(wraps=real_authorize)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100123", None)
+    runner._is_user_authorized.assert_called_once()
+    checked_source = runner._is_user_authorized.call_args.args[0]
+    assert checked_source.chat_id == "-100123"
+    assert checked_source.user_id is None
+    assert checked_source.chat_type == "group"
+    adapter.send.assert_called_once()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_rejects_identityless_unauthorized_group(
+    tmp_path, monkeypatch
+):
+    """An identity-less marker still requires chat-scoped authorization."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100999")
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100123",
+        "chat_type": "group",
+    }))
+
+    runner, adapter = make_restart_runner()
+    real_authorize = gateway_run.GatewayRunner._is_user_authorized.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+    runner._is_user_authorized = MagicMock(wraps=real_authorize)
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    runner._is_user_authorized.assert_called_once()
+    checked_source = runner._is_user_authorized.call_args.args[0]
+    assert checked_source.user_id is None
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_send_restart_notification_skips_unauthorized_marker(tmp_path, monkeypatch):
     """Current markers are re-authorized by requester user_id, not chat_id."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

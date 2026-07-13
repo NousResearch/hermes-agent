@@ -17116,6 +17116,32 @@ def start_server(
                 "There is no unauthenticated public-bind option — to keep it "
                 "local, bind 127.0.0.1 and tunnel in (SSH / Tailscale)."
             )
+            # Hint when credentials exist but the bundled provider is blocked
+            # (#54489).
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                from hermes_cli.plugins_cmd import _BASIC_AUTH_PLUGIN_KEYS
+
+                _cfg = _load_cfg()
+                _ba = (_cfg.get("dashboard") or {}).get("basic_auth") or {}
+                _disabled = (_cfg.get("plugins") or {}).get("disabled") or []
+                # Basic auth only activates with a username AND a credential
+                # (plaintext password or password_hash); don't fire the hint on
+                # a half-configured block.
+                _has_creds = bool(_ba.get("username")) and bool(
+                    _ba.get("password_hash") or _ba.get("password")
+                )
+                if _has_creds and (set(_disabled) & _BASIC_AUTH_PLUGIN_KEYS):
+                    _fix_hint = (
+                        "The 'basic' dashboard-auth plugin is in "
+                        "plugins.disabled but dashboard.basic_auth is "
+                        "configured.\n"
+                        "Remove 'basic' from plugins.disabled (or run "
+                        "`hermes plugins enable basic`), then restart the "
+                        "dashboard.\n\n"
+                    ) + _fix_hint
+            except Exception:
+                pass
             if skip_reasons:
                 raise SystemExit(
                     f"Refusing to bind dashboard to {host} — the auth gate "

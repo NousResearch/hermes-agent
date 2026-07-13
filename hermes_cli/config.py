@@ -8150,29 +8150,17 @@ def set_config_value(key: str, value: str):
         print(f"✓ Set {key} in {get_env_path()}")
         return
     
-    # Otherwise it goes to config.yaml
-    # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
+    # Otherwise it goes to config.yaml. Preserve user comments, ordering, and
+    # quotes while updating the requested path.
     config_path = get_config_path()
     require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception:
-            user_config = {}
-    
-    # Handle nested keys (e.g., "tts.provider") including numeric list
-    # indices (e.g., "custom_providers.0.api_key").  Delegates to
-    # _set_nested which preserves list-typed nodes; before #17876 the
-    # inline navigation here silently overwrote lists with dicts.
 
     # Preserve values for string-typed settings.  In particular, enum members
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
+    is_string_config = isinstance(_default_value_for_key(key), str)
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    if not is_string_config:
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:
@@ -8183,20 +8171,25 @@ def set_config_value(key: str, value: str):
             coerced_value = float(value)
 
     value = coerced_value
-    _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
-    # so a fresh `hermes config set model.api_base ...` lands on the canonical
-    # key the runtime resolver actually reads, instead of being silently
-    # ignored. Mirrors the load-time migration in _normalize_root_model_keys.
+    # so `hermes config set model.api_base ...` lands on the canonical key the
+    # runtime resolver actually reads instead of being silently ignored.
     _alias_norm = key.strip().lower()
     if _alias_norm in ("model.api_base", "api_base"):
-        user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    # Write only user config back (not the full merged defaults)
+
     ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    from utils import atomic_roundtrip_yaml_update
+
+    if is_string_config:
+        # ruamel follows YAML 1.2, but config consumers such as PyYAML still
+        # interpret bare ``off``/``yes`` as YAML 1.1 booleans. Keep declared
+        # string settings unambiguous across both parsers.
+        from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+        value = DoubleQuotedScalarString(value)
+    atomic_roundtrip_yaml_update(config_path, key, value)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

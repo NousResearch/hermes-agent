@@ -124,6 +124,27 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
+    def test_preserves_comments_and_formatting(self, _isolated_hermes_home):
+        """Config set must retain user-authored YAML comments and whitespace."""
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text(
+            "# My custom auxiliary setup\n"
+            "\n"
+            "auxiliary:\n"
+            "  # Keep this model note\n"
+            "  model: gpt-4o-mini  # Inline note\n",
+            encoding="utf-8",
+        )
+
+        set_config_value("auxiliary.model", "gpt-4o")
+
+        config = _read_config(_isolated_hermes_home)
+        assert "# My custom auxiliary setup" in config
+        assert "\n\nauxiliary:" in config
+        assert "# Keep this model note" in config
+        assert "# Inline note" in config
+        assert "model: gpt-4o" in config
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277

@@ -306,7 +306,7 @@ def atomic_roundtrip_yaml_update(
     file + fsync + atomic replace pattern.
     """
     from ruamel.yaml import YAML
-    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -329,12 +329,34 @@ def atomic_roundtrip_yaml_update(
     current = config
     keys = key_path.split(".")
     for key in keys[:-1]:
-        next_value = current.get(key)
-        if not isinstance(next_value, CommentedMap):
-            next_value = CommentedMap()
-            current[key] = next_value
-        current = next_value
-    current[keys[-1]] = value
+        if isinstance(current, CommentedSeq):
+            try:
+                current = current[int(key)]
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"Cannot navigate into list at key {key_path!r}: "
+                    f"segment {key!r} is not a numeric index"
+                ) from exc
+        elif isinstance(current, CommentedMap):
+            next_value = current.get(key)
+            if not isinstance(next_value, (CommentedMap, CommentedSeq)):
+                next_value = CommentedMap()
+                current[key] = next_value
+            current = next_value
+        else:
+            raise TypeError(
+                f"Cannot navigate into {type(current).__name__} at key {key_path!r}"
+            )
+
+    last_key = keys[-1]
+    if isinstance(current, CommentedSeq):
+        current[int(last_key)] = value
+    elif isinstance(current, CommentedMap):
+        current[last_key] = value
+    else:
+        raise TypeError(
+            f"Cannot navigate into {type(current).__name__} at key {key_path!r}"
+        )
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)

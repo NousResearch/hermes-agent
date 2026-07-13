@@ -345,6 +345,11 @@ def _completed_release(tmp_path: Path, monkeypatch):
     spec.interpreter.write_bytes(b"python-binary")
     spec.writer_module_origin.write_text("writer = True\n", encoding="utf-8")
     spec.gateway_module_origin.write_text("gateway = True\n", encoding="utf-8")
+    spec.foundation_module_origin.write_text("foundation = True\n", encoding="utf-8")
+    for relative_path in writer_release._TRACKED_RELEASE_ARTIFACTS:
+        artifact = spec.release_root / relative_path
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(f"-- {relative_path.name}\n".encode())
     wheel = spec.wheel_artifact_root / "hermes_agent-1.0-py3-none-any.whl"
     wheel.write_bytes(b"wheel-bytes")
     for current, directories, files in os.walk(
@@ -388,6 +393,25 @@ def test_completed_release_reconstructs_manifest_after_publication(
     extra.write_bytes(b"drift")
     extra.chmod(writer_release._SEALED_FILE_MODE)
     spec.release_root.chmod(writer_release._SEALED_DIRECTORY_MODE)
+    with pytest.raises(RuntimeError, match="does not match"):
+        writer_release._validate_completed_release(spec)
+
+
+def test_completed_release_rejects_manifest_bound_foundation_sql_tampering(
+    tmp_path,
+    monkeypatch,
+):
+    spec, _manifest = _completed_release(tmp_path, monkeypatch)
+    artifact = (
+        spec.release_root
+        / writer_release.CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS[0]
+    )
+    spec.release_root.chmod(0o700)
+    artifact.chmod(0o600)
+    artifact.write_bytes(b"-- tampered after publication\n")
+    artifact.chmod(writer_release._SEALED_FILE_MODE)
+    spec.release_root.chmod(writer_release._SEALED_DIRECTORY_MODE)
+
     with pytest.raises(RuntimeError, match="does not match"):
         writer_release._validate_completed_release(spec)
 

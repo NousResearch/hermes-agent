@@ -35,6 +35,7 @@ _PACKAGED_MODULES = {
     "gateway/canonical_writer_bootstrap.py",
     "gateway/canonical_writer_config_collector.py",
     "gateway/canonical_writer_deployment_preflight.py",
+    "gateway/canonical_writer_foundation.py",
     "gateway/canonical_writer_gateway_bootstrap.py",
     "gateway/canonical_writer_host_authority.py",
     "gateway/canonical_writer_planner.py",
@@ -176,6 +177,7 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         import gateway.canonical_writer_bootstrap as bootstrap_module
         import gateway.canonical_writer_activation as activation_module
         import gateway.canonical_writer_config_collector as config_collector_module
+        import gateway.canonical_writer_foundation as foundation_module
         import gateway.canonical_writer_gateway_bootstrap as gateway_bootstrap_module
         import gateway.canonical_writer_host_authority as host_authority_module
         import gateway.canonical_writer_planner as planner_module
@@ -257,6 +259,73 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         assert packaged_plan.sha256 == packaged_plan_raw[
             "activation_plan_sha256"
         ]
+        release_revision = "a" * 40
+        release_root = Path("/opt/muncho-canary-releases") / release_revision
+        fallback_calls = []
+        foundation_module._load_source_artifacts_for_tests = (
+            lambda: fallback_calls.append(True)
+        )
+        foundation_module.load_release_manifest = (
+            lambda _revision: (_ for _ in ()).throw(RuntimeError("unavailable"))
+        )
+        try:
+            foundation_module._load_sealed_artifacts(release_revision)
+        except foundation_module.CanonicalWriterFoundationError as exc:
+            assert str(exc) == "foundation_release_manifest_invalid"
+        else:
+            raise AssertionError("missing sealed manifest must fail closed")
+        assert fallback_calls == []
+
+        sql_entries = tuple(
+            SimpleNamespace(
+                path=f"scripts/sql/{filename}",
+                kind="file",
+                mode="0444",
+                size=1,
+                sha256="1" * 64,
+            )
+            for filename in foundation_module._ARTIFACT_FILENAMES.values()
+        )
+        sealed_manifest = SimpleNamespace(
+            artifact_root=str(release_root),
+            entries=sql_entries,
+        )
+        foundation_module.load_release_manifest = lambda revision: (
+            sealed_manifest,
+            b"sealed-manifest",
+        ) if revision == release_revision else (_ for _ in ()).throw(
+            AssertionError("unexpected release revision")
+        )
+        loaded_paths = []
+
+        def capture_sealed_artifact(
+            name,
+            path,
+            *,
+            expected_sha256,
+            expected_size,
+            require_root_sealed,
+        ):
+            assert expected_sha256 == "1" * 64
+            assert expected_size == 1
+            assert require_root_sealed is True
+            loaded_paths.append(path)
+            return foundation_module.SealedSQLArtifact(
+                name,
+                path,
+                expected_sha256,
+                b"x",
+            )
+
+        foundation_module._read_sealed_artifact = capture_sealed_artifact
+        sealed_artifacts = foundation_module._load_sealed_artifacts(
+            release_revision
+        )
+        assert set(sealed_artifacts) == set(foundation_module._ARTIFACT_FILENAMES)
+        assert set(loaded_paths) == {
+            release_root / "scripts/sql" / filename
+            for filename in foundation_module._ARTIFACT_FILENAMES.values()
+        }
         native_result = {
             "artifact_sha256": "1" * 64,
             "native_observation_plan_sha256": "2" * 64,
@@ -310,6 +379,9 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         )
         assert "/site-packages/gateway/canonical_writer_config_collector.py" in (
             config_collector_module.__file__.replace("\\\\", "/")
+        )
+        assert "/site-packages/gateway/canonical_writer_foundation.py" in (
+            foundation_module.__file__.replace("\\\\", "/")
         )
         assert "/site-packages/gateway/canonical_writer_host_authority.py" in (
             host_authority_module.__file__.replace("\\\\", "/")

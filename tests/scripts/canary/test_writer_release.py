@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway import canonical_writer_foundation
 from scripts.canary import writer_release
 from scripts.canary.writer_release import (
     GATEWAY_MODULE,
@@ -35,6 +36,18 @@ from scripts.canary.writer_release import (
 
 REVISION = "a" * 40
 UNIT_SPEC = WriterOnlyUnitSpec(database_ip_allow=("10.20.30.40/32",))
+EXPECTED_TRACKED_RELEASE_ARTIFACTS = (
+    "scripts/sql/canonical_writer_canary_bootstrap_v1.sql",
+    "scripts/sql/canonical_writer_canary_bootstrap_retire_v1.sql",
+    "scripts/sql/canonical_writer_v1.sql",
+    "scripts/sql/canonical_writer_foundation_observe_v1.sql",
+    "scripts/sql/canonical_writer_foundation_legacy_observe_v1.sql",
+    "scripts/sql/canonical_writer_foundation_prerequisites_v1.sql",
+    "scripts/sql/canonical_writer_foundation_legacy_reconcile_v1.sql",
+    "scripts/sql/canonical_writer_foundation_login_v1.sql",
+    "scripts/sql/canonical_writer_foundation_membership_v1.sql",
+    "scripts/sql/canonical_writer_foundation_retire_v1.sql",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +78,15 @@ def _source(spec: ReleaseBuildSpec) -> None:
     (spec.source_root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
 
 
+def _write_required_release_entries(spec: ReleaseBuildSpec) -> None:
+    spec.foundation_module_origin.parent.mkdir(parents=True, exist_ok=True)
+    spec.foundation_module_origin.write_text("FOUNDATION = True\n", encoding="utf-8")
+    for relative_path in writer_release._TRACKED_RELEASE_ARTIFACTS:
+        path = spec.release_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"-- {relative_path.name}\n".encode())
+
+
 def _manifest() -> ReleaseManifest:
     root = Path("/opt/muncho-canary-releases") / REVISION
     site = root / "venv/lib/python3.11/site-packages/gateway"
@@ -82,6 +104,28 @@ def _manifest() -> ReleaseManifest:
         provisional,
         artifact_sha256=provisional.computed_artifact_sha256,
     )
+
+
+def test_tracked_release_artifact_inventory_is_exact_and_complete():
+    assert tuple(
+        path.as_posix() for path in writer_release._TRACKED_RELEASE_ARTIFACTS
+    ) == EXPECTED_TRACKED_RELEASE_ARTIFACTS
+    assert tuple(
+        path.name
+        for path in writer_release.CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS
+    ) == (
+        "canonical_writer_foundation_observe_v1.sql",
+        "canonical_writer_foundation_legacy_observe_v1.sql",
+        "canonical_writer_foundation_prerequisites_v1.sql",
+        "canonical_writer_foundation_legacy_reconcile_v1.sql",
+        "canonical_writer_foundation_login_v1.sql",
+        "canonical_writer_foundation_membership_v1.sql",
+        "canonical_writer_foundation_retire_v1.sql",
+    )
+    assert {
+        Path("scripts/sql") / filename
+        for filename in canonical_writer_foundation._ARTIFACT_FILENAMES.values()
+    } <= set(writer_release._TRACKED_RELEASE_ARTIFACTS)
 
 
 def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path):
@@ -706,7 +750,7 @@ def test_failed_build_retains_incomplete_release_and_scratch(tmp_path, monkeypat
     assert sum("rev-parse" in argv for argv in observed) == 2
 
 
-def test_build_release_materializes_bootstrap_sql_before_install_tooling(
+def test_build_release_materializes_all_tracked_sql_before_install_tooling(
     tmp_path,
     monkeypatch,
 ):
@@ -716,10 +760,7 @@ def test_build_release_materializes_bootstrap_sql_before_install_tooling(
     spec.uv_cache_dir.mkdir()
     managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
     repository_root = Path(writer_release.__file__).resolve().parents[2]
-    relative_paths = (
-        writer_release.CANARY_BOOTSTRAP_SQL_RELATIVE_PATH,
-        writer_release.CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH,
-    )
+    relative_paths = writer_release._TRACKED_RELEASE_ARTIFACTS
     source_raw = {
         relative_path: (repository_root / relative_path).read_bytes()
         for relative_path in relative_paths
@@ -903,6 +944,7 @@ def test_tree_manifest_is_canonical_and_binds_installed_module_origins(tmp_path)
     spec.interpreter.chmod(0o555)
     spec.writer_module_origin.write_text("WRITER = True\n", encoding="utf-8")
     spec.gateway_module_origin.write_text("GATEWAY = True\n", encoding="utf-8")
+    _write_required_release_entries(spec)
     managed = spec.managed_python_root / "runtime/libpython.so"
     managed.parent.mkdir(parents=True)
     managed.write_bytes(b"managed-runtime")
@@ -921,6 +963,15 @@ def test_tree_manifest_is_canonical_and_binds_installed_module_origins(tmp_path)
     assert first.gateway_module == GATEWAY_MODULE
     assert first.writer_module_origin == str(spec.writer_module_origin)
     assert first.gateway_module_origin == str(spec.gateway_module_origin)
+    foundation_entry = next(
+        entry
+        for entry in first.entries
+        if entry.path
+        == spec.foundation_module_origin.relative_to(spec.release_root).as_posix()
+    )
+    assert foundation_entry.sha256 == hashlib.sha256(
+        spec.foundation_module_origin.read_bytes()
+    ).hexdigest()
     assert len(first.artifact_sha256) == 64
     assert [entry.path for entry in first.entries] == sorted(
         entry.path for entry in first.entries
@@ -934,16 +985,13 @@ def test_tree_manifest_is_canonical_and_binds_installed_module_origins(tmp_path)
     assert changed.artifact_sha256 != first.artifact_sha256
 
 
-def test_sealed_release_carries_exact_manifest_bound_canary_bootstrap_sql(
+def test_sealed_release_carries_every_exact_manifest_bound_writer_sql_artifact(
     tmp_path,
     monkeypatch,
 ):
     spec = _spec(tmp_path)
     repository_root = Path(writer_release.__file__).resolve().parents[2]
-    relative_paths = (
-        writer_release.CANARY_BOOTSTRAP_SQL_RELATIVE_PATH,
-        writer_release.CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH,
-    )
+    relative_paths = writer_release._TRACKED_RELEASE_ARTIFACTS
     source_raw = {
         relative_path: (repository_root / relative_path).read_bytes()
         for relative_path in relative_paths
@@ -982,6 +1030,7 @@ def test_sealed_release_carries_exact_manifest_bound_canary_bootstrap_sql(
     spec.writer_module_origin.parent.mkdir(parents=True, exist_ok=True)
     spec.writer_module_origin.write_text("WRITER = True\n", encoding="utf-8")
     spec.gateway_module_origin.write_text("GATEWAY = True\n", encoding="utf-8")
+    spec.foundation_module_origin.write_text("FOUNDATION = True\n", encoding="utf-8")
     writer_release._seal_release_tree(spec.release_root)
     manifest = create_release_manifest(spec)
 
@@ -1006,6 +1055,43 @@ def test_sealed_release_carries_exact_manifest_bound_canary_bootstrap_sql(
         assert expected_path.read_bytes() == raw
         assert stat.S_IMODE(os.lstat(expected_path).st_mode) == 0o444
     assert installed_manifest["artifact_sha256"] == manifest.artifact_sha256
+
+
+def test_tracked_sql_copy_fails_on_missing_and_does_not_discover_untracked_files(
+    tmp_path,
+    monkeypatch,
+):
+    spec = _spec(tmp_path)
+    spec.release_root.mkdir(parents=True)
+    _allow_local_materialization_owner(monkeypatch)
+    monkeypatch.setattr(writer_release.os, "fchown", lambda *_args: None)
+    required = writer_release.CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS[0]
+
+    with pytest.raises(FileNotFoundError):
+        writer_release._copy_tracked_release_artifact(spec, required)
+
+    for relative_path in writer_release._TRACKED_RELEASE_ARTIFACTS:
+        source = spec.build_project_root / relative_path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(f"-- tracked {relative_path.name}\n".encode())
+        source.chmod(0o444)
+    untracked = (
+        spec.build_project_root
+        / "scripts/sql/canonical_writer_foundation_untracked_v1.sql"
+    )
+    untracked.write_bytes(b"-- must not be discovered\n")
+    untracked.chmod(0o444)
+
+    copied = writer_release._copy_tracked_release_artifacts(spec)
+
+    assert copied == tuple(
+        spec.release_root / relative_path
+        for relative_path in writer_release._TRACKED_RELEASE_ARTIFACTS
+    )
+    assert not (
+        spec.release_root
+        / "scripts/sql/canonical_writer_foundation_untracked_v1.sql"
+    ).exists()
 
 
 def test_tree_manifest_rejects_external_symlink_and_special_file(tmp_path):
@@ -1061,6 +1147,8 @@ def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_pat
         module_path.parent.mkdir(parents=True, exist_ok=True)
         module_path.write_text("PACKAGED = True\n", encoding="utf-8")
         module_path.chmod(0o644)
+    spec.foundation_module_origin.write_text("PACKAGED = True\n", encoding="utf-8")
+    spec.foundation_module_origin.chmod(0o644)
     (spec.venv_root / "pyvenv.cfg").write_text(
         "home = " + str(managed.parent) + "\n"
         "include-system-site-packages = false\n"
@@ -1105,6 +1193,8 @@ def test_installed_runtime_requires_exact_packaged_discord_edge_modules(
         module_path.write_text("PACKAGED = True\n", encoding="utf-8")
         module_path.chmod(0o644)
         module_paths.append(module_path)
+    spec.foundation_module_origin.write_text("PACKAGED = True\n", encoding="utf-8")
+    spec.foundation_module_origin.chmod(0o644)
     target = module_paths[0]
     if mutation == "missing":
         target.unlink()
@@ -1117,6 +1207,50 @@ def test_installed_runtime_requires_exact_packaged_discord_edge_modules(
         target.write_bytes(b"")
 
     with pytest.raises(RuntimeError, match="packaged Discord edge module"):
+        writer_release._validate_installed_runtime(spec, managed)
+
+
+@pytest.mark.parametrize("mutation", ("missing", "symlink", "mode", "empty"))
+def test_installed_runtime_requires_packaged_canonical_writer_foundation(
+    tmp_path,
+    mutation,
+):
+    spec = _spec(tmp_path)
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"managed")
+    managed.chmod(0o555)
+    spec.interpreter.parent.mkdir(parents=True)
+    spec.interpreter.write_bytes(b"copied")
+    spec.interpreter.chmod(0o555)
+    spec.site_packages.mkdir(parents=True)
+    (spec.venv_root / "pyvenv.cfg").write_text(
+        "home = " + str(managed.parent) + "\n"
+        "include-system-site-packages = false\n"
+        "executable = " + str(managed) + "\n",
+        encoding="utf-8",
+    )
+    for relative_path in writer_release._PACKAGED_DISCORD_EDGE_MODULES:
+        module_path = spec.site_packages / relative_path
+        module_path.parent.mkdir(parents=True, exist_ok=True)
+        module_path.write_text("PACKAGED = True\n", encoding="utf-8")
+        module_path.chmod(0o644)
+    foundation = spec.foundation_module_origin
+    foundation.write_text("PACKAGED = True\n", encoding="utf-8")
+    foundation.chmod(0o644)
+    if mutation == "missing":
+        foundation.unlink()
+    elif mutation == "symlink":
+        target = tmp_path / "foundation.py"
+        target.write_text("PACKAGED = True\n", encoding="utf-8")
+        foundation.unlink()
+        foundation.symlink_to(target)
+    elif mutation == "mode":
+        foundation.chmod(0o664)
+    else:
+        foundation.write_bytes(b"")
+
+    with pytest.raises(RuntimeError, match="Canonical Writer foundation module"):
         writer_release._validate_installed_runtime(spec, managed)
 
 

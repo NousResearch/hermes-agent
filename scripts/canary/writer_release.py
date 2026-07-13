@@ -92,15 +92,32 @@ _PACKAGED_DISCORD_EDGE_MODULES = (
     Path("gateway/discord_edge_bootstrap.py"),
     Path("gateway/discord_edge_service.py"),
 )
+_PACKAGED_CANONICAL_WRITER_FOUNDATION_MODULE = Path(
+    "gateway/canonical_writer_foundation.py"
+)
 CANARY_BOOTSTRAP_SQL_RELATIVE_PATH = Path(
     "scripts/sql/canonical_writer_canary_bootstrap_v1.sql"
 )
 CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH = Path(
     "scripts/sql/canonical_writer_canary_bootstrap_retire_v1.sql"
 )
+CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH = Path(
+    "scripts/sql/canonical_writer_v1.sql"
+)
+CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS = (
+    Path("scripts/sql/canonical_writer_foundation_observe_v1.sql"),
+    Path("scripts/sql/canonical_writer_foundation_legacy_observe_v1.sql"),
+    Path("scripts/sql/canonical_writer_foundation_prerequisites_v1.sql"),
+    Path("scripts/sql/canonical_writer_foundation_legacy_reconcile_v1.sql"),
+    Path("scripts/sql/canonical_writer_foundation_login_v1.sql"),
+    Path("scripts/sql/canonical_writer_foundation_membership_v1.sql"),
+    Path("scripts/sql/canonical_writer_foundation_retire_v1.sql"),
+)
 _TRACKED_RELEASE_ARTIFACTS = (
     CANARY_BOOTSTRAP_SQL_RELATIVE_PATH,
     CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH,
+    CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH,
+    *CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS,
 )
 _MAX_TRACKED_RELEASE_ARTIFACT_BYTES = 1024 * 1024
 
@@ -245,6 +262,10 @@ class ReleaseBuildSpec:
     @property
     def gateway_module_origin(self) -> Path:
         return self.site_packages / "gateway" / "canonical_writer_gateway_bootstrap.py"
+
+    @property
+    def foundation_module_origin(self) -> Path:
+        return self.site_packages / _PACKAGED_CANONICAL_WRITER_FOUNDATION_MODULE
 
     def validate(self) -> None:
         if (
@@ -760,9 +781,14 @@ def create_release_manifest(spec: ReleaseBuildSpec) -> ReleaseManifest:
         spec.interpreter,
         spec.writer_module_origin,
         spec.gateway_module_origin,
+        spec.foundation_module_origin,
+        *(spec.release_root / path for path in _TRACKED_RELEASE_ARTIFACTS),
     )
     for path in expected:
-        item = os.lstat(path)
+        try:
+            item = os.lstat(path)
+        except FileNotFoundError as exc:
+            raise ValueError("release is missing a required tracked entry") from exc
         if not stat.S_ISREG(item.st_mode) or stat.S_ISLNK(item.st_mode):
             raise ValueError("release entry point is not an installed regular file")
     entries = collect_tree_entries(spec.release_root)
@@ -1357,6 +1383,25 @@ def _validate_installed_runtime(
             or module_stat.st_size == 0
         ):
             raise RuntimeError("release packaged Discord edge module is invalid")
+    foundation_module_path = spec.foundation_module_origin
+    try:
+        foundation_module_stat = os.lstat(foundation_module_path)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "release is missing the packaged Canonical Writer foundation module"
+        ) from exc
+    if (
+        not stat.S_ISREG(foundation_module_stat.st_mode)
+        or stat.S_ISLNK(foundation_module_stat.st_mode)
+        or foundation_module_stat.st_nlink != 1
+        or foundation_module_stat.st_uid != site_stat.st_uid
+        or foundation_module_stat.st_gid != site_stat.st_gid
+        or stat.S_IMODE(foundation_module_stat.st_mode) != 0o644
+        or foundation_module_stat.st_size == 0
+    ):
+        raise RuntimeError(
+            "release packaged Canonical Writer foundation module is invalid"
+        )
     for direct_url in spec.site_packages.glob("*.dist-info/direct_url.json"):
         raw = direct_url.read_bytes()
         if len(raw) > 64 * 1024:

@@ -2392,7 +2392,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         # DeepInfra's generic /models endpoint mixes chat, image, video,
         # speech, and embedding models. The tagged catalog helper is the only
         # safe source for the chat picker, including its empty/failure result.
-        return _fetch_deepinfra_models() or []
+        return _fetch_deepinfra_models(force_refresh=force_refresh) or []
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:

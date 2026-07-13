@@ -57,3 +57,26 @@ def test_delegates_to_openai_handler_with_deepinfra_creds(monkeypatch, tmp_path)
 
     assert "deepinfra" in captured["base_url"]
     assert captured["api_key"] == "test-key"
+
+
+def test_requirements_follow_explicit_deepinfra_provider(monkeypatch):
+    from tools import tts_tool
+
+    monkeypatch.setattr(
+        tts_tool,
+        "_load_tts_config",
+        lambda: {"provider": "deepinfra", "deepinfra": {}},
+    )
+    monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: object)
+
+    assert tts_tool.check_tts_requirements() is True
+
+
+def test_unselected_cloud_credentials_do_not_expose_edge_tool(monkeypatch):
+    from tools import tts_tool
+
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {})
+    monkeypatch.setattr(tts_tool, "_import_edge_tts", MagicMock(side_effect=ImportError))
+    monkeypatch.setenv("OPENAI_API_KEY", "unselected-key")
+
+    assert tts_tool.check_tts_requirements() is False

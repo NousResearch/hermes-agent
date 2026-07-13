@@ -77,7 +77,25 @@ _BUILTIN_DELIVER_PLATFORMS = {
     "qqbot", "yuanbao",
 }
 
-DEFAULT_HOST = "0.0.0.0"
+# Default bind host. ``None`` tells aiohttp/asyncio's ``create_server`` to bind
+# BOTH address families (IPv4 + IPv6) — the portable dual-stack default.
+#
+# Why not "0.0.0.0" (the old default) or "::"?
+#   - "0.0.0.0" binds IPv4 ONLY. On IPv6-only private networks — notably Fly.io
+#     6PN, where an agent's ``<app>.internal`` name resolves to an ``fdaa:…``
+#     IPv6 address — an IPv4-only listener is unreachable. That is exactly why
+#     hosted-agent webhook routes were publicly unreachable: the edge router
+#     reverse-proxies to ``<app>.internal:8644`` over 6PN (IPv6) but the adapter
+#     was listening on 0.0.0.0 (v4 only) → connection refused.
+#   - "::" is NOT a safe fix: on hosts where the kernel sets IPV6_V6ONLY=1
+#     (verified on Fly machines), binding "::" yields an IPv6-ONLY socket, which
+#     then breaks the IPv4 loopback health check (``curl 127.0.0.1:8644/health``)
+#     and the AF_INET port-conflict probe in connect().
+#   - ``None`` asks the event loop to create a listening socket per resolved
+#     family, so both 127.0.0.1 (v4) and the 6PN fdaa (v6) are served regardless
+#     of the bindv6only sysctl. Users can still pin a specific host via
+#     ``platforms.webhook.extra.host``.
+DEFAULT_HOST = None
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
@@ -93,7 +111,7 @@ _LOOPBACK_HOSTS = frozenset({
 })
 
 
-def _is_loopback_host(host: str) -> bool:
+def _is_loopback_host(host: Optional[str]) -> bool:
     """True when `host` binds only to the local machine.
 
     Covers IPv4 loopback, the standard `localhost` alias, IPv6 loopback in
@@ -116,7 +134,11 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
-        self._host: str = config.extra.get("host", DEFAULT_HOST)
+        # ``host`` may be None (dual-stack default) or a user-pinned string.
+        # A config value of empty string / null is normalised to None so it
+        # also means "bind all families" rather than an invalid "" host.
+        _cfg_host = config.extra.get("host", DEFAULT_HOST)
+        self._host: Optional[str] = _cfg_host or None
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
         self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
@@ -245,7 +267,7 @@ class WebhookAdapter(BasePlatformAdapter):
         route_names = ", ".join(self._routes.keys()) or "(none configured)"
         logger.info(
             "[webhook] Listening on %s:%d — routes: %s",
-            self._host,
+            self._host or "* (all interfaces, IPv4+IPv6)",
             self._port,
             route_names,
         )

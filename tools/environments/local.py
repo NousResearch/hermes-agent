@@ -558,14 +558,15 @@ def _find_bash() -> str:
             or "/bin/sh"
         )
 
+    candidates: list[str] = []
+
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
-        return custom
+        candidates.append(custom)
 
-    # Prefer our own portable Git install first — this way a broken or
-    # partially-uninstalled system Git can't hijack the bash lookup.  The
-    # install.ps1 installer always drops portable Git here when the user
-    # didn't already have a working system Git.
+    # Prefer our own portable Git install — a broken or partially-uninstalled
+    # system Git (or a stale HERMES_GIT_BASH_PATH pointing at one) must not
+    # brick the terminal.  install.ps1 drops PortableGit here when needed.
     #
     # Layouts (both checked so upgrades between MinGit and PortableGit
     # installs work transparently):
@@ -578,8 +579,8 @@ def _find_bash() -> str:
             os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
             os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
         ):
-            if os.path.isfile(candidate):
-                return candidate
+            if os.path.isfile(candidate) and candidate not in candidates:
+                candidates.append(candidate)
 
     # Check known Git for Windows install locations before PATH lookup.
     # On machines with both WSL and Git for Windows, shutil.which("bash")
@@ -588,20 +589,73 @@ def _find_bash() -> str:
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe") if _local_appdata else "",
     ):
-        if candidate and os.path.isfile(candidate):
-            return candidate
+        if candidate and os.path.isfile(candidate) and candidate not in candidates:
+            candidates.append(candidate)
 
     found = shutil.which("bash")
-    if found:
-        return found
+    if found and found not in candidates:
+        candidates.append(found)
+
+    # Prefer the first candidate that can actually start.  A stale
+    # HERMES_GIT_BASH_PATH pointing at a broken Git-for-Windows install
+    # (``Directory \\drivers\\etc does not exist``) must not win over a
+    # healthy portable Git under %LOCALAPPDATA%\\hermes\\git.
+    for candidate in candidates:
+        if _bash_starts(candidate):
+            if candidate != custom and custom and os.path.isfile(custom):
+                logger.warning(
+                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead",
+                    custom,
+                    candidate,
+                )
+            return candidate
+
+    if candidates:
+        # Last resort: return the first path even if the probe failed, so the
+        # caller still sees the real bash error instead of "not found".
+        return candidates[0]
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
         "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
     )
+
+
+_bash_starts_cache: dict[str, bool] = {}
+
+
+def _bash_starts(bash: str) -> bool:
+    """True if *bash* can run a trivial non-login command.
+
+    Uses ``--noprofile --norc`` so a broken login post-install
+    (``Directory \\drivers\\etc``) does not falsely condemn an otherwise
+    usable bash.  Cached per path for the process lifetime.
+    """
+    cached = _bash_starts_cache.get(bash)
+    if cached is not None:
+        return cached
+
+    try:
+        result = subprocess.run(
+            [bash, "--noprofile", "--norc", "-c", "exit 0"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
+        )
+        ok = result.returncode == 0
+        if not ok:
+            combined = f"{result.stdout or ''}{result.stderr or ''}"
+            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+    except Exception as exc:
+        logger.debug("bash probe error for %s: %s", bash, exc)
+        ok = False
+
+    _bash_starts_cache[bash] = ok
+    return ok
 
 
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``

@@ -11519,11 +11519,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
 
     def _toggle_voice_tts(self):
-        """Toggle TTS output for voice mode."""
-        if not self._voice_mode:
-            _cprint(f"{_DIM}Enable voice mode first: /voice on{_RST}")
-            return
+        """Toggle spoken output for assistant responses.
 
+        TTS output does not require microphone capture or STT.  Keep this
+        independent from ``/voice on`` so users can enable response speech in
+        environments without input audio libraries.
+        """
         with self._voice_lock:
             self._voice_tts = not self._voice_tts
         status = "enabled" if self._voice_tts else "disabled"
@@ -11532,6 +11533,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from tools.tts_tool import check_tts_requirements
             if not check_tts_requirements():
                 _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
+        else:
+            self._voice_tts_done.set()
 
         _cprint(f"{_ACCENT}Voice TTS {status}.{_RST}")
 

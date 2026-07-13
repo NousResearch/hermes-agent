@@ -592,11 +592,13 @@ class TestDisabledToolsetsPostureToolset:
 
 class TestUnknownToolsetDiagnostics:
     def test_enabled_unknown_logs_in_quiet_mode(self, caplog):
-        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from model_tools import _compute_tool_definitions
 
-        _clear_tool_defs_cache()
-        with caplog.at_level(logging.WARNING, logger="model_tools"):
-            get_tool_definitions(
+        with (
+            patch("model_tools.registry.get_definitions", return_value=[]),
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+        ):
+            _compute_tool_definitions(
                 enabled_toolsets=["definitely-missing-toolset"],
                 quiet_mode=True,
             )
@@ -607,11 +609,13 @@ class TestUnknownToolsetDiagnostics:
         )
 
     def test_disabled_unknown_logs_in_quiet_mode(self, caplog):
-        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from model_tools import _compute_tool_definitions
 
-        _clear_tool_defs_cache()
-        with caplog.at_level(logging.WARNING, logger="model_tools"):
-            get_tool_definitions(
+        with (
+            patch("model_tools.registry.get_definitions", return_value=[]),
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+        ):
+            _compute_tool_definitions(
                 enabled_toolsets=[],
                 disabled_toolsets=["definitely-missing-toolset"],
                 quiet_mode=True,
@@ -623,11 +627,13 @@ class TestUnknownToolsetDiagnostics:
         )
 
     def test_known_toolsets_do_not_log_unknown_warning(self, caplog):
-        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from model_tools import _compute_tool_definitions
 
-        _clear_tool_defs_cache()
-        with caplog.at_level(logging.WARNING, logger="model_tools"):
-            get_tool_definitions(
+        with (
+            patch("model_tools.registry.get_definitions", return_value=[]),
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+        ):
+            _compute_tool_definitions(
                 enabled_toolsets=["terminal"],
                 disabled_toolsets=["file"],
                 quiet_mode=True,

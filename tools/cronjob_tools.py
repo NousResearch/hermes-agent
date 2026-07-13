@@ -729,9 +729,23 @@ def _run_claimed_job(job: Dict[str, Any]) -> Dict[str, Any]:
             )
             _heartbeat_thread.start()
 
+        # Manual runs invoked from a gateway agent execute outside the scheduler
+        # ticker, but they still share the process with the live platform
+        # adapters. Pass the gateway-owned adapter map and event loop through
+        # to run_one_job so delivery is scheduled on the loop that owns clients
+        # such as Matrix/aiohttp. Calling those clients from run_one_job's
+        # standalone asyncio.run() loop raises errors like "Timeout context
+        # manager should be used inside a task" and can break encrypted Matrix
+        # delivery (#61495 — salvaged from #63586 by @Fly-onlyone).
+        gateway_module = sys.modules.get("gateway.run")
+        runner_ref = getattr(gateway_module, "_gateway_runner_ref", None)
+        runner = runner_ref() if callable(runner_ref) else None
+        adapters = getattr(runner, "adapters", None) if runner is not None else None
+        gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
+
         try:
             try:
-                processed = run_one_job(job)
+                processed = run_one_job(job, adapters=adapters, loop=gateway_loop)
             finally:
                 _heartbeat_stop.set()
                 if _heartbeat_thread is not None:

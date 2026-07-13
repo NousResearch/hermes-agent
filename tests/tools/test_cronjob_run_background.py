@@ -61,7 +61,7 @@ class TestBackgroundDispatch:
         run_started = threading.Event()
         run_release = threading.Event()
 
-        def slow_run_one_job(job):
+        def slow_run_one_job(job, **kw):
             run_started.set()
             assert run_release.wait(timeout=5.0)
             return True
@@ -224,7 +224,7 @@ class TestInFlightDedupe:
 
         seen_during_run = {}
 
-        def probe_run(job):
+        def probe_run(job, **kw):
             seen_during_run["registered"] = "job-bg-09" in sched.get_running_job_ids()
             return True
 

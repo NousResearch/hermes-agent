@@ -1063,6 +1063,12 @@ class Comment:
     author: str
     body: str
     created_at: int
+    # Trusted dispatcher provenance. These values are stamped by the Kanban
+    # comment tool from the worker environment, never accepted from model
+    # arguments. Legacy/human/control-plane comments leave them NULL.
+    source_task_id: Optional[str] = None
+    source_run_id: Optional[int] = None
+    source_session_id: Optional[str] = None
 
 
 @dataclass
@@ -1186,11 +1192,14 @@ CREATE TABLE IF NOT EXISTS task_links (
 );
 
 CREATE TABLE IF NOT EXISTS task_comments (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    TEXT NOT NULL,
-    author     TEXT NOT NULL,
-    body       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id           TEXT NOT NULL,
+    author            TEXT NOT NULL,
+    body              TEXT NOT NULL,
+    created_at        INTEGER NOT NULL,
+    source_task_id    TEXT,
+    source_run_id     INTEGER,
+    source_session_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_events (
@@ -2016,6 +2025,34 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "ON task_events(run_id, id)"
     )
 
+    # Comments originally carried only a forgeable profile label. Dispatcher
+    # workers now stamp the exact source task/run/session so workflow engines
+    # can bind a handoff to the run that produced it. NULL preserves legacy,
+    # human, and control-plane comments without inventing provenance.
+    comments_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_comments'"
+    ).fetchone() is not None
+    if comments_table_exists:
+        comment_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_comments)")
+        }
+        if "source_task_id" not in comment_cols:
+            _add_column_if_missing(
+                conn, "task_comments", "source_task_id", "source_task_id TEXT"
+            )
+        if "source_run_id" not in comment_cols:
+            _add_column_if_missing(
+                conn, "task_comments", "source_run_id", "source_run_id INTEGER"
+            )
+        if "source_session_id" not in comment_cols:
+            _add_column_if_missing(
+                conn, "task_comments", "source_session_id", "source_session_id TEXT"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_comments_source_run "
+            "ON task_comments(source_task_id, source_run_id, id)"
+        )
+
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
     ).fetchone() is not None
@@ -2782,6 +2819,11 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     """
     profile = _canonical_assignee(profile)
     with write_txn(conn):
+        if _is_factory_product_anchor(conn, task_id):
+            _append_event(conn, task_id, "lifecycle_rejected", {
+                "operation": "assign", "reason": "factory_control_owned",
+            })
+            return False
         row = conn.execute(
             "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
@@ -2815,6 +2857,19 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     with write_txn(conn):
+        protected_id = next(
+            (tid for tid in (parent_id, child_id)
+             if _is_factory_product_anchor(conn, tid)),
+            None,
+        )
+        if protected_id:
+            _append_event(conn, protected_id, "lifecycle_rejected", {
+                "operation": "link", "reason": "factory_intake_owns_graph",
+                "parent": parent_id, "child": child_id,
+            })
+            raise ValueError(
+                "factory product dependency edges are immutable; create a new "
+                "intake key/program instead")
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
             raise ValueError(f"unknown task(s): {', '.join(missing)}")
@@ -2866,6 +2921,17 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
 
 def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
     with write_txn(conn):
+        protected_id = next(
+            (tid for tid in (parent_id, child_id)
+             if _is_factory_product_anchor(conn, tid)),
+            None,
+        )
+        if protected_id:
+            _append_event(conn, protected_id, "lifecycle_rejected", {
+                "operation": "unlink", "reason": "factory_intake_owns_graph",
+                "parent": parent_id, "child": child_id,
+            })
+            return False
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
             (parent_id, child_id),
@@ -2921,7 +2987,14 @@ def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Op
 # ---------------------------------------------------------------------------
 
 def add_comment(
-    conn: sqlite3.Connection, task_id: str, author: str, body: str
+    conn: sqlite3.Connection,
+    task_id: str,
+    author: str,
+    body: str,
+    *,
+    source_task_id: Optional[str] = None,
+    source_run_id: Optional[int] = None,
+    source_session_id: Optional[str] = None,
 ) -> int:
     if not body or not body.strip():
         raise ValueError("comment body is required")
@@ -2933,18 +3006,60 @@ def add_comment(
             "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
         ).fetchone():
             raise ValueError(f"unknown task {task_id}")
+        # Dispatcher provenance is only meaningful while the named run is
+        # actively executing. Validate it in the same write transaction as the
+        # insert so completion and comment posting have a total order: a
+        # worker cannot complete its station task and then use its stale env to
+        # manufacture a same-second handoff that appears pre-completion.
+        if source_task_id is not None or source_run_id is not None:
+            if not source_task_id or source_run_id is None:
+                raise ValueError(
+                    "comment source provenance requires both task id and run id"
+                )
+            source = conn.execute(
+                "SELECT t.status AS task_status, t.current_run_id, t.assignee, "
+                "r.status AS run_status, r.ended_at "
+                "FROM tasks t JOIN task_runs r ON r.task_id=t.id "
+                "WHERE t.id=? AND r.id=?",
+                (source_task_id, int(source_run_id)),
+            ).fetchone()
+            if (
+                source is None
+                or source["task_status"] != "running"
+                or source["run_status"] != "running"
+                or source["ended_at"] is not None
+                or source["current_run_id"] is None
+                or int(source["current_run_id"]) != int(source_run_id)
+            ):
+                raise ValueError(
+                    "comment source run is not the source task's active run"
+                )
+            if source["assignee"] and source["assignee"] != author.strip():
+                raise ValueError(
+                    "comment author does not match the active source task assignee"
+                )
         cur = conn.execute(
-            "INSERT INTO task_comments (task_id, author, body, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (task_id, author.strip(), body.strip(), now),
+            "INSERT INTO task_comments "
+            "(task_id, author, body, created_at, source_task_id, source_run_id, "
+            " source_session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, author.strip(), body.strip(), now,
+             source_task_id, source_run_id, source_session_id),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        _append_event(conn, task_id, "commented", {
+            "author": author, "len": len(body),
+            "source_task_id": source_task_id,
+            "source_run_id": source_run_id,
+            "source_session_id": source_session_id,
+        })
         return int(cur.lastrowid or 0)
 
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
     rows = conn.execute(
-        "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
+        # IDs are the routing cursor and are strictly monotonic. Integer-second
+        # timestamps are not unique, so ordering by created_at alone can make
+        # two same-second handoffs appear in an undefined order.
+        "SELECT * FROM task_comments WHERE task_id = ? ORDER BY id ASC",
         (task_id,),
     ).fetchall()
     return [
@@ -2954,6 +3069,11 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
             author=r["author"],
             body=r["body"],
             created_at=r["created_at"],
+            source_task_id=(r["source_task_id"] if "source_task_id" in r.keys() else None),
+            source_run_id=(r["source_run_id"] if "source_run_id" in r.keys() else None),
+            source_session_id=(
+                r["source_session_id"] if "source_session_id" in r.keys() else None
+            ),
         )
         for r in rows
     ]
@@ -3315,12 +3435,31 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, "
+            "created_by, idempotency_key "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            # Factory product cards are passive workflow aggregates, never
+            # dispatcher work. Repair legacy/direct-SQL drift here instead of
+            # allowing dependency recomputation to make one runnable.
+            if (
+                row["created_by"] == "factory-control"
+                and str(row["idempotency_key"] or "").startswith("fc-intake:")
+            ):
+                if cur_status != "blocked" or not _has_sticky_block(conn, task_id):
+                    conn.execute(
+                        "UPDATE tasks SET status='blocked', claim_lock=NULL, "
+                        "claim_expires=NULL, worker_pid=NULL WHERE id=?",
+                        (task_id,),
+                    )
+                    _append_event(conn, task_id, "blocked", {
+                        "reason": "factory product aggregate is not dispatchable",
+                        "kind": "factory_product_guard",
+                    })
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -3386,6 +3525,21 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if _is_factory_product_anchor(conn, task_id):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=? "
+                "AND status NOT IN ('done','archived')",
+                (task_id,),
+            )
+            _append_event(conn, task_id, "blocked", {
+                "reason": "factory product aggregate is not dispatchable",
+                "kind": "factory_product_guard",
+            })
+            _append_event(conn, task_id, "lifecycle_rejected", {
+                "operation": "claim", "reason": "factory_control_task_required",
+            })
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3515,6 +3669,22 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if _is_factory_product_anchor(conn, task_id):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=? "
+                "AND status NOT IN ('done','archived')",
+                (task_id,),
+            )
+            _append_event(conn, task_id, "blocked", {
+                "reason": "factory product aggregate is not dispatchable",
+                "kind": "factory_product_guard",
+            })
+            _append_event(conn, task_id, "lifecycle_rejected", {
+                "operation": "claim_review",
+                "reason": "factory_control_task_required",
+            })
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3980,6 +4150,58 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def _is_factory_product_anchor(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether ``task_id`` is a factory product/workflow aggregate.
+
+    Factory intake keys are kernel-visible and immutable.  Keeping this guard
+    here, below CLI/dashboard/tool callers, makes the lifecycle invariant
+    structural: a worker assigned to a product card cannot release dependency
+    edges by accidentally completing its own card.  Station/control cards use
+    ``fc:...`` keys and remain ordinary lifecycle tasks.
+    """
+    row = conn.execute(
+        "SELECT created_by, idempotency_key FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    return bool(
+        row
+        and row["created_by"] == "factory-control"
+        and str(row["idempotency_key"] or "").startswith("fc-intake:")
+    )
+
+
+def quarantine_factory_product(
+    conn: sqlite3.Connection, task_id: str, *, reason: str
+) -> bool:
+    """Restore an unauthorized terminal factory product to sticky quarantine.
+
+    This is a control-plane recovery primitive, not a generic lifecycle path.
+    It intentionally preserves ``result`` as forensic evidence while clearing
+    terminal/claim fields and recording both the quarantine and sticky block.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if row is None or not _is_factory_product_anchor(conn, task_id):
+            return False
+        previous = row["status"]
+        _end_run(
+            conn, task_id, outcome="blocked", status="blocked", summary=reason)
+        conn.execute(
+            "UPDATE tasks SET status='blocked', completed_at=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "current_run_id=NULL WHERE id=?",
+            (task_id,),
+        )
+        _append_event(conn, task_id, "factory_quarantined", {
+            "previous_status": previous, "reason": reason,
+        })
+        _append_event(conn, task_id, "blocked", {
+            "reason": reason, "kind": "factory_product_guard",
+        })
+        return True
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3989,6 +4211,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    _factory_gate: bool = False,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4019,6 +4242,18 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    # A product anchor is a passive aggregate. Only factory_gate's internal
+    # call path may terminate it; every public lifecycle surface reaches this
+    # default-false boundary. Returning False preserves the established API for
+    # an illegal transition while the event makes the refusal auditable.
+    if not _factory_gate and _is_factory_product_anchor(conn, task_id):
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "lifecycle_rejected",
+                {"operation": "complete", "reason": "factory_gate_required"},
+            )
+        return False
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -5003,6 +5238,27 @@ def promote_task(
     if row is None:
         return False, f"task {task_id} not found"
 
+    if _is_factory_product_anchor(conn, task_id):
+        if not dry_run:
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status='blocked', claim_lock=NULL, "
+                    "claim_expires=NULL, worker_pid=NULL WHERE id=? "
+                    "AND status NOT IN ('done','archived')",
+                    (task_id,),
+                )
+                _append_event(conn, task_id, "blocked", {
+                    "reason": "factory product aggregate is not dispatchable",
+                    "kind": "factory_product_guard",
+                })
+                _append_event(conn, task_id, "lifecycle_rejected", {
+                    "operation": "promote",
+                    "reason": "factory_control_task_required",
+                })
+        return False, (
+            f"task {task_id} is a factory product aggregate; promote its "
+            f"dedicated control task instead")
+
     cur_status = row["status"]
     if cur_status not in ("todo", "blocked"):
         return False, (
@@ -5060,6 +5316,21 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     now = int(time.time())
     with write_txn(conn):
+        if _is_factory_product_anchor(conn, task_id):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=? "
+                "AND status NOT IN ('done','archived')",
+                (task_id,),
+            )
+            _append_event(conn, task_id, "blocked", {
+                "reason": "factory product aggregate is not dispatchable",
+                "kind": "factory_product_guard",
+            })
+            _append_event(conn, task_id, "lifecycle_rejected", {
+                "operation": "unblock", "reason": "factory_control_task_required",
+            })
+            return False
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
@@ -5430,6 +5701,21 @@ def decompose_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        protected = conn.execute(
+            "SELECT status, created_by, idempotency_key FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            protected
+            and protected["status"] != "done"
+            and protected["created_by"] == "factory-control"
+            and str(protected["idempotency_key"] or "").startswith("fc-intake:")
+        ):
+            _append_event(
+                conn, task_id, "lifecycle_rejected",
+                {"operation": "archive", "reason": "factory_gate_required"},
+            )
+            return False
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
@@ -5462,6 +5748,12 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     second deliberate action.
     """
     with write_txn(conn):
+        if _is_factory_product_anchor(conn, task_id):
+            _append_event(conn, task_id, "lifecycle_rejected", {
+                "operation": "delete_archived",
+                "reason": "factory_audit_record_required",
+            })
+            return False
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),
@@ -5491,6 +5783,11 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
+        if _is_factory_product_anchor(conn, task_id):
+            _append_event(conn, task_id, "lifecycle_rejected", {
+                "operation": "delete", "reason": "factory_audit_record_required",
+            })
+            return False
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
@@ -5823,6 +6120,11 @@ def schedule_task(
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
     with write_txn(conn):
+        if _is_factory_product_anchor(conn, task_id):
+            _append_event(conn, task_id, "lifecycle_rejected", {
+                "operation": "schedule", "reason": "factory_control_task_required",
+            })
+            return False
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks

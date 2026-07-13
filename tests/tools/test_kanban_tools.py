@@ -922,8 +922,16 @@ def test_heartbeat_extends_claim_expires(worker_env):
     )
 
 
-def test_comment_happy_path(worker_env):
+def test_comment_happy_path(worker_env, monkeypatch):
     from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-comment-source")
     out = kt._handle_comment({
         "task_id": worker_env,
         "body": "hello thread",
@@ -931,7 +939,6 @@ def test_comment_happy_path(worker_env):
     d = json.loads(out)
     assert d["ok"] is True
     assert d["comment_id"]
-    from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
@@ -939,6 +946,9 @@ def test_comment_happy_path(worker_env):
         # Author defaults to HERMES_PROFILE env we set in the fixture
         assert comments[0].author == "test-worker"
         assert comments[0].body == "hello thread"
+        assert comments[0].source_task_id == worker_env
+        assert comments[0].source_run_id == run_id
+        assert comments[0].source_session_id == "session-comment-source"
     finally:
         conn.close()
 

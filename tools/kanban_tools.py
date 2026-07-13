@@ -821,13 +821,32 @@ def _handle_comment(args: dict, **kw) -> str:
     # an authoritative-looking name like ``hermes-system`` and poison
     # the future-worker context with what reads as a system directive.
     # Cross-task commenting itself remains unrestricted (see #19713) —
-    # comments are the deliberate handoff channel between tasks.
+    # comments are the deliberate handoff channel between tasks. The source
+    # task/run/session are nevertheless stamped from trusted worker context so
+    # consumers can distinguish a legitimate cross-task handoff from a verdict
+    # that claims to have been produced by some other run.
     author = os.environ.get("HERMES_PROFILE") or "worker"
+    source_task_id = os.environ.get("HERMES_KANBAN_TASK") or None
+    source_run_id = _worker_run_id(source_task_id) if source_task_id else None
+    source_session_id = os.environ.get("HERMES_SESSION_ID") or None
+    if source_run_id is None:
+        # Legacy/manual tool contexts may carry a task id without having been
+        # claimed by the dispatcher. Preserve their documented ability to
+        # comment, but do not create half-trusted provenance: consumers see
+        # the whole source tuple as NULL and therefore cannot treat it as a
+        # station verdict.
+        source_task_id = None
+        source_session_id = None
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
         try:
-            cid = kb.add_comment(conn, tid, author=author, body=str(body))
+            cid = kb.add_comment(
+                conn, tid, author=author, body=str(body),
+                source_task_id=source_task_id,
+                source_run_id=source_run_id,
+                source_session_id=source_session_id,
+            )
             return _ok(task_id=tid, comment_id=cid)
         finally:
             conn.close()

@@ -10,7 +10,7 @@ Rules:
   - test files    → delete immediately at task end (age >= 0)
   - temp files    → delete after 7 days
   - cron-output   → delete after 14 days
-  - empty dirs    → always delete (under HERMES_HOME)
+  - empty dirs    → delete when safe under HERMES_HOME (excluding checkpoint state)
   - research      → keep 10 newest, prompt for older (deep only)
   - chrome-profile→ prompt after 14 days (deep only)
   - >500 MB files → prompt always (deep only)
@@ -160,6 +160,26 @@ _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
 # regardless of what the stored category says.  This is a defense-in-depth
 # guard against stale tracked.json entries from before #34840.
 _PROTECTED_CRON_PATHS: set[str] = set()
+
+
+def _is_checkpoint_state_dir(path: Path, hermes_home: Path) -> bool:
+    """Protect the current store and recognized archived legacy repos."""
+    try:
+        rel_parts = path.relative_to(hermes_home).parts
+    except ValueError:
+        return False
+    if len(rel_parts) == 2:
+        return rel_parts == ("checkpoints", "store")
+    if (
+        len(rel_parts) == 3
+        and rel_parts[0] == "checkpoints"
+        and rel_parts[1].startswith("legacy-")
+    ):
+        return any(
+            (path / marker).exists()
+            for marker in ("HEAD", "config", "HERMES_WORKDIR")
+        )
+    return False
 
 
 def _is_protected_cron_path(p: Path) -> bool:
@@ -402,6 +422,7 @@ def quick() -> Dict[str, Any]:
                     child.is_dir()
                     and not child.is_symlink()
                     and child.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
+                    and not _is_checkpoint_state_dir(child, hermes_home)
                 ):
                     sweep_stack.append((child, False))
         except OSError:

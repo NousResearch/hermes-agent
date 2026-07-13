@@ -382,6 +382,46 @@ class TestTrackForgetQuick:
         for d in ("logs", "memories", "sessions", "cron", "cache"):
             assert (_isolate_env / d).exists(), f"{d}/ should be preserved"
 
+    def test_quick_preserves_checkpoint_store_tree(self, _isolate_env):
+        dg = _load_lib()
+        checkpoint_heads = _isolate_env / "checkpoints" / "store" / "refs" / "hermes"
+        checkpoint_info = _isolate_env / "checkpoints" / "store" / "objects" / "info"
+        plain_empty = _isolate_env / "checkpoints" / "scratch" / "empty-dir"
+
+        for p in (checkpoint_heads, checkpoint_info):
+            p.mkdir(parents=True, exist_ok=True)
+        plain_empty.mkdir(parents=True)
+
+        dg.quick()
+
+        assert checkpoint_heads.exists()
+        assert checkpoint_info.exists()
+        assert not plain_empty.exists()
+
+    def test_quick_preserves_legacy_checkpoint_tree(self, _isolate_env):
+        dg = _load_lib()
+        legacy_repo = _isolate_env / "checkpoints" / "legacy-20260712" / "repo"
+        legacy_heads = legacy_repo / "refs" / "heads"
+        legacy_info = legacy_repo / "objects" / "info"
+        plain_empty = (
+            _isolate_env
+            / "checkpoints"
+            / "legacy-20260712"
+            / "ordinary"
+            / "empty-dir"
+        )
+
+        for p in (legacy_heads, legacy_info):
+            p.mkdir(parents=True, exist_ok=True)
+        (legacy_repo / "HEAD").write_text("ref: refs/heads/main\n")
+        plain_empty.mkdir(parents=True)
+
+        dg.quick()
+
+        assert legacy_heads.exists()
+        assert legacy_info.exists()
+        assert not plain_empty.exists()
+
     def test_quick_does_not_descend_into_protected_top_level_dirs(
         self, _isolate_env, monkeypatch
     ):

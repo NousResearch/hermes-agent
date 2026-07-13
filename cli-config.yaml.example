@@ -716,7 +716,7 @@ agent:
 
   # Standing operator instructions for the coding posture (when Hermes is in a
   # code workspace). Appended to the coding brief as an extra system block, so
-  # you can pin project-wide workflow rules without editing the shipped brief.
+  # you can pin project-wide workflow rules without editing the pushed brief.
   # Accepts a string or a list of strings. Takes effect next session.
   # coding_instructions:
   #   - "For UI work, don't run tsc/lint until I approve the look."

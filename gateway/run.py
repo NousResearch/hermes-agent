@@ -11234,9 +11234,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # compression.hygiene_hard_message_limit.
                 # (#2153)
                 _HARD_MSG_LIMIT = _hyg_hard_msg_limit
-                _needs_compress = (
-                    _approx_tokens >= _compress_token_threshold
-                    or _msg_count >= _HARD_MSG_LIMIT
+                _token_pressure = _approx_tokens >= _compress_token_threshold
+                _count_pressure = _HARD_MSG_LIMIT > 0 and _msg_count >= _HARD_MSG_LIMIT
+                _needs_compress = _token_pressure or _count_pressure
+                # Three-way reason: accurately reflects which threshold(s) fired.
+                # Used to craft an informative notice when message-count was the
+                # (sole or co-) trigger rather than normal token pressure.
+                _hygiene_reason = (
+                    "both" if (_token_pressure and _count_pressure)
+                    else "message_count" if _count_pressure
+                    else "token_pressure"
                 )
 
                 if _needs_compress:
@@ -11401,6 +11408,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         _msg_count, _new_count,
                                         f"{_approx_tokens:,}", f"{_new_tokens:,}",
                                     )
+
+                                    # Notify the user when message count was the sole or
+                                    # co-trigger so the behaviour is not surprising.
+                                    # Pure token-pressure compaction is expected; message-
+                                    # count compaction at low token usage is not obvious.
+                                    if _hygiene_reason in ("message_count", "both"):
+                                        try:
+                                            _tok_pct = min(100, int(_approx_tokens / _hyg_context_length * 100))
+                                            if _hygiene_reason == "both":
+                                                _trigger_desc = (
+                                                    f"your conversation reached {_msg_count} messages "
+                                                    f"(limit: {_HARD_MSG_LIMIT}) and token usage was "
+                                                    f"{_tok_pct}% of the context window."
+                                                )
+                                            else:
+                                                _trigger_desc = (
+                                                    f"your conversation reached {_msg_count} messages "
+                                                    f"(limit: {_HARD_MSG_LIMIT}). Token pressure was "
+                                                    f"only {_tok_pct}% of the context window."
+                                                )
+                                            _notice = (
+                                                f"ℹ️ **Session auto-compacted** — {_trigger_desc}\n"
+                                                f"Earlier context was summarized to keep things running smoothly.\n"
+                                                f"_To adjust the limit: set `compression.hygiene_hard_message_limit` "
+                                                f"in config.yaml. Set to `0` to disable the message-count valve._"
+                                            )
+                                            _hyg_adapter = self.adapters.get(
+                                                _gateway_platform_value(source.platform)
+                                            ) or self.adapters.get(source.platform)
+                                            if _hyg_adapter:
+                                                await _hyg_adapter._send_with_retry(
+                                                    chat_id=source.chat_id,
+                                                    content=_notice,
+                                                    metadata=self._thread_metadata_for_source(
+                                                        source, self._reply_anchor_for_event(event)
+                                                    ),
+                                                )
+                                        except Exception:
+                                            pass
 
                                     if _new_tokens >= _warn_token_threshold:
                                         logger.warning(

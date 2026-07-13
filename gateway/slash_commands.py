@@ -54,6 +54,29 @@ logger = logging.getLogger("gateway.run")
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
+# Default matches the hygiene gate in gateway/run.py.
+_HYGIENE_HARD_MSG_LIMIT_DEFAULT = 5000
+
+
+def _hygiene_msg_limit_from_config(config: dict) -> int:
+    """Return the effective hygiene hard-message limit from a config dict.
+
+    Reads ``compression.hygiene_hard_message_limit`` — the same key the
+    hygiene gate uses — so that /usage proximity always matches the real
+    trigger threshold.  Returns 0 when the limit is explicitly disabled.
+    """
+    comp_cfg = config.get("compression", {})
+    if not isinstance(comp_cfg, dict):
+        return _HYGIENE_HARD_MSG_LIMIT_DEFAULT
+    raw = comp_cfg.get("hygiene_hard_message_limit")
+    if raw is None:
+        return _HYGIENE_HARD_MSG_LIMIT_DEFAULT
+    try:
+        parsed = int(raw)
+        return parsed if parsed >= 0 else _HYGIENE_HARD_MSG_LIMIT_DEFAULT
+    except (TypeError, ValueError):
+        return _HYGIENE_HARD_MSG_LIMIT_DEFAULT
+
 
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
@@ -4040,6 +4063,24 @@ class GatewaySlashCommandsMixin:
             if ctx.compression_count:
                 lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
 
+            # Message count vs hygiene hard limit.  Use raw transcript row count
+            # (same accounting as the hygiene gate) so the % reflects true proximity
+            # even in tool-heavy sessions where filtered user/assistant counts diverge.
+            try:
+                _usage_se = await self.async_session_store.get_or_create_session(source)
+                _usage_hist = await self.async_session_store.load_transcript(_usage_se.session_id)
+                _usage_raw = len(_usage_hist) if _usage_hist else 0
+                _usage_hard_limit = _hygiene_msg_limit_from_config(
+                    self.config if isinstance(self.config, dict) else {}
+                )
+                if _usage_hard_limit > 0:
+                    _usage_pct = min(100, _usage_raw * 100 // _usage_hard_limit)
+                    lines.append(f"Messages: {_usage_raw:,} / {_usage_hard_limit:,} ({_usage_pct}%)")
+                    if _usage_raw >= _usage_hard_limit * 0.9:
+                        lines.append("⚠️ _Approaching message limit — session may auto-compact soon_")
+            except Exception:
+                pass
+
             # Per-category context breakdown (estimated — chars/4 heuristic).
             # Same engine the desktop popover uses (PR #54907). The system
             # prompt / tools / skills / memory slices read off the live agent;
@@ -4073,6 +4114,19 @@ class GatewaySlashCommandsMixin:
                 t("gateway.usage.label_estimated_context", count=f"{approx:,}"),
                 t("gateway.usage.detailed_after_first"),
             ]
+            # Hygiene proximity — raw row count vs hard limit, same as the gate itself.
+            try:
+                _fb_raw = len(history)
+                _fb_hard_limit = _hygiene_msg_limit_from_config(
+                    self.config if isinstance(self.config, dict) else {}
+                )
+                if _fb_hard_limit > 0:
+                    _fb_pct = min(100, _fb_raw * 100 // _fb_hard_limit)
+                    lines.append(f"Messages (raw): {_fb_raw:,} / {_fb_hard_limit:,} ({_fb_pct}%)")
+                    if _fb_raw >= _fb_hard_limit * 0.9:
+                        lines.insert(2, "⚠️ _Approaching message limit — session may auto-compact soon_")
+            except Exception:
+                pass
             if account_lines:
                 lines.append("")
                 lines.extend(account_lines)

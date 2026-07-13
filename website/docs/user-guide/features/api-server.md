@@ -359,6 +359,42 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -d '{"input": "what files changed in the last hour?"}'
 ```
 
+### Durable idempotency for session chat (`Idempotency-Key`)
+
+`POST /api/sessions/{id}/chat` accepts an optional `Idempotency-Key` header (1–200 printable ASCII characters, no whitespace). Because a session-chat turn can run real tools (terminal, APIs, messaging), a blind retry after a timeout or gateway crash could repeat side effects. With a key, the turn runs under a durable **at-most-once** contract:
+
+- The key is reserved in a crash-safe SQLite receipt (`api_idempotency.db` in the profile's Hermes home) **before** the agent is constructed. If the reservation cannot be durably written, the turn does not run.
+- The receipt fingerprints the target session **incarnation** (its persisted creation identity — a deleted-and-recreated session with the same textual ID is a different incarnation), the normalized message, `X-Hermes-Session-Key`, and any `system_message`/`instructions`. Reusing a key with a different payload — or against a recreated session — is rejected; the old session's response can never replay into the new one. The incarnation is re-read from the session store at the receipt decision itself (under the decision lock, after the request body has been parsed, with no awaits before the reservation), so a concurrent delete/recreate mid-request cannot smuggle the old incarnation's answer into the new session. Writers in *other processes* mutating the session store out of band linearize at that decision-time read — the session and receipt databases are separate SQLite files and are deliberately not claimed to share one transaction.
+- On POSIX, owner-only (`0600`) permissions on the receipt database and its SQLite sidecars are **enforced and verified**; if they cannot be, keyed requests fail closed instead of storing responses in a non-private file. (Windows/NTFS has no POSIX mode semantics; this gate applies on POSIX only.)
+- Requests without the header behave exactly as before and never touch the receipt store.
+
+Responses:
+
+| Situation | Response |
+|-----------|----------|
+| First execution | `200` + `X-Hermes-Idempotency: recorded` |
+| Concurrent duplicate (same process, turn still running) | Waits for the in-flight turn, then `200` + `X-Hermes-Idempotency: coalesced` — the agent runs once |
+| Retry after completion (payload retained) | Stored response replayed byte-for-byte, `X-Hermes-Idempotency: replayed`, zero agent invocations |
+| Retry after the replay payload expired (`retention_hours` elapsed, or the response exceeded the persistence byte cap) | `409` with code `idempotency_response_expired` — the turn already executed and is **never re-executed** under this key; read the session transcript for the outcome |
+| Same key, different payload — or same textual session ID after delete/recreate | `409` with code `idempotency_conflict` |
+| Reserved turn found after a gateway restart (outcome unknown) | `409` with code `idempotency_state_uncertain` — **never re-executed automatically** |
+| Receipt store unavailable/corrupt/at capacity/permissions unenforceable | `503` with code `idempotency_store_unavailable`, no agent execution |
+| Key sent to `/chat/stream` | `400` with code `idempotency_not_supported` (the streaming endpoint has no replayable single response, so it rejects keys instead of advertising a false guarantee) |
+
+**Execution evidence never expires automatically — only replay payloads do.** After `retention_hours`, a completed receipt's response bytes are dropped but the receipt itself survives as a compact tombstone, so an aged retry gets `idempotency_response_expired` rather than silently executing the turn a second time. Responses larger than the persistence cap (1 MiB) are still returned to the original caller but are terminalized without replay bytes — same `idempotency_response_expired` on retry. The store is capacity-bounded: when full, requests for **new** keys fail closed (`503`) rather than evicting evidence; existing keys are still served.
+
+The `idempotency_state_uncertain` hold is deliberate: after an ambiguous crash the gateway cannot know whether tools already ran, and operator reconciliation beats duplicated side effects. Inspect the session transcript (`GET /api/sessions/{id}/messages`), then retry with a **new** key once reconciled. Cleanup is explicit only: `running` receipts are never auto-evicted, and the store's `release()` is compare-and-swap on the exact receipt an operator inspected (fingerprint + owner) **and matches `running` receipts only** — it exists solely for dead-owner reconciliation and can never remove terminal evidence, fresh or tombstoned. Reclaiming capacity from terminal receipts goes exclusively through `purge_completed()` (ages older than every client retry window). A completion is likewise compare-and-swap: a stale execution can never overwrite a receipt that was released and re-reserved after it.
+
+`Idempotency-Key` on this endpoint requires `API_SERVER_KEY` to be configured (receipts replay stored responses, so unauthenticated callers must not be able to create or probe them). `/v1/capabilities` advertises support via `"session_chat_idempotency": true`.
+
+```yaml
+# config.yaml
+gateway:
+  api_server:
+    idempotency:
+      retention_hours: 24   # replay-payload window; execution evidence never auto-expires
+```
+
 ## Skills and toolsets discovery
 
 `GET /v1/skills` and `GET /v1/toolsets` let external clients enumerate the agent's capabilities deterministically over REST instead of asking the model. Both are read-only and gated by `API_SERVER_KEY`.
@@ -450,7 +486,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 When CORS is enabled:
 - **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
 - **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
-- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
+- **`Idempotency-Key`** is an allowed request header — on `/v1/chat/completions` and `/v1/responses` it deduplicates via an in-memory 5-minute cache; on `/api/sessions/{id}/chat` it engages the durable at-most-once contract (see [Sessions API](#durable-idempotency-for-session-chat-idempotency-key))
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 

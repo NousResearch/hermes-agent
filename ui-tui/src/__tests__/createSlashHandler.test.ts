@@ -267,6 +267,30 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('keeps typed /skin switches scoped to the active session profile', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/skin noir')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'skin',
+      session_id: 'sid-abc',
+      value: 'noir'
+    })
+  })
+
+  it('keeps typed /busy switches scoped to the active session profile', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/busy queue')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'busy',
+      session_id: 'sid-abc',
+      value: 'queue'
+    })
+  })
+
   it('opens the skills hub locally for bare /skills', () => {
     const ctx = buildCtx()
 
@@ -534,7 +558,7 @@ describe('createSlashHandler', () => {
     ['/reload', 'reload.env', {}],
     ['/stop', 'process.stop', {}],
     ['/fast status', 'config.get', { key: 'fast', session_id: null }],
-    ['/busy status', 'config.get', { key: 'busy' }],
+    ['/busy status', 'config.get', { key: 'busy', session_id: null }],
     ['/indicator', 'config.get', { key: 'indicator' }]
   ])('routes %s through native RPC (no slash worker)', (command, method, params) => {
     const rpc = vi.fn(() => Promise.resolve({}))

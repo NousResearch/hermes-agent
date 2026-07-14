@@ -1960,7 +1960,9 @@ def _save_cfg(cfg: dict):
 
     from hermes_cli.config import atomic_config_write
 
-    path = _hermes_home / "config.yaml"
+    override = get_hermes_home_override()
+    home = override if isinstance(override, str) and override else _hermes_home
+    path = Path(home) / "config.yaml"
     atomic_config_write(path, cfg)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
@@ -11272,6 +11274,30 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"project": proj})
     except Exception as e:
         return _err(rid, 5061, str(e))
+_config_set_unscoped = _methods.get("config.set")
+
+
+def _config_set_profile_scoped(rid, params: dict) -> dict:
+    if _config_set_unscoped is None:
+        return _err(rid, 5001, "config.set handler unavailable")
+    session = (
+        _sessions.get(params.get("session_id", ""))
+        if isinstance(params, dict)
+        else None
+    )
+    profile_home = session.get("profile_home") if isinstance(session, dict) else None
+    if not profile_home:
+        return _config_set_unscoped(rid, params)
+
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        return _config_set_unscoped(rid, params)
+    finally:
+        reset_hermes_home_override(token)
+
+
+if _config_set_unscoped is not None:
+    _methods["config.set"] = _config_set_profile_scoped
 
 
 @method("config.get")

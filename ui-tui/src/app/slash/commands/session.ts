@@ -378,12 +378,12 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'skin' })
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'skin', session_id: ctx.sid })
           .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`skin: ${r.value || 'default'}`)))
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'skin', value: arg })
+        .rpc<ConfigSetResponse>('config.set', { key: 'skin', session_id: ctx.sid, value: arg })
         .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`skin → ${r.value}`)))
     }
   },
@@ -532,7 +532,7 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!mode || mode === 'status') {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy', session_id: ctx.sid })
           .then(
             ctx.guarded<ConfigGetValueResponse>(r => {
               const current = r.value || 'interrupt'
@@ -543,7 +543,7 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
+        .rpc<ConfigSetResponse>('config.set', { key: 'busy', session_id: ctx.sid, value: mode })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value || mode

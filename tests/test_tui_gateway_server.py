@@ -2896,6 +2896,55 @@ def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatc
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
 
+def test_config_set_writes_resumed_profile_config(tmp_path, monkeypatch):
+    """config.set in a resumed remote-profile session must not mutate launch config."""
+    import yaml
+
+    launch_home = tmp_path / "default"
+    profile_home = tmp_path / "profiles" / "worker"
+    launch_home.mkdir()
+    profile_home.mkdir(parents=True)
+    launch_cfg = launch_home / "config.yaml"
+    profile_cfg = profile_home / "config.yaml"
+    launch_cfg.write_text(
+        yaml.safe_dump({"display": {"busy_input_mode": "interrupt"}}),
+        encoding="utf-8",
+    )
+    profile_cfg.write_text(
+        yaml.safe_dump({"display": {"busy_input_mode": "steer"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+    server._sessions["sid"] = _session(profile_home=str(profile_home))
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "busy", "value": "queue"},
+            }
+        )
+
+        assert resp["result"]["value"] == "queue"
+        assert (
+            yaml.safe_load(profile_cfg.read_text())["display"]["busy_input_mode"]
+            == "queue"
+        )
+        assert (
+            yaml.safe_load(launch_cfg.read_text())["display"]["busy_input_mode"]
+            == "interrupt"
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+
+
 def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
     writes = []
     emits = []

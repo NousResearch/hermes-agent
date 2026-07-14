@@ -7,7 +7,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
@@ -66,6 +66,7 @@ import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
 import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
 import type { ChatBarState } from './composer/types'
+import { shouldShowChatHeader, windowTitleForChat } from './header-state'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
@@ -126,6 +127,10 @@ function ChatHeader({
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
 
+  useEffect(() => {
+    document.title = windowTitleForChat(title)
+  }, [title])
+
   // Pins live on the durable lineage-root id, but selectedSessionId is the live
   // (tip) id — resolve through the loaded row so the menu reflects the pin
   // state after auto-compression rotates the id.
@@ -135,10 +140,10 @@ function ChatHeader({
       ? pinnedSessionIds.includes(selectedSessionId)
       : false
 
-  // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
-  // are compact side panels — they drop the session-actions header + border
-  // entirely. A brand-new draft has nothing to pin/delete/rename either.
-  if (isSecondaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
+  // Session pop-outs should mirror the primary window title/action affordance so
+  // users can identify and rename each OS window. Only a brand-new draft has
+  // nothing to pin/delete/rename.
+  if (!shouldShowChatHeader({ activeSessionId, isRoutedSessionView, selectedSessionId })) {
     return null
   }
 
@@ -156,6 +161,7 @@ function ChatHeader({
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
           onPin={selectedSessionId ? onToggleSelectedPin : undefined}
           pinned={selectedIsPinned}
+          profile={activeStoredSession?.profile}
           sessionId={selectedSessionId || activeSessionId || ''}
           sideOffset={8}
           title={title}

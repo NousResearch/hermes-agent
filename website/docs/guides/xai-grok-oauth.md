@@ -6,7 +6,7 @@ description: "Sign in with your SuperGrok or X Premium+ subscription to use Grok
 
 # xAI Grok OAuth (SuperGrok / X Premium+)
 
-Hermes Agent supports xAI Grok through a browser-based OAuth login flow against [accounts.x.ai](https://accounts.x.ai), using either a **SuperGrok subscription** ([grok.com](https://x.ai/grok)) or an **X Premium+ subscription** (linked X account). No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
+Hermes Agent supports xAI Grok through a browser-based OAuth device-code login flow against [accounts.x.ai](https://accounts.x.ai), using either a **SuperGrok subscription** ([grok.com](https://x.ai/grok)) or an **X Premium+ subscription** (linked X account). No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
 
 When you sign in with an X account that has Premium+, xAI automatically links the subscription status to your xAI session, so the OAuth flow works the same as it does for direct SuperGrok subscribers.
 
@@ -20,9 +20,9 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 |------|-------|
 | Provider ID | `xai-oauth` |
 | Display name | xAI Grok OAuth (SuperGrok / X Premium+) |
-| Auth type | Browser OAuth 2.0 PKCE (loopback callback) |
+| Auth type | Browser OAuth 2.0 device code |
 | Transport | xAI Responses API (`codex_responses`) |
-| Default model | `grok-4.3` |
+| Default model | `grok-build-0.1` |
 | Endpoint | `https://api.x.ai/v1` |
 | Auth server | `https://accounts.x.ai` |
 | Requires env var | No (`XAI_API_KEY` is **not** used for this provider) |
@@ -33,7 +33,7 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 - Python 3.9+
 - Hermes Agent installed
 - An active **SuperGrok** subscription on your xAI account, **or** an **X Premium+** subscription on the X account you sign in with (xAI links the subscription automatically)
-- A browser available on the local machine (or use `--no-browser` for remote sessions)
+- A browser available anywhere you can open the printed verification URL
 
 :::warning xAI may restrict OAuth API access by tier
 xAI's backend enforces its own allowlist on the OAuth API surface and has been seen to reject standard SuperGrok subscribers with `HTTP 403` (see issue [#26847](https://github.com/NousResearch/hermes-agent/issues/26847)) even though the in-app subscription is active. If OAuth login succeeds in the browser but inference returns 403, set `XAI_API_KEY` and switch to the API-key path (`provider: xai`) — that surface is not subject to the same gating today.
@@ -45,9 +45,9 @@ xAI's backend enforces its own allowlist on the OAuth API surface and has been s
 # Launch the provider and model picker
 hermes model
 # → Select "xAI Grok OAuth (SuperGrok / X Premium+)" from the provider list
-# → Hermes opens your browser to accounts.x.ai
-# → Approve access in the browser
-# → Pick a model (grok-4.3 is at the top)
+# → Hermes opens or prints an accounts.x.ai verification URL
+# → Enter the displayed code if prompted, then approve access in the browser
+# → Pick a model (grok-build-0.1 is at the top)
 # → Start chatting
 
 hermes
@@ -65,43 +65,21 @@ hermes auth add xai-oauth
 
 ### Remote / headless sessions
 
-On servers, containers, or SSH sessions where no browser is available, Hermes detects the remote environment and prints the authorization URL instead of opening a browser.
-
-**Important:** the loopback listener still runs on the remote machine at `127.0.0.1:56121`. The xAI redirect needs to reach *that* listener, so opening the URL on your laptop will fail (`Could not establish connection. We couldn't reach your app.`) unless you forward the port:
+On servers, containers, browser-only consoles (Cloud Shell, Codespaces, EC2 Instance Connect), or SSH sessions where Hermes cannot open a browser locally, Hermes prints the xAI verification URL and user code. Open the URL in any browser on your laptop or in the cloud console, enter the code if prompted, and Hermes will keep polling until xAI approves the login. No SSH tunnel or local callback listener is required.
 
 ```bash
-# In a separate terminal on your local machine:
-ssh -N -L 56121:127.0.0.1:56121 user@remote-host
-
-# Then in your SSH session on the remote machine:
 hermes auth add xai-oauth --no-browser
-# Open the printed authorize URL in your local browser.
+# Open the printed verification URL in your browser.
 ```
 
-Through a jump box / bastion: add `-J jump-user@jump-host`.
-
-See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) for the full step-by-step, including ProxyJump chains, mosh/tmux, and ControlMaster gotchas.
-
-### Browser-only remotes (Cloud Shell, Codespaces, EC2 Instance Connect)
-
-If you don't have a regular SSH client (e.g. you're running Hermes inside GCP Cloud Shell, GitHub Codespaces, AWS EC2 Instance Connect, Gitpod, or another browser-based console), the `ssh -L` recipe above isn't available. Use `--manual-paste` instead — Hermes skips the loopback listener and lets you paste the failed callback URL straight from your browser:
-
-```bash
-hermes auth add xai-oauth --manual-paste
-# Or via the model picker:
-hermes model --manual-paste
-```
-
-See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md#browser-only-remote-cloud-shell--codespaces--ec2-instance-connect) for the full walkthrough. Regression fix for [#26923](https://github.com/NousResearch/hermes-agent/issues/26923).
-
-If the consent page renders the authorization code directly on the page (xAI's current behavior on browser-based consoles) instead of redirecting to your `127.0.0.1:56121/callback`, paste **just the bare code value** at the `Callback URL:` prompt — Hermes accepts the full URL, a bare `?code=...&state=...` query fragment, or a bare code interchangeably.
+The same device-code flow applies when you sign in from the web dashboard or the desktop app: Hermes shows the verification URL and user code, then polls in the background until you approve access.
 
 ## How the Login Works
 
-1. Hermes opens your browser to `accounts.x.ai`.
-2. You sign in (or confirm your existing session) and approve access.
-3. xAI redirects back to Hermes and the tokens are saved to `~/.hermes/auth.json`.
-4. From then on, Hermes refreshes the access token in the background — you stay signed in until you `hermes auth remove xai-oauth` or revoke access from your xAI account settings.
+1. Hermes requests a device code from `auth.x.ai`.
+2. You open the verification URL, sign in, enter the displayed code if prompted, and approve access.
+3. Hermes polls xAI until approval, then saves tokens to `~/.hermes/auth.json`.
+4. From then on, Hermes refreshes the access token in the background — you stay signed in until you `hermes auth logout xai-oauth` or revoke access from your xAI account settings.
 
 ## Checking Login Status
 
@@ -116,13 +94,13 @@ The `◆ Auth Providers` section will show the current state of every provider, 
 ```bash
 hermes model
 # → Select "xAI Grok OAuth (SuperGrok / X Premium+)"
-# → Pick from the model list (grok-4.3 is pinned to the top)
+# → Pick from the model list (grok-build-0.1 is pinned to the top)
 ```
 
 Or set the model directly:
 
 ```bash
-hermes config set model.default grok-4.3
+hermes config set model.default grok-build-0.1
 hermes config set model.provider xai-oauth
 ```
 
@@ -132,7 +110,7 @@ After login, `~/.hermes/config.yaml` will contain:
 
 ```yaml
 model:
-  default: grok-4.3
+  default: grok-build-0.1
   provider: xai-oauth
   base_url: https://api.x.ai/v1
 ```
@@ -176,7 +154,8 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 
 | Tool | Model | Notes |
 |------|-------|-------|
-| Chat | `grok-4.3` | Default; auto-selected when you log in via OAuth |
+| Chat | `grok-build-0.1` | Default; auto-selected when you log in via OAuth |
+| Chat | `grok-4.3` | Previous default |
 | Chat | `grok-4.20-0309-reasoning` | Reasoning variant |
 | Chat | `grok-4.20-0309-non-reasoning` | Non-reasoning variant |
 | Chat | `grok-4.20-multi-agent-0309` | Multi-agent variant |
@@ -186,7 +165,7 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 | Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |
 | TTS | (default voice) | xAI `/v1/tts` endpoint |
 
-The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-4.3` is always pinned to the top of the list.
+The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-build-0.1` is always pinned to the top of the list.
 
 ## Environment Variables
 
@@ -208,29 +187,19 @@ When the refresh failure is terminal (HTTP 4xx, `invalid_grant`, revoked grant, 
 
 ### Authorization timed out
 
-The loopback listener has a finite expiry window (default 180 s). If you don't approve the login in time, Hermes raises a timeout error.
+Device-code approval has a finite expiry window (xAI sets `expires_in` on the device-code response, typically on the order of tens of minutes). If you do not approve the login in time, Hermes raises a timeout error.
 
 **Fix:** re-run `hermes auth add xai-oauth` (or `hermes model`). The flow starts fresh.
 
-### State mismatch (possible CSRF)
-
-Hermes detected that the `state` value returned by the authorization server doesn't match what it sent.
-
-**Fix:** re-run the login. If it persists, check for a proxy or redirect that is modifying the OAuth response.
-
 ### Logging in from a remote server
 
-On SSH or container sessions Hermes prints the authorization URL instead of opening a browser. The loopback callback listener still binds `127.0.0.1:56121` on the remote host — your laptop's browser can't reach it without an SSH local-forward:
+On SSH or container sessions Hermes prints the verification URL and user code instead of opening a browser. Open that URL in a browser on your laptop or in a cloud console — no SSH port forward is needed for xAI Grok OAuth.
 
 ```bash
-# Local machine, separate terminal:
-ssh -N -L 56121:127.0.0.1:56121 user@remote-host
-
-# Remote machine:
 hermes auth add xai-oauth --no-browser
 ```
 
-Full walkthrough (jump boxes, mosh/tmux, port conflicts): [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md).
+For loopback-redirect providers (Spotify, MCP servers), see [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md).
 
 ### HTTP 403 after a successful login (tier / entitlement)
 
@@ -265,7 +234,7 @@ This clears both the singleton OAuth entry in `auth.json` and any credential-poo
 
 ## See Also
 
-- [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — required reading if Hermes is on a different machine than your browser
+- [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — SSH tunnels for loopback-redirect providers (Spotify, MCP); xAI uses device code and does not need a tunnel
 - [AI Providers reference](../integrations/providers.md)
 - [Environment Variables](../reference/environment-variables.md)
 - [Configuration](../user-guide/configuration.md)

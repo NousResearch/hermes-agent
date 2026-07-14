@@ -508,6 +508,26 @@ class TestBedrockModelIdDetection:
 class TestAuxiliaryClientBedrockResolution:
     """Verify resolve_provider_client handles Bedrock's aws_sdk auth type."""
 
+    @pytest.fixture(autouse=True)
+    def _clean_aws_env(self, monkeypatch):
+        """Strip every AWS auth env var so each test sets exactly what it needs.
+
+        Without this, a user-level ``AWS_BEARER_TOKEN_BEDROCK`` (which takes
+        priority over IAM keys in ``resolve_aws_auth_env_var``) routes the
+        client to ``BedrockConverseAuxiliaryClient`` and breaks the
+        ``isinstance(client, AnthropicAuxiliaryClient)`` assertions below.
+        """
+        for key in (
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_PROFILE",
+            "AWS_DEFAULT_REGION",
+            "AWS_REGION",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
     def test_bedrock_returns_client_with_credentials(self, monkeypatch):
         """With valid AWS credentials, Bedrock should return a usable client."""
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")

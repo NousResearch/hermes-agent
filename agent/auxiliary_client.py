@@ -1366,6 +1366,107 @@ class _AnthropicChatShim:
         self.completions = adapter
 
 
+class _BedrockConverseAdapter:
+    """OpenAI-client-compatible adapter for AWS Bedrock Converse API.
+
+    Used when the user authenticates via ``AWS_BEARER_TOKEN_BEDROCK`` — the
+    ``anthropic.AnthropicBedrock`` SDK only accepts IAM credentials from the
+    boto3 credential chain and raises ``RuntimeError: could not resolve
+    credentials from session`` on bearer tokens.  The Converse API (called via
+    boto3, which DOES support bearer tokens natively) supports all Bedrock
+    models including Claude Opus/Sonnet/Haiku, so we route auxiliary tasks
+    (vision, summarization, etc.) through it instead.
+
+    Mirrors the dual-path routing in
+    ``hermes_cli.runtime_provider._build_runtime_provider`` for the main
+    model loop — see that function for the full rationale.
+    """
+
+    def __init__(self, region: str, model: str):
+        self._region = region
+        self._model = model
+
+    def create(self, **kwargs) -> Any:
+        from agent.bedrock_adapter import call_converse
+
+        messages = kwargs.get("messages", [])
+        model = kwargs.get("model", self._model)
+        tools = kwargs.get("tools")
+        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 2000
+        temperature = kwargs.get("temperature")
+        top_p = kwargs.get("top_p")
+        stop_sequences = kwargs.get("stop") or kwargs.get("stop_sequences")
+        if isinstance(stop_sequences, str):
+            stop_sequences = [stop_sequences]
+
+        # call_converse() already returns an OpenAI-compatible SimpleNamespace
+        # with .choices / .usage / .model — same shape the anthropic adapter
+        # produces, so callers that consume aux responses don't need to care
+        # which Bedrock auth path was taken.
+        return call_converse(
+            region=self._region,
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop_sequences=stop_sequences,
+        )
+
+
+class _AsyncBedrockConverseAdapter:
+    def __init__(self, sync_adapter: _BedrockConverseAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _BedrockConverseChatShim:
+    def __init__(self, adapter: Any):
+        self.completions = adapter
+
+
+class BedrockConverseAuxiliaryClient:
+    """OpenAI-client-compatible wrapper that drives AWS Bedrock Converse API
+    via boto3.  Used when ``AWS_BEARER_TOKEN_BEDROCK`` is set; for IAM /
+    SSO / instance-profile auth the legacy ``AnthropicAuxiliaryClient``
+    (backed by ``anthropic.AnthropicBedrock``) is still used because it
+    gives full feature parity with the main model loop's anthropic_messages
+    path (prompt caching, thinking budgets, etc.).
+    """
+
+    def __init__(self, region: str, model: str, base_url: str):
+        self._region = region
+        self._model = model
+        adapter = _BedrockConverseAdapter(region, model)
+        self.chat = _BedrockConverseChatShim(adapter)
+        self.api_key = "aws-sdk"
+        self.base_url = base_url
+        # For cache-eviction parity with other aux clients: poisoned-client
+        # eviction in resolve_provider_client compares ``_real_client`` by
+        # identity, so expose a stable handle.  boto3 clients are cached
+        # per-region inside bedrock_adapter, so this is a thin wrapper.
+        self._real_client = adapter
+
+    def close(self):
+        # boto3 clients are cached per-region in bedrock_adapter; nothing
+        # to close here.  Provided for symmetry with other aux clients.
+        return None
+
+
+class AsyncBedrockConverseAuxiliaryClient:
+    def __init__(self, sync_wrapper: "BedrockConverseAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncBedrockConverseAdapter(sync_adapter)
+        self.chat = _BedrockConverseChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+        self._real_client = sync_wrapper._real_client
+
+
 class AnthropicAuxiliaryClient:
     """OpenAI-client-compatible wrapper over a native Anthropic client."""
 
@@ -3111,6 +3212,13 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         "unrecognized request argument",
         "unrecognized parameter",
         "invalid parameter",
+        # AWS Bedrock Converse phrasing for newer Anthropic models
+        # ("`temperature` is deprecated for this model.") — without this the
+        # reactive-retry branch never fires and the boto3 ValidationException
+        # is swallowed by downstream wrappers, surfacing as an empty
+        # ChatCompletion with all-None fields. Ref: aux vision broken on
+        # Bedrock Opus 4.7 / Sonnet 4.5 when temperature is passed.
+        "is deprecated",
     ))
 
 
@@ -4350,6 +4458,11 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, BedrockConverseAuxiliaryClient):
+        # Bedrock Converse (bearer-token auth) has no OpenAI-wire equivalent —
+        # wrap the sync client so async callers run it via
+        # asyncio.to_thread, never AsyncOpenAI against the Bedrock URL.
+        return AsyncBedrockConverseAuxiliaryClient(sync_client), model
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
@@ -5089,12 +5202,25 @@ def resolve_provider_client(
                 else (client, final_model))
 
     elif pconfig.auth_type == "aws_sdk":
-        # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
-        # SDK (prompt caching, thinking); non-Claude models use Converse API.
+        # AWS SDK providers (Bedrock).  Two auth paths:
+        #
+        #   1. AWS_BEARER_TOKEN_BEDROCK → boto3 Converse API directly.  The
+        #      ``anthropic.AnthropicBedrock`` SDK does NOT support bearer
+        #      tokens (it raises ``RuntimeError: could not resolve credentials
+        #      from session`` because its auth helper only consults the boto3
+        #      credential chain for IAM keys, not bearer tokens), so we route
+        #      through Converse instead.  This mirrors the dual-path routing
+        #      in ``hermes_cli.runtime_provider`` for the main model loop.
+        #
+        #   2. IAM credentials (env vars / SSO / instance profile) → Claude
+        #      models use the AnthropicBedrock SDK for full feature parity
+        #      (prompt caching, thinking budgets, adaptive thinking); non-Claude
+        #      models (Nova, DeepSeek, gpt-oss, etc.) use the Converse shim.
         try:
             from agent.bedrock_adapter import (
                 has_aws_credentials,
                 is_anthropic_bedrock_model,
+                resolve_aws_auth_env_var,
                 resolve_bedrock_region,
             )
             from agent.anthropic_adapter import build_anthropic_bedrock_client
@@ -5110,9 +5236,22 @@ def resolve_provider_client(
 
         region = resolve_bedrock_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
-        final_model = _normalize_resolved_model(model or default_model, provider)
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
         base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
 
+        # Bearer-token path: boto3 Converse via BedrockConverseAuxiliaryClient.
+        # AnthropicBedrock SDK can't use bearer tokens, so route both Claude
+        # and non-Claude models through Converse here.
+        if resolve_aws_auth_env_var() == "AWS_BEARER_TOKEN_BEDROCK":
+            client = BedrockConverseAuxiliaryClient(region, final_model, base_url)
+            logger.debug(
+                "resolve_provider_client: bedrock converse (%s, %s, bearer-token)",
+                final_model, region,
+            )
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
+
+        # IAM / SSO path: Claude → AnthropicBedrock SDK; non-Claude → Converse shim.
         if is_anthropic_bedrock_model(final_model):
             try:
                 real_client = build_anthropic_bedrock_client(region)
@@ -5124,13 +5263,12 @@ def resolve_provider_client(
                 real_client, final_model, api_key="aws-sdk",
                 base_url=base_url,
             )
-            logger.debug("resolve_provider_client: bedrock anthropic (%s, %s)",
+            logger.debug("resolve_provider_client: bedrock anthropic-sdk (%s, %s)",
                          final_model, region)
         else:
             client = BedrockAuxiliaryClient(region, final_model)
             logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
                          final_model, region)
-
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -6029,12 +6167,41 @@ def _resolve_task_provider_model(
     if base_url and _preserve_provider_with_base_url(provider):
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if base_url:
+        # Explicit known provider must win over the "base_url → custom"
+        # heuristic. When ``resolve_vision_provider_client`` (or any other
+        # caller) re-resolves with ``provider="bedrock"`` and a Bedrock
+        # base_url + bearer token, forcing ``"custom"`` here routes the
+        # request through the OpenAI HTTP client to ``/chat/completions``
+        # on a Bedrock host — Bedrock 200s with an empty body and the
+        # response surfaces as ``ChatCompletion(id=None, choices=None,
+        # ...)``. Same trap for ``anthropic``, ``nous``, ``openai-codex``,
+        # any provider whose adapter is incompatible with the OpenAI
+        # chat-completions wire.
+        if provider and provider not in {"auto", "custom"}:
+            return provider, resolved_model, base_url, api_key, resolved_api_mode
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
+        #
+        # Explicit known provider wins over the base_url+api_key heuristic.
+        # When the user (or `hermes auxiliary` setup) writes
+        #
+        #     auxiliary.vision:
+        #         provider: bedrock
+        #         base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+        #         api_key: <AWS_BEARER_TOKEN_BEDROCK>
+        #
+        # the `provider: bedrock` directive must NOT be silently rewritten to
+        # `custom`. If we hand the bedrock URL + bearer token to the generic
+        # OpenAI-wire client, boto3-only auth and the Converse-vs-OpenAI wire
+        # mismatch produce a 200 with empty body that surfaces downstream as
+        # `ChatCompletion(id=None, choices=None, ...)`. Same logic applies to
+        # any other named provider (`anthropic`, `nous`, `openai-codex`, ...).
+        if cfg_provider and cfg_provider not in {"auto", "custom"}:
+            return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_base_url and cfg_api_key:
             # Both base_url and api_key explicitly set → custom endpoint.
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode

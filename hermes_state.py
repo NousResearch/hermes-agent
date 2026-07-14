@@ -4166,14 +4166,25 @@ class SessionDB:
         reached one end of the session.
 
         Returns an empty window when ``around_message_id`` is not a real id in
-        ``session_id`` — callers decide how to surface that.
+        ``session_id``, or when the anchor is not search-visible (rewound /
+        undo rows with ``active=0, compacted=0``). Callers decide how to
+        surface that.
+
+        Visibility matches :meth:`search_messages`: live rows (``active=1``)
+        and compaction-archived rows (``compacted=1``) are included;
+        rewind/undo rows stay hidden. Discovery hands FTS hits to
+        :meth:`get_anchored_view`, so this predicate must stay aligned.
         """
         if window < 0:
             window = 0
+        # Same discoverability contract as search_messages() — do not use
+        # active=1 alone or compacted history becomes invisible after archive.
+        _visible = "(active = 1 OR compacted = 1)"
         with self._lock:
-            # Confirm the anchor exists in this session.
+            # Confirm the anchor exists and is search-visible in this session.
             anchor_exists = self._conn.execute(
-                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                f"SELECT 1 FROM messages WHERE id = ? AND session_id = ? "
+                f"AND {_visible} LIMIT 1",
                 (around_message_id, session_id),
             ).fetchone()
             if not anchor_exists:
@@ -4182,15 +4193,15 @@ class SessionDB:
             # Two queries: anchor + before (DESC, take window+1), and after
             # (ASC, take window). Final order is id ASC.
             before_rows = self._conn.execute(
-                "SELECT * FROM messages "
-                "WHERE session_id = ? AND id <= ? "
-                "ORDER BY id DESC LIMIT ?",
+                f"SELECT * FROM messages "
+                f"WHERE session_id = ? AND id <= ? AND {_visible} "
+                f"ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1),
             ).fetchall()
             after_rows = self._conn.execute(
-                "SELECT * FROM messages "
-                "WHERE session_id = ? AND id > ? "
-                "ORDER BY id ASC LIMIT ?",
+                f"SELECT * FROM messages "
+                f"WHERE session_id = ? AND id > ? AND {_visible} "
+                f"ORDER BY id ASC LIMIT ?",
                 (session_id, around_message_id, window),
             ).fetchall()
 
@@ -4301,9 +4312,12 @@ class SessionDB:
                     role_clause = f" AND role IN ({role_placeholders})"
                     role_params = list(keep_roles)
 
+                # Match search_messages / get_messages_around visibility:
+                # include live + compaction-archived; exclude rewind/undo.
+                _visible = "(active = 1 OR compacted = 1)"
                 bookend_start_rows = self._conn.execute(
                     f"SELECT * FROM messages "
-                    f"WHERE session_id = ? AND id < ?{role_clause} "
+                    f"WHERE session_id = ? AND id < ? AND {_visible}{role_clause} "
                     f"AND length(content) > 0 "
                     f"ORDER BY id ASC LIMIT ?",
                     (session_id, window_min_id, *role_params, bookend),
@@ -4311,7 +4325,7 @@ class SessionDB:
 
                 bookend_end_rows = self._conn.execute(
                     f"SELECT * FROM messages "
-                    f"WHERE session_id = ? AND id > ?{role_clause} "
+                    f"WHERE session_id = ? AND id > ? AND {_visible}{role_clause} "
                     f"AND length(content) > 0 "
                     f"ORDER BY id DESC LIMIT ?",
                     (session_id, window_max_id, *role_params, bookend),

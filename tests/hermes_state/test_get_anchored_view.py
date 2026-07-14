@@ -159,3 +159,45 @@ class TestSessionIsolation:
         # All bookend messages should have session_id = s1 (or session_id col)
         for m in view["bookend_start"] + view["bookend_end"]:
             assert m.get("session_id") == "s1"
+
+
+class TestSearchVisibility:
+    """Bookends + window must honor search_messages visibility."""
+
+    def test_rewound_rows_excluded_from_window_and_bookends(self, db):
+        ids = _seed_long_session(db, n=20)
+        # Soft-delete the tail (undo/rewind): active=0, compacted=0.
+        db.rewind_to_message("s1", ids[12])
+        view = db.get_anchored_view("s1", ids[8], window=2, bookend=3)
+        visible_ids = {
+            m["id"]
+            for m in view["window"] + view["bookend_start"] + view["bookend_end"]
+        }
+        for hidden in ids[12:]:
+            assert hidden not in visible_ids
+        assert ids[8] in visible_ids
+
+    def test_inactive_rewind_anchor_returns_empty_view(self, db):
+        ids = _seed_long_session(db, n=12)
+        # rewind_to_message requires a user-role target (even indices).
+        db.rewind_to_message("s1", ids[6])
+        view = db.get_anchored_view("s1", ids[8], window=3, bookend=3)
+        assert view["window"] == []
+        assert view["bookend_start"] == []
+        assert view["bookend_end"] == []
+
+    def test_compacted_history_stays_in_window_and_bookends(self, db):
+        ids = _seed_long_session(db, n=20)
+        db.archive_and_compact(
+            "s1",
+            [{"role": "user", "content": "compacted summary of the session"}],
+        )
+        # Anchor on pre-compaction row — still discoverable via compacted=1.
+        view = db.get_anchored_view("s1", ids[10], window=2, bookend=3)
+        window_ids = [m["id"] for m in view["window"]]
+        assert ids[10] in window_ids
+        # Bookends should draw from compacted prose at the session head/tail
+        # of the archived range (not only the new summary).
+        assert len(view["bookend_start"]) > 0
+        start_ids = [m["id"] for m in view["bookend_start"]]
+        assert start_ids[0] == ids[0]

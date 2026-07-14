@@ -7467,7 +7467,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _pending_clarify is not None:
             _raw_clarify_reply = (event.text or "").strip()
             _attempted_voice_clarify = False
-            if not _raw_clarify_reply:
+            if not _raw_clarify_reply.startswith("/"):
                 _media_urls = getattr(event, "media_urls", None) or []
                 _media_types = getattr(event, "media_types", None) or []
                 _audio_paths = []
@@ -7485,6 +7485,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _audio_paths.append(_path)
                 if _audio_paths:
                     _attempted_voice_clarify = True
+                    # Voice events may expose a cached filename in ``text``.
+                    # Never let that filename resolve the pending clarify if
+                    # transcription fails or returns no usable transcript.
+                    _raw_clarify_reply = ""
                     # Call _enrich_message_with_transcription directly rather than
                     # the canonical _prepare_inbound_message_text: the clarify
                     # answer must be the RAW transcript, not the agent-facing
@@ -7492,20 +7496,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # its native-image-buffer side effect for a reply we only read
                     # as text.
                     try:
-                        _enriched, _transcripts = await self._enrich_message_with_transcription(
+                        _, _transcripts = await self._enrich_message_with_transcription(
                             "", _audio_paths,
                         )
-                        # Clarify needs the answer itself, not the agent-facing
-                        # wrapper text.  Keep wrappers only as fallback if STT
-                        # could not produce a clean transcript.
-                        _raw_clarify_reply = "\n".join(
+                        _clean_transcripts = [
                             tx.strip() for tx in _transcripts if tx and tx.strip()
-                        ).strip() or (_enriched or "").strip()
-                        if _transcripts:
+                        ]
+                        _raw_clarify_reply = "\n".join(_clean_transcripts)
+                        if _clean_transcripts:
                             _echo_adapter = self.adapters.get(source.platform)
                             _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                             if _echo_adapter:
-                                for _tx in _transcripts:
+                                for _tx in _clean_transcripts:
                                     try:
                                         await _echo_adapter.send(
                                             source.chat_id,

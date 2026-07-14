@@ -911,7 +911,13 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: overlay.sudo.requestId }, () => {
+      const requestId = overlay.sudo.requestId
+
+      if (!pw) {
+        patchOverlayState({ sudo: null })
+      }
+
+      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
@@ -925,7 +931,13 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('secret.respond', { request_id: overlay.secret.requestId, value }, () => {
+      const requestId = overlay.secret.requestId
+
+      if (!value) {
+        patchOverlayState({ secret: null })
+      }
+
+      return respondWith('secret.respond', { request_id: requestId, value }, () => {
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })

@@ -671,7 +671,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "approvals.mode": {
         "type": "select",
         "description": "Dangerous command approval mode",
-        "options": ["ask", "yolo", "deny"],
+        "options": ["manual", "smart", "off"],
     },
     "context.engine": {
         "type": "select",
@@ -696,7 +696,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",
-        "options": ["", "low", "medium", "high"],
+        "options": ["", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     },
     "updates.non_interactive_local_changes": {
         "type": "select",
@@ -1023,19 +1023,42 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
        ``normalize_model_for_provider`` (e.g. ``anthropic/claude-opus-4.6``
        on native anthropic → ``claude-opus-4-6``).
     """
+    from hermes_cli.config import get_compatible_custom_providers
     from hermes_cli.models import _KNOWN_PROVIDER_NAMES, normalize_provider
     from hermes_cli.model_normalize import normalize_model_for_provider
+    from hermes_cli.providers import resolve_custom_provider, resolve_user_provider
 
     prov_in = (provider or "").strip()
     model_in = (model or "").strip()
     canonical = normalize_provider(prov_in)
+
+    # User-declared providers are real routing targets, not analytics vendor
+    # labels. Resolve them before the unknown-vendor fallback. ``providers:``
+    # keeps its declared bare slug; ``custom_providers:`` canonicalizes both a
+    # bare display name and ``custom:<name>`` to the durable custom slug.
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    user_providers = cfg.get("providers") if isinstance(cfg, dict) else None
+    user_provider = resolve_user_provider(
+        prov_in, user_providers if isinstance(user_providers, dict) else {}
+    )
+    custom_provider = resolve_custom_provider(
+        prov_in,
+        get_compatible_custom_providers(cfg) if isinstance(cfg, dict) else [],
+    )
+    if user_provider is not None:
+        return user_provider.id, model_in
+    if custom_provider is not None:
+        return custom_provider.id, model_in
 
     if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.
         try:
-            cur_cfg = load_config().get("model", {})
+            cur_cfg = cfg.get("model", {})
             cur_provider = (
                 str(cur_cfg.get("provider", "") or "").strip().lower()
                 if isinstance(cur_cfg, dict) else ""
@@ -2308,6 +2331,11 @@ async def git_worktrees_route(path: str):
 @app.get("/api/git/branches")
 async def git_branches_route(path: str):
     return {"branches": await _git_op(_web_git.branch_list, _git_path(path))}
+
+
+@app.get("/api/git/base-branches")
+async def git_base_branches_route(path: str):
+    return {"branches": await _git_op(_web_git.base_branch_list, _git_path(path))}
 
 
 @app.get("/api/git/review/list")
@@ -9546,6 +9574,34 @@ class BulkDeleteSessions(BaseModel):
     profile: Optional[str] = None
 
 
+class SessionImport(BaseModel):
+    sessions: List[Dict[str, Any]]
+    profile: Optional[str] = None
+
+
+# Keep the dashboard import endpoint stream-safe: FastAPI otherwise parses and
+# buffers an arbitrarily large JSON body before SessionDB can enforce its own
+# per-session and transaction-work limits.
+_SESSION_IMPORT_MAX_BYTES = 25 * 1024 * 1024
+
+
+async def _read_session_import_body(request: Request) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > _SESSION_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Session import payload is too large")
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    db = _open_session_db_for_profile(profile)
+    try:
+        return db.import_sessions(sessions)
+    finally:
+        db.close()
+
+
 @app.post("/api/sessions/bulk-delete")
 async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     """Delete every session in ``body.ids`` in a single DB transaction.
@@ -9594,6 +9650,32 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
+
+
+@app.post("/api/sessions/import")
+async def import_sessions_endpoint(request: Request):
+    """Import one or more sessions exported from the dashboard or CLI.
+
+    This is intentionally separate from ``/api/ops/import``: that endpoint
+    restores a whole Hermes backup archive, while this endpoint is scoped to
+    session rows/messages and is safe to use from the Sessions page.
+    """
+    try:
+        raw_body = await _read_session_import_body(request)
+        body = SessionImport.model_validate_json(raw_body)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid session import payload") from exc
+
+    try:
+        result = await asyncio.to_thread(_import_sessions_for_profile, body.profile, body.sessions)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not result.get("ok", False):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.get("/api/sessions/empty/count")

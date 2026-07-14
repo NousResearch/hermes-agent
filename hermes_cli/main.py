@@ -4425,6 +4425,8 @@ def _print_version_info(*, check_updates: bool = True) -> None:
                 f"Update available: {behind} {commits_word} behind — "
                 f"run '{recommended_update_command()}'"
             )
+        elif behind and behind < 0:
+            print(f"Update available — run '{recommended_update_command()}'")
         elif behind == 0:
             print("Up to date")
     except Exception:

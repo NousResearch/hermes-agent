@@ -1776,6 +1776,57 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
+def _char_to_line(content: str, char_pos: int) -> int:
+    """Return the 1-based line number containing ``char_pos`` in ``content``.
+
+    ``char_pos`` is clamped to ``[0, len(content)]``.  Line counting follows
+    Python's ``str.splitlines`` semantics so trailing newlines don't inflate
+    the count.
+    """
+    pos = max(0, min(char_pos, len(content)))
+    # Count newlines before pos; +1 for 1-based line numbering.
+    return content.count("\n", 0, pos) + 1
+
+
+def _format_truncation_warning(
+    filename: str,
+    total_chars: int,
+    max_chars: int,
+    head_chars: int,
+    tail_chars: int,
+    omitted_start: int,
+    omitted_end: int,
+    content: str,
+) -> str:
+    """Build a detailed truncation warning message with exact omitted ranges.
+
+    Reports the exact character range omitted (``chars A–B of N``) and, when
+    practical, the line range (``lines X–Y``) so operators can locate the
+    missing material without guessing.
+    """
+    omitted_chars = omitted_end - omitted_start
+    line_start = _char_to_line(content, omitted_start)
+    line_end = (
+        _char_to_line(content, omitted_end - 1)
+        if omitted_end > omitted_start
+        else line_start
+    )
+    line_range = (
+        f", lines {line_start}–{line_end}"
+        if line_end > line_start
+        else f", line {line_start}"
+    )
+    return (
+        f"⚠️  Context file {filename} TRUNCATED: "
+        f"{total_chars} chars exceeds limit of {max_chars} "
+        f"(omitted chars {omitted_start}–{omitted_end} of {total_chars}, "
+        f"~{omitted_chars} chars{line_range}; "
+        f"kept {head_chars} head + {tail_chars} tail) — "
+        f"trim the file, pin a larger context_file_max_chars, or use a "
+        f"larger-context model!"
+    )
+
+
 def _truncate_content(
     content: str,
     filename: str,
@@ -1789,24 +1840,29 @@ def _truncate_content(
     concrete path the agent should ``read_file`` to recover the full content
     (defaults to ``filename`` when not supplied). ``context_length`` lets the
     cap scale to the model's window when no explicit config override is set.
+
+    The truncation warning reports the exact omitted character range and the
+    line range so operators can pinpoint the missing material, not just the
+    total / limit.
     """
     if max_chars is None:
         max_chars = _get_context_file_max_chars(context_length)
     if len(content) <= max_chars:
         return content
     target = read_path or filename
-    msg = (
-        f"⚠️  Context file {filename} TRUNCATED: "
-        f"{len(content)} chars exceeds limit of {max_chars} — "
-        f"trim the file, pin a larger context_file_max_chars, or use a "
-        f"larger-context model!"
-    )
-    logger.warning(msg)
-    _record_truncation_warning(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
     head = content[:head_chars]
     tail = content[-tail_chars:]
+    # Exact omitted range: characters head_chars .. (len(content) - tail_chars)
+    omitted_start = head_chars
+    omitted_end = len(content) - tail_chars
+    msg = _format_truncation_warning(
+        filename, len(content), max_chars, head_chars, tail_chars,
+        omitted_start, omitted_end, content,
+    )
+    logger.warning(msg)
+    _record_truncation_warning(msg)
     marker = (
         f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of "
         f"{len(content)} chars. The middle is omitted — if you need the full "

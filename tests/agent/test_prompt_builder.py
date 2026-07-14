@@ -224,6 +224,79 @@ class TestTruncateContent:
         assert "parent.md" in parent_warnings[0]
 
 
+class TestDetailedTruncationWarnings:
+    """Truncation warnings report exact omitted char and line ranges."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_truncation_state(self, monkeypatch):
+        drain_truncation_warnings()
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+    def test_warning_reports_exact_char_range(self):
+        """The warning includes the exact omitted character range, not just total/limit."""
+        max_chars = 200
+        content = "A" * max_chars + "B" * 300  # 500 chars total
+        _truncate_content(content, "range.md", max_chars=max_chars)
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        w = warnings[0]
+        # Must contain the word 'omitted' (the key signal that ranges are reported).
+        assert "omitted" in w.lower()
+        # Must contain the exact start char (head_chars = 200 * 0.7 = 140).
+        assert "140" in w
+        # Must contain the exact end char (500 - 200 * 0.2 = 460).
+        assert "460" in w
+
+    def test_warning_reports_line_range_single_line(self):
+        """When content is a single line, warning reports 'line N' not 'lines'."""
+        content = "x" * 500  # one long line, no newlines
+        _truncate_content(content, "single.md", max_chars=200)
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        # Single line → "line 1" not "lines 1–N"
+        assert "line 1" in warnings[0]
+        assert "lines " not in warnings[0]
+
+    def test_warning_reports_line_range_multiline(self):
+        """When content spans multiple lines, warning reports 'lines X–Y'."""
+        # 10 lines of ~60 chars each = 600 chars (with newlines)
+        lines = [f"line {i}: " + "x" * 50 for i in range(10)]
+        content = "\n".join(lines)
+        _truncate_content(content, "multi.md", max_chars=200)
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        # Must contain "lines " (plural) with a range
+        assert "lines " in warnings[0]
+
+    def test_warning_includes_head_and_tail_counts(self):
+        """Warning reports kept head + tail counts for quick verification."""
+        content = "x" * 500
+        _truncate_content(content, "counts.md", max_chars=200)
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        # head = 140, tail = 40 (200 * 0.7 and 200 * 0.2)
+        assert "140 head" in warnings[0]
+        assert "40 tail" in warnings[0]
+
+    def test_warning_omitted_chars_sum_matches_total(self):
+        """The omitted range size + kept size should be consistent with total."""
+        max_chars = 200
+        total = 500
+        content = "x" * total
+        _truncate_content(content, "consistency.md", max_chars=max_chars)
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        w = warnings[0]
+        # head_chars = 140, tail_chars = 40
+        # omitted = 500 - 140 - 40 = 320
+        assert "~320 chars" in w
+
+
 class TestDynamicContextFileCap:
     """B — cap scales with the model's context window when not pinned.
     C — truncation marker points the agent at the full file to read_file."""
@@ -1644,5 +1717,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

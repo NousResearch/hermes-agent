@@ -82,6 +82,23 @@ def test_ws_disconnect_reaps_flagged_session_and_closes_worker(monkeypatch):
         server._sessions.clear()
 
 
+def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch):
+    server._sessions.clear()
+    try:
+        _run_disconnect(
+            monkeypatch,
+            lambda t: server._sessions.update(
+                plain={
+                    "transport": t,
+                    "close_on_disconnect": False,
+                    "session_key": "k",
+                    "history_lock": threading.Lock(),
+                }
+            ),
+        )
+        assert server._sessions["plain"]["transport"] is server._detached_ws_transport
+    finally:
+        server._sessions.clear()
 
 
 def test_ws_connection_registers_then_disconnect_unregisters_live_transport(monkeypatch):

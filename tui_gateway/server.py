@@ -755,9 +755,18 @@ def _reap_idle_sessions() -> None:
 # accumulates detached sessions (the report's ``detached_sessions=5``) whose
 # agents sit resident for the full TTL. The cap evicts the least-recently-active
 # DETACHED sessions sooner so live agents don't pile up under memory pressure.
-# Default-on but provably safe: it only touches sessions with no live client
-# (reopening re-resumes them from the DB) and never a running / pending /
-# mid-build / live-transport one. 0/null disables.
+#
+# Default-off (opt-in): _max_live_sessions() returns 0 when no explicit
+# max_live_sessions is configured, and _enforce_session_cap() bails on
+# `cap <= 0`. Set max_live_sessions to a positive integer in config.yaml
+# (top-level or under `gateway:`) to enable. 0 / null disables.
+#
+# Note: even when enabled, this cap is currently doubly inert for connected
+# clients — _session_is_lru_evictable() gates on _transport_is_dead(), which
+# is never true while a client WebSocket is alive. See #46082 / PR #63551 for
+# the same gate on the idle TTL reaper. Tracking default-on/off is a separate
+# maintainer call (see issue context); this comment matches the code as it
+# ships today.
 def _max_live_sessions() -> int:
     try:
         from hermes_cli.active_sessions import coerce_max_concurrent_sessions

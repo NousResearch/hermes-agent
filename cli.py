@@ -3696,6 +3696,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        reasoning_effort: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -3711,6 +3712,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
+            reasoning_effort: Reasoning effort level (none, minimal, low, medium, high, xhigh). Ephemeral override for single-query mode.
         """
         # Initialize Rich console
         self.console = Console()
@@ -3915,11 +3917,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.prefill_messages = _load_prefill_messages(
             _resolve_prefill_messages_file(CLI_CONFIG)
         )
-        
+
         # Reasoning config (OpenRouter reasoning effort level)
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
-        )
+        # CLI --effort/--reasoning flag takes precedence over config file
+        if reasoning_effort:
+            self.reasoning_config = _parse_reasoning_config(reasoning_effort)
+        else:
+            self.reasoning_config = _parse_reasoning_config(
+                CLI_CONFIG["agent"].get("reasoning_effort", "")
+            )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
@@ -15810,10 +15816,12 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    effort: str = None,
+    reasoning: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
-    
+
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
@@ -15832,7 +15840,9 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
-    
+        effort: Reasoning effort level for single-query mode (none, minimal, low, medium, high, xhigh). Ephemeral, does not persist to config.
+        reasoning: Alias for --effort.
+
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
@@ -15843,6 +15853,8 @@ def main(
         python cli.py --resume 20260225_143052_a1b2c3  # Resume session
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
+        python cli.py -q "Complex task" --effort high  # Single query with high reasoning effort
+        python cli.py -q "Simple lookup" --reasoning none  # Single query with no reasoning
     """
     global _active_worktree
 
@@ -15945,6 +15957,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        reasoning_effort=effort or reasoning,
     )
 
     if parsed_skills:

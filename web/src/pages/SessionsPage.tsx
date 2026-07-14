@@ -778,6 +778,11 @@ export default function SessionsPage() {
   const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const importSessionsLabel = t.sessions.importSessions ?? en.sessions.importSessions!;
+  const importSessionsAria =
+    t.sessions.importSessionsAria ?? en.sessions.importSessionsAria ?? importSessionsLabel;
+  const importSessionsTitle =
+    t.sessions.importSessionsTitle ?? en.sessions.importSessionsTitle ?? importSessionsLabel;
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
@@ -1622,12 +1627,12 @@ export default function SessionsPage() {
                 className="shrink-0"
                 disabled={importingSessions}
                 onClick={() => importInputRef.current?.click()}
-                aria-label="Import exported sessions"
-                title="Import exported session JSON or JSONL"
+                aria-label={importSessionsAria}
+                title={importSessionsTitle}
                 prefix={importingSessions ? <Spinner /> : <Upload />}
               >
                 <span className="font-mondwest normal-case text-xs">
-                  Import sessions
+                  {importSessionsLabel}
                 </span>
               </Button>
             )}

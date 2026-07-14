@@ -230,12 +230,11 @@ describe('ProvidersSettings', () => {
       </I18nProvider>
     )
 
-    const title = await screen.findByText('أوبن راوتر')
+    const title = await screen.findByText('OpenRouter')
     fireEvent.click(title.closest('[role="button"]') as HTMLElement)
 
     expect(await screen.findByText('مئات النماذج المتقدمة خلف مفتاح واحد.')).toBeTruthy()
     expect(screen.getByText('الرابط الأساسي البديل')).toBeTruthy()
-    expect(screen.getByText('رابط أساسي بديل لخدمة أوبن راوتر.')).toBeTruthy()
-    expect(screen.queryByText('OpenRouter')).toBeNull()
+    expect(screen.getByText('رابط أساسي بديل لخدمة OpenRouter.')).toBeTruthy()
   })
 })

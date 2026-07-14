@@ -138,11 +138,11 @@ describe('ProviderConfigPanel', () => {
   it('localizes the provider schema and controls in Arabic', async () => {
     await renderPanel('hindsight', 'ar')
 
-    expect(await screen.findByRole('button', { name: /إعدادات هايندسايت/ })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /إعدادات Hindsight/ })).toBeTruthy()
     expect(screen.getByLabelText('رابط الواجهة البرمجية')).toBeTruthy()
     expect(screen.getByText('سحابي')).toBeTruthy()
     expect(
-      screen.getAllByText('واجهة هايندسايت السحابية؛ خفيفة ولا تحتاج إلا إلى مفتاح واجهة.').length
+      screen.getAllByText('واجهة Hindsight السحابية؛ خفيفة ولا تحتاج إلا إلى مفتاح واجهة.').length
     ).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'حفظ' })).toBeTruthy()
     expect(screen.queryByText('Mode')).toBeNull()

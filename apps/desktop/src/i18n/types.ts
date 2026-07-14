@@ -713,6 +713,10 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      pasteProviderKey: (key: string) => string
+      activatingProvider: string
+      activateProvider: string
+      setUpProvider: (provider: string) => string
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
@@ -1116,6 +1120,7 @@ export interface Translations {
       referenceImageTooLarge: string
       referenceImageInvalid: string
       reference: string
+      addReference: string
       removeReference: string
       unavailableTitle: string
       unavailableDesc: string
@@ -1869,6 +1874,9 @@ export interface Translations {
       gatewayToolsMessage: (labels: string[]) => string
       gatewayToolLabels: Record<string, string>
       providerUnavailable: (detail?: string) => string
+      couldNotStartSignIn: (detail: string) => string
+      signInStatus: (status: string) => string
+      pollingFailed: (detail: string) => string
       tokenExchangeFailed: string
       externalUnavailable: (provider: string, command: string) => string
       enterValueFirst: string
@@ -1880,7 +1888,7 @@ export interface Translations {
       couldNotSaveProvider: (provider: string) => string
       couldNotSaveEndpoint: string
       couldNotChangeModel: string
-      unexpectedError: string
+      unexpectedError: (detail?: string) => string
     }
   }
 
@@ -2384,6 +2392,7 @@ export interface Translations {
     restartToUseSaveImage: string
     restartToSaveImages: string
     imageDownloadFailed: string
+    generatedImage: string
     openImage: string
     overlayMessage: string
     openInHermes: string

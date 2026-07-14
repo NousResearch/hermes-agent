@@ -825,6 +825,10 @@ export const en: Translations = {
       provider: 'Provider',
       model: 'Model',
       applying: 'Applying...',
+      pasteProviderKey: key => `Paste ${key}`,
+      activatingProvider: 'Activating...',
+      activateProvider: 'Activate',
+      setUpProvider: provider => `Set up ${provider}`,
       defaultsLabel: 'Defaults',
       reasoning: 'Reasoning',
       reasoningOff: 'Off',
@@ -1252,6 +1256,7 @@ export const en: Translations = {
       referenceImageTooLarge: 'Reference image is too large. Use one under 16 MB.',
       referenceImageInvalid: 'Could not read that reference image. Try a PNG, JPG, WebP, or GIF.',
       reference: 'Reference',
+      addReference: 'Add a reference',
       removeReference: 'Remove reference',
       unavailableTitle: 'Add an image backend to generate',
       unavailableDesc: 'Hatching a custom pet needs a provider that can use a reference image.',
@@ -2275,6 +2280,9 @@ export const en: Translations = {
         detail
           ? `Connected, but Hermes still cannot resolve a usable provider. ${detail}`
           : 'Connected, but Hermes still cannot resolve a usable provider.',
+      couldNotStartSignIn: detail => `Could not start sign-in: ${detail}`,
+      signInStatus: status => `Sign-in ${status}.`,
+      pollingFailed: detail => `Polling failed: ${detail}`,
       tokenExchangeFailed: 'Token exchange failed.',
       externalUnavailable: (provider, command) =>
         `Hermes still cannot reach ${provider}. Run \`${command}\` in a terminal first.`,
@@ -2288,7 +2296,7 @@ export const en: Translations = {
       couldNotSaveProvider: provider => `Could not save ${provider}`,
       couldNotSaveEndpoint: 'Could not save local endpoint',
       couldNotChangeModel: 'Could not change model',
-      unexpectedError: 'The operation failed. Try again.'
+      unexpectedError: detail => (detail ? `The operation failed: ${detail}` : 'The operation failed. Try again.')
     }
   },
 
@@ -2851,6 +2859,7 @@ export const en: Translations = {
     restartToUseSaveImage: 'Restart Hermes Desktop to use Save Image.',
     restartToSaveImages: 'Restart Hermes Desktop to save images',
     imageDownloadFailed: 'Image download failed',
+    generatedImage: 'Generated image',
     openImage: 'Open image',
     overlayMessage: 'Message…',
     openInHermes: 'Open in Hermes',

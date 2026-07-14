@@ -160,6 +160,8 @@ export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
+const errMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
 const patch = (update: Partial<DesktopOnboardingState>) =>
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), ...update })
 
@@ -205,7 +207,12 @@ function notifyGatewayTools(tools: string[] | undefined) {
     return
   }
 
-  const labels = tools.map(tool => translateNow(`onboarding.runtime.gatewayToolLabels.${tool}`))
+  const labels = tools.map(tool => {
+    const key = `onboarding.runtime.gatewayToolLabels.${tool}`
+    const translated = translateNow(key)
+
+    return translated === key ? tool : translated
+  })
 
   notify({
     durationMs: 8000,
@@ -579,8 +586,12 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
 
     setFlow({ status: 'polling', provider, start, copied: false })
     pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
-  } catch {
-    setFlow({ status: 'error', provider, message: translateNow('onboarding.runtime.unexpectedError') })
+  } catch (error) {
+    setFlow({
+      status: 'error',
+      provider,
+      message: translateNow('onboarding.runtime.couldNotStartSignIn', errMessage(error))
+    })
   }
 }
 
@@ -605,12 +616,17 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
         status: 'error',
         provider,
         start,
-        message: error_message || translateNow('onboarding.runtime.unexpectedError')
+        message: error_message || translateNow('onboarding.runtime.signInStatus', status)
       })
     }
-  } catch {
+  } catch (error) {
     clearPoll()
-    setFlow({ status: 'error', provider, start, message: translateNow('onboarding.runtime.unexpectedError') })
+    setFlow({
+      status: 'error',
+      provider,
+      start,
+      message: translateNow('onboarding.runtime.pollingFailed', errMessage(error))
+    })
   }
 }
 
@@ -652,8 +668,13 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
         message: resp.message || translateNow('onboarding.runtime.tokenExchangeFailed')
       })
     }
-  } catch {
-    setFlow({ status: 'error', provider, start, message: translateNow('onboarding.runtime.unexpectedError') })
+  } catch (error) {
+    setFlow({
+      status: 'error',
+      provider,
+      start,
+      message: translateNow('onboarding.runtime.unexpectedError', errMessage(error))
+    })
   }
 }
 
@@ -776,7 +797,7 @@ export async function saveOnboardingApiKey(
   } catch (error) {
     notifyError(error, translateNow('onboarding.runtime.couldNotSaveProvider', label))
 
-    return { ok: false, message: translateNow('onboarding.runtime.unexpectedError') }
+    return { ok: false, message: translateNow('onboarding.runtime.unexpectedError', errMessage(error)) }
   }
 }
 
@@ -855,7 +876,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   } catch (error) {
     notifyError(error, translateNow('onboarding.runtime.couldNotSaveEndpoint'))
 
-    return { ok: false, message: translateNow('onboarding.runtime.unexpectedError') }
+    return { ok: false, message: translateNow('onboarding.runtime.unexpectedError', errMessage(error)) }
   }
 }
 

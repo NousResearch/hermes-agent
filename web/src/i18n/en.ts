@@ -189,6 +189,9 @@ export const en: Translations = {
     deleteEmptyConfirmTitle: "Delete empty sessions?",
     deleteEmptyConfirmMessage:
       "This permanently removes {count} sessions that have no messages. Active and archived sessions are skipped. This cannot be undone.",
+    importSessions: "Import sessions",
+    importSessionsAria: "Import exported sessions",
+    importSessionsTitle: "Import exported session JSON or JSONL",
     emptySessionsDeleted: "{count} empty sessions deleted",
     failedToDeleteEmpty: "Failed to delete empty sessions",
     selectSession: "Select session",

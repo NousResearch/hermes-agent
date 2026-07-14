@@ -208,6 +208,9 @@ export interface Translations {
     deleteEmpty: string;
     deleteEmptyConfirmTitle: string;
     deleteEmptyConfirmMessage: string;
+    importSessions?: string;
+    importSessionsAria?: string;
+    importSessionsTitle?: string;
     emptySessionsDeleted: string;
     failedToDeleteEmpty: string;
     selectSession: string;

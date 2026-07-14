@@ -1,8 +1,7 @@
-import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import { expect, test } from 'vitest'
 
 import { stageMacLocalizedInfoPlist } from './after-pack.mjs'
 
@@ -20,8 +19,8 @@ test('stages the Arabic InfoPlist localization in the macOS app bundle', async (
       'utf8'
     )
 
-    assert.match(staged, /"CFBundleDisplayName" = "هرمس";/)
-    assert.match(staged, /"NSMicrophoneUsageDescription" = "يستخدم هرمس الميكروفون/)
+    expect(staged).toMatch(/"CFBundleDisplayName" = "هرمس";/)
+    expect(staged).toMatch(/"NSMicrophoneUsageDescription" = "يستخدم هرمس الميكروفون/)
   } finally {
     await rm(appOutDir, { force: true, recursive: true })
   }

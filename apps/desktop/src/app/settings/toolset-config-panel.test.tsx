@@ -145,16 +145,16 @@ describe('ToolsetConfigPanel', () => {
       </I18nProvider>
     )
 
-    expect(await screen.findByText('المتصفح المحلي')).toBeTruthy()
+    expect(await screen.findByText('Local Browser')).toBeTruthy()
     expect(screen.getByText('★ موصى به · مجاني')).toBeTruthy()
-    expect(await screen.findByText('كروميوم بلا واجهة، ولا يحتاج إلى مفتاح واجهة برمجية.')).toBeTruthy()
-    expect(screen.getByText('كاموفوكس')).toBeTruthy()
-    expect(screen.queryByText('Local Browser')).toBeNull()
+    expect(await screen.findByText('Chromium بلا واجهة، ولا يحتاج إلى مفتاح واجهة برمجية.')).toBeTruthy()
+    expect(screen.getByText('Camofox')).toBeTruthy()
+    expect(screen.queryByText('المتصفح المحلي')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: /كاموفوكس/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Camofox/ }))
 
-    expect(await screen.findByText('متصفح مقاوم للكشف مبني على فايرفوكس وكاموفوكس.')).toBeTruthy()
-    expect(screen.getByText('رابط خادم كاموفوكس')).toBeTruthy()
+    expect(await screen.findByText('متصفح مقاوم للكشف مبني على Firefox وCamoufox.')).toBeTruthy()
+    expect(screen.getByText('رابط خادم Camoufox')).toBeTruthy()
     await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('browser', 'Camofox'))
   })
 
@@ -201,7 +201,7 @@ describe('ToolsetConfigPanel', () => {
       </I18nProvider>
     )
 
-    expect(await screen.findByText('أوبن إيه آي')).toBeTruthy()
+    expect(await screen.findByText('OpenAI')).toBeTruthy()
     expect(screen.getByText('مدفوع')).toBeTruthy()
     expect(await screen.findByText('نحو أربعين ثانية')).toBeTruthy()
     expect(screen.getByText('متوازن، وهو الافتراضي.')).toBeTruthy()

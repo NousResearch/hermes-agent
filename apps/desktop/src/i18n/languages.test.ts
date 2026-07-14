@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from './catalog'
 import {
   DEFAULT_LOCALE,
   isLocale,
@@ -8,6 +9,27 @@ import {
   localeDirection,
   normalizeLocale
 } from './languages'
+
+function missingTranslationPaths(source: unknown, target: unknown, prefix = ''): string[] {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) {
+    return []
+  }
+
+  const targetRecord =
+    typeof target === 'object' && target !== null && !Array.isArray(target)
+      ? (target as Record<string, unknown>)
+      : {}
+
+  return Object.entries(source as Record<string, unknown>).flatMap(([key, value]) => {
+    const path = prefix ? `${prefix}.${key}` : key
+
+    if (!(key in targetRecord)) {
+      return [path]
+    }
+
+    return missingTranslationPaths(value, targetRecord[key], path)
+  })
+}
 
 describe('desktop i18n languages', () => {
   it('normalizes supported locale aliases', () => {
@@ -60,5 +82,29 @@ describe('desktop i18n languages', () => {
     expect(localeDirection('ar')).toBe('rtl')
     expect(localeDirection('en')).toBe('ltr')
     expect(localeDirection('zh')).toBe('ltr')
+  })
+
+  it('keeps provider and model brands in their original script in Arabic UI', () => {
+    const arabic = TRANSLATIONS.ar
+
+    const maps = [
+      arabic.settings.memoryProvider!.providerNames,
+      arabic.settings.providers.providerNames,
+      arabic.settings.toolsets.providerNames,
+      arabic.onboarding.providerNames
+    ]
+
+    for (const map of maps) {
+      for (const label of Object.values(map ?? {})) {
+        expect(label).not.toMatch(/\p{Script=Arabic}/u)
+      }
+    }
+
+    expect(arabic.onboarding.openRouterName).toBe('OpenRouter')
+    expect(arabic.commandCenter.generatePet.openAi).toBe('OpenAI')
+  })
+
+  it('provides an Arabic value for every English translation path', () => {
+    expect(missingTranslationPaths(TRANSLATIONS.en, TRANSLATIONS.ar)).toEqual([])
   })
 })

@@ -29,12 +29,12 @@ import {
 } from 'electron'
 import nodePty from 'node-pty'
 
-import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import {
   applicationMenuCopy,
   type ApplicationMenuLocale,
   normalizeApplicationMenuLocale
 } from './application-menu-copy'
+import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'

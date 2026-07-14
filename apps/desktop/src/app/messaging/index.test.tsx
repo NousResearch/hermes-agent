@@ -192,7 +192,7 @@ describe('MessagingView setup-guide link', () => {
 
     await renderMessaging('ar')
 
-    expect(await screen.findByText('اربط هرمس بمحادثات جوجل عبر خدمة النشر والاشتراك السحابية.')).toBeTruthy()
+    expect(await screen.findByText('اربط هرمس بمحادثات Google عبر خدمة النشر والاشتراك السحابية.')).toBeTruthy()
     expect(screen.queryByText('Connect Hermes to Google Chat via Cloud Pub/Sub.')).toBeNull()
   })
 })

@@ -752,7 +752,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       void activateApiKeyProvider()
                     }
                   }}
-                  placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
+                  placeholder={m.pasteProviderKey(selectedProviderRow?.key_env ?? 'API key')}
                   type="password"
                   value={apiKeyDraft}
                 />
@@ -762,12 +762,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   size="sm"
                 >
                   {activating && <Loader2 className="size-3.5 animate-spin" />}
-                  {activating ? 'Activating...' : 'Activate'}
+                  {activating ? m.activatingProvider : m.activateProvider}
                 </Button>
               </>
             ) : (
               <Button onClick={startProviderSetup} size="sm" variant="textStrong">
-                Set up {selectedProviderRow?.name ?? 'provider'}
+                {m.setUpProvider(selectedProviderRow?.name ?? m.provider)}
               </Button>
             )
           ) : (

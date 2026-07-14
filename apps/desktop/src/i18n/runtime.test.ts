@@ -36,6 +36,16 @@ describe('desktop i18n runtime translator', () => {
     )
   })
 
+  it('preserves technical error details in localized onboarding failures', () => {
+    setRuntimeI18nLocale('ar')
+
+    expect(translateNow('onboarding.runtime.couldNotStartSignIn', 'connection reset')).toContain(
+      'connection reset'
+    )
+    expect(translateNow('onboarding.runtime.pollingFailed', 'request timed out')).toContain('request timed out')
+    expect(translateNow('onboarding.runtime.unexpectedError', 'invalid response')).toContain('invalid response')
+  })
+
   it('translates migrated overlap keys for newly supported locales', () => {
     setRuntimeI18nLocale('ja')
     expect(translateNow('common.save')).toBe('保存')

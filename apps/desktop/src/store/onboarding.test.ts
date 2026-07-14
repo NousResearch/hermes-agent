@@ -276,6 +276,7 @@ describe('OAuth onboarding', () => {
   it('clears stale readiness errors after OAuth succeeds and model confirmation is shown', async () => {
     const model = 'anthropic/claude-opus-4.8'
     const calls: { body?: unknown; path: string }[] = []
+    const notifySpy = vi.spyOn(notifications, 'notify')
 
     installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
       calls.push({ body, path })
@@ -301,7 +302,7 @@ describe('OAuth onboarding', () => {
       }
 
       if (path === '/api/model/set') {
-        return { ok: true, provider: 'nous', model, gateway_tools: [] }
+        return { ok: true, provider: 'nous', model, gateway_tools: ['future_tool'] }
       }
 
       throw new Error(`unexpected api path: ${path}`)
@@ -364,6 +365,52 @@ describe('OAuth onboarding', () => {
     expect(optionsIndex).toBeGreaterThanOrEqual(0)
     expect(recommendedIndex).toBeGreaterThan(optionsIndex)
     expect(setIndex).toBeGreaterThan(recommendedIndex)
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'info',
+        message: expect.stringContaining('future_tool')
+      })
+    )
+    expect(notifySpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('gatewayToolLabels.future_tool')
+      })
+    )
+  })
+
+  it('preserves OAuth failure details for diagnosis', async () => {
+    installApiMock(async ({ path }: { path: string }) => {
+      if (path === '/api/providers/oauth/nous/submit') {
+        throw new Error('connection reset')
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          status: 'awaiting_user',
+          provider: provider('nous', 'Nous Portal'),
+          start: {
+            auth_url: 'https://portal.example/auth',
+            expires_in: 600,
+            flow: 'pkce',
+            session_id: 'portal-session'
+          },
+          code: 'fresh-code'
+        }
+      })
+    )
+
+    await submitOnboardingCode(onboardingContext(runtimeMismatchGateway()))
+
+    const flow = $desktopOnboarding.get().flow
+    expect(flow.status).toBe('error')
+
+    if (flow.status === 'error') {
+      expect(flow.message).toContain('connection reset')
+    }
   })
 })
 

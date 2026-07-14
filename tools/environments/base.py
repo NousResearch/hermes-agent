@@ -387,16 +387,11 @@ class BaseEnvironment(ABC):
         # source() either sees the old complete snapshot or the new complete
         # one — never a partial/truncated file.
         #
-        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
-        # bash PID, but in ``&``-launched subshells (how concurrent terminal
-        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
-        # writers would pick the SAME temp name, clobber each other's temp
-        # mid-write, and mv would then publish a torn file (the corruption is
-        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
-        # and is genuinely unique per writer, which closes the race.  The
-        # static path is shell-quoted (Windows/Git-Bash drive letters, spaces)
-        # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Each wrapper is built in Python before its shell is spawned, so a
+        # UUID is portable and unique even on macOS' Bash 3.2 (which has no
+        # $BASHPID). Quoting the complete path also handles spaces and MSYS
+        # path rewriting without leaving a shell expansion outside the quote.
+        _snap_tmp = self._snapshot_temp_path()
         bootstrap = (
             f"umask 077\n"
             f"export -p > {_snap_tmp}\n"
@@ -497,6 +492,11 @@ class BaseEnvironment(ABC):
         """
         return shlex.quote(path)
 
+    def _snapshot_temp_path(self) -> str:
+        """Return a shell-safe, per-writer snapshot staging path."""
+        path = f"{self._snapshot_path}.tmp.{uuid.uuid4().hex}"
+        return self._quote_shell_path(path)
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -507,13 +507,10 @@ class BaseEnvironment(ABC):
         _quoted_snap = self._quote_shell_path(self._snapshot_path)
         _quoted_cwd_file = self._quote_shell_path(self._cwd_file)
         # Use atomic file replacement for env snapshot updates (issue #38249).
-        # Assemble into a per-writer-unique temp file, then mv to atomically
-        # replace the snapshot so concurrent source() calls never read a
-        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
-        # subshell PID — unique per concurrent ``&``-launched writer — so two
-        # writers never share a temp name and clobber each other before the mv.
-        # Static path shell-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Assemble into a per-writer UUID temp file, then atomically replace
+        # the snapshot. The UUID is generated in Python, so uniqueness does not
+        # depend on shell features unavailable in macOS' Bash 3.2.
+        _snap_tmp = self._snapshot_temp_path()
 
         parts = []
 

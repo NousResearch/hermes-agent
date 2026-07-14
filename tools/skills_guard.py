@@ -26,6 +26,7 @@ import re
 import fnmatch
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -951,8 +952,11 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                 description=f"binary/executable file ({ext}) should not be in a skill",
             ))
 
+        script_exts = {'.sh', '.bash', '.py', '.rb', '.pl'}
+        is_executable = bool(f.stat().st_mode & 0o111)
+
         # Executable permission on non-script files
-        if ext not in {'.sh', '.bash', '.py', '.rb', '.pl'} and f.stat().st_mode & 0o111:
+        if ext not in script_exts and is_executable:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
                 severity="medium",
@@ -962,6 +966,29 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                 match="executable bit set",
                 description="file has executable permission but is not a recognized script type",
             ))
+
+        # A shebang advertises direct execution. On POSIX, flag scripts whose
+        # mode contradicts that contract; interpreter-only files should omit
+        # the shebang or be documented as such.
+        if os.name != "nt" and ext in script_exts and not is_executable:
+            try:
+                with f.open("rb") as handle:
+                    has_shebang = handle.read(2) == b"#!"
+            except OSError:
+                has_shebang = False
+            if has_shebang:
+                findings.append(Finding(
+                    pattern_id="script_not_executable",
+                    severity="low",
+                    category="structural",
+                    file=rel,
+                    line=1,
+                    match="shebang without executable bit",
+                    description=(
+                        "script declares an interpreter but is not executable; "
+                        "set an executable mode or remove the shebang"
+                    ),
+                ))
 
     # File count limit
     if file_count > MAX_FILE_COUNT:

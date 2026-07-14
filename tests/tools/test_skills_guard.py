@@ -1,6 +1,7 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
 import tempfile
+import os
 from pathlib import Path
 
 import pytest
@@ -372,6 +373,22 @@ class TestScanSkill:
 
 
 class TestCheckStructure:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX executable bits")
+    def test_shebang_without_executable_bit_detected(self, tmp_path):
+        script = tmp_path / "helper.py"
+        script.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+        script.chmod(0o600)
+        findings = _check_structure(tmp_path)
+        assert any(fi.pattern_id == "script_not_executable" for fi in findings)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX executable bits")
+    def test_executable_shebang_script_allowed(self, tmp_path):
+        script = tmp_path / "helper.py"
+        script.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+        script.chmod(0o700)
+        findings = _check_structure(tmp_path)
+        assert not any(fi.pattern_id == "script_not_executable" for fi in findings)
+
     def test_too_many_files(self, tmp_path):
         for i in range(MAX_FILE_COUNT + 5):
             (tmp_path / f"file_{i}.txt").write_text("x")

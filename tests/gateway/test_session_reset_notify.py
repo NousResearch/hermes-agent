@@ -15,6 +15,7 @@ from gateway.config import (
     Platform,
     SessionResetPolicy,
 )
+from gateway.run import _should_notify_auto_reset
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
@@ -203,6 +204,41 @@ class TestResetPolicyNotify:
         assert restored.notify == original.notify
         assert restored.notify_exclude_platforms == original.notify_exclude_platforms
         assert restored.mode == original.mode
+
+    def test_suspended_reset_honors_notify_false(self):
+        policy = SessionResetPolicy(notify=False)
+
+        assert _should_notify_auto_reset(
+            policy,
+            reset_reason="suspended",
+            had_activity=True,
+            platform_name="telegram",
+        ) is False
+
+    def test_suspended_reset_honors_activity_and_excludes(self):
+        policy = SessionResetPolicy(
+            notify=True,
+            notify_exclude_platforms=("telegram",),
+        )
+
+        assert _should_notify_auto_reset(
+            policy,
+            reset_reason="suspended",
+            had_activity=False,
+            platform_name="signal",
+        ) is False
+        assert _should_notify_auto_reset(
+            policy,
+            reset_reason="suspended",
+            had_activity=True,
+            platform_name="telegram",
+        ) is False
+        assert _should_notify_auto_reset(
+            policy,
+            reset_reason="suspended",
+            had_activity=True,
+            platform_name="signal",
+        ) is True
 
 
 # ---------------------------------------------------------------------------

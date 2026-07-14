@@ -2714,6 +2714,21 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _should_notify_auto_reset(
+    policy: Any,
+    *,
+    reset_reason: str,
+    had_activity: bool,
+    platform_name: str,
+) -> bool:
+    """Return whether an automatic session reset should notify the user."""
+    return bool(
+        getattr(policy, "notify", False)
+        and had_activity
+        and platform_name not in getattr(policy, "notify_exclude_platforms", ())
+    )
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -11070,12 +11085,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
-                # Suspended sessions always notify (they were explicitly stopped
-                # or crashed mid-operation) — skip the policy check.
-                should_notify = reset_reason == "suspended" or (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
+                should_notify = _should_notify_auto_reset(
+                    policy,
+                    reset_reason=reset_reason,
+                    had_activity=had_activity,
+                    platform_name=platform_name,
                 )
                 if should_notify:
                     adapter = self._adapter_for_source(source)

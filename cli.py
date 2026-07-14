@@ -39,7 +39,7 @@ import uuid
 import textwrap
 from collections import deque
 from urllib.parse import unquote, urlparse
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -15799,6 +15799,7 @@ def main(
     max_turns: int = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
+    json_output: bool = False,
     compact: bool = False,
     list_tools: bool = False,
     list_toolsets: bool = False,
@@ -15826,6 +15827,7 @@ def main(
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)
         verbose: Enable verbose logging
+        json_output: Emit one versioned JSON result object; implies quiet mode
         compact: Use compact display mode
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
@@ -16072,9 +16074,20 @@ def main(
     except Exception:
         pass  # signal handler may fail in restricted environments
     
+    if json_output:
+        quiet = True
+
     # Handle single query mode
     if query or image:
-        if not cli._claim_active_session("cli", stderr=bool(quiet)):
+        if json_output:
+            with open(os.devnull, "w", encoding="utf-8") as _sink:
+                with redirect_stdout(_sink), redirect_stderr(_sink):
+                    _session_claimed = cli._claim_active_session("cli", stderr=True)
+        else:
+            _session_claimed = cli._claim_active_session("cli", stderr=bool(quiet))
+        if not _session_claimed:
+            if json_output:
+                print("Hermes JSON chat failed", file=sys.stderr)
             sys.exit(1)
         try:
             query, single_query_images = _collect_query_images(query, image)
@@ -16119,7 +16132,15 @@ def main(
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
                 cli.tool_progress_mode = "off"
-                if cli._ensure_runtime_credentials():
+                cli.show_reasoning = False
+                cli.streaming_enabled = False
+                if json_output:
+                    with open(os.devnull, "w", encoding="utf-8") as _sink:
+                        with redirect_stdout(_sink), redirect_stderr(_sink):
+                            _credentials_ok = cli._ensure_runtime_credentials()
+                else:
+                    _credentials_ok = cli._ensure_runtime_credentials()
+                if _credentials_ok:
                     effective_query: Any = query
                     if single_query_images or single_query_image_urls:
                         # Honour the same image-routing decision used by the
@@ -16178,27 +16199,53 @@ def main(
                     turn_route = cli._resolve_turn_agent_config(effective_query)
                     if turn_route["signature"] != cli._active_agent_route_signature:
                         cli.agent = None
-                    if cli._init_agent(
-                        model_override=turn_route["model"],
-                        runtime_override=turn_route["runtime"],
-                        request_overrides=turn_route.get("request_overrides"),
-                    ):
+                    if json_output:
+                        with open(os.devnull, "w", encoding="utf-8") as _sink:
+                            with redirect_stdout(_sink), redirect_stderr(_sink):
+                                _agent_ready = cli._init_agent(
+                                    model_override=turn_route["model"],
+                                    runtime_override=turn_route["runtime"],
+                                    request_overrides=turn_route.get("request_overrides"),
+                                )
+                    else:
+                        _agent_ready = cli._init_agent(
+                            model_override=turn_route["model"],
+                            runtime_override=turn_route["runtime"],
+                            request_overrides=turn_route.get("request_overrides"),
+                        )
+                    if _agent_ready:
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
-                        # Suppress streaming display callbacks so stdout stays
-                        # machine-readable (no styled "Hermes" box, no tool-gen
-                        # status lines).  The response is printed once below.
-                        cli.agent.stream_delta_callback = None
-                        cli.agent.tool_gen_callback = None
+                        # Programmatic modes have no terminal UI. Disable every
+                        # callback that can render reasoning or tool activity.
+                        for _callback in (
+                            "reasoning_callback",
+                            "tool_progress_callback",
+                            "tool_start_callback",
+                            "tool_complete_callback",
+                            "stream_delta_callback",
+                            "tool_gen_callback",
+                        ):
+                            setattr(cli.agent, _callback, None)
                         try:
-                            result = cli.agent.run_conversation(
-                                user_message=effective_query,
-                                conversation_history=cli.conversation_history,
-                            )
+                            with open(os.devnull, "w", encoding="utf-8") as _sink:
+                                with redirect_stdout(_sink), redirect_stderr(_sink):
+                                    result = cli.agent.run_conversation(
+                                        user_message=effective_query,
+                                        conversation_history=cli.conversation_history,
+                                    )
                         except KeyboardInterrupt:
                             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
-                            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                            if json_output:
+                                print("Hermes JSON chat interrupted", file=sys.stderr)
+                            else:
+                                print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                             sys.exit(130)
+                        except Exception:
+                            if json_output:
+                                print("Hermes JSON chat failed", file=sys.stderr)
+                                sys.exit(1)
+                            raise
                         # Sync session_id if mid-run compression created a
                         # continuation session. The exit line below reports
                         # session_id to stderr for automation wrappers; without
@@ -16213,11 +16260,28 @@ def main(
                         # (e.g. invalid model slug → provider 4xx). Mirrors the
                         # interactive CLI path. Write to stderr so piped stdout
                         # stays clean for automation wrappers.
-                        if (
+                        _failed = isinstance(result, dict) and bool(
+                            result.get("failed") or result.get("partial")
+                        )
+                        if json_output and (_failed or not cli.session_id):
+                            print("Hermes JSON chat failed", file=sys.stderr)
+                        elif json_output:
+                            print(
+                                json.dumps(
+                                    {
+                                        "protocol": "hermes.chat.result.v1",
+                                        "reply": response,
+                                        "session_id": cli.session_id,
+                                    },
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                )
+                            )
+                        elif (
                             not response
                             and isinstance(result, dict)
                             and result.get("error")
-                            and (result.get("failed") or result.get("partial"))
+                            and _failed
                         ):
                             print(f"Error: {result['error']}", file=sys.stderr)
                         elif response:
@@ -16230,14 +16294,15 @@ def main(
                         # out (→ sticky block). Gated on the env vars the
                         # dispatcher sets in `_default_spawn`; a no-op for every
                         # normal worker and every non-kanban `-q` run.
-                        if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+                        if not json_output and os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
                             try:
                                 _run_kanban_goal_loop_q(cli, response)
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
 
                         # Session ID goes to stderr so piped stdout is clean.
-                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                        if not json_output:
+                            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
                         # Ensure proper exit code for automation wrappers.
                         #
@@ -16252,7 +16317,7 @@ def main(
                         # permanently block the card. Non-kanban runs keep the
                         # plain 0/1 contract automation wrappers expect.
                         _exit_code = 0
-                        if isinstance(result, dict) and result.get("failed"):
+                        if _failed:
                             _exit_code = 1
                             if os.environ.get("HERMES_KANBAN_TASK") and result.get(
                                 "failure_reason"
@@ -16266,7 +16331,9 @@ def main(
                                     _exit_code = 1
                         sys.exit(_exit_code)
 
-                # Exit with error code if credentials or agent init fails
+                # Exit with error code if credentials or agent init fails.
+                if json_output:
+                    print("Hermes JSON chat failed", file=sys.stderr)
                 sys.exit(1)
             else:
                 # Single-query mode (`hermes chat -q "…"`): skip the welcome

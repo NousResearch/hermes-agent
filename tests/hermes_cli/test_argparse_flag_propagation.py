@@ -109,6 +109,44 @@ class TestChatVerboseArg:
         assert "verbose" not in captured
 
 
+class TestChatJsonArg:
+    def test_json_flag_is_parsed(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["chat", "--json"])
+
+        assert args.json_output is True
+
+    def test_cmd_chat_forwards_json_and_implies_quiet(self, monkeypatch):
+        import types
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(["chat", "--json"])
+        captured = {}
+        fake_cli = types.ModuleType("cli")
+        fake_cli.main = lambda **kwargs: captured.update(kwargs)
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        fake_banner.prefetch_update_check = lambda: None
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        fake_skills_sync.sync_skills = lambda quiet=True: None
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+
+        main_mod.cmd_chat(args)
+
+        assert captured["json_output"] is True
+        assert captured["quiet"] is True
+
+
 class TestYoloEnvVar:
     """Verify --yolo sets HERMES_YOLO_MODE regardless of flag position.
 

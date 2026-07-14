@@ -163,6 +163,69 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
     expect(merged[0].sessions).toHaveLength(1)
   })
 
+  it('deduplicates Windows worktree paths across separator and case variants', () => {
+    const repo = {
+      id: String.raw`D:\IvoDimitrov-Universe`,
+      path: String.raw`D:\IvoDimitrov-Universe`,
+      groups: [
+        lane({
+          id: String.raw`D:\IvoDimitrov-Universe-wt-feature`,
+          label: 'IvoDimitrov-Universe-wt-feature',
+          isMain: false,
+          path: String.raw`D:\IvoDimitrov-Universe-wt-feature`,
+          sessions: [makeSession(String.raw`D:\IvoDimitrov-Universe-wt-feature`)]
+        })
+      ]
+    }
+    const discovered: HermesGitWorktree[] = [
+      {
+        branch: 'feature',
+        detached: false,
+        isMain: false,
+        locked: false,
+        path: 'd:/ivodimitrov-universe-wt-feature/'
+      }
+    ]
+
+    const merged = mergeRepoWorktreeGroups(repo, discovered)
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0].sessions).toHaveLength(1)
+    expect(merged[0].path).toBe(String.raw`D:\IvoDimitrov-Universe-wt-feature`)
+  })
+
+  it('keeps one home lane when the Windows main checkout uses mixed separators', () => {
+    const repo = {
+      id: String.raw`D:\IvoDimitrov-Universe`,
+      path: String.raw`D:\IvoDimitrov-Universe`,
+      groups: [
+        lane({
+          id: String.raw`D:\IvoDimitrov-Universe::branch::master`,
+          label: 'master',
+          isMain: true,
+          path: String.raw`D:\IvoDimitrov-Universe`,
+          sessions: [makeSession(String.raw`D:\IvoDimitrov-Universe`)]
+        })
+      ]
+    }
+    const discovered: HermesGitWorktree[] = [
+      {
+        branch: 'master',
+        detached: false,
+        isMain: true,
+        locked: false,
+        path: 'D:/IvoDimitrov-Universe'
+      }
+    ]
+
+    const merged = mergeRepoWorktreeGroups(repo, discovered)
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0].isHome).toBe(true)
+    expect(merged[0].path).toBe(repo.path)
+    expect(merged[0].sessions).toHaveLength(1)
+  })
+
   it('is a no-op when git worktree list is unavailable (remote backend)', () => {
     const groups = [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
 

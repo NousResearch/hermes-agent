@@ -553,6 +553,49 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
                 _ttfb_timeout = _ttfb_cap
 
+    # Ensure the fast-reconnect no-byte TTFB watchdog can actually fire well
+    # before the blunt wall-clock stale timer. When the TTFB cutoff (default
+    # 120s) is >= the stale timeout (default 90s), the stale detector always
+    # wins first: the connection is killed at the stale threshold and the much
+    # cheaper ~2s reconnect never gets a chance. A wedged
+    # chatgpt.com/backend-api/codex socket (observed: ReadError/Broken pipe with
+    # zero stream events) then burns the full stale timeout on every retry —
+    # e.g. 90s x 3 ~= 4.5min — before the fallback model kicks in.
+    #
+    # The no-byte watchdog is already disabled for large requests (>= 25k
+    # tokens) so we never kill a legitimate long prefill. For everything below
+    # that we can afford an aggressive fast-reconnect cutoff: small-context
+    # admission/prefill on the subscription Codex backend clears in a few
+    # seconds, so a ~40s cutoff reconnects 2-3x within the stale budget instead
+    # of waiting it out once. We also clamp to stay strictly below the stale
+    # timeout. Operators can disable via HERMES_CODEX_TTFB_BELOW_STALE=0 or tune
+    # the target via HERMES_CODEX_TTFB_FAST_RECONNECT_SECONDS.
+    if (
+        _ttfb_enabled
+        and _codex_watchdog_enabled
+        and _env_float("HERMES_CODEX_TTFB_BELOW_STALE", 1.0) > 0
+    ):
+        _ttfb_fast = _env_float("HERMES_CODEX_TTFB_FAST_RECONNECT_SECONDS", 40.0)
+        # Clamp below the stale timer (if finite) so the fast-reconnect cutoff
+        # is guaranteed to fire first; keep a small margin.
+        if _stale_timeout != float("inf"):
+            _ttfb_margin = _env_float(
+                "HERMES_CODEX_TTFB_BELOW_STALE_MARGIN_SECONDS", 10.0
+            )
+            _ttfb_fast = min(_ttfb_fast, max(_stale_timeout - _ttfb_margin, 5.0))
+        # Only ever lower the cutoff — never raise an operator-set tighter value.
+        if _ttfb_fast > 0 and _ttfb_timeout > _ttfb_fast:
+            logger.info(
+                "Lowering codex no-byte TTFB cutoff from %.0fs to %.0fs so it "
+                "fires before the %.0fs stale timer (fast reconnect instead of "
+                "waiting out the stale timeout). Set HERMES_CODEX_TTFB_BELOW_STALE=0 "
+                "to disable or HERMES_CODEX_TTFB_FAST_RECONNECT_SECONDS to tune.",
+                _ttfb_timeout,
+                _ttfb_fast,
+                _stale_timeout,
+            )
+            _ttfb_timeout = _ttfb_fast
+
     _codex_idle_enabled = _codex_watchdog_enabled
     _codex_idle_timeout = _env_float(
         "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS",

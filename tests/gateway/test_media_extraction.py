@@ -159,6 +159,30 @@ caption
         tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
         assert tags == ["MEDIA:/tmp/voice.ogg"]
         assert voice is True
+
+    def test_gateway_auto_append_keeps_weather_image_media_tag(self):
+        """The restricted weather renderer is an intentional media producer."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Weather forecast as an image"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_weather", "function": {"name": "get_weather_image"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": '{"success": true, "media": "MEDIA:/tmp/weather.png"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/weather.png"]
+        assert voice is False
     
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""

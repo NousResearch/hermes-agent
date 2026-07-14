@@ -3949,10 +3949,29 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 for block in (result.content or []):
                     if hasattr(block, "text"):
                         error_text += block.text
+                # Try to extract a human-readable message from JSON error
+                # bodies to avoid double-encoding (issue #47867).
+                display_text = error_text or "MCP tool returned an error"
+                if error_text:
+                    try:
+                        parsed = json.loads(error_text)
+                        if isinstance(parsed, dict):
+                            # Walk common nested shapes: error.message,
+                            # error.msg, message, msg, detail
+                            inner = parsed
+                            for key in ("error", "details"):
+                                if isinstance(inner.get(key), dict):
+                                    inner = inner[key]
+                            for key in ("message", "msg", "detail",
+                                        "description", "error"):
+                                val = inner.get(key)
+                                if isinstance(val, str) and val:
+                                    display_text = val
+                                    break
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        pass
                 return json.dumps({
-                    "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
-                    )
+                    "error": _sanitize_error(display_text)
                 }, ensure_ascii=False)
 
             # Collect text from content blocks. MCP tool results can also

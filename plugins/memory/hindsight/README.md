@@ -120,6 +120,21 @@ Available in `hybrid` and `tools` memory modes:
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
 | `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
+| `hindsight_list_mental_models` | List all mental models with optional tag filtering; shows name, ID, staleness, and last refresh time |
+| `hindsight_get_mental_model` | Get full details of a specific mental model by ID (name, query, content, tags, trigger, freshness) |
+| `hindsight_create_mental_model` | Create a new mental model with a source query, tags, max tokens, and optional trigger configuration |
+| `hindsight_update_mental_model` | Update a mental model's metadata (name, source query, tags, max tokens, trigger); only provided fields are sent |
+| `hindsight_refresh_mental_model` | Manually trigger a refresh of a mental model, re-running its source query against current memories |
+| `hindsight_delete_mental_model` | Permanently delete a mental model and its refresh schedule |
+
+### Mental Models
+
+Mental models are cached reflections on queries that Hindsight periodically refreshes. They let the agent maintain synthesized views of evolving memory content — e.g., "What do I know about project X so far?" that updates as new facts arrive. Each mental model has:
+
+- **source_query** — the reflection prompt run against memories
+- **tags** — scope which memories are considered during reflection
+- **trigger** — controls refresh behavior (mode: `full`/`delta`, refresh after consolidation, fact type filtering)
+- **staleness** — Hindsight tracks whether the model's content is current or needs refreshing
 
 ## Environment Variables
 

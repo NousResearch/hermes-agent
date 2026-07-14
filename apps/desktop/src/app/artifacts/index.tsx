@@ -216,7 +216,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     const titles = [...new Set(artifacts.map(artifact => artifact.sessionTitle).filter(Boolean))].slice(0, 2)
 
-    const hints = [...extensions.map(ext => t.common.tryHint(`.${ext}`)), ...titles.map(title => t.common.tryHint(title))]
+    const hints = [
+      ...extensions.map(ext => t.common.tryHint(`.${ext}`)),
+      ...titles.map(title => t.common.tryHint(title))
+    ]
 
     return hints.length > 0 ? hints : undefined
   }, [artifacts, t])

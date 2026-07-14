@@ -7,6 +7,7 @@
   perSystem = { pkgs, lib, self', ... }:
     let
       hermes-agent = self'.packages.default;
+      hermes-browser = self'.packages.browser;
       hermesVenv = hermes-agent.hermesVenv;
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
@@ -247,6 +248,31 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: Node v$NODE_MAJOR >= 20"
 
           echo "=== All HERMES_NODE checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify the opt-in local browser runtime without bloating the default package.
+        browser-runtime = pkgs.runCommand "hermes-browser-runtime" { } ''
+          set -e
+          echo "=== Checking agent-browser CLI ==="
+          ${lib.getExe hermes-browser.agentBrowser} --version
+          echo "PASS: agent-browser CLI runs"
+
+          echo "=== Checking Chromium wiring ==="
+          test -x ${lib.getExe pkgs.chromium} || \
+            (echo "FAIL: Chromium binary missing"; exit 1)
+          grep -q "${hermes-browser.agentBrowser}/bin" ${hermes-browser}/bin/hermes || \
+            (echo "FAIL: agent-browser not present in browser wrapper PATH"; exit 1)
+          grep -q "AGENT_BROWSER_EXECUTABLE_PATH='${lib.getExe pkgs.chromium}'" ${hermes-browser}/bin/hermes || \
+            (echo "FAIL: AGENT_BROWSER_EXECUTABLE_PATH not set in browser wrapper"; exit 1)
+          grep -q "HERMES_BUNDLED_LOCALES" ${hermes-browser}/bin/hermes || \
+            (echo "FAIL: HERMES_BUNDLED_LOCALES not set in browser wrapper"; exit 1)
+          if grep -q "AGENT_BROWSER_EXECUTABLE_PATH" ${hermes-agent}/bin/hermes; then
+            echo "FAIL: default package unexpectedly includes Chromium"; exit 1
+          fi
+          echo "PASS: Chromium and wrapper wiring present"
+
           mkdir -p $out
           echo "ok" > $out/result
         '';

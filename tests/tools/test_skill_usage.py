@@ -786,7 +786,7 @@ def test_end_to_end_telemetry_tracked_but_lifecycle_refused(skills_home):
 
 def test_usage_report_covers_all_provenance(skills_home):
     """usage_report() surfaces every skill with provenance, unlike the
-    curator-scoped agent_created_report()."""
+    curator-scoped curated_report()."""
     from tools.skill_usage import (
         bump_use, usage_report, mark_agent_created,
     )

@@ -136,6 +136,7 @@ class ProcessSession:
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _reaper_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
 
 
@@ -694,6 +695,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        notify_on_complete: bool = False,
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -712,6 +714,7 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
+            notify_on_complete=notify_on_complete,
         )
 
         if use_pty:
@@ -787,7 +790,8 @@ class ProcessRegistry:
         session.host_start_time = self._safe_host_start_time(session.pid)
 
         try:
-            # Start output reader thread
+            # Register before either worker can finish. Fast commands must
+            # still move from running exactly once and enqueue completion.
             reader = threading.Thread(
                 target=self._reader_loop,
                 args=(session,),
@@ -795,12 +799,20 @@ class ProcessRegistry:
                 name=f"proc-reader-{session.id}",
             )
             session._reader_thread = reader
-            reader.start()
+            reaper = threading.Thread(
+                target=self._local_reaper_loop,
+                args=(session,),
+                daemon=True,
+                name=f"proc-reaper-{session.id}",
+            )
+            session._reaper_thread = reaper
 
             with self._lock:
                 self._prune_if_needed()
                 self._running[session.id] = session
 
+            reader.start()
+            reaper.start()
             self._write_checkpoint()
         except Exception:
             # Post-Popen setup failed — kill the orphaned subprocess (and any
@@ -967,16 +979,41 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
-            # Always reap the child to prevent zombie processes.
-            try:
-                session.process.wait(timeout=5)
-            except Exception as e:
-                logger.debug("Process wait timed out or failed: %s", e)
+            # Spawned sessions have a dedicated waiter because descendants can
+            # hold stdout open after the direct child exits. Retain ownership
+            # here for tests/legacy callers that invoke the reader directly.
+            if session._reaper_thread is None:
+                try:
+                    rc = session.process.wait(timeout=5)
+                except Exception as e:
+                    logger.debug("Process wait timed out or failed: %s", e)
+                    rc = session.process.returncode
+                if rc is not None:
+                    self._complete_local_exit(session, rc)
+
+    def _local_reaper_loop(self, session: ProcessSession) -> None:
+        """Own the direct local child lifecycle independently of stdout EOF."""
+        try:
+            rc = session.process.wait()
+        except Exception as e:
+            logger.debug("Process wait failed for %s: %s", session.id, e)
+            return
+
+        reader = session._reader_thread
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=0.1)
+        self._complete_local_exit(session, rc)
+
+    def _complete_local_exit(self, session: ProcessSession, rc: int) -> None:
+        """Publish a reaped local exit once across waiter/poll/reader races."""
+        with session._lock:
+            if session.exited:
+                return
             session.exited = True
             if session.completion_reason != "killed":
-                session.exit_code = session.process.returncode
+                session.exit_code = rc
                 session.completion_reason = "exited"
-            self._move_to_finished(session)
+        self._move_to_finished(session)
 
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
@@ -1227,8 +1264,9 @@ class ProcessRegistry:
     def _reconcile_local_exit(self, session: "ProcessSession") -> None:
         """Reconcile session.exited against the real child process state.
 
-        The reader thread (`_reader_loop`) sets `session.exited = True` only
-        in its `finally` block, which runs when `stdout.read()` returns EOF.
+        The dedicated local reaper normally sets ``session.exited`` as soon as
+        the direct child terminates, independently of stdout EOF. This helper
+        remains the synchronous fallback for callers racing that reaper.
         If the direct `Popen` child has exited but a descendant process (e.g.
         a daemon spawned by `hermes update` restarting the gateway) is still
         holding the stdout pipe open, the reader blocks forever and poll()
@@ -1283,20 +1321,18 @@ class ProcessRegistry:
                 logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
 
         with session._lock:
+            if session.exited:
+                return
             if drained:
                 session.output_buffer += drained
                 if len(session.output_buffer) > session.max_output_chars:
                     session.output_buffer = session.output_buffer[-session.max_output_chars:]
-            session.exited = True
-            if session.completion_reason != "killed":
-                session.exit_code = rc
-                session.completion_reason = "exited"
         logger.info(
             "Reconciled session %s: direct child exited with code %s but reader "
             "was still blocked (orphaned pipe). Flipped to exited.",
             session.id, rc,
         )
-        self._move_to_finished(session)
+        self._complete_local_exit(session, rc)
 
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""

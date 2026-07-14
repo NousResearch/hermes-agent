@@ -106,6 +106,7 @@ CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH = Path(
 )
 CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS = (
     Path("scripts/sql/canonical_writer_foundation_observe_v1.sql"),
+    Path("scripts/sql/canonical_writer_foundation_phase_b_role_v1.sql"),
     Path("scripts/sql/canonical_writer_foundation_legacy_observe_v1.sql"),
     Path("scripts/sql/canonical_writer_foundation_prerequisites_v1.sql"),
     Path("scripts/sql/canonical_writer_foundation_legacy_reconcile_v1.sql"),
@@ -160,8 +161,11 @@ _ACTIVATION_PATHS = (
     Path("/etc/hermes/config.yaml"),
 )
 _STOPPED_SERVICE_UNITS = (
+    "muncho-canary-discord-edge.service",
     "muncho-discord-egress.service",
     "muncho-canonical-writer.service",
+    "muncho-canonical-writer-export.service",
+    "muncho-canonical-writer-export.timer",
     "hermes-cloud-gateway.service",
 )
 _SERVICE_PROPERTIES = (

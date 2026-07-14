@@ -41,6 +41,7 @@ EXPECTED_TRACKED_RELEASE_ARTIFACTS = (
     "scripts/sql/canonical_writer_canary_bootstrap_retire_v1.sql",
     "scripts/sql/canonical_writer_v1.sql",
     "scripts/sql/canonical_writer_foundation_observe_v1.sql",
+    "scripts/sql/canonical_writer_foundation_phase_b_role_v1.sql",
     "scripts/sql/canonical_writer_foundation_legacy_observe_v1.sql",
     "scripts/sql/canonical_writer_foundation_prerequisites_v1.sql",
     "scripts/sql/canonical_writer_foundation_legacy_reconcile_v1.sql",
@@ -115,6 +116,7 @@ def test_tracked_release_artifact_inventory_is_exact_and_complete():
         for path in writer_release.CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS
     ) == (
         "canonical_writer_foundation_observe_v1.sql",
+        "canonical_writer_foundation_phase_b_role_v1.sql",
         "canonical_writer_foundation_legacy_observe_v1.sql",
         "canonical_writer_foundation_prerequisites_v1.sql",
         "canonical_writer_foundation_legacy_reconcile_v1.sql",

@@ -148,6 +148,7 @@ _MAX_PUBLIC_JSON_BYTES = 4 * 1024 * 1024
 
 _ARTIFACT_FILENAMES: Mapping[str, str] = {
     "observe": "canonical_writer_foundation_observe_v1.sql",
+    "phase_b_role": "canonical_writer_foundation_phase_b_role_v1.sql",
     "legacy_observe": "canonical_writer_foundation_legacy_observe_v1.sql",
     "prerequisites": "canonical_writer_foundation_prerequisites_v1.sql",
     "legacy_reconcile": "canonical_writer_foundation_legacy_reconcile_v1.sql",

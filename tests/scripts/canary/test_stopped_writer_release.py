@@ -203,12 +203,21 @@ def test_fixed_systemctl_observation_is_read_only_and_closed():
 
     states = writer_release._collect_service_states(runner=runner)
 
+    assert writer_release._STOPPED_SERVICE_UNITS == (
+        "muncho-canary-discord-edge.service",
+        "muncho-discord-egress.service",
+        "muncho-canonical-writer.service",
+        "muncho-canonical-writer-export.service",
+        "muncho-canonical-writer-export.timer",
+        "hermes-cloud-gateway.service",
+    )
+
     service_commands = [
         command
         for command in runner.commands
         if command.argv[0] == str(writer_release.DEFAULT_SYSTEMCTL_EXECUTABLE)
     ]
-    assert len(states) == len(service_commands) == 3
+    assert len(states) == len(service_commands) == 6
     for command, unit in zip(service_commands, writer_release._STOPPED_SERVICE_UNITS):
         assert command.argv == (
             "/usr/bin/systemctl",
@@ -247,6 +256,36 @@ def test_service_parser_rejects_every_unsafe_state(field, value):
 
     with pytest.raises(RuntimeError, match="not safely stopped"):
         writer_release._parse_service_observation(unit, raw)
+
+
+def test_live_legacy_discord_edge_blocks_stopped_release_collection():
+    legacy = "muncho-canary-discord-edge.service"
+    assert writer_release._STOPPED_SERVICE_UNITS[0] == legacy
+
+    class LegacyLiveRunner(_PlanRunner):
+        def __call__(self, command):
+            result = super().__call__(command)
+            if command.argv[-1] != legacy:
+                return result
+            values = _service_properties(legacy, loaded=True)
+            values.update({
+                "ActiveState": "active",
+                "SubState": "running",
+                "UnitFileState": "enabled",
+                "MainPID": "4242",
+            })
+            return subprocess.CompletedProcess(
+                command.argv,
+                0,
+                "".join(
+                    f"{name}={values[name]}\n"
+                    for name in writer_release._SERVICE_PROPERTIES
+                ),
+                "",
+            )
+
+    with pytest.raises(RuntimeError, match="not safely stopped"):
+        writer_release._collect_service_states(runner=LegacyLiveRunner())
 
 
 def test_service_parser_accepts_only_exact_absent_or_disabled_state():

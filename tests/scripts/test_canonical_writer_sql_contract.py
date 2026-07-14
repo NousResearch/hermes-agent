@@ -25,6 +25,12 @@ FOUNDATION_PREREQUISITES_SQL_PATH = (
 FOUNDATION_MEMBERSHIP_SQL_PATH = (
     ROOT / "scripts" / "sql" / "canonical_writer_foundation_membership_v1.sql"
 )
+FOUNDATION_PHASE_B_ROLE_SQL_PATH = (
+    ROOT
+    / "scripts"
+    / "sql"
+    / "canonical_writer_foundation_phase_b_role_v1.sql"
+)
 HELPERS_PATH = ROOT / "scripts" / "sql" / "canonical_writer_v1_helpers.json"
 SQL = SQL_PATH.read_text(encoding="utf-8")
 BOOTSTRAP_SQL = BOOTSTRAP_SQL_PATH.read_text(encoding="utf-8")
@@ -33,6 +39,9 @@ FOUNDATION_PREREQUISITES_SQL = FOUNDATION_PREREQUISITES_SQL_PATH.read_text(
     encoding="utf-8"
 )
 FOUNDATION_MEMBERSHIP_SQL = FOUNDATION_MEMBERSHIP_SQL_PATH.read_text(
+    encoding="utf-8"
+)
+FOUNDATION_PHASE_B_ROLE_SQL = FOUNDATION_PHASE_B_ROLE_SQL_PATH.read_text(
     encoding="utf-8"
 )
 
@@ -278,6 +287,76 @@ def test_persistent_memberships_use_provider_native_inherit_without_set():
     assert "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;" not in (
         FOUNDATION_MEMBERSHIP_SQL
     )
+
+
+def test_phase_b_role_artifact_is_fixed_preterminal_and_minimal():
+    required_bindings = {
+        "release_revision",
+        "role_artifact_sha256",
+        "initial_observation_sha256",
+        "approved_plan_sha256",
+    }
+    observed_bindings = set(re.findall(
+        r"muncho\.canonical_writer_phase_b_([a-z0-9_]+)",
+        FOUNDATION_PHASE_B_ROLE_SQL,
+    )) - {"role_outcome"}
+
+    assert observed_bindings == required_bindings
+    assert "muncho_canary_brain" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "ai_platform_brain" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "server_version_num" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "^muncho_canary_admin_[0-9a-f]{16}$" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "SET LOCAL ROLE cloudsqlsuperuser;" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "RESET ROLE;" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert FOUNDATION_PHASE_B_ROLE_SQL.count(
+        "CREATE ROLE canonical_brain_canary_bootstrap"
+    ) == 1
+    assert FOUNDATION_PHASE_B_ROLE_SQL.count(
+        "GRANT CONNECT ON DATABASE muncho_canary_brain"
+    ) == 1
+    assert len(re.findall(r"\bGRANT\b", FOUNDATION_PHASE_B_ROLE_SQL)) == 1
+    assert "REVOKE" not in FOUNDATION_PHASE_B_ROLE_SQL
+    assert re.search(r"(?<!NO)LOGIN\b", FOUNDATION_PHASE_B_ROLE_SQL) is None
+    assert re.search(r"\bPASSWORD\b", FOUNDATION_PHASE_B_ROLE_SQL) is None
+    assert "NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE" in (
+        FOUNDATION_PHASE_B_ROLE_SQL
+    )
+    assert "NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1" in (
+        FOUNDATION_PHASE_B_ROLE_SQL
+    )
+    assert "temporary_admin_delete_required', true" in (
+        FOUNDATION_PHASE_B_ROLE_SQL
+    )
+    assert "preterminal', true" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "secret_material_recorded', false" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "grantor.rolname = 'cloudsqladmin'" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "grantor', 'cloudsqlsuperuser'" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "pg_catalog.pg_shdepend" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "dependency.deptype = 'a'" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "adopted_same_admin_predelete" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "adopted_zero_membership" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "managed_cloudsqladmin_hba_boundary_separate', true" in (
+        FOUNDATION_PHASE_B_ROLE_SQL
+    )
+    for forbidden in (
+        "safe_to_start",
+        "CREATE USER",
+        "CREATE SCHEMA",
+        "CREATE TABLE",
+        "CREATE FUNCTION",
+        "ALTER ROLE",
+        "GRANT TEMP",
+        "GRANT CREATE",
+        "GRANT USAGE",
+        "GRANT EXECUTE",
+        "GRANT SELECT",
+        "GRANT INSERT",
+        "GRANT UPDATE",
+        "GRANT DELETE",
+        "canonical_event_log",
+        "legacy_quarantine",
+    ):
+        assert forbidden not in FOUNDATION_PHASE_B_ROLE_SQL
 
 
 def test_canary_bootstrap_retirement_is_exact_idempotent_canonical_truth():

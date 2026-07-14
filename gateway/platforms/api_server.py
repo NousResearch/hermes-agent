@@ -3448,6 +3448,19 @@ class APIServerAdapter(BasePlatformAdapter):
             # If no instructions provided, carry forward from previous
             if instructions is None:
                 instructions = stored.get("instructions")
+        elif not conversation_history and conversation:
+            # Fallback: if 'conversation' is actually a SessionDB ID, load its history directly.
+            db = self._ensure_session_db()
+            if db:
+                session = db.get_session(conversation)
+                if session:
+                    try:
+                        conversation_history = db.get_messages_as_conversation(conversation)
+                        stored_session_id = conversation
+                        if instructions is None:
+                            instructions = session.get("system_prompt")
+                    except Exception as exc:
+                        logger.warning("Failed to load session history for fallback %s: %s", conversation, exc)
 
         # Append new input messages to history (all but the last become history)
         for msg in input_messages[:-1]:

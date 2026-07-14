@@ -176,12 +176,16 @@ class LSPService:
         self._spawning: Dict[Tuple[str, str], asyncio.Future] = {}
         self._last_used: Dict[Tuple[str, str], float] = {}
         self._state_lock = threading.Lock()
+        self._idle_reaper_task: Optional[asyncio.Task] = None
 
         # Delta baseline: file path → snapshot of diagnostics taken
         # immediately before a write.  ``get_diagnostics_sync`` filters
         # out anything in the baseline so the agent only sees errors
         # introduced by the current edit.
         self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
+
+        if self._enabled and self._idle_timeout > 0:
+            self._loop.run(self._start_idle_reaper(), timeout=2.0)
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
@@ -508,6 +512,7 @@ class LSPService:
         with self._state_lock:
             client = self._clients.get(key)
             if client is not None and client.is_running:
+                self._last_used[key] = time.time()
                 eventlog.log_active(srv.server_id, per_server_root)
                 return client
             spawning = self._spawning.get(key)
@@ -566,7 +571,35 @@ class LSPService:
             with self._state_lock:
                 self._spawning.pop(key, None)
 
+    async def _start_idle_reaper(self) -> None:
+        self._idle_reaper_task = asyncio.create_task(self._idle_reaper_loop())
+
+    async def _idle_reaper_loop(self) -> None:
+        interval = min(60.0, self._idle_timeout)
+        while True:
+            await asyncio.sleep(interval)
+            cutoff = time.time() - self._idle_timeout
+            with self._state_lock:
+                idle_keys = [
+                    key
+                    for key in self._clients
+                    if self._last_used.get(key, 0) < cutoff
+                ]
+                clients = [self._clients.pop(key) for key in idle_keys]
+                for key in idle_keys:
+                    self._last_used.pop(key, None)
+            if clients:
+                await asyncio.gather(
+                    *(client.shutdown() for client in clients),
+                    return_exceptions=True,
+                )
+
     async def _shutdown_async(self) -> None:
+        reaper = self._idle_reaper_task
+        self._idle_reaper_task = None
+        if reaper is not None:
+            reaper.cancel()
+            await asyncio.gather(reaper, return_exceptions=True)
         with self._state_lock:
             clients = list(self._clients.values())
             self._clients.clear()

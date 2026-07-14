@@ -8,6 +8,7 @@ on.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -172,5 +173,35 @@ def test_service_status_includes_clients(mock_pyright):
         info = svc.get_status()
         assert info["enabled"] is True
         assert any(c["server_id"] == "pyright" for c in info["clients"])
+    finally:
+        svc.shutdown()
+
+
+def test_service_reaps_client_after_idle_timeout(mock_pyright):
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("")
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        idle_timeout=0.2,
+    )
+    try:
+        svc.get_diagnostics_sync(str(f))
+        assert svc.get_status()["clients"]
+        client = next(iter(svc._clients.values()))
+        process = client._proc
+        assert process is not None
+
+        deadline = time.monotonic() + 2.0
+        while svc.get_status()["clients"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        while process.returncode is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        assert svc.get_status()["clients"] == []
+        assert process.returncode is not None
     finally:
         svc.shutdown()

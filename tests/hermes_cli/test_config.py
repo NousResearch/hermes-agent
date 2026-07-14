@@ -14,6 +14,7 @@ from hermes_cli.config import (
     ensure_hermes_home,
     get_compatible_custom_providers,
     _explicit_config_paths,
+    get_config_generation,
     _normalize_max_turns_config,
     load_config,
     load_env,
@@ -126,6 +127,46 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+
+class TestConfigGeneration:
+    def test_config_file_change_produces_new_generation(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                yaml.safe_dump({"model": {"default": "first-model"}}),
+                encoding="utf-8",
+            )
+
+            first_config = load_config()
+            first_generation = get_config_generation(first_config)
+
+            config_path.write_text(
+                yaml.safe_dump({"model": {"default": "second-model-longer"}}),
+                encoding="utf-8",
+            )
+
+            second_config = load_config()
+            second_generation = get_config_generation(second_config)
+
+            assert second_config["model"]["default"] == "second-model-longer"
+            assert first_generation.fingerprint != second_generation.fingerprint
+
+    def test_env_reference_change_produces_new_generation(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "MODEL_NAME": "first"}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "model:\n  default: ${MODEL_NAME}\n",
+                encoding="utf-8",
+            )
+
+            first_generation = get_config_generation()
+
+            os.environ["MODEL_NAME"] = "second"
+            second_generation = get_config_generation()
+
+            assert load_config()["model"]["default"] == "second"
+            assert first_generation.fingerprint != second_generation.fingerprint
 
 
 class TestLoadConfigParseFailure:
@@ -1926,5 +1967,3 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
-

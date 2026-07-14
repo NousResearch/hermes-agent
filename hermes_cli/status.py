@@ -13,7 +13,13 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config import (
+    get_config_generation,
+    get_env_path,
+    get_env_value,
+    get_hermes_home,
+    load_config,
+)
 from hermes_cli.models import provider_label
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message,
@@ -129,6 +135,11 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
+    try:
+        config_generation = get_config_generation(config)
+        print(f"  Config Gen:   {config_generation.short}")
+    except Exception:
+        pass
 
     # =========================================================================
     # API Keys
@@ -498,6 +509,15 @@ def show_status(args):
         print(f"  Manager:      {snapshot.manager}")
         if snapshot.gateway_pids:
             print(f"  PID(s):       {_format_gateway_pids(snapshot.gateway_pids)}")
+        try:
+            from gateway.status import read_runtime_status
+
+            runtime_status = read_runtime_status() or {}
+            runtime_generation = runtime_status.get("config_generation")
+            if isinstance(runtime_generation, dict) and runtime_generation.get("short"):
+                print(f"  Config Gen:   {runtime_generation['short']}")
+        except Exception:
+            pass
         if snapshot.has_process_service_mismatch:
             print("  Service:      installed but not managing the current running gateway")
         elif _is_termux() and not snapshot.gateway_pids:

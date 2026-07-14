@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -255,6 +256,27 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+
+
+@dataclass(frozen=True)
+class ConfigGeneration:
+    """Stable fingerprint for the effective config served by this process."""
+
+    fingerprint: str
+    sources: Tuple[Dict[str, Any], ...]
+
+    @property
+    def short(self) -> str:
+        return self.fingerprint[:12]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fingerprint": self.fingerprint,
+            "short": self.short,
+            "sources": [dict(source) for source in self.sources],
+        }
+
+
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -6355,6 +6377,79 @@ def _env_ref_snapshot(obj, snapshot=None):
         for item in obj:
             _env_ref_snapshot(item, snapshot)
     return snapshot
+
+
+def _json_fingerprint(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _file_source_metadata(name: str, path: Path) -> Dict[str, Any]:
+    try:
+        st = path.stat()
+    except OSError:
+        return {"name": name, "path": str(path), "exists": False}
+    return {
+        "name": name,
+        "path": str(path),
+        "exists": True,
+        "mtime_ns": st.st_mtime_ns,
+        "size": st.st_size,
+    }
+
+
+def _effective_config_sources() -> Tuple[Dict[str, Any], ...]:
+    """Return non-secret source metadata that affects the effective config."""
+    sources: list[Dict[str, Any]] = [
+        {
+            "name": "defaults",
+            "fingerprint": _json_fingerprint(DEFAULT_CONFIG),
+        },
+        _file_source_metadata("config", get_config_path()),
+    ]
+
+    from hermes_cli import managed_scope
+
+    managed_dir = managed_scope.get_managed_dir()
+    if managed_dir:
+        sources.append(_file_source_metadata("managed_config", managed_dir / "config.yaml"))
+
+    env_refs: Dict[str, Optional[str]] = {}
+    try:
+        _env_ref_snapshot(read_raw_config(), env_refs)
+    except Exception:
+        pass
+    try:
+        managed_config = managed_scope.load_managed_config()
+        if managed_config:
+            _env_ref_snapshot(managed_config, env_refs)
+    except Exception:
+        pass
+    if env_refs:
+        sources.append({
+            "name": "env_refs",
+            "keys": sorted(env_refs),
+            "fingerprint": _json_fingerprint(env_refs),
+        })
+    return tuple(sources)
+
+
+def get_config_generation(config: Optional[Dict[str, Any]] = None) -> ConfigGeneration:
+    """Return a stable generation for the current effective config.
+
+    The exposed value is a hash only. It is derived from the fully effective
+    config plus source metadata, so config.yaml edits, managed-config edits,
+    and referenced environment value changes all produce a new generation
+    without introducing a mutable runtime control.
+    """
+    with _CONFIG_LOCK:
+        effective = load_config_readonly() if config is None else config
+        sources = _effective_config_sources()
+        fingerprint = _json_fingerprint({
+            "effective_config": effective,
+            "sources": sources,
+        })
+        return ConfigGeneration(fingerprint=fingerprint, sources=sources)
 
 
 def _items_by_unique_name(items):

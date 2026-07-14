@@ -14150,6 +14150,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         button, text reply, or has the confirm gate disabled.
         """
         loop = asyncio.get_running_loop()
+        old_config_generation = None
+        try:
+            from gateway.status import read_runtime_status
+
+            runtime_status = read_runtime_status() or {}
+            runtime_generation = runtime_status.get("config_generation")
+            if isinstance(runtime_generation, dict):
+                old_config_generation = runtime_generation.get("short")
+        except Exception:
+            old_config_generation = None
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
@@ -14183,6 +14193,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 lines.append(t("gateway.reload_mcp.none_connected"))
             else:
                 lines.append(t("gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
+
+            try:
+                from gateway.status import write_runtime_status
+                from hermes_cli.config import get_config_generation
+
+                new_config_generation = get_config_generation()
+                logger.info(
+                    "Gateway config generation on reload: %s -> %s",
+                    old_config_generation or "(unknown)",
+                    new_config_generation.short,
+                )
+                write_runtime_status(config_generation=new_config_generation.to_dict())
+            except Exception:
+                logger.debug("Could not refresh runtime config generation", exc_info=True)
 
             # Refresh cached agents so existing sessions see new MCP tools on
             # their next turn — without this, the user has to `/new` (which

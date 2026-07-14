@@ -460,6 +460,18 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 2000
 
+    def test_write_runtime_status_records_config_generation(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            config_generation={"fingerprint": "abc123", "short": "abc123"},
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["config_generation"]["fingerprint"] == "abc123"
+        assert payload["config_generation"]["short"] == "abc123"
+
     def test_runtime_status_running_pid_rejects_stale_record_for_supervisor_pid(self, monkeypatch):
         """Regression: stale profile runtime state must not mark s6 supervisors live.
 

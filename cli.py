@@ -6590,6 +6590,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
+        try:
+            from hermes_cli.config import get_config_generation
+
+            lines.append(f"Config Gen: {get_config_generation().short}")
+        except Exception:
+            pass
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
@@ -8745,9 +8751,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "image":
             self._handle_image_command(cmd_original)
         elif canonical == "reload":
-            from hermes_cli.config import reload_env
+            from hermes_cli.config import get_config_generation, reload_env
+
+            old_generation = get_config_generation().short
             count = reload_env()
-            print(f"  Reloaded .env ({count} var(s) updated)")
+            new_generation = get_config_generation().short
+            if old_generation != new_generation:
+                logger.info(
+                    "CLI config generation on reload: %s -> %s",
+                    old_generation,
+                    new_generation,
+                )
+                agent = getattr(self, "agent", None)
+                if hasattr(agent, "_invalidate_system_prompt"):
+                    agent._invalidate_system_prompt()
+            print(
+                f"  Reloaded .env ({count} var(s) updated; "
+                f"config {old_generation} -> {new_generation})"
+            )
         elif canonical == "reload-mcp":
             # Interactive reload: confirm first (unless the user has opted out).
             # The auto-reload path (file watcher) calls _reload_mcp directly

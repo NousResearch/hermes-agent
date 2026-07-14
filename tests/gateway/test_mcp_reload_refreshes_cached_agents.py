@@ -82,6 +82,13 @@ def _make_runner_with_cached_agents(num_agents: int = 2):
     return runner
 
 
+def _config_generation(short: str):
+    return SimpleNamespace(
+        short=short,
+        to_dict=lambda: {"short": short, "fingerprint": f"{short}-fingerprint"},
+    )
+
+
 @pytest.mark.asyncio
 async def test_reload_mcp_refreshes_cached_agent_tools():
     """After /reload-mcp succeeds, every cached agent gets its tool list
@@ -106,6 +113,9 @@ async def test_reload_mcp_refreshes_cached_agent_tools():
     ]
 
     with (
+        patch("gateway.status.read_runtime_status", return_value={"config_generation": {"short": "old"}}),
+        patch("gateway.status.write_runtime_status"),
+        patch("hermes_cli.config.get_config_generation", return_value=_config_generation("new")),
         patch("tools.mcp_tool.shutdown_mcp_servers"),
         patch("tools.mcp_tool.discover_mcp_tools", return_value=["HassTurnOn", "HassTurnOff"]),
         patch.dict("tools.mcp_tool._servers", {"homeassistant": object()}, clear=True),
@@ -136,6 +146,9 @@ async def test_reload_mcp_handles_empty_agent_cache():
     assert len(runner._agent_cache) == 0
 
     with (
+        patch("gateway.status.read_runtime_status", return_value={}),
+        patch("gateway.status.write_runtime_status"),
+        patch("hermes_cli.config.get_config_generation", return_value=_config_generation("new")),
         patch("tools.mcp_tool.shutdown_mcp_servers"),
         patch("tools.mcp_tool.discover_mcp_tools", return_value=[]),
         patch.dict("tools.mcp_tool._servers", {}, clear=True),
@@ -164,6 +177,9 @@ async def test_reload_mcp_preserves_per_agent_toolset_overrides():
         return [{"type": "function", "function": {"name": "refreshed"}}]
 
     with (
+        patch("gateway.status.read_runtime_status", return_value={}),
+        patch("gateway.status.write_runtime_status"),
+        patch("hermes_cli.config.get_config_generation", return_value=_config_generation("new")),
         patch("tools.mcp_tool.shutdown_mcp_servers"),
         patch("tools.mcp_tool.discover_mcp_tools", return_value=["refreshed"]),
         patch.dict("tools.mcp_tool._servers", {"homeassistant": object()}, clear=True),
@@ -174,3 +190,24 @@ async def test_reload_mcp_preserves_per_agent_toolset_overrides():
     assert captured_calls, "get_tool_definitions was never called to refresh the cache"
     assert captured_calls[0]["enabled_toolsets"] == ["safe"]
     assert captured_calls[0]["disabled_toolsets"] == ["terminal"]
+
+
+@pytest.mark.asyncio
+async def test_reload_mcp_logs_config_generation_change(caplog):
+    runner = _make_runner_with_cached_agents(num_agents=0)
+
+    with (
+        caplog.at_level("INFO", logger="gateway.run"),
+        patch("gateway.status.read_runtime_status", return_value={"config_generation": {"short": "old-gen"}}),
+        patch("gateway.status.write_runtime_status") as write_status,
+        patch("hermes_cli.config.get_config_generation", return_value=_config_generation("new-gen")),
+        patch("tools.mcp_tool.shutdown_mcp_servers"),
+        patch("tools.mcp_tool.discover_mcp_tools", return_value=[]),
+        patch.dict("tools.mcp_tool._servers", {}, clear=True),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+    ):
+        result = await runner._execute_mcp_reload(_make_event())
+
+    assert isinstance(result, str)
+    write_status.assert_called_once()
+    assert "old-gen -> new-gen" in caplog.text

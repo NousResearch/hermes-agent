@@ -23,6 +23,11 @@ def _resolve_log_path() -> Path:
     return Path(home) / "logs" / "rpe-audit.log"
 
 
+def _resolve_journal_log_path() -> Path:
+    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    return Path(home) / "logs" / "journal-approve-audit.log"
+
+
 def log_rpe_invocation(
     *,
     user_id: str,
@@ -53,3 +58,31 @@ def log_rpe_invocation(
                 f.write(line)
     except Exception as exc:
         _log.warning("RPE audit log write failed: %s", exc)
+
+
+def log_journal_approve_attempt(
+    *,
+    todo_id: str,
+    actor: str,
+    outcome: str,
+) -> None:
+    """Append one journal-approve attempt to the audit log.
+
+    Fields logged: ts, todo_id, actor, outcome.
+    Write failures are logged at WARNING but never raised.
+    """
+    entry = {
+        "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "todo_id": todo_id,
+        "actor": actor,
+        "outcome": outcome,
+    }
+    line = json.dumps(entry, separators=(",", ":")) + "\n"
+    path = _resolve_journal_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _write_lock:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception as exc:
+        _log.warning("Journal approve audit log write failed: %s", exc)

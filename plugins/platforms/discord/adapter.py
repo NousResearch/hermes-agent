@@ -761,6 +761,35 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"true", "1", "yes", "on"}
 
 
+def _read_bedtime_config() -> dict:
+    """Return the bedtime scheduler configuration from environment variables.
+
+    Keys:
+        enabled  — True when DISCORD_BEDTIME_HOUR is set and parseable
+        hour     — int, UTC hour (0-23)
+        minute   — int, UTC minute (0-59, default 0)
+        timeout  — int, seconds the BedtimeView waits for a click (default 300)
+    """
+    raw_hour = os.getenv("DISCORD_BEDTIME_HOUR", "").strip()
+    if not raw_hour:
+        return {"enabled": False, "hour": 0, "minute": 0, "timeout": 300}
+    try:
+        hour = int(raw_hour)
+    except ValueError:
+        return {"enabled": False, "hour": 0, "minute": 0, "timeout": 300}
+    raw_minute = os.getenv("DISCORD_BEDTIME_MINUTE", "0").strip()
+    try:
+        minute = int(raw_minute)
+    except ValueError:
+        minute = 0
+    raw_timeout = os.getenv("DISCORD_BEDTIME_TIMEOUT", "300").strip()
+    try:
+        timeout = max(60, int(raw_timeout))
+    except ValueError:
+        timeout = 300
+    return {"enabled": True, "hour": hour, "minute": minute, "timeout": timeout}
+
+
 def _read_discord_prompt_timeout() -> int:
     """Return the timeout (in seconds) for Discord button views.
 
@@ -875,6 +904,7 @@ class DiscordAdapter(BasePlatformAdapter):
             "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", 3
         )
         self._liveness_task: Optional[asyncio.Task] = None
+        self._bedtime_task: Optional[asyncio.Task] = None
         # True while disconnect() is intentionally closing discord.py. The
         # bot task's done callback uses this to distinguish an operator/service
         # shutdown from a runtime websocket crash.
@@ -1374,6 +1404,119 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
         self._liveness_task = None
 
+    def _start_bedtime_scheduler(self) -> None:
+        """Start the bedtime overnight-sprint scheduler if configured.
+
+        Idempotent: a second call while the task is live is a no-op.
+        The loop fires once per night at DISCORD_BEDTIME_HOUR:DISCORD_BEDTIME_MINUTE (UTC),
+        fetches the current backlog count from Commander, and posts the
+        Start/Skip prompt to DISCORD_HOME_CHANNEL.
+        """
+        cfg = _read_bedtime_config()
+        if not cfg["enabled"]:
+            return
+        if self._bedtime_task and not self._bedtime_task.done():
+            return
+        self._bedtime_task = asyncio.create_task(self._bedtime_scheduler_loop(cfg))
+        logger.info(
+            "[%s] Bedtime scheduler started (fire at %02d:%02d UTC)",
+            self.name, cfg["hour"], cfg["minute"],
+        )
+
+    async def _bedtime_scheduler_loop(self, cfg: dict) -> None:
+        """Loop indefinitely, posting the bedtime prompt once per night."""
+        import datetime
+
+        while True:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            target = now_utc.replace(
+                hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0
+            )
+            if target <= now_utc:
+                target += datetime.timedelta(days=1)
+            delay = (target - now_utc).total_seconds()
+            logger.debug(
+                "[%s] Bedtime scheduler: sleeping %.0fs until %s UTC",
+                self.name, delay, target.isoformat(),
+            )
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+
+            # Fetch backlog count
+            try:
+                from services.hermes.bedtime import fetch_backlog_count
+                backlog_n = await asyncio.to_thread(fetch_backlog_count)
+            except Exception as exc:
+                logger.error(
+                    "[%s] Bedtime: failed to fetch backlog count: %s", self.name, exc
+                )
+                home_channel_id = os.getenv("DISCORD_HOME_CHANNEL", "").strip()
+                if home_channel_id and self._client:
+                    try:
+                        ch = self._client.get_channel(int(home_channel_id))
+                        if ch:
+                            await ch.send(
+                                "❌ Could not fetch backlog count for overnight sprint prompt."
+                                f" Error: {exc}"
+                            )
+                    except Exception:
+                        pass
+                continue
+
+            # Build allowed-user set from env for button auth
+            raw_users = os.getenv("DISCORD_ALLOWED_USERS", "")
+            allowed_user_ids = {
+                u.strip() for u in raw_users.split(",") if u.strip()
+            }
+            # Allow all users when DISCORD_ALLOW_ALL_USERS is set
+            if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                allowed_user_ids = {"*"}
+
+            prompt_text = (
+                f"Backlog has {backlog_n} tickets. Start the overnight sprint?"
+            )
+
+            home_channel_id = os.getenv("DISCORD_HOME_CHANNEL", "").strip()
+            if not home_channel_id or not self._client:
+                logger.warning(
+                    "[%s] Bedtime: DISCORD_HOME_CHANNEL not set; skipping prompt", self.name
+                )
+                continue
+
+            try:
+                ch = self._client.get_channel(int(home_channel_id))
+                if ch is None:
+                    logger.warning(
+                        "[%s] Bedtime: channel %s not found in cache", self.name, home_channel_id
+                    )
+                    continue
+                view = BedtimeView(
+                    backlog_count=backlog_n,
+                    allowed_user_ids=allowed_user_ids,
+                )
+                msg = await ch.send(prompt_text, view=view)
+                view._message = msg
+                logger.info(
+                    "[%s] Bedtime prompt posted (backlog=%d, channel=%s)",
+                    self.name, backlog_n, home_channel_id,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] Bedtime: failed to post prompt: %s", self.name, exc
+                )
+
+    async def _cancel_bedtime_task(self) -> None:
+        """Cancel and await the bedtime scheduler task, if running."""
+        if self._bedtime_task and not self._bedtime_task.done():
+            self._bedtime_task.cancel()
+            try:
+                await self._bedtime_task
+            except asyncio.CancelledError:
+                pass
+        self._bedtime_task = None
+
     async def cancel_background_tasks(self) -> None:
         """Cancel background tasks, but first flush any pending text-batch sends.
 
@@ -1411,6 +1554,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         task.cancel()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
+        await self._cancel_bedtime_task()
         await super().cancel_background_tasks()
 
     def _text_batch_flush_deadline_seconds(self) -> float:
@@ -1672,6 +1816,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
             return
+        self._start_bedtime_scheduler()
         try:
             sync_policy = self._get_discord_command_sync_policy()
             if sync_policy == "off":
@@ -5845,6 +5990,65 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_journal_dev_todos(
+        self,
+        chat_id: str,
+        todos: list,
+        project: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send dev-category journal todos with per-todo [Approve] buttons.
+
+        Each todo gets its own message with a JournalApproveView.
+        Only users in the adapter's allowlist may click Approve (AC2).
+
+        ``todos`` is a list of dicts with keys: id, title, body.
+        ``project`` is the target repo in ``owner/repo`` format.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        if not todos:
+            return SendResult(success=True, message_id="")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            last_msg_id: str = ""
+            for todo in todos:
+                todo_id = str(todo.get("id") or "")
+                title = str(todo.get("title") or "")
+                body = str(todo.get("body") or "")
+                label_title = _truncate_discord_component_text(title, 200)
+                embed = discord.Embed(
+                    title=f"📋 Dev Todo: {label_title}",
+                    description=body[:4000] if body else "(no description)",
+                    color=discord.Color.blurple(),
+                )
+                embed.set_footer(text=f"id: {todo_id}")
+                view = JournalApproveView(
+                    todo_id=todo_id,
+                    title=title,
+                    body=body,
+                    project=project,
+                    allowed_user_ids=self._allowed_user_ids,
+                    allowed_role_ids=self._allowed_role_ids,
+                )
+                msg = await channel.send(embed=embed, view=view)
+                view._message = msg
+                last_msg_id = str(msg.id)
+
+            return SendResult(success=True, message_id=last_msg_id)
+        except Exception as exc:
+            logger.warning("[%s] send_journal_dev_todos failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -6830,7 +7034,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, JournalApproveView, BedtimeView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -7761,6 +7965,275 @@ def _define_discord_view_classes() -> None:
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass
+
+    class JournalApproveView(discord.ui.View):
+        """Single-button [Approve] view for promoting a dev journal todo to the backlog.
+
+        One view instance is created per todo. Clicking [Approve]:
+          1. Auth-checks the clicker against the adapter's allowed users/roles.
+          2. Calls handle_journal_approve() to POST to Commander's /api/tickets/create.
+          3. Confirms in-channel with "✅ Ticket created: #<N>" or an error message.
+          4. Disables the button to prevent duplicate clicks.
+
+        Unauthorised clicks receive an ephemeral rejection reply (AC2).
+        """
+
+        def __init__(
+            self,
+            todo_id: str,
+            title: str,
+            body: str,
+            project: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=_read_discord_prompt_timeout())
+            self.todo_id = todo_id
+            self.title = title
+            self.body = body
+            self.project = project
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids
+            )
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+        async def approve(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This todo has already been approved.", ephemeral=True
+                )
+                return
+
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorised to approve journal todos.", ephemeral=True
+                )
+                return
+
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+            user_id = str(getattr(getattr(interaction, "user", None), "id", "unknown"))
+
+            try:
+                from services.hermes.journal_approve import handle_journal_approve
+                result = handle_journal_approve(
+                    todo_id=self.todo_id,
+                    title=self.title,
+                    body=self.body,
+                    project=self.project,
+                    user_id=user_id,
+                )
+            except Exception as exc:
+                logger.error("journal_approve error for todo=%s: %s", self.todo_id, exc)
+                result = {"success": False, "duplicate": False, "error": str(exc), "ticket_number": None}
+
+            if result.get("duplicate"):
+                reply = f"⚠️ Todo `{self.todo_id}` was already approved — no duplicate ticket created."
+            elif result.get("success"):
+                num = result.get("ticket_number")
+                reply = f"✅ Ticket created: #{num}" if num else "✅ Ticket created."
+            else:
+                reply = f"❌ Could not create ticket: {result.get('error', 'unknown error')}"
+
+            try:
+                await interaction.response.edit_message(content=reply, view=self)
+            except Exception:
+                try:
+                    await interaction.followup.send(content=reply, ephemeral=False)
+                except Exception:
+                    pass
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            msg = getattr(self, "_message", None)
+            if msg:
+                try:
+                    await msg.edit(view=self)
+                except Exception:
+                    pass
+
+    class BedtimeView(discord.ui.View):
+        """Two-button prompt for the bedtime overnight-sprint interaction.
+
+        Posts once per night at the configured DISCORD_BEDTIME_HOUR/MINUTE.
+        Clicking [Start] calls Commander's POST /api/sprints/run (after
+        confirming no sprint is already running).  Clicking [Skip] (or timeout)
+        updates the message and writes an audit log entry.
+
+        Idempotency: self.resolved is set on the first handled interaction;
+        subsequent clicks receive an ephemeral "Already handled" reply.
+        """
+
+        def __init__(
+            self,
+            *,
+            backlog_count: int,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ) -> None:
+            super().__init__(timeout=_read_discord_prompt_timeout())
+            self.backlog_count = backlog_count
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids
+            )
+
+        @discord.ui.button(label="Start", style=discord.ButtonStyle.green, custom_id="bedtime_start")
+        async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "Already handled.", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorised to use this button.", ephemeral=True
+                )
+                return
+
+            self.resolved = True
+            user = getattr(interaction, "user", None)
+            user_id = str(getattr(user, "id", "unknown"))
+            username = getattr(user, "name", "unknown")
+            for child in self.children:
+                child.disabled = True
+
+            from services.hermes import bedtime as _bedtime
+
+            try:
+                sprint_status = await asyncio.to_thread(_bedtime.check_running_sprint)
+            except Exception as exc:
+                logger.error("BedtimeView: check_running_sprint failed: %s", exc)
+                await interaction.response.send_message(
+                    f"❌ Error checking sprint status: {exc}", ephemeral=True
+                )
+                self.resolved = False
+                for child in self.children:
+                    child.disabled = False
+                return
+
+            if sprint_status["running"]:
+                _bedtime.log_bedtime_action(
+                    user_id=user_id,
+                    username=username,
+                    action="skip",
+                    sprint_id=sprint_status.get("sprint_id"),
+                )
+                await interaction.response.send_message(
+                    "A sprint is already running — skipped.", ephemeral=True
+                )
+                return
+
+            result = await asyncio.to_thread(_bedtime.start_sprint)
+            if not result["success"]:
+                _bedtime.log_bedtime_action(
+                    user_id=user_id,
+                    username=username,
+                    action="start",
+                    sprint_id=None,
+                )
+                await interaction.response.send_message(
+                    f"❌ Could not start sprint: {result.get('error', 'unknown error')}",
+                    ephemeral=True,
+                )
+                return
+
+            sprint_id = result["sprint_id"]
+            _bedtime.log_bedtime_action(
+                user_id=user_id,
+                username=username,
+                action="start",
+                sprint_id=sprint_id,
+            )
+            try:
+                await interaction.response.edit_message(
+                    content=f"✅ Overnight sprint started! (ID: {sprint_id})",
+                    view=None,
+                )
+            except Exception:
+                try:
+                    await interaction.followup.send(
+                        content=f"✅ Overnight sprint started! (ID: {sprint_id})"
+                    )
+                except Exception:
+                    pass
+
+        @discord.ui.button(label="Skip", style=discord.ButtonStyle.grey, custom_id="bedtime_skip")
+        async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "Already handled.", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorised to use this button.", ephemeral=True
+                )
+                return
+
+            self.resolved = True
+            user = getattr(interaction, "user", None)
+            user_id = str(getattr(user, "id", "unknown"))
+            username = getattr(user, "name", "unknown")
+            for child in self.children:
+                child.disabled = True
+
+            from services.hermes import bedtime as _bedtime
+            _bedtime.log_bedtime_action(
+                user_id=user_id,
+                username=username,
+                action="skip",
+                sprint_id=None,
+            )
+            try:
+                await interaction.response.edit_message(
+                    content="⏭ Overnight sprint skipped.",
+                    view=self,
+                )
+            except Exception:
+                try:
+                    await interaction.followup.send(
+                        content="⏭ Overnight sprint skipped.", ephemeral=False
+                    )
+                except Exception:
+                    pass
+
+        async def on_timeout(self) -> None:
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            from services.hermes import bedtime as _bedtime
+            _bedtime.log_bedtime_action(
+                user_id="system",
+                username="system",
+                action="timeout",
+                sprint_id=None,
+            )
+            msg = getattr(self, "_message", None)
+            if msg:
+                try:
+                    await msg.edit(
+                        content="⏰ Overnight sprint prompt timed out — no action taken.",
+                        view=self,
+                    )
+                except Exception:
+                    pass
+
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()
 

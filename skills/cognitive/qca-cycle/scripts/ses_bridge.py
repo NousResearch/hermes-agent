@@ -13,31 +13,39 @@ from __future__ import annotations
 import json, os, re, sys, sqlite3
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hermes_home import get_hermes_home
 from qca_engine import Graph, canonical_json, _now
 import hashlib
 
-LEARNED_DIR = os.path.expanduser(os.getenv("QCA_LEARNED_DIR", "~/.hermes/skills/learned"))
+LEARNED_DIR = os.path.expanduser(os.getenv("QCA_LEARNED_DIR", "")) or \
+              str(get_hermes_home() / "skills" / "learned")
 
 
 def verify(path: str) -> bool:
     """Verify a snapshot. Supports canonical SES v5.1 (meta.hash over the whole
     snapshot, SES_CANON_JSON_v1 sorting) and the legacy body/provenance wrapper."""
     doc = json.load(open(path))
+    canon_ok = True
     if "initiator" in doc:  # canonical v5.1
         from qca_engine import _snapshot_hash
         claimed = doc.get("meta", {}).get("hash", "")
         actual = _snapshot_hash(doc)
-        # v5.1 canon lock (§12): a state must reference its kernel
+        # v5.1 canon lock (§12): a state must reference its kernel.
+        # This is an integrity invariant, not a warning — it fails the check.
         if doc.get("snapshot_type") == "STATE_SNAPSHOT" and not (
                 doc["meta"].get("kernel_ref") or doc["meta"].get("kernel_hash")):
-            print("⚠ canon violation: STATE_SNAPSHOT without kernel_ref/kernel_hash")
+            print("❌ canon violation: STATE_SNAPSHOT without kernel_ref/kernel_hash (SES v5.1 §12)")
+            canon_ok = False
     else:  # legacy
         claimed = doc.get("provenance", {}).get("hash", "")
         actual = "sha256:" + hashlib.sha256(canonical_json(doc["body"]).encode()).hexdigest()
-    ok = claimed == actual
-    print(f"{'✅ integrity verified' if ok else '❌ TAMPERED: hash mismatch'}")
+    hash_ok = claimed == actual
+    if not hash_ok:
+        print("❌ TAMPERED: hash mismatch")
+    elif canon_ok:
+        print("✅ integrity verified")
     print(f"  claimed: {claimed}\n  actual:  {actual}")
-    return ok
+    return hash_ok and canon_ok
 
 
 def export_skills(learned_dir: str = LEARNED_DIR):

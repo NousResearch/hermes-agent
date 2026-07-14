@@ -247,6 +247,27 @@ class TestPeerLookupHelpers:
         assert result == ["Role: user"]
         assistant_peer.set_card.assert_called_once_with(["Role: user"], target=session.user_peer_id)
 
+    def test_get_peer_card_falls_back_to_legacy_default_user_peer_id(self):
+        mgr, session = self._make_cached_manager()
+        session.user_peer_id = "w0lf"
+        assistant_peer = MagicMock()
+        assistant_peer.get_card.return_value = []
+        user_peer = MagicMock()
+        user_peer.get_card.return_value = []
+        legacy_user_peer = MagicMock()
+        legacy_user_peer.get_card.return_value = ["Name: w0lf"]
+        peers = {
+            session.assistant_peer_id: assistant_peer,
+            session.user_peer_id: user_peer,
+            "user-default-w0lf": legacy_user_peer,
+        }
+        mgr._get_or_create_peer = MagicMock(side_effect=lambda peer_id: peers[peer_id])
+
+        assert mgr.get_peer_card(session.key) == ["Name: w0lf"]
+        assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
+        user_peer.get_card.assert_called_once_with()
+        legacy_user_peer.get_card.assert_called_once_with()
+
     def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()

@@ -242,7 +242,10 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # editing the managed-scope config.yaml invalidates the cache (see
 # managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
 # changes value (late .env load, in-process rotation — #58514).
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
+_LOAD_CONFIG_CACHE: Dict[
+    str,
+    Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]], bool],
+] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -6799,6 +6802,16 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def load_config_readonly_strict() -> Dict[str, Any]:
+    """Read config without silently substituting defaults or stale values.
+
+    Security gates use this path when an existing malformed or unreadable
+    source must disable execution until the operator repairs it. Missing user
+    and managed config files remain valid and resolve to normal defaults.
+    """
+    return _load_config_impl(want_deepcopy=False, strict_sources=True)
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,
@@ -6916,7 +6929,9 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+def _load_config_impl(
+    *, want_deepcopy: bool, strict_sources: bool = False
+) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
@@ -6957,14 +6972,15 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
         if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
-            # File signatures match, but the cached expansion is only valid if
-            # every ${VAR} it was expanded against still has the same value.
-            # Without this, a load_config() that ran before load_hermes_dotenv()
-            # pins unexpanded literals (e.g. auxiliary.<task>.api_key) for the
-            # life of the process (#58514).
-            env_snapshot = cached[5] if len(cached) > 5 else {}
-            if all(os.environ.get(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+            strict_validated = len(cached) > 6 and cached[6] is True
+            if not strict_sources or strict_validated:
+                # File signatures match, but the cached expansion is only valid
+                # if every ${VAR} it was expanded against still has the same
+                # value. Without this, a load_config() that ran before
+                # load_hermes_dotenv() pins unexpanded literals for the process.
+                env_snapshot = cached[5] if len(cached) > 5 else {}
+                if all(os.environ.get(k) == v for k, v in env_snapshot.items()):
+                    return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -7000,6 +7016,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     e,
                     fallback="last-known-good" if lkg is not None else "defaults",
                 )
+                if strict_sources:
+                    raise
                 if lkg is not None:
                     # save_config() stores the pre-expansion normalized dict
                     # (env-ref templates preserved); the load path stores the
@@ -7018,7 +7036,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                         _LOAD_CONFIG_CACHE[path_key] = (
                             cache_sig[0], cache_sig[1],
                             cache_sig[2], cache_sig[3],
-                            lkg_copy, _empty_env,
+                            lkg_copy, _empty_env, False,
                         )
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
@@ -7029,7 +7047,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # against the process environment, never against user-config-defined refs.
         # This deliberately inverts the usual env-over-config precedence for the
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
-        managed_config = managed_scope.load_managed_config()
+        managed_config = managed_scope.load_managed_config(strict=strict_sources)
         if managed_config:
             managed_expanded = _expand_env_vars(managed_config)
             expanded = _deep_merge(expanded, managed_expanded)
@@ -7040,14 +7058,19 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
             # callers all see the same stable cached object. The cached tuple is
             # (user_mtime, user_size, managed_mtime, managed_size, value,
-            # env_ref_snapshot). The snapshot records the environment values
-            # this expansion was made against so later loads can detect env
-            # drift (late .env load, in-process rotation) — see cache hit above.
+            # env_ref_snapshot, strict_validated). The snapshot records the
+            # environment values this expansion was made against so later loads
+            # can detect env drift (late .env load, in-process rotation).
             cached_copy = copy.deepcopy(expanded)
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+            _LOAD_CONFIG_CACHE[path_key] = (
+                *cache_sig,
+                cached_copy,
+                env_snapshot,
+                strict_sources,
+            )
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.

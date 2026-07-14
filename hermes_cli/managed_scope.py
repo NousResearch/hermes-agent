@@ -78,7 +78,7 @@ def invalidate_managed_cache() -> None:
         _ENV_CACHE.clear()
 
 
-def _cached_read(path: Path, cache: Dict[str, tuple], parse):
+def _cached_read(path: Path, cache: Dict[str, tuple], parse, *, strict: bool = False):
     """Shared (mtime_ns, size)-keyed read. Returns a deepcopy of the parsed value.
 
     Returns ``None`` when the file is absent or fails to parse (fail-open). A
@@ -88,8 +88,12 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     """
     try:
         st = path.stat()
-    except OSError:
+    except FileNotFoundError:
         return None  # absent
+    except OSError:
+        if strict:
+            raise
+        return None
     key = (st.st_mtime_ns, st.st_size)
     path_key = str(path)
     with _CACHE_LOCK:
@@ -106,14 +110,16 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
             path,
             exc,
         )
+        if strict:
+            raise
         return None
     with _CACHE_LOCK:
         cache[path_key] = (key[0], key[1], copy.deepcopy(parsed))
     return parsed
 
 
-def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
+def load_managed_config(*, strict: bool = False) -> dict:
+    """Parse managed config.yaml, optionally rejecting an invalid source."""
     managed_dir = get_managed_dir()
     if managed_dir is None:
         return {}
@@ -121,8 +127,15 @@ def load_managed_config() -> dict:
         managed_dir / "config.yaml",
         _CONFIG_CACHE,
         lambda f: yaml.safe_load(f) or {},
+        strict=strict,
     )
-    return parsed if isinstance(parsed, dict) else {}
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        if strict:
+            raise ValueError("managed config.yaml root must be a mapping")
+        return {}
+    return parsed
 
 
 def load_managed_env() -> Dict[str, str]:

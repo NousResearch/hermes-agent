@@ -16,6 +16,7 @@ from hermes_cli.config import (
     _explicit_config_paths,
     _normalize_max_turns_config,
     load_config,
+    load_config_readonly_strict,
     load_env,
     migrate_config,
     read_raw_config,
@@ -323,6 +324,21 @@ class TestLoadConfigParseFailure:
             time.sleep(0.05)
             cfg.write_text("model:\n  default: test/second\n")
             assert load_config()["model"]["default"] == "test/second"
+
+    def test_strict_read_rejects_corruption_despite_last_known_good(self, tmp_path):
+        from hermes_cli import config as cfg_mod
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text("plugins:\n  entries: {}\n")
+            assert isinstance(load_config_readonly_strict(), dict)
+
+            cfg.write_text("plugins:\n  entries: [broken and deliberately longer\n")
+            assert load_config()["plugins"]["entries"] == {}
+            with pytest.raises(Exception):
+                load_config_readonly_strict()
+
+            cfg_mod._LOAD_CONFIG_CACHE.pop(str(cfg), None)
 
     def test_fresh_process_still_falls_back_to_defaults(self, tmp_path):
         """With no last-known-good (fresh process for this path), a broken
@@ -1926,5 +1942,4 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
 

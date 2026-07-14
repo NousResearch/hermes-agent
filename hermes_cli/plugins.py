@@ -44,6 +44,7 @@ import asyncio
 import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import sys
@@ -629,6 +630,33 @@ class PluginContext:
             agent = getattr(cli, "agent", None) if cli else None
             if agent is not None:
                 kwargs["parent_agent"] = agent
+
+        parent_agent = kwargs.get("parent_agent")
+        middleware_trace = kwargs.get("middleware_trace")
+        try:
+            block_message = resolve_pre_tool_block(
+                tool_name,
+                args,
+                task_id=str(kwargs.get("task_id") or ""),
+                session_id=str(
+                    kwargs.get("session_id")
+                    or getattr(parent_agent, "session_id", "")
+                    or ""
+                ),
+                tool_call_id=str(kwargs.get("tool_call_id") or ""),
+                turn_id=str(kwargs.get("turn_id") or ""),
+                api_request_id=str(kwargs.get("api_request_id") or ""),
+                middleware_trace=(
+                    list(middleware_trace) if isinstance(middleware_trace, list) else None
+                ),
+            )
+        except Exception:
+            # Preserve fail-open behavior for ordinary observer-hook failures.
+            # Required-policy failures are converted to block messages inside
+            # resolve_pre_tool_block().
+            block_message = None
+        if block_message is not None:
+            return json.dumps({"error": block_message}, ensure_ascii=False)
 
         return registry.dispatch(tool_name, args, **kwargs)
 
@@ -2134,6 +2162,7 @@ class _PreToolCallDirective:
 class _RequiredPreToolPolicies:
     plugin_ids: tuple[str, ...] = ()
     invalid_plugin_ids: tuple[str, ...] = ()
+    configuration_error: bool = False
 
 
 def _required_pre_tool_policies(tool_name: str) -> _RequiredPreToolPolicies:
@@ -2152,23 +2181,31 @@ def _required_pre_tool_policies(tool_name: str) -> _RequiredPreToolPolicies:
     the operator's intended guard.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import load_config_readonly_strict
 
-        config = load_config_readonly() or {}
+        config = load_config_readonly_strict() or {}
     except Exception:
-        return _RequiredPreToolPolicies()
+        logger.exception("Required pre_tool_call policy configuration is unreadable")
+        return _RequiredPreToolPolicies(configuration_error=True)
 
-    entries = cfg_get(config, "plugins", "entries", default={})
-    if not isinstance(entries, dict):
+    plugins_config = config.get("plugins", {})
+    if not isinstance(plugins_config, dict):
+        return _RequiredPreToolPolicies(configuration_error=True)
+    if "entries" not in plugins_config:
         return _RequiredPreToolPolicies()
+    entries = plugins_config.get("entries")
+    if not isinstance(entries, dict):
+        return _RequiredPreToolPolicies(configuration_error=True)
 
     required: List[str] = []
     invalid: List[str] = []
     for raw_plugin_id, entry in entries.items():
         if not isinstance(raw_plugin_id, str) or not raw_plugin_id.strip():
-            continue
+            return _RequiredPreToolPolicies(configuration_error=True)
         plugin_id = raw_plugin_id.strip()
-        if not isinstance(entry, dict) or "required_pre_tool_call" not in entry:
+        if not isinstance(entry, dict):
+            return _RequiredPreToolPolicies(configuration_error=True)
+        if "required_pre_tool_call" not in entry:
             continue
         setting = entry.get("required_pre_tool_call")
         if setting is False or setting is None:
@@ -2196,6 +2233,8 @@ def _required_pre_tool_policies(tool_name: str) -> _RequiredPreToolPolicies:
 def required_pre_tool_policy_failure(tool_name: str) -> Optional[str]:
     """Return a sanitized fail-closed message if *tool_name* is protected."""
     policies = _required_pre_tool_policies(tool_name)
+    if policies.configuration_error:
+        return "BLOCKED: required pre_tool_call policy configuration is unavailable"
     if not policies.plugin_ids and not policies.invalid_plugin_ids:
         return None
     return f"BLOCKED: required pre_tool_call policy evaluation failed for {tool_name}"
@@ -2206,6 +2245,14 @@ def _required_policy_block(plugin_id: str, reason: str) -> _PreToolCallDirective
     return _PreToolCallDirective(
         action="block",
         message=f"BLOCKED: required pre_tool_call policy '{plugin_id}' {reason}",
+    )
+
+
+def _required_policy_configuration_block() -> _PreToolCallDirective:
+    logger.error("Required pre_tool_call policy configuration is unavailable")
+    return _PreToolCallDirective(
+        action="block",
+        message="BLOCKED: required pre_tool_call policy configuration is unavailable",
     )
 
 
@@ -2301,6 +2348,8 @@ def _get_pre_tool_call_directive_details(
         "middleware_trace": list(middleware_trace or []),
     }
     policies = _required_pre_tool_policies(tool_name)
+    if policies.configuration_error:
+        return _required_policy_configuration_block()
     if policies.invalid_plugin_ids:
         return _required_policy_block(
             policies.invalid_plugin_ids[0], "has invalid configuration"

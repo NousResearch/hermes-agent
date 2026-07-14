@@ -3179,6 +3179,14 @@ class _CodexTokenCandidate:
     last_refresh_ts: Optional[float]
 
 
+@dataclass(frozen=True)
+class _CodexSiblingRecoveryAnchor:
+    id: str
+    source: str
+    last_refresh: str
+    last_refresh_ts: float
+
+
 def _parse_codex_last_refresh(value: Any) -> Optional[float]:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -3283,6 +3291,88 @@ def _append_codex_candidates_from_store(
         ))
 
 
+def _codex_sibling_recovery_anchor(
+    *,
+    entry_id: Any,
+    entry_source: Any,
+    last_refresh: Any,
+) -> Optional[_CodexSiblingRecoveryAnchor]:
+    source = str(entry_source or "").strip()
+    anchor_id = str(entry_id or "").strip()
+    if not anchor_id or source != "device_code":
+        return None
+    last_refresh_ts = _parse_codex_last_refresh(last_refresh)
+    if last_refresh_ts is None:
+        return None
+    return _CodexSiblingRecoveryAnchor(
+        id=anchor_id,
+        source=source,
+        last_refresh=str(last_refresh).strip(),
+        last_refresh_ts=last_refresh_ts,
+    )
+
+
+def _codex_sibling_recovery_anchor_from_store(
+    auth_store: Dict[str, Any]
+) -> Optional[_CodexSiblingRecoveryAnchor]:
+    pool = auth_store.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        anchor = _codex_sibling_recovery_anchor(
+            entry_id=entry.get("id"),
+            entry_source=entry.get("source"),
+            last_refresh=entry.get("last_refresh"),
+        )
+        if anchor is not None:
+            return anchor
+    return None
+
+
+def _append_matching_sibling_codex_candidate(
+    candidates: List[_CodexTokenCandidate],
+    auth_store: Dict[str, Any],
+    *,
+    profile_name: str,
+    source_rank: int,
+    refresh_skew_seconds: float,
+    anchor: _CodexSiblingRecoveryAnchor,
+) -> None:
+    pool = auth_store.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("id") or "").strip() != anchor.id:
+            continue
+        if str(entry.get("source") or "").strip() != anchor.source:
+            continue
+        last_refresh = entry.get("last_refresh")
+        last_refresh_ts = _parse_codex_last_refresh(last_refresh)
+        if last_refresh_ts is None or last_refresh_ts <= anchor.last_refresh_ts:
+            return
+        tokens = _valid_codex_token_pair(
+            entry,
+            refresh_skew_seconds=refresh_skew_seconds,
+        )
+        if tokens is None:
+            return
+        candidates.append(_CodexTokenCandidate(
+            tokens=tokens,
+            last_refresh=last_refresh if isinstance(last_refresh, str) else None,
+            source=f"sibling:{profile_name}:pool:{anchor.source}",
+            source_rank=source_rank,
+            source_order=len(candidates),
+            last_refresh_ts=last_refresh_ts,
+        ))
+        return
+
+
 def _read_auth_store_readonly(auth_path: Path) -> Dict[str, Any]:
     try:
         raw = json.loads(auth_path.read_text(encoding="utf-8"))
@@ -3353,14 +3443,25 @@ def _find_codex_token_candidate(
     include_current: bool = True,
     include_codex_cli: bool = True,
     refresh_skew_seconds: float = 0,
+    sibling_pool_entry_id: Optional[str] = None,
+    sibling_pool_entry_source: Optional[str] = None,
+    sibling_last_refresh: Optional[str] = None,
 ) -> Optional[_CodexTokenCandidate]:
     """Find a valid Codex token pair without mutating any source store."""
+    current_store: Optional[Dict[str, Any]] = current_auth_store
+    if current_store is None and (
+        include_current
+        or sibling_pool_entry_id is None
+        or sibling_pool_entry_source is None
+        or sibling_last_refresh is None
+    ):
+        current_store = _load_auth_store()
+
     current_candidates: List[_CodexTokenCandidate] = []
     if include_current:
-        current_store = current_auth_store if current_auth_store is not None else _load_auth_store()
         _append_codex_candidates_from_store(
             current_candidates,
-            current_store,
+            current_store or {},
             source_prefix="current",
             source_rank=0,
             refresh_skew_seconds=refresh_skew_seconds,
@@ -3380,14 +3481,23 @@ def _find_codex_token_candidate(
             refresh_skew_seconds=refresh_skew_seconds,
         )
 
-    for index, (profile_name, store) in enumerate(_iter_sibling_codex_auth_stores()):
-        _append_codex_candidates_from_store(
-            candidates,
-            store,
-            source_prefix=f"sibling:{profile_name}",
-            source_rank=100 + (index * 10),
-            refresh_skew_seconds=refresh_skew_seconds,
-        )
+    sibling_anchor = _codex_sibling_recovery_anchor(
+        entry_id=sibling_pool_entry_id,
+        entry_source=sibling_pool_entry_source,
+        last_refresh=sibling_last_refresh,
+    )
+    if sibling_anchor is None and current_store is not None:
+        sibling_anchor = _codex_sibling_recovery_anchor_from_store(current_store)
+    if sibling_anchor is not None:
+        for index, (profile_name, store) in enumerate(_iter_sibling_codex_auth_stores()):
+            _append_matching_sibling_codex_candidate(
+                candidates,
+                store,
+                profile_name=profile_name,
+                source_rank=100 + (index * 10),
+                refresh_skew_seconds=refresh_skew_seconds,
+                anchor=sibling_anchor,
+            )
 
     if include_codex_cli:
         cli_tokens = _import_codex_cli_tokens()
@@ -3414,11 +3524,17 @@ def _recover_codex_tokens_from_shared_sources(
     current_auth_store: Optional[Dict[str, Any]] = None,
     include_current: bool = True,
     refresh_skew_seconds: float = 0,
+    sibling_pool_entry_id: Optional[str] = None,
+    sibling_pool_entry_source: Optional[str] = None,
+    sibling_last_refresh: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     candidate = _find_codex_token_candidate(
         current_auth_store=current_auth_store,
         include_current=include_current,
         refresh_skew_seconds=refresh_skew_seconds,
+        sibling_pool_entry_id=sibling_pool_entry_id,
+        sibling_pool_entry_source=sibling_pool_entry_source,
+        sibling_last_refresh=sibling_last_refresh,
     )
     if candidate is None:
         return None

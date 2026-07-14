@@ -714,6 +714,9 @@ class CredentialPool:
             recovered = auth_mod._recover_codex_tokens_from_shared_sources(
                 current_auth_store=auth_store,
                 include_current=False,
+                sibling_pool_entry_id=entry.id,
+                sibling_pool_entry_source=entry.source,
+                sibling_last_refresh=entry.last_refresh,
             )
             if not isinstance(recovered, dict):
                 return entry

@@ -69,6 +69,26 @@ def _codex_provider(access_token: str, refresh_token: str, last_refresh: str) ->
     }
 
 
+def _codex_pool_entry(
+    *,
+    entry_id: str,
+    access_token: str,
+    refresh_token: str,
+    last_refresh: str,
+    source: str = "device_code",
+) -> dict:
+    return {
+        "id": entry_id,
+        "label": source,
+        "source": source,
+        "auth_type": "oauth",
+        "priority": 0,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "last_refresh": last_refresh,
+    }
+
+
 # ---------------------------------------------------------------------------
 # read_credential_pool — provider-slice reads
 # ---------------------------------------------------------------------------
@@ -376,17 +396,36 @@ def test_codex_profile_missing_current_recovers_from_sibling_profile(profile_env
     from hermes_cli.auth import _read_codex_tokens
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
+    copied_id = "copied-device"
     sibling_dir = profile_env["global"] / "profiles" / "writer"
     sibling_dir.mkdir(parents=True)
+    stale_token = _jwt_with_exp(int(time.time()) - 10)
     access_token = _jwt_with_exp(int(time.time()) + 3600)
 
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(
+        pool={
+            "openai-codex": [_codex_pool_entry(
+                entry_id=copied_id,
+                access_token=stale_token,
+                refresh_token="refresh-stale",
+                last_refresh="2026-01-01T00:00:00Z",
+            )],
+        },
+        providers={},
+    ))
     _write(sibling_dir / "auth.json", _make_auth_store(providers={
         "openai-codex": _codex_provider(
             access_token,
             "refresh-sibling",
             "2026-05-01T00:00:00Z",
         ),
+    }, pool={
+        "openai-codex": [_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=access_token,
+            refresh_token="refresh-sibling",
+            last_refresh="2026-05-01T00:00:00Z",
+        )],
     }))
 
     data = _read_codex_tokens()

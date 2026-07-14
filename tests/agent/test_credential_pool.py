@@ -2654,6 +2654,26 @@ def _codex_auth_store(
     }
 
 
+def _codex_pool_entry(
+    *,
+    entry_id: str,
+    access_token: str,
+    refresh_token: str,
+    last_refresh: str,
+    source: str = "device_code",
+) -> dict:
+    return {
+        "id": entry_id,
+        "label": source,
+        "source": source,
+        "auth_type": "oauth",
+        "priority": 0,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "last_refresh": last_refresh,
+    }
+
+
 def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypatch):
     """When auth.json has newer Codex tokens, the pool entry should adopt them."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -2791,13 +2811,34 @@ def test_sync_codex_entry_from_auth_store_adopts_sibling_tokens_and_clears_statu
     sibling.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(active))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
+    copied_id = "copied-device"
 
     (active / "auth.json").write_text(json.dumps(
-        _codex_auth_store("access-OLD", "refresh-OLD", "2026-01-01T00:00:00Z"),
+        _codex_auth_store(
+            "access-OLD",
+            "refresh-OLD",
+            "2026-01-01T00:00:00Z",
+            pool_entries=[_codex_pool_entry(
+                entry_id=copied_id,
+                access_token="access-OLD",
+                refresh_token="refresh-OLD",
+                last_refresh="2026-01-01T00:00:00Z",
+            )],
+        ),
         indent=2,
     ))
     (sibling / "auth.json").write_text(json.dumps(
-        _codex_auth_store("access-FRESH", "refresh-FRESH", "2026-05-01T00:00:00Z"),
+        _codex_auth_store(
+            "access-FRESH",
+            "refresh-FRESH",
+            "2026-05-01T00:00:00Z",
+            pool_entries=[_codex_pool_entry(
+                entry_id=copied_id,
+                access_token="access-FRESH",
+                refresh_token="refresh-FRESH",
+                last_refresh="2026-05-01T00:00:00Z",
+            )],
+        ),
         indent=2,
     ))
 
@@ -2828,6 +2869,135 @@ def test_sync_codex_entry_from_auth_store_adopts_sibling_tokens_and_clears_statu
     assert synced.last_error_reset_at is None
     active_auth = json.loads((active / "auth.json").read_text())
     assert active_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-FRESH"
+
+
+def test_sync_codex_entry_from_auth_store_ignores_unrelated_sibling_tokens(tmp_path, monkeypatch):
+    """Sibling recovery must not adopt a different copied-entry lineage."""
+    from dataclasses import replace as dc_replace
+    from agent.credential_pool import load_pool, STATUS_DEAD
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    active = root / "profiles" / "coder"
+    sibling = root / "profiles" / "writer"
+    active.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(active))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
+
+    (active / "auth.json").write_text(json.dumps(
+        _codex_auth_store(
+            "access-OLD",
+            "refresh-OLD",
+            "2026-01-01T00:00:00Z",
+            pool_entries=[_codex_pool_entry(
+                entry_id="active-device",
+                access_token="access-OLD",
+                refresh_token="refresh-OLD",
+                last_refresh="2026-01-01T00:00:00Z",
+            )],
+        ),
+        indent=2,
+    ))
+    (sibling / "auth.json").write_text(json.dumps(
+        _codex_auth_store(
+            "access-FRESH",
+            "refresh-FRESH",
+            "2026-05-01T00:00:00Z",
+            pool_entries=[_codex_pool_entry(
+                entry_id="other-device",
+                access_token="access-FRESH",
+                refresh_token="refresh-FRESH",
+                last_refresh="2026-05-01T00:00:00Z",
+            )],
+        ),
+        indent=2,
+    ))
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    stale = dc_replace(
+        entry,
+        last_status=STATUS_DEAD,
+        last_error_code=401,
+        last_error_reason="refresh_token_reused",
+        last_error_message="token reused",
+        last_error_reset_at=time.time() + 3600,
+    )
+    pool._replace_entry(entry, stale)
+    pool._persist()
+
+    synced = pool._sync_codex_entry_from_auth_store(stale)
+
+    assert synced is stale
+    active_auth = json.loads((active / "auth.json").read_text())
+    assert active_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-OLD"
+
+
+def test_sync_codex_entry_from_auth_store_requires_strictly_newer_sibling_rotation(tmp_path, monkeypatch):
+    """Sibling recovery ignores matching copies when the recorded rotation is not newer."""
+    from dataclasses import replace as dc_replace
+    from agent.credential_pool import load_pool, STATUS_DEAD
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    active = root / "profiles" / "coder"
+    sibling = root / "profiles" / "writer"
+    active.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(active))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
+    copied_id = "copied-device"
+
+    (active / "auth.json").write_text(json.dumps(
+        _codex_auth_store(
+            "access-OLD",
+            "refresh-OLD",
+            "2026-05-01T00:00:00Z",
+            pool_entries=[_codex_pool_entry(
+                entry_id=copied_id,
+                access_token="access-OLD",
+                refresh_token="refresh-OLD",
+                last_refresh="2026-05-01T00:00:00Z",
+            )],
+        ),
+        indent=2,
+    ))
+    (sibling / "auth.json").write_text(json.dumps(
+        _codex_auth_store(
+            "access-FRESH",
+            "refresh-FRESH",
+            "2026-05-01T00:00:00Z",
+            pool_entries=[_codex_pool_entry(
+                entry_id=copied_id,
+                access_token="access-FRESH",
+                refresh_token="refresh-FRESH",
+                last_refresh="2026-05-01T00:00:00Z",
+            )],
+        ),
+        indent=2,
+    ))
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    stale = dc_replace(
+        entry,
+        last_status=STATUS_DEAD,
+        last_error_code=401,
+        last_error_reason="refresh_token_reused",
+        last_error_message="token reused",
+        last_error_reset_at=time.time() + 3600,
+    )
+    pool._replace_entry(entry, stale)
+    pool._persist()
+
+    synced = pool._sync_codex_entry_from_auth_store(stale)
+
+    assert synced is stale
+    active_auth = json.loads((active / "auth.json").read_text())
+    assert active_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-OLD"
 
 
 # ---------------------------------------------------------------------------
@@ -2977,22 +3147,28 @@ def _codex_auth_store(
     access_token: str,
     refresh_token: str,
     last_refresh: str | None = None,
+    *,
+    pool_entries: list[dict] | None = None,
 ) -> dict:
     state = {
         "tokens": {
             "access_token": access_token,
             "refresh_token": refresh_token,
+            "id_token": "id-" + access_token,
         },
     }
     if last_refresh is not None:
         state["last_refresh"] = last_refresh
-    return {
+    auth_store = {
         "version": 1,
         "active_provider": "openai-codex",
         "providers": {
             "openai-codex": state
         },
     }
+    if pool_entries is not None:
+        auth_store["credential_pool"] = {"openai-codex": pool_entries}
+    return auth_store
 
 
 def test_is_terminal_codex_oauth_refresh_error():

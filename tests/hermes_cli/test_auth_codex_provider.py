@@ -66,9 +66,9 @@ def _write_codex_profile_auth(
     access_token: str,
     refresh_token: str,
     last_refresh: str,
+    pool_entries: list[dict] | None = None,
 ) -> None:
-    auth_dir.mkdir(parents=True, exist_ok=True)
-    (auth_dir / "auth.json").write_text(json.dumps({
+    auth_store = {
         "version": 1,
         "providers": {
             "openai-codex": {
@@ -80,7 +80,31 @@ def _write_codex_profile_auth(
                 "auth_mode": "chatgpt",
             },
         },
-    }, indent=2))
+    }
+    if pool_entries is not None:
+        auth_store["credential_pool"] = {"openai-codex": pool_entries}
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "auth.json").write_text(json.dumps(auth_store, indent=2))
+
+
+def _codex_pool_entry(
+    *,
+    entry_id: str,
+    access_token: str,
+    refresh_token: str,
+    last_refresh: str,
+    source: str = "device_code",
+) -> dict:
+    return {
+        "id": entry_id,
+        "label": source,
+        "source": source,
+        "auth_type": "oauth",
+        "priority": 0,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "last_refresh": last_refresh,
+    }
 
 
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
@@ -141,6 +165,7 @@ def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, mo
 
 def test_resolve_codex_runtime_credentials_recovers_stale_current_from_fresher_sibling(tmp_path, monkeypatch):
     root, active = _setup_profile_codex_env(tmp_path, monkeypatch)
+    copied_id = "copied-device"
     expired_current = _jwt_with_exp(int(time.time()) - 10)
     older_sibling = _jwt_with_exp(int(time.time()) + 1800)
     fresher_sibling = _jwt_with_exp(int(time.time()) + 3600)
@@ -150,18 +175,36 @@ def test_resolve_codex_runtime_credentials_recovers_stale_current_from_fresher_s
         access_token=expired_current,
         refresh_token="refresh-stale",
         last_refresh="2026-01-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=expired_current,
+            refresh_token="refresh-stale",
+            last_refresh="2026-01-01T00:00:00Z",
+        )],
     )
     _write_codex_profile_auth(
         root / "profiles" / "alpha",
         access_token=older_sibling,
         refresh_token="refresh-older",
         last_refresh="2026-02-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id="other-device",
+            access_token=older_sibling,
+            refresh_token="refresh-older",
+            last_refresh="2026-02-01T00:00:00Z",
+        )],
     )
     _write_codex_profile_auth(
         root / "profiles" / "writer",
         access_token=fresher_sibling,
         refresh_token="refresh-fresher",
         last_refresh="2026-05-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=fresher_sibling,
+            refresh_token="refresh-fresher",
+            last_refresh="2026-05-01T00:00:00Z",
+        )],
     )
 
     monkeypatch.setattr(
@@ -178,6 +221,7 @@ def test_resolve_codex_runtime_credentials_recovers_stale_current_from_fresher_s
 
 def test_resolve_codex_runtime_credentials_does_not_reuse_current_token_inside_refresh_skew(tmp_path, monkeypatch):
     root, active = _setup_profile_codex_env(tmp_path, monkeypatch)
+    copied_id = "copied-device"
     now = int(time.time())
     soon_expiring_current = _jwt_with_exp(now + 60)
     sibling_token = _jwt_with_exp(now + 3600)
@@ -187,12 +231,24 @@ def test_resolve_codex_runtime_credentials_does_not_reuse_current_token_inside_r
         access_token=soon_expiring_current,
         refresh_token="refresh-soon",
         last_refresh="2026-01-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=soon_expiring_current,
+            refresh_token="refresh-soon",
+            last_refresh="2026-01-01T00:00:00Z",
+        )],
     )
     _write_codex_profile_auth(
         root / "profiles" / "writer",
         access_token=sibling_token,
         refresh_token="refresh-sibling",
         last_refresh="2026-05-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=sibling_token,
+            refresh_token="refresh-sibling",
+            last_refresh="2026-05-01T00:00:00Z",
+        )],
     )
 
     monkeypatch.setattr(
@@ -205,6 +261,53 @@ def test_resolve_codex_runtime_credentials_does_not_reuse_current_token_inside_r
     assert resolved["api_key"] == sibling_token
     active_auth = json.loads((active / "auth.json").read_text())
     assert active_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-sibling"
+
+
+def test_resolve_codex_runtime_credentials_does_not_adopt_unrelated_sibling_account(tmp_path, monkeypatch):
+    root, active = _setup_profile_codex_env(tmp_path, monkeypatch)
+    now = int(time.time())
+    soon_expiring_current = _jwt_with_exp(now + 60)
+    sibling_token = _jwt_with_exp(now + 3600)
+
+    _write_codex_profile_auth(
+        active,
+        access_token=soon_expiring_current,
+        refresh_token="refresh-soon",
+        last_refresh="2026-01-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id="active-device",
+            access_token=soon_expiring_current,
+            refresh_token="refresh-soon",
+            last_refresh="2026-01-01T00:00:00Z",
+        )],
+    )
+    _write_codex_profile_auth(
+        root / "profiles" / "writer",
+        access_token=sibling_token,
+        refresh_token="refresh-sibling",
+        last_refresh="2026-05-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id="other-device",
+            access_token=sibling_token,
+            refresh_token="refresh-sibling",
+            last_refresh="2026-05-01T00:00:00Z",
+        )],
+    )
+
+    called = {"count": 0}
+
+    def _fake_refresh(tokens, timeout_seconds):
+        called["count"] += 1
+        return {"access_token": "access-network", "refresh_token": "refresh-network"}
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _fake_refresh)
+
+    resolved = resolve_codex_runtime_credentials(refresh_skew_seconds=300)
+
+    assert called["count"] == 1
+    assert resolved["api_key"] == "access-network"
+    active_auth = json.loads((active / "auth.json").read_text())
+    assert active_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-soon"
 
 
 def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):

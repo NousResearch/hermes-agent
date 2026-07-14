@@ -2059,6 +2059,52 @@ class TestRunJobConfigEnvVarExpansion:
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
 
 
+class TestRunJobConfigNullSections:
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def test_null_agent_section_does_not_crash_cron_model_chain(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "model: gpt-4o-mini\n"
+            "max_turns: 11\n"
+            "agent:\n"
+            "provider_routing:\n"
+            "fallback_providers:\n"
+            "  - null\n"
+            "  - provider: openrouter\n"
+            "    model: gpt-4o-fallback\n"
+        )
+
+        job = {"id": "null-agent-job", "name": "null agent section", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["model"] == "gpt-4o-mini"
+        assert kwargs["max_iterations"] == 11
+        assert kwargs["fallback_model"] == [
+            {"provider": "openrouter", "model": "gpt-4o-fallback"}
+        ]
+
+
 class TestRunJobModelResolution:
     """Verify defensive model resolution for jobs stored with ``model: null``.
 

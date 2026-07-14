@@ -568,6 +568,96 @@ class TestRefreshOauthToken:
         with patch("urllib.request.urlopen", side_effect=Exception("network error")):
             assert _refresh_oauth_token(creds) is None
 
+    def test_refresh_runs_under_auth_store_lock(self, tmp_path, monkeypatch):
+        """The single-use refresh POST must be serialized by the shared auth lock.
+
+        Concurrent anthropic_messages turns / aux tasks / the pool all funnel
+        through _refresh_oauth_token; without the lock they each replay the same
+        single-use refresh token and trigger 429s that exhaust the sole
+        Anthropic credential and force a provider fallback.
+        """
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        lock_calls = []
+        import contextlib
+
+        @contextlib.contextmanager
+        def _fake_lock(timeout_seconds=None):
+            lock_calls.append(timeout_seconds)
+            yield
+
+        monkeypatch.setattr("hermes_cli.auth._auth_store_lock", _fake_lock)
+
+        creds = {
+            "accessToken": "old-token",
+            "refreshToken": "refresh-123",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+        # No concurrently-rotated token on disk → the POST path runs (under lock).
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.refresh_anthropic_oauth_pure",
+            lambda refresh_token, use_json=False: {
+                "access_token": "new-token-abc",
+                "refresh_token": "new-refresh-456",
+                "expires_at_ms": int(time.time() * 1000) + 7200_000,
+            },
+        )
+        monkeypatch.setattr("agent.anthropic_adapter._write_claude_code_credentials", lambda *a, **k: None)
+
+        result = _refresh_oauth_token(creds)
+
+        assert result == "new-token-abc"
+        assert lock_calls, "refresh POST must be wrapped in the shared auth-store lock"
+
+    def test_refresh_adopts_concurrently_rotated_token_without_posting(self, tmp_path, monkeypatch):
+        """A lock waiter must adopt the winner's rotated token, not re-POST.
+
+        Simulates process B entering _refresh_oauth_token after process A has
+        already refreshed and written ~/.claude/.credentials.json. B must return
+        the fresh token and never call refresh_anthropic_oauth_pure again.
+        """
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def _fake_lock(timeout_seconds=None):
+            yield
+
+        monkeypatch.setattr("hermes_cli.auth._auth_store_lock", _fake_lock)
+
+        stale_creds = {
+            "accessToken": "stale-access",
+            "refreshToken": "stale-refresh",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+        # First read (pre-lock adoption check): still stale.
+        # Second read (in-lock): winner has rotated a fresh valid token.
+        reads = [
+            dict(stale_creds),
+            {
+                "accessToken": "winner-access",
+                "refreshToken": "winner-refresh",
+                "expiresAt": int(time.time() * 1000) + 7200_000,
+            },
+        ]
+
+        def _fake_read():
+            return reads.pop(0) if reads else reads_last[0]
+
+        reads_last = [reads[-1]]
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", _fake_read)
+
+        def _should_not_post(*args, **kwargs):
+            raise AssertionError("must adopt rotated token instead of POSTing the consumed refresh token")
+
+        monkeypatch.setattr("agent.anthropic_adapter.refresh_anthropic_oauth_pure", _should_not_post)
+
+        result = _refresh_oauth_token(stale_creds)
+
+        assert result == "winner-access"
+
 
 class TestWriteClaudeCodeCredentials:
     def test_writes_new_file(self, tmp_path, monkeypatch):

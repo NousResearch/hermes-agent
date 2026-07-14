@@ -2230,6 +2230,18 @@ class TestReconnectFailureCleanup:
     """_reconnect() must close and clear _ws and _session on failure
     so stale references don't leak resources."""
 
+    @pytest.fixture(autouse=True)
+    def _disable_reconnect_backoff(self, monkeypatch):
+        # _reconnect(0) reads RECONNECT_BACKOFF[0] (production: 2s) and awaits
+        # it via asyncio.sleep. Stub it to zero so the five tests below still
+        # exercise the full _reconnect() path without burning real wall-clock
+        # time on the production backoff. Patch is scoped to this class and
+        # monkeypatch auto-restores it after each test.
+        monkeypatch.setattr(
+            "gateway.platforms.qqbot.adapter.RECONNECT_BACKOFF",
+            (0,),
+        )
+
     def _make_adapter(self, **extra):
         from gateway.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="test", client_secret="test", **extra))

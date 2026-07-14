@@ -38,10 +38,17 @@ def _resolve_agent_browser(path: str | None) -> str | None:
     )
 
 
+def _has_repo_agent_browser() -> bool:
+    repo_root = Path(__file__).parent.parent
+    local_shim = repo_root / "node_modules" / ".bin" / "agent-browser"
+    return _resolve_agent_browser(str(local_shim)) is not None
+
+
 _DEP_CHECKS = {
     "node": lambda: shutil.which("node") is not None,
     "browser": lambda: (
         _resolve_agent_browser(shutil.which("agent-browser")) is not None
+        or _has_repo_agent_browser()
         or _has_system_browser()
         or _has_hermes_agent_browser()
     ),

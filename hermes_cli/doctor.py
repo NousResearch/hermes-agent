@@ -96,9 +96,12 @@ def _resolve_agent_browser_for_doctor(path: str | None) -> str | None:
 
 def _agent_browser_candidates_for_doctor() -> tuple[str | None, ...]:
     local_bin_dir = PROJECT_ROOT / "node_modules" / ".bin"
+    local_bin = _safe_which("agent-browser", path=str(local_bin_dir)) or str(
+        local_bin_dir / "agent-browser"
+    )
     return (
         _safe_which("agent-browser"),
-        _safe_which("agent-browser", path=str(local_bin_dir)),
+        local_bin,
         *(str(path) for path in agent_browser_managed_shim_candidates(HERMES_HOME)),
     )
 

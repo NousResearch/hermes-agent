@@ -92,6 +92,55 @@ def test_managed_windows_native_fallback_is_consistent(tmp_path, monkeypatch):
     assert browser_tool._find_agent_browser() == native
 
 
+def test_repo_local_native_without_shim_is_consistent(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    package_bin = repo_root / "node_modules" / "agent-browser" / "bin"
+    package_bin.mkdir(parents=True)
+    native = _make_executable(
+        package_bin / "agent-browser-linux-x64",
+        "#!/bin/sh\nexit 0\n",
+    )
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+
+    monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+    monkeypatch.setattr(hermes_constants.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(browser_tool, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(
+        browser_tool,
+        "__file__",
+        str(repo_root / "tools" / "browser_tool.py"),
+    )
+    monkeypatch.setattr(
+        nous_subscription,
+        "__file__",
+        str(repo_root / "hermes_cli" / "nous_subscription.py"),
+    )
+    monkeypatch.setattr(
+        dep_ensure,
+        "__file__",
+        str(repo_root / "hermes_cli" / "dep_ensure.py"),
+    )
+    monkeypatch.setattr(doctor, "PROJECT_ROOT", repo_root)
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(shutil, "which", lambda cmd, path=None: None)
+    monkeypatch.setattr(dep_ensure, "_has_system_browser", lambda: False)
+    monkeypatch.setattr(dep_ensure, "_has_hermes_agent_browser", lambda: False)
+    monkeypatch.setattr(browser_tool, "_cached_agent_browser", None)
+    monkeypatch.setattr(browser_tool, "_agent_browser_resolved", False)
+
+    local_shim = repo_root / "node_modules" / ".bin" / "agent-browser"
+    assert not local_shim.exists()
+    assert browser_tool._find_agent_browser() == native
+    assert nous_subscription._has_agent_browser() is True
+    assert dep_ensure._DEP_CHECKS["browser"]() is True
+    assert any(
+        doctor._resolve_agent_browser_for_doctor(candidate) == native
+        for candidate in doctor._agent_browser_candidates_for_doctor()
+    )
+
+
 def test_ambient_shim_with_managed_node_is_consistent(tmp_path, monkeypatch):
     home = tmp_path / "hermes-home"
     managed_bin = home / "node" / "bin"

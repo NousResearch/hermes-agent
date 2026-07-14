@@ -522,6 +522,12 @@ class HermesACPAgent(acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        # Freeze the process-scoped yolo flag at agent init time — same security
+        # rationale as _YOLO_MODE_FROZEN in tools/approval.py: a mid-process
+        # skill must not be able to flip this and bypass edit approval prompts.
+        from utils import is_truthy_value
+
+        self._yolo_mode_frozen = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -567,6 +573,14 @@ class HermesACPAgent(acp.Agent):
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
+        # When --yolo / HERMES_YOLO_MODE is active, auto-approve edits by
+        # promoting the policy from "ask" to "session" — same escape hatch
+        # that dangerous-command approval already has.  Sensitive paths
+        # (~/.hermes, ~/.ssh, ~/.aws) are still gated by the downstream
+        # sensitive-path check in edit_approval itself, so this never
+        # silently approves writes to auth/config files.
+        if self._yolo_mode_frozen and policy == "ask":
+            policy = "session"
         return policy, state.cwd
 
     @staticmethod

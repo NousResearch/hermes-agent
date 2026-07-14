@@ -1,61 +1,125 @@
 ---
 name: obsidian
 description: Read, search, create, and edit notes in the Obsidian vault.
-platforms: [linux, macos, windows]
 ---
 
-# Obsidian Vault
+# Obsidian Skill
 
-Use this skill for filesystem-first Obsidian vault work: reading notes, listing notes, searching note files, creating notes, appending content, and adding wikilinks.
+Use this skill for filesystem-first work on Obsidian-owned notes: reading,
+listing, searching, creating, appending, editing, and adding wikilinks. Do not
+use Obsidian as the default discovery engine for code, configuration, runtime
+state, or another source whose authoritative location is already known.
 
-## Vault path
+## When to Use
 
-Use a known or resolved vault path before calling file tools.
+- The user asks to read, find, create, or edit an Obsidian note.
+- The requested artifact belongs in the vault.
+- The authoritative source is unknown and vault evidence is genuinely relevant.
 
-The documented vault-path convention is the `OBSIDIAN_VAULT_PATH` environment variable, for example from `${HERMES_HOME:-~/.hermes}/.env`. If it is unset, use `~/Documents/Obsidian Vault`.
+## Prerequisites
 
-File tools do not expand shell variables. Do not pass paths containing `$OBSIDIAN_VAULT_PATH` to `read_file`, `write_file`, `patch`, or `search_files`; resolve the vault path first and pass a concrete absolute path. Vault paths may contain spaces, which is another reason to prefer file tools over shell commands.
+Resolve the authoritative source before accessing the vault. Resolve the vault
+path only when the source-resolution procedure selects Obsidian.
 
-If the vault path is unknown, `terminal` is acceptable for resolving `OBSIDIAN_VAULT_PATH` or checking whether the fallback path exists. Once the path is known, switch back to file tools.
+The documented vault-path convention is the `OBSIDIAN_VAULT_PATH` environment
+variable, for example from `${HERMES_HOME:-~/.hermes}/.env`. If it is unset,
+use `~/Documents/Obsidian Vault`.
 
-## Read a note
+File tools do not expand shell variables. Pass a concrete absolute path to
+`read_file`, `write_file`, `patch`, or `search_files`. Vault paths may contain
+spaces, which is another reason to prefer file tools over shell commands.
 
-Use `read_file` with the resolved absolute path to the note. Prefer this over `cat` because it provides line numbers and pagination.
+If the selected vault path is unknown, `terminal` is acceptable for resolving
+`OBSIDIAN_VAULT_PATH` or checking whether the fallback exists. Once resolved,
+switch back to file tools.
 
-## List notes
+## How to Run
 
-Use `search_files` with `target: "files"` and the resolved vault path. Prefer this over `find` or `ls`.
+### Source resolution
 
-- To list all markdown notes, use `pattern: "*.md"` under the vault path.
-- To list a subfolder, search under that subfolder's absolute path.
+Apply this lookup order before any vault discovery:
 
-## Search
+1. **Explicit source** — If the user provides a path, repository, URL,
+   filename, pull request, or exact authoritative source, access it directly.
+   Use it for the requested evidence without inferring claims it does not
+   support.
+2. **Known canonical home** — Use the source's owning canonical location:
+   - Project governance (including MAIOS) → the canonical GitHub repository or
+     a verified local checkout.
+   - Code and configuration → the owning repository or verified machine config.
+   - Runtime state → the designated runtime location.
+   - Obsidian-owned notes and exploratory knowledge → Obsidian.
+3. **Narrow source index** — When the exact location is not known, use the
+   owning repository map, manifest, or source-specific index.
+4. **Obsidian discovery** — Use vault indexes and search only when the artifact
+   belongs in Obsidian, the user requests vault research, or the source is
+   unknown and vault evidence is genuinely relevant.
+5. **Broad discovery** — Search broadly only as the final fallback.
 
-Use `search_files` for both filename and content searches. Prefer this over `grep`, `find`, or `ls`.
+Enforce these rules:
 
-- For filenames, use `search_files` with `target: "files"` and a filename `pattern`.
-- For note contents, use `search_files` with `target: "content"`, the content regex as `pattern`, and `file_glob: "*.md"` when you want to restrict matches to markdown notes.
+- Never scan Obsidian merely because a task concerns system configuration.
+- Never reconstruct repository or configuration evidence from vault notes when
+  the live authoritative source is available.
+- Do not repeat a vault search after resolving the direct source.
+- For a routing-hook investigation, search known Codex hook, config, and plugin
+  locations directly unless evidence shows the target hook is vault-owned.
+- If a direct source is inaccessible, disclose that fact and use one deliberate
+  fallback; do not silently change authority.
+- Preserve vault privacy and organization rules.
+- Preserve one canonical home for each artifact. Patch the generator or source
+  that owns generated copies, regenerate them, and verify parity instead of
+  editing an installed or cached copy into permanent divergence.
 
-## Create a note
+### Quick reference
 
-Use `write_file` with the resolved absolute path and the full markdown content. Prefer this over shell heredocs or `echo` because it avoids shell quoting issues and returns structured results.
+| Operation | Preferred tool |
+|---|---|
+| Read a note | `read_file` |
+| List notes | `search_files` with `target: "files"` |
+| Search note contents | `search_files` with `target: "content"` |
+| Create or rewrite a note | `write_file` |
+| Focused edit or anchored append | `patch` |
 
-## Append to a note
+## Procedure
 
-Prefer a native file-tool workflow when it is not awkward:
+1. Apply the source-resolution order. Stop if a direct non-vault source answers
+   the request.
+2. If Obsidian is selected, resolve the concrete absolute vault path.
+3. Use the narrowest appropriate vault operation:
+   - Read a known note with `read_file`.
+   - List Markdown notes with `search_files`, `target: "files"`, and
+     `pattern: "*.md"` under the selected folder.
+   - Search note contents with `search_files`, `target: "content"`, the content
+     regex as `pattern`, and `file_glob: "*.md"` when appropriate.
+   - Create or rewrite a note with `write_file` and complete Markdown content.
+   - Use `patch` for a focused edit or an anchored append with stable context.
+4. For a simple append without stable context, use `terminal` only when it is
+   the clearest safe option.
+5. Use `[[Note Name]]` syntax for Obsidian wikilinks.
 
-- Read the target note with `read_file`.
-- Use `patch` for an anchored append when there is stable context, such as adding a section after an existing heading or appending before a known trailing block.
-- Use `write_file` when rewriting the whole note is clearer than constructing a fragile patch.
+## Pitfalls
 
-For an anchored append with `patch`, replace the anchor with the anchor plus the new content.
+- A system topic is not evidence that its source lives in Obsidian.
+- Vault notes may summarize stale repository or machine state; prefer the live
+  authoritative source whenever it is available.
+- Do not pass unresolved variables such as `$OBSIDIAN_VAULT_PATH` to file tools.
+- Do not broaden a vault search after a direct source has been resolved.
+- Do not overwrite a generated copy without updating its canonical source and
+  running the owning regeneration path.
 
-For a simple append with no stable context, `terminal` is acceptable if it is the clearest safe option.
+## Verification
 
-## Targeted edits
+Validate source selection with these cases:
 
-Use `patch` for focused note changes when the current content gives you stable context. Prefer this over shell text rewriting.
-
-## Wikilinks
-
-Obsidian links notes with `[[Note Name]]` syntax. When creating notes, use these to link related content.
+- Exact hook file or config location known → access it directly with zero vault
+  lookup.
+- Exact GitHub repository and pull request known → use GitHub directly with zero
+  vault lookup.
+- User asks for an Obsidian note → use the vault first.
+- Source genuinely unknown but likely recorded in notes → use a narrow vault
+  index, then search.
+- Direct source unavailable → disclose the failure and use one deliberate
+  fallback.
+- Generated skill copy → regenerate it through the owning sync path and verify
+  that it matches the canonical source.

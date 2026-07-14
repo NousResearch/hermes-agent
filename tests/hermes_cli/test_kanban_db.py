@@ -729,10 +729,16 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
 def test_detect_crashed_workers_systemic_failure_fast_block(
     kanban_home, monkeypatch,
 ):
-    """When many tasks crash with the same error, trip the breaker faster."""
+    """When many tasks crash with the same error, the breaker trips after
+    ``protocol_violation_failure_limit`` consecutive crashes (default 3)."""
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    # Use limit=1 to reproduce legacy one-crash-and-block behavior.
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"protocol_violation_failure_limit": 1}},
+    )
 
     with kb.connect() as conn:
         task_ids = []
@@ -754,6 +760,75 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
             task = kb.get_task(conn, tid)
             assert task.status == "blocked", (
                 f"task {tid} should be blocked (systemic), got {task.status}"
+            )
+
+
+def test_detect_crashed_workers_systemic_respects_configurable_limit(
+    kanban_home, monkeypatch,
+):
+    """Systemic crashes use ``protocol_violation_failure_limit`` (default 3)
+    instead of the old hardcoded limit of 1."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        task_ids = []
+        for i in range(4):
+            tid = kb.create_task(conn, title=f"pv-{i}", assignee="a")
+            host = _kb._claimer_id().split(":", 1)[0]
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (70000 + i, f"{host}:w{i}", tid),
+            )
+            task_ids.append(tid)
+        conn.commit()
+
+        # First crash — tasks stay ready (limit is 3, failures now 1).
+        crashed = kb.detect_crashed_workers(conn)
+        assert len(crashed) == 4
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"task {tid} should be ready after 1 crash, got {task.status}"
+            )
+            assert task.consecutive_failures == 1
+
+
+def test_detect_crashed_workers_pv_limit_from_config(
+    kanban_home, monkeypatch,
+):
+    """``kanban.protocol_violation_failure_limit`` overrides the default."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"protocol_violation_failure_limit": 1}},
+    )
+
+    with kb.connect() as conn:
+        task_ids = []
+        for i in range(3):
+            tid = kb.create_task(conn, title=f"cfg-{i}", assignee="a")
+            host = _kb._claimer_id().split(":", 1)[0]
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (60000 + i, f"{host}:w{i}", tid),
+            )
+            task_ids.append(tid)
+        conn.commit()
+
+        # With config limit=1 and 3+ same-fingerprint crashes (systemic),
+        # a single crash should block all tasks.
+        crashed = kb.detect_crashed_workers(conn)
+        assert len(crashed) == 3
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked", (
+                f"task {tid} should be blocked (config limit=1), got {task.status}"
             )
 
 

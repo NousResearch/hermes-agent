@@ -5865,6 +5865,12 @@ DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
+# Failure limit for protocol-violation and systemic crashes. Protocol
+# violations (API timeouts, network errors) are often transient — a higher
+# limit gives the provider time to recover before auto-blocking the task.
+# Overridable via ``kanban.protocol_violation_failure_limit`` in config.yaml.
+DEFAULT_PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
+
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -6724,11 +6730,20 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # ready → blocked with a ``gave_up`` event on top of the ``crashed``
     # event we already emitted.
     #
-    # Protocol-violation crashes force an immediate trip (failure_limit=1)
-    # because clean-exit-without-transition is deterministic: the next
-    # respawn will do exactly the same thing. Better to surface to a
-    # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
-    # times first.
+    # Protocol-violation and systemic crashes use a configurable failure
+    # limit (default 3) to give transient provider errors time to recover
+    # before auto-blocking.  Override via
+    # ``kanban.protocol_violation_failure_limit`` in config.yaml; set to 1
+    # for the legacy one-crash-and-block behavior.
+    pv_limit: int = DEFAULT_PROTOCOL_VIOLATION_FAILURE_LIMIT
+    try:
+        from hermes_cli.config import load_config
+        _kanban_cfg = (load_config().get("kanban") or {})
+        _pv_cfg = _kanban_cfg.get("protocol_violation_failure_limit")
+        if _pv_cfg is not None:
+            pv_limit = max(1, int(_pv_cfg))
+    except Exception:
+        pass
     auto_blocked: list[str] = []
     if crash_details:
         # Fingerprint errors to detect systemic failures.
@@ -6746,7 +6761,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                failure_limit=pv_limit if (protocol_violation or is_systemic) else None,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},

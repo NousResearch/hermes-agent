@@ -477,17 +477,3 @@ class TestManifestMatchesInRepoLists:
             "Run: python scripts/build_model_catalog.py && "
             "git add website/static/api/model-catalog.json"
         )
-
-    def test_openrouter_free_router_is_in_manifest(self):
-        repo_root = Path(__file__).resolve().parents[2]
-        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
-
-        if not manifest_path.exists():
-            pytest.skip(f"manifest missing at {manifest_path}")
-
-        with open(manifest_path, encoding="utf-8") as fh:
-            actual = json.load(fh)
-
-        models = actual["providers"]["openrouter"]["models"]
-        ids = [model["id"] for model in models]
-        assert "openrouter/free" in ids

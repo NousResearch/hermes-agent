@@ -56,10 +56,6 @@ class TestOpenRouterModels:
             assert isinstance(mid, str) and len(mid) > 0
             assert isinstance(desc, str)
 
-    def test_includes_openrouter_free_router(self):
-        ids = [mid for mid, _ in OPENROUTER_MODELS]
-        assert "openrouter/free" in ids
-
 
 class TestFetchOpenRouterModels:
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):

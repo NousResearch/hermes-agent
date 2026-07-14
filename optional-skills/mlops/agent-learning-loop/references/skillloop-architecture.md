@@ -42,7 +42,7 @@ A local SQLite database is enough for the first version. Store:
 - review status
 - export metadata
 
-Keep it under the chosen project root, not under global Hermes state.
+Keep it under the chosen project root, not under live profile-scoped Hermes state.
 
 ### 3. Evaluation engine
 
@@ -143,7 +143,7 @@ Safe first integrations:
 
 Avoid as first integrations:
 
-- Automatically writing to `~/.hermes/memories`
+- Automatically writing to the selected profile's `$HERMES_HOME/memories`
 - Automatically writing to bundled `skills/`
 - Adding fine-tuning dependencies to core install
 - Training jobs that run without user approval

@@ -2774,7 +2774,7 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s' failed initial connection after "
                             "%d attempts, parking until a reconnect is requested: %s",
-                            self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
+                            self.name, initial_retries, exc,
                         )
                         self._error = exc
                         self._ready.set()

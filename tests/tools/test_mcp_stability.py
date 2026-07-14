@@ -1,6 +1,7 @@
 """Tests for MCP stability fixes — event loop handler, PID tracking, shutdown robustness."""
 
 import asyncio
+import logging
 import os
 import signal
 from unittest.mock import patch, MagicMock
@@ -672,7 +673,7 @@ class TestMCPInitialConnectionRetry:
 
         asyncio.get_event_loop().run_until_complete(_run())
 
-    def test_initial_connect_gives_up_after_max_retries(self):
+    def test_initial_connect_gives_up_after_max_retries(self, caplog):
         """Server parks (does not exit) after _MAX_INITIAL_CONNECT_RETRIES failures."""
         from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
 
@@ -687,7 +688,8 @@ class TestMCPInitialConnectionRetry:
                 call_count += 1
                 raise ConnectionError("DNS resolution failed")
 
-            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
                 task = asyncio.ensure_future(server.run({"command": "fake"}))
                 await server._ready.wait()
 
@@ -696,6 +698,11 @@ class TestMCPInitialConnectionRetry:
                 assert "DNS resolution failed" in str(server._error)
                 # 1 initial + N retries = _MAX_INITIAL_CONNECT_RETRIES + 1 total attempts
                 assert call_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+                assert any(
+                    "failed initial connection after "
+                    f"{call_count} attempts" in record.getMessage()
+                    for record in caplog.records
+                )
                 # The task parks for later revival instead of exiting.
                 await asyncio.sleep(0)
                 assert not task.done(), "run task should park, not exit"

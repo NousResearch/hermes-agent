@@ -57,6 +57,31 @@ def _resolve_auto_decompose_settings(
     return enabled, per_tick
 
 
+def _respawn_guard_summary(results: "list[tuple[str, Optional[object]]]") -> str:
+    counts: dict[str, int] = {}
+    for _slug, res in results or []:
+        if res is None:
+            continue
+        for _task_id, reason in getattr(res, "respawn_guarded", []) or []:
+            counts[str(reason)] = counts.get(str(reason), 0) + 1
+    return ", ".join(
+        f"{reason}×{count}" for reason, count in sorted(counts.items())
+    )
+
+
+def _all_spawnable_ready_deferred_by_respawn_guard(
+    results: "list[tuple[str, Optional[object]]]",
+) -> bool:
+    spawnable = 0
+    guarded = 0
+    for _slug, res in results or []:
+        if res is None:
+            continue
+        spawnable += int(getattr(res, "spawnable_ready", 0) or 0)
+        guarded += len(getattr(res, "respawn_guarded", []) or [])
+    return spawnable > 0 and guarded == spawnable
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -1252,9 +1277,23 @@ class GatewayKanbanWatchersMixin:
                         )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                all_ready_guarded = _all_spawnable_ready_deferred_by_respawn_guard(
+                    results or []
+                )
+                if ready_pending and not any_spawned and not all_ready_guarded:
                     bad_ticks += 1
                 else:
+                    if ready_pending and not any_spawned and all_ready_guarded:
+                        summary = _respawn_guard_summary(results or [])
+                        logger.info(
+                            "kanban dispatcher: %d ready deferred by respawn guard: %s",
+                            sum(
+                                int(getattr(res, "spawnable_ready", 0) or 0)
+                                for _slug, res in (results or [])
+                                if res is not None
+                            ),
+                            summary or "unknown",
+                        )
                     bad_ticks = 0
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())

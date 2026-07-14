@@ -8,6 +8,7 @@ that GatewayRunner picks them up via the MRO (behavior-neutral relocation).
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 
@@ -67,3 +68,23 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_all_ready_deferred_by_respawn_guard_helpers():
+    from gateway.kanban_watchers import (
+        _all_spawnable_ready_deferred_by_respawn_guard,
+        _respawn_guard_summary,
+    )
+
+    guarded = SimpleNamespace(
+        spawnable_ready=2,
+        respawn_guarded=[("t1", "active_pr"), ("t2", "active_pr")],
+    )
+    mixed = SimpleNamespace(
+        spawnable_ready=2,
+        respawn_guarded=[("t1", "active_pr")],
+    )
+
+    assert _all_spawnable_ready_deferred_by_respawn_guard([("default", guarded)])
+    assert not _all_spawnable_ready_deferred_by_respawn_guard([("default", mixed)])
+    assert _respawn_guard_summary([("default", guarded)]) == "active_pr×2"

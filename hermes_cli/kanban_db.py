@@ -5908,6 +5908,147 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+_RESPAWN_GUARD_PR_TERMINAL_RE = re.compile(
+    r"\b(merged|closed)\b|머지|닫힘|종결",
+    re.IGNORECASE,
+)
+_RESPAWN_GUARD_PR_NUMBER_RE = re.compile(r"/pull/(\d+)", re.IGNORECASE)
+_RESPAWN_GUARD_PR_STATE_CACHE: dict[str, tuple[int, bool]] = {}
+
+
+def _kanban_config() -> dict:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban") if isinstance(cfg, dict) else {}
+        return kanban_cfg if isinstance(kanban_cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _resolve_respawn_guard_escalation_threshold() -> int:
+    cfg = _kanban_config()
+    raw_enabled = os.environ.get(
+        "HERMES_KANBAN_RESPAWN_GUARD_ESCALATE",
+        str(cfg.get("respawn_guard_escalate", True)),
+    ).strip().lower()
+    if raw_enabled in {"0", "false", "no", "off"}:
+        return 0
+    raw = os.environ.get(
+        "HERMES_KANBAN_RESPAWN_GUARD_MAX_TICKS",
+        str(cfg.get("respawn_guard_max_ticks", "")),
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed >= 0:
+            return parsed
+    return 30
+
+
+def _resolve_respawn_guard_pr_state_cache_seconds() -> int:
+    cfg = _kanban_config()
+    raw = os.environ.get(
+        "HERMES_KANBAN_RESPAWN_GUARD_PR_STATE_CACHE_SECONDS",
+        str(cfg.get("respawn_guard_pr_state_cache_seconds", "")),
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed >= 0:
+            return parsed
+    return 600
+
+
+def _pr_number_from_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    m = _RESPAWN_GUARD_PR_NUMBER_RE.search(url)
+    return m.group(1) if m else None
+
+
+def _github_pr_url_is_open(url: str) -> bool:
+    """Return False when GitHub reports the PR is closed/merged.
+
+    Fail closed in favour of duplicate-PR prevention: if the local ``gh`` probe
+    is unavailable or inconclusive, keep treating the recent PR comment as
+    active. Successful and failed probes are cached briefly so dispatcher ticks
+    do not hit GitHub every time.
+    """
+    ttl = _resolve_respawn_guard_pr_state_cache_seconds()
+    now = int(time.time())
+    if ttl > 0:
+        cached = _RESPAWN_GUARD_PR_STATE_CACHE.get(url)
+        if cached is not None and now - cached[0] < ttl:
+            return cached[1]
+    is_open = True
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", url, "--json", "state", "--jq", ".state"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        if proc.returncode == 0:
+            state = (proc.stdout or "").strip().upper()
+            if state in {"CLOSED", "MERGED"}:
+                is_open = False
+            elif state == "OPEN":
+                is_open = True
+    except Exception:
+        is_open = True
+    if ttl > 0:
+        _RESPAWN_GUARD_PR_STATE_CACHE[url] = (now, is_open)
+    return is_open
+
+
+def _active_pr_comment(
+    conn: sqlite3.Connection, task_id: str, cutoff: int
+) -> Optional[dict[str, str]]:
+    for c in conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id, cutoff),
+    ).fetchall():
+        body = c["body"] or ""
+        match = _RESPAWN_GUARD_PR_URL_RE.search(body)
+        if not match:
+            continue
+        if _RESPAWN_GUARD_PR_TERMINAL_RE.search(body):
+            continue
+        url = match.group(0)
+        if not _github_pr_url_is_open(url):
+            continue
+        return {"url": url, "number": _pr_number_from_url(url) or ""}
+    return None
+
+
+def _consecutive_respawn_guard_events(
+    conn: sqlite3.Connection, task_id: str, reason: str
+) -> int:
+    count = 0
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "ORDER BY id DESC LIMIT 100",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        payload = row["payload"]
+        try:
+            parsed = json.loads(payload) if payload else {}
+        except Exception:
+            parsed = {}
+        if isinstance(parsed, dict) and parsed.get("reason") == reason:
+            count += 1
+            continue
+        break
+    return count
 
 
 @dataclass
@@ -5957,6 +6098,10 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    spawnable_ready: int = 0
+    """Ready, assigned, profile-spawnable tasks considered before guard/claim.
+    Gateway health telemetry uses this to distinguish all-ready-deferred by
+    respawn guard from real spawn stalls."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
@@ -7104,12 +7249,8 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    if _active_pr_comment(conn, task_id, pr_cutoff):
+        return "active_pr"
 
     return None
 
@@ -7462,6 +7603,7 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        result.spawnable_ready += 1
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -7477,11 +7619,35 @@ def _dispatch_once_locked(
             # skipped when reading `hermes kanban tail` — without
             # this the task appears stuck in ready with no diagnosis.
             if not dry_run:
-                with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
-                    )
+                threshold = _resolve_respawn_guard_escalation_threshold()
+                should_escalate = (
+                    threshold > 0
+                    and guard_reason in {"active_pr", "recent_success"}
+                    and _consecutive_respawn_guard_events(
+                        conn, row["id"], guard_reason
+                    ) + 1 >= threshold
+                )
+                if should_escalate:
+                    pr_cutoff = int(time.time()) - _RESPAWN_GUARD_PR_WINDOW
+                    pr_info = _active_pr_comment(conn, row["id"], pr_cutoff) or {}
+                    pr_num = pr_info.get("number") or "unknown"
+                    if guard_reason == "active_pr":
+                        block_reason = (
+                            f"PR #{pr_num} open but unmergeable — external rework needed"
+                        )
+                    else:
+                        block_reason = (
+                            "recent successful run kept respawn-guarding this "
+                            "ready task — external review needed"
+                        )
+                    block_task(conn, row["id"], reason=block_reason, kind="capability")
+                    result.auto_blocked.append(row["id"])
+                else:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": guard_reason},
+                        )
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))

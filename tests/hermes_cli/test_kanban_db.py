@@ -17,6 +17,10 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 
+def _cache_pr_state(url: str, is_open: bool = True) -> None:
+    kb._RESPAWN_GUARD_PR_STATE_CACHE[url] = (int(time.time()), is_open)
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -1919,14 +1923,45 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
 
 def test_respawn_guard_active_pr_in_comment(kanban_home):
     """A GitHub PR URL in a recent comment triggers active_pr."""
+    url = "https://github.com/totemx-AI/subsidysmart/pull/42"
+    _cache_pr_state(url, True)
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
             conn, t, "worker",
-            "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
+            f"PR created: {url}",
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "active_pr"
+
+
+def test_respawn_guard_closed_pr_comment_not_guarded(kanban_home):
+    """A recent PR comment with a closed/merged signal is not active."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="closed-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "reviewer",
+            "CLOSED PR https://github.com/totemx-AI/subsidysmart/pull/967",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_closed_pr_state_not_guarded(kanban_home, monkeypatch):
+    """If GitHub reports the referenced PR is closed, active_pr is released."""
+    url = "https://github.com/totemx-AI/subsidysmart/pull/123"
+    kb._RESPAWN_GUARD_PR_STATE_CACHE.clear()
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[:4] == ["gh", "pr", "view", url]
+        return subprocess.CompletedProcess(cmd, 0, stdout="CLOSED\n", stderr="")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="closed-pr-state", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR created: {url}")
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
 
 
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
@@ -2019,6 +2054,8 @@ def test_dispatch_respawn_guard_skips_active_pr(
     kanban_home, all_assignees_spawnable
 ):
     """dispatch_once skips (but does not block) a task with an active PR comment."""
+    url = "https://github.com/totemx-AI/subsidysmart/pull/99"
+    _cache_pr_state(url, True)
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -2028,7 +2065,7 @@ def test_dispatch_respawn_guard_skips_active_pr(
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
             conn, t, "worker",
-            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+            f"Opened {url}",
         )
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
 
@@ -2037,6 +2074,38 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_escalates_active_pr_after_threshold(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """Repeated active_pr deferrals transition to blocked instead of livelocking."""
+    monkeypatch.setenv("HERMES_KANBAN_RESPAWN_GUARD_MAX_TICKS", "2")
+    url = "https://github.com/totemx-AI/subsidysmart/pull/99"
+    _cache_pr_state(url, True)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            f"Opened {url}",
+        )
+        first = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        assert (t, "active_pr") in first.respawn_guarded
+        first_task = kb.get_task(conn, t)
+        assert first_task is not None
+        assert first_task.status == "ready"
+
+        second = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert (t, "active_pr") in second.respawn_guarded
+    assert t in second.auto_blocked
+    assert task is not None
+    assert task.status == "blocked"
+    blocked = [e for e in events if e.kind == "blocked"][-1]
+    assert blocked.payload is not None
+    assert "PR #99 open but unmergeable" in blocked.payload["reason"]
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

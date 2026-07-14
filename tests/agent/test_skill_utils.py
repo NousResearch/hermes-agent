@@ -2,18 +2,77 @@
 
 from unittest.mock import patch
 
+from agent import skill_utils
 from agent.skill_utils import (
+    _detect_environment,
+    _normalize_string_set,
+    _resolve_dotpath,
+    discover_all_skill_config_vars,
+    extract_skill_config_vars,
     extract_skill_conditions,
+    extract_skill_description,
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
     is_external_skill_path,
     is_skill_support_path,
+    is_valid_namespace,
     iter_skill_index_files,
+    parse_frontmatter,
+    parse_qualified_name,
     resolve_skill_config_values,
+    skill_matches_environment,
     skill_matches_platform,
     skill_matches_platform_list,
 )
+
+
+def test_is_excluded_skill_path_accepts_paths_and_strings(tmp_path):
+    assert is_excluded_skill_path(tmp_path / "skill" / "SKILL.md") is False
+    assert is_excluded_skill_path(tmp_path / ".git" / "hooks" / "SKILL.md") is True
+    assert is_excluded_skill_path("pkg/node_modules/dep/SKILL.md") is True
+
+
+def test_parse_frontmatter_full_yaml_and_missing_frontmatter():
+    content = (
+        "---\n"
+        "name: demo\n"
+        "description: Test skill\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    requires_tools:\n"
+        "      - read_file\n"
+        "---\n"
+        "# Body\n"
+    )
+
+    frontmatter, body = parse_frontmatter(content)
+
+    assert frontmatter["name"] == "demo"
+    assert frontmatter["metadata"]["hermes"]["requires_tools"] == ["read_file"]
+    assert body == "# Body\n"
+    assert parse_frontmatter("# No frontmatter") == ({}, "# No frontmatter")
+    assert parse_frontmatter("---\nname: demo\n") == ({}, "---\nname: demo\n")
+
+
+def test_parse_frontmatter_falls_back_for_malformed_yaml(monkeypatch):
+    monkeypatch.setattr(
+        skill_utils,
+        "yaml_load",
+        lambda _content: (_ for _ in ()).throw(ValueError("bad yaml")),
+    )
+
+    frontmatter, body = parse_frontmatter(
+        "---\n"
+        "name: demo\n"
+        "description: fallback parser\n"
+        "not-a-pair\n"
+        "---\n"
+        "body"
+    )
+
+    assert frontmatter == {"name": "demo", "description": "fallback parser"}
+    assert body == "body"
 
 
 def test_metadata_as_dict_with_hermes():
@@ -237,6 +296,232 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert found == [scripts_skill / "SKILL.md", templates_skill / "SKILL.md"]
     assert is_skill_support_path(scripts_skill / "SKILL.md") is False
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
+
+
+def test_environment_matching_defaults_unknowns_and_empty_tags(monkeypatch):
+    assert skill_matches_environment({}) is True
+    assert skill_matches_environment({"environments": "unknown-runtime"}) is True
+
+    calls: list[str] = []
+
+    def fake_detect(env):
+        calls.append(env)
+        return env == "docker"
+
+    monkeypatch.setattr(skill_utils, "_detect_environment", fake_detect)
+
+    assert skill_matches_environment({"environments": ["", "s6"]}) is False
+    assert calls == ["s6"]
+    assert skill_matches_environment({"environments": ["kanban", "docker"]}) is True
+    assert calls[-2:] == ["kanban", "docker"]
+
+
+def test_detect_environment_uses_cache_and_runtime_markers(monkeypatch):
+    skill_utils._ENV_DETECT_CACHE.clear()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    assert _detect_environment("kanban") is True
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    assert _detect_environment("kanban") is True
+
+    skill_utils._ENV_DETECT_CACHE.clear()
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+    assert _detect_environment("docker") is True
+
+    skill_utils._ENV_DETECT_CACHE.clear()
+    monkeypatch.setattr(
+        skill_utils.os.path,
+        "isdir",
+        lambda path: path == "/package/admin/s6-overlay",
+    )
+    assert _detect_environment("s6") is True
+
+
+def test_normalize_string_set_handles_strings_lists_and_empty_values():
+    assert _normalize_string_set(None) == set()
+    assert _normalize_string_set(" one ") == {"one"}
+    assert _normalize_string_set([" one ", "", None, 2]) == {"one", "None", "2"}
+
+
+def test_get_disabled_skill_names_handles_invalid_config(tmp_path, monkeypatch):
+    config = tmp_path / "config.yaml"
+    monkeypatch.setattr(skill_utils, "get_config_path", lambda: config)
+
+    assert skill_utils.get_disabled_skill_names() == set()
+
+    config.write_text("not: [valid", encoding="utf-8")
+    assert skill_utils.get_disabled_skill_names() == set()
+
+    config.write_text("- just\n- a\n- list\n", encoding="utf-8")
+    assert skill_utils.get_disabled_skill_names() == set()
+
+    config.write_text("skills: disabled\n", encoding="utf-8")
+    assert skill_utils.get_disabled_skill_names() == set()
+
+
+def test_get_disabled_skill_names_prefers_platform_specific_config(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "skills:\n"
+        "  disabled:\n"
+        "    - global-skill\n"
+        "  platform_disabled:\n"
+        "    telegram:\n"
+        "      - telegram-skill\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(skill_utils, "get_config_path", lambda: config)
+    monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+
+    assert skill_utils.get_disabled_skill_names(platform="telegram") == {
+        "global-skill",
+        "telegram-skill",
+    }
+
+
+def test_extract_skill_config_vars_normalizes_and_deduplicates():
+    frontmatter = {
+        "metadata": {
+            "hermes": {
+                "config": [
+                    {
+                        "key": "wiki.path",
+                        "description": " Wiki directory ",
+                        "default": "~/wiki",
+                        "prompt": " Choose wiki ",
+                    },
+                    {"key": "wiki.path", "description": "duplicate"},
+                    {"key": "", "description": "missing key"},
+                    {"key": "bad.description"},
+                    "not-a-dict",
+                ]
+            }
+        }
+    }
+
+    assert extract_skill_config_vars(frontmatter) == [
+        {
+            "key": "wiki.path",
+            "description": "Wiki directory",
+            "default": "~/wiki",
+            "prompt": "Choose wiki",
+        }
+    ]
+    assert extract_skill_config_vars({"metadata": "bad"}) == []
+    assert extract_skill_config_vars({"metadata": {"hermes": "bad"}}) == []
+    assert extract_skill_config_vars({"metadata": {"hermes": {"config": "bad"}}}) == []
+
+
+def test_discover_all_skill_config_vars_filters_and_deduplicates(tmp_path, monkeypatch):
+    enabled = tmp_path / "a-enabled"
+    enabled.mkdir()
+    (enabled / "SKILL.md").write_text(
+        "---\n"
+        "name: enabled-skill\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    config:\n"
+        "      - key: wiki.path\n"
+        "        description: Wiki path\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    duplicate = tmp_path / "b-duplicate"
+    duplicate.mkdir()
+    (duplicate / "SKILL.md").write_text(
+        "---\n"
+        "name: duplicate-skill\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    config:\n"
+        "      - key: wiki.path\n"
+        "        description: Duplicate path\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    disabled = tmp_path / "disabled"
+    disabled.mkdir()
+    (disabled / "SKILL.md").write_text(
+        "---\n"
+        "name: disabled-skill\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    config:\n"
+        "      - key: disabled.path\n"
+        "        description: Disabled path\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "SKILL.md").write_bytes(b"\xff")
+    missing = tmp_path / "missing"
+
+    monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [missing, tmp_path])
+    monkeypatch.setattr(
+        skill_utils,
+        "get_disabled_skill_names",
+        lambda: {"disabled-skill"},
+    )
+    monkeypatch.setattr(skill_utils, "skill_matches_platform", lambda _fm: True)
+
+    assert discover_all_skill_config_vars() == [
+        {
+            "key": "wiki.path",
+            "description": "Wiki path",
+            "prompt": "Wiki path",
+            "skill": "enabled-skill",
+        }
+    ]
+
+
+def test_resolve_skill_config_values_prefers_config_and_expands_paths(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "skills:\n"
+        "  config:\n"
+        "    wiki:\n"
+        "      path: ${WIKI_ROOT}/notes\n"
+        "    empty:\n"
+        "      path: '   '\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(skill_utils, "get_config_path", lambda: config)
+    monkeypatch.setenv("WIKI_ROOT", str(tmp_path / "wiki"))
+
+    resolved = resolve_skill_config_values(
+        [
+            {"key": "wiki.path", "default": "~/fallback"},
+            {"key": "empty.path", "default": "~/empty-default"},
+            {"key": "missing.path", "default": "plain-default"},
+        ]
+    )
+
+    assert resolved["wiki.path"] == str(tmp_path / "wiki" / "notes")
+    assert resolved["empty.path"].endswith("/empty-default")
+    assert resolved["missing.path"] == "plain-default"
+
+
+def test_resolve_dotpath_and_description_and_namespace_helpers():
+    config = {"skills": {"config": {"wiki": {"path": "/tmp/wiki"}}}}
+
+    assert _resolve_dotpath(config, "skills.config.wiki.path") == "/tmp/wiki"
+    assert _resolve_dotpath(config, "skills.config.missing") is None
+    assert extract_skill_description({}) == ""
+    assert extract_skill_description({"description": "  'short text'  "}) == "short text"
+    assert extract_skill_description({"description": "x" * 80}) == ("x" * 57) + "..."
+    assert parse_qualified_name("github:pull-request") == ("github", "pull-request")
+    assert parse_qualified_name("local-skill") == (None, "local-skill")
+    assert is_valid_namespace("github-1") is True
+    assert is_valid_namespace("bad namespace") is False
+    assert is_valid_namespace(None) is False
 
 
 # ── skill_matches_platform on Termux ──────────────────────────────────────

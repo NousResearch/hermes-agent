@@ -326,6 +326,42 @@ class TestBuildFromSessions:
             }
         ]
 
+    def test_state_db_origin_message_id_reaches_channel_metadata(self, tmp_path):
+        from hermes_state import SessionDB
+
+        origin = {
+            "platform": "feishu",
+            "chat_id": "oc_chat",
+            "chat_name": "Agent 多线程 Main",
+            "thread_id": "omt_topic",
+            "message_id": "om_root",
+        }
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("feishu-topic", "feishu", user_id="ou_user")
+        db.record_gateway_session_peer(
+            "feishu-topic",
+            source="feishu",
+            user_id="ou_user",
+            session_key="agent:main:feishu:group:oc_chat:omt_topic",
+            chat_id="oc_chat",
+            chat_type="group",
+            thread_id="omt_topic",
+            display_name="Agent 多线程 Main",
+            origin_json=json.dumps(origin),
+        )
+
+        with patch("hermes_state.SessionDB", return_value=db):
+            entries = _build_from_sessions("feishu")
+
+        cache_file = _write_directory(tmp_path, {"feishu": entries})
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            metadata = lookup_channel_metadata("feishu", "oc_chat:omt_topic")
+
+        assert metadata == {
+            "thread_id": "omt_topic",
+            "reply_to_message_id": "om_root",
+        }
+
 
 class TestFormatDirectoryForDisplay:
     def test_empty_directory(self, tmp_path):

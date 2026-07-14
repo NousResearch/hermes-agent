@@ -308,12 +308,15 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
             if not entry_id or entry_id in seen_ids:
                 continue
             seen_ids.add(entry_id)
-            entries.append({
+            entry = {
                 "id": entry_id,
                 "name": _session_entry_name(origin),
                 "type": row.get("chat_type") or "dm",
                 "thread_id": origin.get("thread_id"),
-            })
+            }
+            if origin.get("message_id"):
+                entry["message_id"] = origin.get("message_id")
+            entries.append(entry)
     except Exception as e:
         logger.debug(
             "Channel directory: state.db session read failed for %s: %s",

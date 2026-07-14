@@ -293,6 +293,49 @@ def test_link_detects_cycle(kanban_home):
             kb.link_tasks(conn, b, a)
 
 
+def test_link_demotes_running_child_to_todo_when_parent_not_done(kanban_home):
+    """Regression test for race: A (done) linked → child claimed → B (undone) linked.
+
+    When a child is created ``ready`` and parents are linked one-by-one,
+    a dispatcher tick between links can claim the child after a done
+    parent is linked but before an undone parent is linked.  The undone
+    parent's ``link_tasks`` must demote the already-running child back
+    to ``todo`` and release the claim so ``recompute_ready`` can
+    re-promote it once all parents are truly done.
+    """
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a", assignee="alice")
+        b = kb.create_task(conn, title="b", assignee="alice")
+        c = kb.create_task(conn, title="c", assignee="alice")
+        assert kb.get_task(conn, c).status == "ready"
+
+        # Complete A so it's done.
+        kb.complete_task(conn, a, result="ok")
+        assert kb.get_task(conn, a).status == "done"
+
+        # Link A → C: all linked parents (just A) are done → C stays ready.
+        kb.link_tasks(conn, a, c)
+        assert kb.get_task(conn, c).status == "ready"
+
+        # Simulate dispatcher race: claim C before B is linked.
+        claimed = kb.claim_task(conn, c)
+        assert claimed is not None
+        assert claimed.status == "running"
+
+        # Link B → C: B is not done → must demote C from running → todo
+        # and release the claim.
+        kb.link_tasks(conn, b, c)
+        task = kb.get_task(conn, c)
+        assert task.status == "todo"
+        assert task.claim_lock is None
+
+        # Verify C's run was ended.
+        run = kb.latest_run(conn, c)
+        assert run is not None
+        assert run.outcome == "reclaimed"
+        assert "parent_not_done_on_link" in (run.error or "")
+
+
 def test_recompute_ready_cascades_through_chain(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")

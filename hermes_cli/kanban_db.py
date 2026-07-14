@@ -2383,10 +2383,26 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         ).fetchall()
         all_parents_done = all(p["status"] in ("done", "archived") for p in parents)
         if not all_parents_done:
+            # Demote ready → todo (common case: linked before dispatch).
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
+            # Demote running → todo + release claim (race case:
+            # dispatcher claimed the child after a done parent was
+            # linked but before this undone parent was linked).
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'todo', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'running'",
+                (child_id,),
+            )
+            if cur.rowcount == 1:
+                _end_run(
+                    conn, child_id,
+                    outcome="reclaimed", status="reclaimed",
+                    error=f"parent_not_done_on_link parent={parent_id}",
+                )
         _append_event(
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},

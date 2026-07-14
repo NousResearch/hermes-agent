@@ -301,6 +301,17 @@ export function ChatBar({
   )
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    // Windows/Chromium can fire compositionstart for plain, non-IME keystrokes
+    // and never a matching compositionend, leaving composingRef stuck `true`
+    // forever (#39649). The native InputEvent's isComposing is authoritative
+    // for THIS event — use it to self-heal the ref rather than trusting a
+    // value that may have gone stale. Checked against `=== false` (not `!`)
+    // so an environment where isComposing is unsupported (undefined) doesn't
+    // get treated as "composition over" and wrongly unstick a genuine one.
+    if (composingRef.current && (event.nativeEvent as InputEvent).isComposing === false) {
+      composingRef.current = false
+    }
+
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend flushes
     // the finalized text (see onCompositionEnd).
@@ -362,11 +373,19 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Windows/Chromium can fire compositionstart for plain, non-IME keystrokes
+    // and never a matching compositionend, leaving composingRef stuck `true`
+    // forever — which used to swallow every subsequent Enter (#39649). This
+    // key's own nativeEvent.isComposing is authoritative for whether a real
+    // composition is in progress right now; resync the ref from it first so a
+    // stale `true` can't outlive the composition that (falsely) set it.
+    if (composingRef.current && event.nativeEvent.isComposing === false) {
+      composingRef.current = false
+    }
+
     // IME composition: Enter confirms composed text, not a message submission.
-    // We check both composingRef (set by compositionstart/compositionend, robust
-    // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
-    // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
-    // preedit fires submitDraft() and splits the message mid-word.
+    // Without this guard, pressing Enter to finalise a Korean/Japanese/Chinese
+    // IME preedit fires submitDraft() and splits the message mid-word.
     if (composingRef.current || event.nativeEvent.isComposing) {
       return
     }
@@ -723,7 +742,15 @@ export function ChatBar({
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
-        onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onBlur={() => {
+          // Losing focus (e.g. clicking the Send button) means composition —
+          // real or falsely stuck by the Windows compositionstart quirk
+          // (#39649) — is over either way. The form's onSubmit has no
+          // composition event to resync from, so clear synchronously here to
+          // guarantee the very next submit isn't blocked by a stale ref.
+          composingRef.current = false
+          window.setTimeout(closeTrigger, 80)
+        }}
         onCompositionEnd={event => {
           composingRef.current = false
 

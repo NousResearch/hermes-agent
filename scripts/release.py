@@ -45,6 +45,19 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
+    "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
+    "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approvals.timeout in gateway waits)
+    "luigi@users.noreply.github.com": "Tortugasaur",  # PR #43205 salvage (desktop: profile-aware three-way approval mode statusbar control)
+    "kavi@local.hermes": "kavioavio",  # Issue #46544 / PR #47705 evolution (smart DENY exact-operation owner override)
+    "135129512+ansel-f@users.noreply.github.com": "ansel-f",  # PR #62388 salvage (approval: allow exact verifier temp cleanup without broadening rm safety boundary)
+    "robert@modern-minds.ai": "Hopfensaft",  # PR #31933 salvage (dashboard: align approvals.mode dropdown with canonical engine values)
+    "palmer@dugoutfantasy.com": "professorpalmer",  # PR #48591 salvage (sessions: CLI workspace filter + restore-cwd-on-resume)
+    "true@supersynergy.de": "Supersynergy",  # PR #59241 salvage (desktop: workspace path status-bar action)
+    "me@roryford.com": "roryford",  # PR #63132 salvage (compression: fail closed for errors from a resolved lock API, preserving lineage)
+    "esthon@gmail.com": "esthonjr",  # PR #61950 salvage (desktop: legacy non-git workspace grouping + Windows path identity)
+    "iganapolsky@gmail.com": "IgorGanapolsky",  # PR #62125 salvage (compaction anti-thrash threshold verification)
+    "tturney1@gmail.com": "TheTom",  # PR #62696 salvage (gateway: expand @ context references under runtime/session model resolution)
     "wilsonkinyuam@gmail.com": "WilsonKinyua",  # PR #62052 (tui: persist unflushed conversations on disconnect/restart)
     "humphreysun98@gmail.com": "HumphreySun98",  # PR #61142 salvage (web: null web/backend config value guards)
     "sonxi@nous.local": "17324393074",  # PR #53196 salvage (tools_config: known_plugin_toolsets null guard; commit under unlinked local identity)
@@ -77,6 +90,7 @@ AUTHOR_MAP = {
     "lord-dubious@users.noreply.github.com": "lord-dubious",  # PR #58453 salvage (preserve static custom provider models declared as dict rows)
     "williamumu@users.noreply.github.com": "williamumu",  # PR #31041 salvage (pairing: merge split legacy/new pairing store dirs at PairingStore init so approved users aren't re-prompted to pair)
     "jonathan@mintrx.com": "JAlmanzarMint",  # PR #52688 salvage (vision: rasterize SVG / re-encode unsupported raster formats to PNG before embedding), folded into #57890
+    "alex@fireworks.ai": "alex-fireworks",  # PR #61182 salvage (Fireworks AI model-provider integration)
     "al3060388206@gmail.com": "ooiuuii",  # PR #58466/#58377 salvage (redact: fireworks fw-/fpk_ prefixes; telegram: redact bot tokens out of transport error strings). Also PR #58433 salvage (codex: accept recorded final_text when app-server omits turn/completed) and PR #58472 salvage (gateway: cap proxy SSE line buffer at 16MiB).
     "Jigoooo@users.noreply.github.com": "Jigoooo",  # PR #58474 salvage (auxiliary: fall back to token resolver when anthropic pool has no usable entry)
     "root@vmi3351581.contaboserver.net": "ostravajih",  # PR #58374 salvage (poolside: coerce integer finish_reason and tool_call id to strings)
@@ -124,6 +138,7 @@ AUTHOR_MAP = {
     "259353979+testingbuddies24@users.noreply.github.com": "testingbuddies24",  # PR #43192 salvage (strip orphan think-tag close tags in progressive gateway stream so a bare </think> whose open was dropped upstream can't leak to the user)
     "shx_929@163.com": "Lazymonter",  # PR #42914 salvage (retry launchd bootstrap after bootout on EIO for install/start instead of degrading to detached)
     "96322396+WXBR@users.noreply.github.com": "WXBR",  # PR #46183 salvage (persist recovered final_response at the finalize_turn chokepoint so recovery-path breaks don't drop the delivered assistant row)
+    "dmabry@sparky.fabe-gray.ts.net": "dmabry",  # PR #63862 salvage (output-cap retry: use provider available_tokens + request estimate; exempt parseable vLLM/LM Studio errors from compression-disabled guard)
     "sahil.rakhaiya117814@marwadiuniversity.ac.in": "SahilRakhaiya05",  # PR #44073 salvage (fail-closed gateway/external-surface hardening: own-policy defaults, open-policy startup guard, profile-aware multiplex authz, API-server auth, execute_code per-session RPC token)
     "5848605+itenev@users.noreply.github.com": "itenev",  # PR #22753 salvage (asyncify model-context resolution in gateway message path so blocking requests.get can't starve Discord heartbeats)
     "arthur.zhang@ingenico.com": "arthurzhang",  # PR #34718 salvage (redact Slack App-Level xapp- tokens in agent/redact.py + gateway/run.py)
@@ -229,6 +244,7 @@ AUTHOR_MAP = {
     "w31rdm4ch1n3z@protonmail.com": "w31rdm4ch1nZ",
     "xtpeeps@gmail.com": "x7peeps",
     "ahmad@madsgency.com": "ahmadashfq",
+    "182213728+yinkev@users.noreply.github.com": "yinkev",  # scratch artifact preservation salvage
     "rratmansky@gmail.com": "rratmansky",
     "lkz-de@users.noreply.github.com": "lkz-de",
     "charles@salesondemand.io": "salesondemandio",
@@ -309,6 +325,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "johnmlussier@gmail.com": "John-Lussier",
     "chenkun_lws@126.com": "bytesnail",  # PR #60360 salvage (--yolo startup ordering; #60328)
     "iamgexin@qq.com": "nullptr0807",  # PR #60956 salvage (gateway hygiene in-place compaction; #60947)
     "embwl0x@users.noreply.github.com": "embwl0x",  # PR #60810 salvage (channel directory offload)
@@ -1077,6 +1094,8 @@ AUTHOR_MAP = {
     "alexazzjjtt@163.com": "alexzhu0",
     "pub_forgreatagent@antgroup.com": "AntAISecurityLab",
     "252620095+briandevans@users.noreply.github.com": "briandevans",
+    "51974392+tcconnally@users.noreply.github.com": "tcconnally",
+    "jan@mg5.org": "mijanx",
     "incharge.automation@gmail.com": "inchargeautomation-lab",
     "danielrpike9@gmail.com": "Bartok9",
     "96944678+ymylive@users.noreply.github.com": "sweetcornna",
@@ -1435,6 +1454,7 @@ AUTHOR_MAP = {
     "michaelfackerell@gmail.com": "MikeFac",
     "18024642@qq.com": "GuyCui",
     "eumael.mkt@gmail.com": "maelrx",
+    "georgi@deepinfra.com": "ats3v",
     # v0.11.0 additions
     "benbarclay@gmail.com": "benbarclay",
     "lijiawen@umich.edu": "Jiawen-lee",
@@ -1508,6 +1528,8 @@ AUTHOR_MAP = {
     "daniuxie88@proton.me": "DaniuXie",
     "panchanler@gmail.com": "ChanlerDev",
     "252620095+briandevans@users.noreply.github.com": "briandevans",
+    "51974392+tcconnally@users.noreply.github.com": "tcconnally",
+    "jan@mg5.org": "mijanx",
     "141889580+h0tp-ftw@users.noreply.github.com": "h0tp-ftw",
     "chinadbo@foxmail.com": "chinadbo",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",

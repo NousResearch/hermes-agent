@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { useI18n } from '@/i18n'
 
 import { SectionHeading } from './primitives'
 
@@ -127,9 +127,7 @@ export function UninstallSection() {
               {copy.confirmMessage(copy.options[pendingOption.mode].consequence)}
             </p>
             {summary?.running_app_path && (
-              <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">
-                {copy.appPath(summary.running_app_path)}
-              </p>
+              <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">{copy.appPath(summary.running_app_path)}</p>
             )}
             {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -153,24 +151,24 @@ export function UninstallSection() {
                 const optionCopy = copy.options[opt.mode]
 
                 return (
-                <button
-                  className={cn(
-                    'flex items-start gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 text-left transition',
-                    'hover:border-destructive/40 hover:bg-destructive/5'
-                  )}
-                  key={opt.mode}
-                  onClick={() => {
-                    setError(null)
-                    setPending(opt.mode)
-                  }}
-                  type="button"
-                >
-                  <Trash2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium text-foreground">{optionCopy.title}</span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground">{optionCopy.description}</span>
-                  </span>
-                </button>
+                  <button
+                    className={cn(
+                      'flex items-start gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 text-left transition',
+                      'hover:border-destructive/40 hover:bg-destructive/5'
+                    )}
+                    key={opt.mode}
+                    onClick={() => {
+                      setError(null)
+                      setPending(opt.mode)
+                    }}
+                    type="button"
+                  >
+                    <Trash2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-foreground">{optionCopy.title}</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{optionCopy.description}</span>
+                    </span>
+                  </button>
                 )
               })}
             </div>

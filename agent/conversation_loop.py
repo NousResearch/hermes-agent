@@ -522,12 +522,12 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
 
 def run_conversation(
     agent,
-    user_message: str,
+    user_message: Any,
     system_message: str = None,
     conversation_history: List[Dict[str, Any]] = None,
     task_id: str = None,
     stream_callback: Optional[callable] = None,
-    persist_user_message: Optional[str] = None,
+    persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -857,10 +857,19 @@ def run_conversation(
 
         if moa_config:
             try:
+                from agent.message_content import flatten_message_text as _flatten_mt
                 from agent.moa_loop import _preset_temperature, aggregate_moa_context
 
                 _moa_context = aggregate_moa_context(
-                    user_prompt=original_user_message if isinstance(original_user_message, str) else str(original_user_message),
+                    user_prompt=(
+                        original_user_message
+                        if isinstance(original_user_message, str)
+                        # Multimodal / decorated content list: extract the
+                        # visible text instead of str()-ing a Python repr of
+                        # the parts (which would leak base64 image payloads
+                        # into the aggregator prompt).
+                        else _flatten_mt(original_user_message)
+                    ),
                     api_messages=api_messages,
                     reference_models=moa_config.get("reference_models") or [],
                     aggregator=moa_config.get("aggregator") or {},
@@ -874,6 +883,14 @@ def run_conversation(
                             _base = _msg.get("content", "")
                             if isinstance(_base, str):
                                 _msg["content"] = _base + "\n\n" + _moa_context
+                            elif isinstance(_base, list):
+                                # Multimodal user turn (text + image parts):
+                                # append the MoA context as a trailing text
+                                # part instead of silently dropping it.
+                                _msg["content"] = [
+                                    *_base,
+                                    {"type": "text", "text": "\n\n" + _moa_context},
+                                ]
                             break
             except Exception as _moa_exc:
                 logger.warning("MoA context aggregation failed: %s", _moa_exc)
@@ -3061,14 +3078,24 @@ def run_conversation(
                 # (``/new``), switch to a larger-context model, or reduce
                 # attachments.  Forced compaction via ``/compress``
                 # (``force=True``) is unaffected — it never reaches this loop.
+                #
+                # Output-cap errors (max_tokens too large) are NOT input
+                # overflow — the recovery is a max_tokens-only retry that
+                # does not require compression.  Exempt them from this guard
+                # so the retry still fires even when compression is disabled.
                 _overflow_reasons = {
                     FailoverReason.long_context_tier,
                     FailoverReason.payload_too_large,
                     FailoverReason.context_overflow,
                 }
+                _is_output_cap_error = (
+                    is_output_cap_error(error_msg)
+                    or parse_available_output_tokens_from_error(error_msg) is not None
+                )
                 if (
                     classified.reason in _overflow_reasons
                     and not getattr(agent, "compression_enabled", True)
+                    and not _is_output_cap_error
                 ):
                     agent._flush_status_buffer()
                     agent._vprint(
@@ -3472,15 +3499,33 @@ def run_conversation(
                     #       context_length = total window (input + output combined).
                     available_out = parse_available_output_tokens_from_error(error_msg)
                     if available_out is not None:
-                        # Error is purely about the output cap being too large.
-                        # Cap output to the available space and retry without
-                        # touching context_length or triggering compression.
-                        safe_out = max(1, available_out - 64)  # small safety margin
+                        # This is an output-cap error, not input overflow.
+                        # The provider's available_tokens is the authoritative
+                        # cap for the failed request, so keep it as an upper
+                        # bound.  Also estimate the current API request shape
+                        # (system prompt, injected context, tool schemas) because
+                        # Hermes may add API-only content not present in persisted
+                        # messages.  Use the smaller budget and apply a small
+                        # safety margin.  Do not alter context_length.
+                        request_input_estimate = estimate_request_tokens_rough(
+                            api_messages, tools=agent.tools or None,
+                        )
+                        local_available_out = old_ctx - request_input_estimate
+                        if local_available_out > 0:
+                            safe_out = max(1, min(available_out, local_available_out) - 64)
+                        else:
+                            # The rough local estimate can overshoot the real
+                            # request size.  Fall back to the provider-reported
+                            # budget, which is authoritative for the failed
+                            # request.
+                            safe_out = max(1, available_out - 64)
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "
                             f"retrying with max_tokens={safe_out:,} "
-                            f"(available_tokens={available_out:,}; context_length unchanged at {old_ctx:,})"
+                            f"(provider_available={available_out:,}, "
+                            f"estimated_request_tokens={request_input_estimate:,}; "
+                            f"context_length unchanged at {old_ctx:,})"
                         )
                         # Still count against compression_attempts so we don't
                         # loop forever if the error keeps recurring.
@@ -4631,11 +4676,37 @@ def run_conversation(
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
+                turn_content = assistant_message.content or ""
+
+                # Classify tools in this turn to determine if they are all housekeeping.
+                # This classification is needed regardless of whether the turn has visible content,
+                # because a substantive tool-only turn must invalidate any older housekeeping fallback.
+                _HOUSEKEEPING_TOOLS = frozenset({
+                    "memory", "todo", "skill_manage", "session_search",
+                })
+                _all_housekeeping = all(
+                    tc.function.name in _HOUSEKEEPING_TOOLS
+                    for tc in assistant_message.tool_calls
+                )
+
+                # If this turn has substantive tools (non-housekeeping), clear any older fallback.
+                # Prevents a two-turn-old housekeeping narration from being treated as if it belonged
+                # to the immediately preceding substantive tool turn.
+                if assistant_message.tool_calls and not _all_housekeeping:
+                    agent._last_content_with_tools = None
+                    agent._last_content_tools_all_housekeeping = False
+                    # Also clear the mute flag: a prior housekeeping turn may
+                    # have set _mute_post_response (line ~4667), and the
+                    # substantive tools in THIS turn should produce visible
+                    # progress output. Without this reset, _vprint suppresses
+                    # tool progress until the no-tool-call branch clears it at
+                    # line ~4834 — after all tools have finished.
+                    agent._mute_post_response = False
+
                 # If this turn has both content AND tool_calls, capture the content
                 # as a fallback final response. Common pattern: model delivers its
                 # answer and calls memory/skill tools as a side-effect in the same
                 # turn. If the follow-up turn after tools is empty, we use this.
-                turn_content = assistant_message.content or ""
                 if turn_content and agent._has_content_after_think_block(turn_content):
                     agent._last_content_with_tools = turn_content
                     # Only mute subsequent output when EVERY tool call in
@@ -4643,13 +4714,6 @@ def run_conversation(
                     # skill_manage, etc.).  If any substantive tool is present
                     # (search_files, read_file, write_file, terminal, ...),
                     # keep output visible so the user sees progress.
-                    _HOUSEKEEPING_TOOLS = frozenset({
-                        "memory", "todo", "skill_manage", "session_search",
-                    })
-                    _all_housekeeping = all(
-                        tc.function.name in _HOUSEKEEPING_TOOLS
-                        for tc in assistant_message.tool_calls
-                    )
                     agent._last_content_tools_all_housekeeping = _all_housekeeping
                     if _all_housekeeping and agent._has_stream_consumers():
                         agent._mute_post_response = True
@@ -5261,6 +5325,53 @@ def run_conversation(
                     agent._session_messages = messages
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)
+                    _pending_verification_response = final_response
+                    final_response = None
+                    continue
+
+                # ── Kanban worker terminal-tool stop guard ─────────────
+                # Workers must end with kanban_complete / kanban_block.
+                # Models sometimes narrate the next step ("Let me write the
+                # report") and stop with finish_reason=stop — a clean exit
+                # that the dispatcher records as protocol_violation. Nudge
+                # once or twice before allowing that exit.
+                try:
+                    from agent.kanban_stop import build_kanban_stop_nudge
+
+                    _kanban_nudge = build_kanban_stop_nudge(
+                        messages=messages,
+                        attempts=getattr(agent, "_kanban_stop_nudges", 0),
+                    )
+                except Exception:
+                    logger.debug("kanban stop-loop check failed", exc_info=True)
+                    _kanban_nudge = None
+
+                if _kanban_nudge:
+                    agent._kanban_stop_nudges = (
+                        getattr(agent, "_kanban_stop_nudges", 0) + 1
+                    )
+                    final_msg["finish_reason"] = "kanban_terminal_required"
+                    final_msg["_kanban_stop_synthetic"] = True
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _kanban_nudge,
+                        "_kanban_stop_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.info(
+                        "kanban stop-loop nudge issued (attempt %d) task=%s",
+                        agent._kanban_stop_nudges,
+                        os.environ.get("HERMES_KANBAN_TASK", ""),
+                    )
+                    agent._emit_status(
+                        "⚠️ Kanban worker tried to exit without "
+                        "kanban_complete/kanban_block — nudging to finish"
+                    )
+                    # Same finalizer contract as verify-on-stop: clear
+                    # final_response while continuing so a later budget
+                    # exhaustion path does not treat the narrated stop as
+                    # a completed answer.
                     _pending_verification_response = final_response
                     final_response = None
                     continue

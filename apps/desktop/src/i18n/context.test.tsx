@@ -229,4 +229,37 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('en')
     expect(screen.getByTestId('label').textContent).toBe('Language')
   })
+
+  it('applies document lang and direction for Arabic and restores ltr for English', async () => {
+    render(
+      <I18nProvider configClient={null}>
+        <LanguageProbe target="ar" />
+      </I18nProvider>
+    )
+
+    expect(document.documentElement.lang).toBe('en')
+    expect(document.documentElement.dir).toBe('ltr')
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ar'))
+    expect(document.documentElement.lang).toBe('ar')
+    expect(document.documentElement.dir).toBe('rtl')
+
+    cleanup()
+    render(
+      <I18nProvider configClient={null} initialLocale="ar">
+        <LanguageProbe target="en" />
+      </I18nProvider>
+    )
+
+    expect(document.documentElement.lang).toBe('ar')
+    expect(document.documentElement.dir).toBe('rtl')
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
+    expect(document.documentElement.lang).toBe('en')
+    expect(document.documentElement.dir).toBe('ltr')
+  })
 })

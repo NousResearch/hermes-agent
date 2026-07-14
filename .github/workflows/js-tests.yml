@@ -1,0 +1,49 @@
+# .github/workflows/js-tests.yml
+name: JS Tests
+
+on:
+  workflow_call:
+
+jobs:
+  workspaces:
+    name: List npm workspaces
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.set-matrix.outputs.packages }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts
+      - id: set-matrix
+        run: |
+          PACKAGES=$(npm query .workspace | jq -c '[.[].location]')
+          if [ "$PACKAGES" = "[]" ] || [ -z "$PACKAGES" ]; then
+            echo "::error::Workspace discovery produced an empty package list — refusing to emit a zero-length matrix (would skip all JS/TS checks silently)."
+            exit 1
+          fi
+          echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
+
+  check:
+    name: Typecheck & Test
+    runs-on: ubuntu-latest
+    needs: workspaces
+    strategy:
+      matrix:
+        package: ${{ fromJson(needs.workspaces.outputs.packages) }}
+      fail-fast: false # report all failures, not just the first one
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: ./.github/actions/retry
+        with:
+          # --ignore-scripts: TS & tests don't need native deps
+          command: npm ci --ignore-scripts
+      - run: npm run --prefix ${{ matrix.package }} check

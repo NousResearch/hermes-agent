@@ -67,6 +67,21 @@ class TestDashboardStatus:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
 
+    def test_status_uses_parsed_endpoint_for_unverified_windows_listener(self, capsys):
+        with patch("hermes_cli.main.sys.platform", "win32"), \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             patch("hermes_cli.main._dashboard_listening", return_value=True) as listening, \
+             patch("hermes_cli.main._windows_listener_pids_on_port", return_value=[33316]), \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(status=True, host="127.0.0.2", port=9120))
+
+        assert exc.value.code == 0
+        listening.assert_called_once_with("127.0.0.2", 9120)
+        out = capsys.readouterr().out
+        assert "127.0.0.2:9120" in out
+        assert "taskkill /PID 33316 /T /F" in out
+        assert "/IM pythonw.exe" not in out
+
 
 class TestDashboardStop:
     def test_stop_when_nothing_running(self, capsys):
@@ -122,6 +137,34 @@ class TestDashboardStop:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 0
 
+    def test_stop_listener_is_diagnostic_and_pid_specific(self, capsys):
+        with patch("hermes_cli.main.sys.platform", "win32"), \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             patch("hermes_cli.main._dashboard_listening", return_value=True) as listening, \
+             patch("hermes_cli.main._windows_listener_pids_on_port", return_value=[444]), \
+             patch("hermes_cli.main._kill_stale_dashboard_processes") as kill, \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(stop=True, host="0.0.0.0", port=9234))
+
+        assert exc.value.code == 1
+        listening.assert_called_once_with("127.0.0.1", 9234)
+        kill.assert_not_called()
+        out = capsys.readouterr().out
+        assert "0.0.0.0:9234" in out
+        assert "taskkill /PID 444 /T /F" in out
+        assert "/IM" not in out
+
+    def test_stop_custom_port_does_not_probe_default_port(self, capsys):
+        with patch("hermes_cli.main.sys.platform", "win32"), \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             patch("hermes_cli.main._dashboard_listening", return_value=False) as listening, \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(stop=True, port=9555))
+
+        assert exc.value.code == 0
+        listening.assert_called_once_with("127.0.0.1", 9555)
+        assert "No hermes dashboard processes running" in capsys.readouterr().out
+
 
 class TestLifecycleFlagsTakePrecedence:
     """If both --stop and --status are set, --status wins (it's listed
@@ -156,6 +199,48 @@ class TestLifecycleFlagsTakePrecedence:
              pytest.raises(SystemExit):
             cmd_dashboard(_ns(stop=True))
         assert called["start"] is False
+
+
+class TestWindowsListenerPidLookup:
+    def test_parses_only_listening_rows_for_requested_port(self):
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                "  TCP    127.0.0.1:9119    0.0.0.0:0    LISTENING    111\n"
+                "  TCP    127.0.0.1:9119    127.0.0.1:50000    ESTABLISHED    222\n"
+                "  TCP    127.0.0.1:9120    0.0.0.0:0    LISTENING    333\n"
+                "  TCP    [::]:9119         [::]:0         LISTENING    444\n"
+            ),
+        )
+        with patch("hermes_cli.main.sys.platform", "win32"), \
+             patch("hermes_cli.main.subprocess.run", return_value=result) as run, \
+             patch("hermes_cli._subprocess_compat.windows_hide_flags", return_value=0):
+            from hermes_cli.main import _windows_listener_pids_on_port
+
+            assert _windows_listener_pids_on_port(9119) == [111, 444]
+
+        assert run.call_args.args[0] == ["netstat", "-ano", "-p", "TCP"]
+
+    def test_start_warning_uses_parsed_endpoint(self):
+        original_import = __import__
+
+        def fail_after_listener_probe(name, *args, **kwargs):
+            if name == "fastapi":
+                raise ImportError("stop after listener probe")
+            return original_import(name, *args, **kwargs)
+
+        with patch("hermes_cli.main.sys.platform", "win32"), \
+             patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             patch("hermes_cli.main._dashboard_listening", return_value=True) as listening, \
+             patch("hermes_cli.main._report_unverified_dashboard_listener") as report, \
+             patch("builtins.__import__", side_effect=fail_after_listener_probe), \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(host="0.0.0.0", port=9666, no_open=True))
+
+        assert exc.value.code == 1
+        listening.assert_called_once_with("127.0.0.1", 9666)
+        report.assert_called_once_with("0.0.0.0", 9666)
 
 
 class TestArgparseWiring:

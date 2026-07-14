@@ -55,6 +55,18 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+# Raw FTS rows are only a discovery-plan input. The final response hydrates
+# its own anchored message window and bookends after lineage deduplication.
+_DISCOVER_SEARCH_FIELDS = (
+    "id",
+    "session_id",
+    "role",
+    "snippet",
+    "source",
+    "model",
+    "session_started",
+)
+
 # Prefixes that identify generated context-compaction handoff summaries.
 # These are inserted by agent/context_compressor.py as normal user/assistant
 # messages but contain machine-generated summary metadata — not user content.
@@ -699,6 +711,7 @@ def _discover(
             # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
+            fields=_DISCOVER_SEARCH_FIELDS,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)

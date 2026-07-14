@@ -11,9 +11,11 @@ import { test } from 'vitest'
 import {
   applyZoomLevel,
   clampZoomLevel,
+  createZoomCoordinator,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
   ZOOM_REASSERT_WINDOW_EVENTS,
+  ZOOM_RESIZE_REASSERT_DELAY_MS,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomWiringForWindowKind
@@ -64,32 +66,93 @@ test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1_000_000), 9)
 })
 
-test('installZoomReassertOnWindowEvents wires show, restore, cross-display moves, and resize', () => {
+test('installZoomReassertOnWindowEvents wires show/restore/moved and coalesces resize bursts', () => {
   const handlers = new Map()
+  const onceHandlers = new Map()
+  const timers = new Map()
+  let nextTimer = 0
 
   const win = {
     isDestroyed: () => false,
     on(event, listener) {
       handlers.set(event, listener)
+    },
+    once(event, listener) {
+      onceHandlers.set(event, listener)
     }
   }
 
   let calls = 0
-  installZoomReassertOnWindowEvents(win, () => {
-    calls += 1
-  })
+  installZoomReassertOnWindowEvents(
+    win,
+    () => {
+      calls += 1
+    },
+    {
+      clearTimer: id => timers.delete(id),
+      setTimer: ((callback, delay) => {
+        assert.equal(delay, ZOOM_RESIZE_REASSERT_DELAY_MS)
+        const id = ++nextTimer
+        timers.set(id, callback)
+
+        return id
+      }) as typeof setTimeout
+    }
+  )
 
   assert.deepEqual([...handlers.keys()], [...ZOOM_REASSERT_WINDOW_EVENTS])
   handlers.get('show')()
   handlers.get('restore')()
   handlers.get('moved')()
   handlers.get('resize')()
+  handlers.get('resize')()
+  handlers.get('resize')()
+  assert.equal(calls, 3)
+  assert.equal(timers.size, 1)
+
+  const [timerId, callback] = timers.entries().next().value
+  timers.delete(timerId)
+  callback()
   assert.equal(calls, 4)
+
+  handlers.get('resize')()
+  assert.equal(timers.size, 1)
+  onceHandlers.get('closed')()
+  assert.equal(timers.size, 0)
+})
+
+test('zoom coordinator commits the initial persisted restore', () => {
+  const coordinator = createZoomCoordinator()
+  const commitRestore = coordinator.beginRestore()
+
+  assert.equal(commitRestore(1), 1)
+  assert.equal(coordinator.getDesired(), 1)
+})
+
+test('zoom coordinator rejects a stale restore after a global zoom change', () => {
+  const coordinator = createZoomCoordinator()
+  const commitRestore = coordinator.beginRestore()
+
+  coordinator.setDesired(2)
+
+  assert.equal(commitRestore(1), undefined)
+  assert.equal(coordinator.getDesired(), 2)
+})
+
+test('zoom coordinator rejects restores started after global zoom is known', () => {
+  const coordinator = createZoomCoordinator()
+  coordinator.setDesired(2)
+
+  const commitRestore = coordinator.beginRestore()
+
+  assert.equal(commitRestore(1), undefined)
+  assert.equal(coordinator.getDesired(), 2)
 })
 
 test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   const handlers = new Map()
   let destroyed = false
+  let timer: (() => void) | undefined
 
   const win = {
     isDestroyed: () => destroyed,
@@ -99,10 +162,22 @@ test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   }
 
   let calls = 0
-  installZoomReassertOnWindowEvents(win, () => {
-    calls += 1
-  })
+  installZoomReassertOnWindowEvents(
+    win,
+    () => {
+      calls += 1
+    },
+    {
+      setTimer: (callback => {
+        timer = callback
+
+        return 1
+      }) as typeof setTimeout
+    }
+  )
+  handlers.get('resize')()
   destroyed = true
+  timer?.()
   handlers.get('show')()
   assert.equal(calls, 0)
 })

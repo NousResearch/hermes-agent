@@ -48,26 +48,84 @@ export function applyZoomLevel(webContents, level) {
   return clamped
 }
 
+/**
+ * One desired zoom shared by every chat window. A revision rejects an async
+ * localStorage read when a newer in-memory choice already exists.
+ */
+export function createZoomCoordinator() {
+  let desiredLevel
+  let revision = 0
+
+  return {
+    beginRestore() {
+      const restoreRevision = revision
+      const canRestore = desiredLevel === undefined
+
+      return level => {
+        if (!canRestore || revision !== restoreRevision) {
+          return undefined
+        }
+
+        desiredLevel = clampZoomLevel(level)
+
+        return desiredLevel
+      }
+    },
+    getDesired() {
+      return desiredLevel
+    },
+    setDesired(level) {
+      desiredLevel = clampZoomLevel(level)
+      revision += 1
+
+      return desiredLevel
+    }
+  }
+}
+
 // Chromium can drop webContents zoom when a BrowserWindow is minimized,
 // restored, resized, or crosses onto a monitor with different display scaling.
 // WSLg runs Electron as Linux, where the cross-platform `resize` event is
 // available but the one-shot `resized` event is not.
 export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore', 'moved', 'resize']
+export const ZOOM_RESIZE_REASSERT_DELAY_MS = 120
 
-export function installZoomReassertOnWindowEvents(win, reassert) {
+export function installZoomReassertOnWindowEvents(
+  win,
+  reassert,
+  { clearTimer = clearTimeout, setTimer = setTimeout } = {}
+) {
   if (!win?.on) {
     return
   }
 
-  for (const event of ZOOM_REASSERT_WINDOW_EVENTS) {
-    win.on(event, () => {
-      if (win.isDestroyed?.()) {
-        return
-      }
-
+  const run = () => {
+    if (!win.isDestroyed?.()) {
       reassert()
-    })
+    }
   }
+
+  win.on('show', run)
+  win.on('restore', run)
+  win.on('moved', run)
+
+  let resizeTimer
+  win.on('resize', () => {
+    if (resizeTimer !== undefined) {
+      clearTimer(resizeTimer)
+    }
+
+    resizeTimer = setTimer(() => {
+      resizeTimer = undefined
+      run()
+    }, ZOOM_RESIZE_REASSERT_DELAY_MS)
+  })
+
+  win.once?.('closed', () => {
+    if (resizeTimer !== undefined) {
+      clearTimer(resizeTimer)
+    }
+  })
 }
 
 /**

@@ -4853,12 +4853,15 @@ function installPreviewShortcut(window) {
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
 import {
   applyZoomLevel,
+  createZoomCoordinator,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomWiringForWindowKind
 } from './zoom'
+
+const zoomCoordinator = createZoomCoordinator()
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {
@@ -4867,7 +4870,8 @@ function setAndPersistZoomLevel(window, zoomLevel) {
 
   // Apply + notify in one funnel so the settings UI stays in sync, including
   // changes made via the keyboard shortcuts or the View menu.
-  const next = applyZoomLevel(window.webContents, zoomLevel)
+  const next = zoomCoordinator.setDesired(zoomLevel)
+  applyZoomLevel(window.webContents, next)
   window.webContents
     .executeJavaScript(
       `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
@@ -4880,6 +4884,16 @@ function restorePersistedZoomLevel(window) {
     return
   }
 
+  const cached = zoomCoordinator.getDesired()
+
+  if (cached !== undefined) {
+    applyZoomLevel(window.webContents, cached)
+
+    return
+  }
+
+  const commitRestore = zoomCoordinator.beginRestore()
+
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
@@ -4889,11 +4903,33 @@ function restorePersistedZoomLevel(window) {
         return
       }
 
+      const desired = commitRestore(Number(stored))
+
+      if (desired === undefined) {
+        return
+      }
+
       // Notify the renderer too — otherwise the Appearance UI Scale control
       // can stay stuck at 100% even though the window zoom was restored.
-      applyZoomLevel(window.webContents, Number(stored))
+      applyZoomLevel(window.webContents, desired)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
+}
+
+function reassertDesiredZoomLevel(window) {
+  if (!window || window.isDestroyed()) {
+    return
+  }
+
+  const desired = zoomCoordinator.getDesired()
+
+  if (desired === undefined) {
+    restorePersistedZoomLevel(window)
+
+    return
+  }
+
+  applyZoomLevel(window.webContents, desired)
 }
 
 function installZoomShortcuts(window) {
@@ -7111,10 +7147,10 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
   if (zoom) {
     installZoomShortcuts(win)
-    // Re-apply persisted zoom on show/restore/cross-display move (Windows can
-    // drop webContents zoom after minimize or a monitor-scale change) and on
-    // first load (reloads / crash recovery).
-    installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
+    // Re-apply cached zoom after show/restore, a cross-display move, and a
+    // coalesced resize; read localStorage only on first load or before the
+    // cache has been populated.
+    installZoomReassertOnWindowEvents(win, () => reassertDesiredZoomLevel(win))
     win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
   }
 

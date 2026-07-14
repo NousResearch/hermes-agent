@@ -49,9 +49,12 @@ class TestUpstageProfile:
         # Only the agentic, tool-calling Solar Pro models belong in the offline
         # catalog — Mini is capable but not agentic, so it's never promoted as a
         # default. Live /v1/models still surfaces everything when a key is set.
-        assert upstage_profile.fallback_models == (
-            "solar-pro3",
-        )
+        # Behavior contract (not a frozen list): non-empty, no denied families.
+        assert upstage_profile.fallback_models
+        for denied in ("solar-mini", "syn-pro"):
+            assert not any(
+                denied in m for m in upstage_profile.fallback_models
+            ), f"non-agentic family {denied!r} must not be a fallback default"
 
     def test_default_model_is_solar_pro3(self, upstage_profile):
         # Entry [0] is the setup default (get_default_model_for_provider).
@@ -82,6 +85,16 @@ class TestUpstageReasoning:
     def test_pro_strong_efforts_collapse_to_high(self, upstage_profile, effort):
         _, top_level = upstage_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}, model="solar-pro2"
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+    def test_unknown_future_effort_collapses_to_high(self, upstage_profile):
+        # Guard against the #62650 recurrence: a future effort level Hermes
+        # adds above "high" must collapse to Solar's strongest, not silently
+        # downgrade to the medium default.
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "hyperthink"},
+            model="solar-pro3",
         )
         assert top_level == {"reasoning_effort": "high"}
 

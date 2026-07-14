@@ -1,8 +1,8 @@
 ---
 name: home-assistant
-description: Control Home Assistant — lights, switches, climate, scenes, scripts, and automations — via MCP, with natural-language YAML automation creation and risk assessment. Auth is OAuth 2.0 through Selora Connect.
+description: Control lights, climate, scenes and automations via MCP.
 version: 1.0.0
-author: Selora Homes
+author: Gunnar Beck Nelson (@GChief117)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -12,7 +12,7 @@ metadata:
     related_skills: [mcporter]
 ---
 
-# Home Assistant
+# Home Assistant Skill
 
 Control your smart home from Hermes — lights, switches, climate, scenes, scripts, and automations. Describe new automations in plain English; the skill returns validated Home Assistant YAML with a risk assessment for review before deployment. Auth is OAuth 2.0 via Selora Connect; no long-lived tokens or copy-pasted secrets.
 
@@ -62,63 +62,70 @@ Confirm the connection with `hermes mcp test home-assistant`. On first tool invo
 3. Hermes surfaces an authorization URL — open it, approve access on the Selora Connect consent screen.
 4. The browser callback completes the token exchange; tokens refresh silently from then on.
 
-Verify with: *"Get a snapshot of my home"*. The `selora_get_home_snapshot` tool returns entities grouped by area.
+Verify with: *"Get a snapshot of my home"*. The `mcp__home_assistant__selora_get_home_snapshot` tool returns entities grouped by area.
 
 ## Quick Reference
+
+Hermes registers MCP tools as `mcp__<server>__<tool>`, so the names below assume the server was
+added as `home-assistant` per [How to Run](#how-to-run). Confirm the exact set with
+`hermes mcp test home-assistant`.
 
 **Read tools** (no admin role required):
 
 | Tool | Description |
 |------|-------------|
-| `selora_get_home_snapshot` | Entity states grouped by area — call this first |
-| `selora_list_automations` | Selora automations with status and risk (filterable) |
-| `selora_get_automation` | Full detail: YAML, versions, risk |
-| `selora_validate_automation` | Validate and risk-assess YAML without creating it |
-| `selora_list_sessions` | Recent chat sessions |
-| `selora_list_patterns` | Detected behavior patterns |
-| `selora_get_pattern` | Pattern detail with linked suggestions |
-| `selora_list_suggestions` | Proactive suggestions with YAML previews |
+| `mcp__home_assistant__selora_get_home_snapshot` | Entity states grouped by area — call this first |
+| `mcp__home_assistant__selora_list_automations` | Selora automations with status and risk (filterable) |
+| `mcp__home_assistant__selora_get_automation` | Full detail: YAML, versions, risk |
+| `mcp__home_assistant__selora_validate_automation` | Validate and risk-assess YAML without creating it |
+| `mcp__home_assistant__selora_list_sessions` | Recent chat sessions |
+| `mcp__home_assistant__selora_list_patterns` | Detected behavior patterns |
+| `mcp__home_assistant__selora_get_pattern` | Pattern detail with linked suggestions |
+| `mcp__home_assistant__selora_list_suggestions` | Proactive suggestions with YAML previews |
 
 **Mutating tools** (🔒 require `owner` or `member` role on Selora Connect):
 
 | Tool | Description |
 |------|-------------|
-| `selora_chat` 🔒 | Natural-language chat — proposes automations with YAML and risk |
-| `selora_create_automation` 🔒 | Create automation from YAML (disabled by default) |
-| `selora_accept_automation` 🔒 | Enable a pending automation |
-| `selora_delete_automation` 🔒 | Delete permanently |
-| `selora_accept_suggestion` 🔒 | Create automation from a suggestion |
-| `selora_dismiss_suggestion` 🔒 | Dismiss a suggestion |
-| `selora_trigger_scan` 🔒 | Trigger immediate suggestion scan (rate-limited 60s) |
+| `mcp__home_assistant__selora_chat` 🔒 | Natural-language chat — proposes automations with YAML and risk |
+| `mcp__home_assistant__selora_create_automation` 🔒 | Create automation from YAML (disabled by default) |
+| `mcp__home_assistant__selora_accept_automation` 🔒 | Enable a pending automation |
+| `mcp__home_assistant__selora_delete_automation` 🔒 | Delete permanently |
+| `mcp__home_assistant__selora_accept_suggestion` 🔒 | Create automation from a suggestion |
+| `mcp__home_assistant__selora_dismiss_suggestion` 🔒 | Dismiss a suggestion |
+| `mcp__home_assistant__selora_trigger_scan` 🔒 | Trigger immediate suggestion scan (rate-limited 60s) |
 
 ## Procedure
 
 ### Inspect the home
 
-1. `selora_get_home_snapshot` to learn entities and areas.
-2. `selora_list_automations` / `selora_get_automation` for existing automations.
+1. `mcp__home_assistant__selora_get_home_snapshot` to learn entities and areas.
+2. `mcp__home_assistant__selora_list_automations` / `mcp__home_assistant__selora_get_automation` for existing automations.
 
 ### Create an automation from YAML
 
-1. `selora_validate_automation` — check YAML and surface risk.
+1. `mcp__home_assistant__selora_validate_automation` — check YAML and surface risk.
 2. Show normalized YAML + risk; ask the user to confirm.
-3. `selora_create_automation` with `enabled=false`.
-4. `selora_accept_automation` after explicit approval.
+3. `mcp__home_assistant__selora_create_automation` with `enabled=false`.
+4. `mcp__home_assistant__selora_accept_automation` after explicit approval.
 
 ### Create an automation from natural language
 
-1. `selora_chat` — describe the automation; Selora returns YAML + risk.
+1. `mcp__home_assistant__selora_chat` — describe the automation; Selora returns YAML + risk.
 2. Summarize risk; ask the user to confirm.
-3. `selora_create_automation`, then `selora_accept_automation`.
+3. `mcp__home_assistant__selora_create_automation`, then `mcp__home_assistant__selora_accept_automation`.
 
 ### Act on a proactive suggestion
 
-1. `selora_list_suggestions` (optionally `selora_trigger_scan` first).
+1. `mcp__home_assistant__selora_list_suggestions` (optionally `mcp__home_assistant__selora_trigger_scan` first).
 2. Show suggestion details; ask the user to confirm.
-3. `selora_accept_suggestion` or `selora_dismiss_suggestion`.
+3. `mcp__home_assistant__selora_accept_suggestion` or `mcp__home_assistant__selora_dismiss_suggestion`.
 
 ## Pitfalls
 
+- **Tool names follow the registered server name.** Registering the server as anything other than
+  `home-assistant` changes the prefix (`hermes mcp add ha ...` yields `mcp__ha__selora_*`). Take the
+  names from `hermes mcp test <server>` rather than assuming the ones documented here.
 - **Never invent entity IDs**. Resolve them from tool output only.
 - **Always surface `risk_assessment`** before any mutation. `high` or missing risk requires a second confirmation.
 - **Create automations disabled by default**; enable only after explicit approval.
@@ -134,4 +141,4 @@ Verify with: *"Get a snapshot of my home"*. The `selora_get_home_snapshot` tool 
 curl -sS https://mcp-<id>.selorabox.com/api/selora_ai/mcp/.well-known/oauth-authorization-server | jq .
 ```
 
-Then ask the agent: *"Get a snapshot of my home"*. Expected: a list of areas with entity states from `selora_get_home_snapshot`. Failure modes: `401 Unauthorized` with an authorization URL surfaced (expected on first use), connection refused (HA not running or URL wrong), or empty tool list (Selora AI integration not enabled in HA).
+Then ask the agent: *"Get a snapshot of my home"*. Expected: a list of areas with entity states from `mcp__home_assistant__selora_get_home_snapshot`. Failure modes: `401 Unauthorized` with an authorization URL surfaced (expected on first use), connection refused (HA not running or URL wrong), or empty tool list (Selora AI integration not enabled in HA).

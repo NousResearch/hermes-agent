@@ -651,6 +651,21 @@ def auth_adapter():
 
 class TestAgentExecution:
     @pytest.mark.asyncio
+    async def test_run_agent_forwards_reasoning_callback(self, adapter):
+        reasoning_callback = object()
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent) as create_agent:
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                reasoning_callback=reasoning_callback,
+            )
+
+        assert create_agent.call_args.kwargs["reasoning_callback"] is reasoning_callback
+
+    @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1872,26 +1887,23 @@ class TestChatCompletionsEndpoint:
     @pytest.mark.asyncio
     async def test_chat_completions_stream_includes_reasoning_chunks(self, adapter):
         """Streaming response includes delta.reasoning_content chunks when show_reasoning=True."""
-        import asyncio
         import json as _json
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            async def _mock_run_agent(**kwargs):
-                tp_cb = kwargs.get("tool_progress_callback")
-                cb = kwargs.get("stream_delta_callback")
-                if tp_cb:
-                    tp_cb("reasoning.available", preview="thinking text")
-                if cb:
-                    await asyncio.sleep(0.01)
-                    cb("Answer")
-                return (
+            reasoning = "provider reasoning " * 100
+
+            def _fake_create_agent(**kwargs):
+                fake_agent = MagicMock()
+                fake_agent.run_conversation.side_effect = lambda **run_kwargs: (
+                    kwargs["reasoning_callback"](reasoning),
+                    kwargs["stream_delta_callback"]("Answer"),
                     {"final_response": "Answer", "messages": [], "api_calls": 1},
-                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
-                )
+                )[-1]
+                return fake_agent
 
             with (
-                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+                patch.object(adapter, "_create_agent", side_effect=_fake_create_agent),
                 patch(
                     "gateway.platforms.api_server.resolve_display_setting",
                     return_value=True,
@@ -1924,33 +1936,27 @@ class TestChatCompletionsEndpoint:
                     if "content" in delta:
                         content_chunks.append(delta["content"])
             assert reasoning_chunks, "Expected at least one reasoning_content delta"
-            assert "thinking text" in reasoning_chunks
-            assert any("Answer" in c for c in content_chunks)
+            assert "".join(reasoning_chunks) == reasoning
+            assert content_chunks == ["Answer"]
 
     @pytest.mark.asyncio
     async def test_chat_completions_stream_omits_reasoning_when_display_disabled(self, adapter):
         """Streaming response omits reasoning_content when show_reasoning=False."""
-        import asyncio
         import json as _json
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            async def _mock_run_agent(**kwargs):
-                tp_cb = kwargs.get("tool_progress_callback")
-                cb = kwargs.get("stream_delta_callback")
-                # When display is disabled, tool_progress_callback is None, so reasoning
-                # events are never enqueued. Verify the callback is not set.
-                assert tp_cb is None, "tool_progress_callback should be None when display is off"
-                if cb:
-                    await asyncio.sleep(0.01)
-                    cb("Answer")
-                return (
+            def _fake_create_agent(**kwargs):
+                assert kwargs["reasoning_callback"] is None
+                fake_agent = MagicMock()
+                fake_agent.run_conversation.side_effect = lambda **run_kwargs: (
+                    kwargs["stream_delta_callback"]("Answer"),
                     {"final_response": "Answer", "messages": [], "api_calls": 1},
-                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
-                )
+                )[-1]
+                return fake_agent
 
             with (
-                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+                patch.object(adapter, "_create_agent", side_effect=_fake_create_agent),
                 patch(
                     "gateway.platforms.api_server.resolve_display_setting",
                     return_value=False,

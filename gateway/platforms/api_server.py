@@ -1394,6 +1394,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        reasoning_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
@@ -1511,6 +1512,7 @@ class APIServerAdapter(BasePlatformAdapter):
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
+            reasoning_callback=reasoning_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
@@ -2379,10 +2381,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
-            def _on_reasoning_progress(event_type, tool_name=None, preview=None, args=None, **kwargs):
-                """Forward reasoning.available events as tagged tuples to the stream queue."""
-                if event_type == "reasoning.available" and preview:
-                    _stream_q.put(("__reasoning__", preview))
+            def _on_reasoning(delta):
+                if delta:
+                    _stream_q.put(("__reasoning__", delta))
 
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
@@ -2446,7 +2447,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
-                tool_progress_callback=_on_reasoning_progress if _show_reasoning else None,
+                reasoning_callback=_on_reasoning if _show_reasoning else None,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
@@ -4228,6 +4229,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        reasoning_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
@@ -4265,6 +4267,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=stream_delta_callback,
                     tool_progress_callback=tool_progress_callback,
+                    reasoning_callback=reasoning_callback,
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,

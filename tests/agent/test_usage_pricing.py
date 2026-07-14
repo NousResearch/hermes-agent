@@ -440,24 +440,59 @@ def test_bedrock_branch_does_not_override_explicit_provider():
 # path can reprice company-OAuth codex without importing scripts/spend_core.py.
 # ──────────────────────────────────────────────────────────────────────────
 def test_codex_pricing_tables_present_and_cover_live_models():
-    """The codex rate tables must be importable from core and cover every
-    live company-OAuth gpt-* model (gpt-5.5 / gpt-5.4 / gpt-5.4-mini)."""
+    """The codex rate tables must cover every live company-OAuth model."""
     from agent.usage_pricing import CODEX_PRICING_STANDARD, CODEX_PRICING_PRIORITY
 
+    models = (
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5",
+    )
     for table in (CODEX_PRICING_STANDARD, CODEX_PRICING_PRIORITY):
-        for model in ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5"):
+        for model in models:
             assert model in table, model
-            assert len(table[model]) == 3  # (input, cached_input, output)
+            assert len(table[model]) == 4  # input, cached input, cache write, output
 
 
-def test_codex_pricing_priority_rates_match_spend_core_verbatim():
-    """Priority-tier rates must be the verbatim values verified in spend_core
-    (gpt-5.5 12.50/1.25/75, gpt-5.4 5/0.50/30, gpt-5.4-mini 1.50/0.15/9)."""
-    from agent.usage_pricing import CODEX_PRICING_PRIORITY
+def test_codex_pricing_rates_match_openai_official_docs():
+    from agent.usage_pricing import CODEX_PRICING_STANDARD, CODEX_PRICING_PRIORITY
 
-    assert CODEX_PRICING_PRIORITY["gpt-5.5"] == (12.50, 1.25, 75.00)
-    assert CODEX_PRICING_PRIORITY["gpt-5.4"] == (5.00, 0.50, 30.00)
-    assert CODEX_PRICING_PRIORITY["gpt-5.4-mini"] == (1.50, 0.15, 9.00)
+    assert CODEX_PRICING_STANDARD["gpt-5.6-sol"] == (5.00, 0.50, 6.25, 30.00)
+    assert CODEX_PRICING_STANDARD["gpt-5.6-terra"] == (2.50, 0.25, 3.125, 15.00)
+    assert CODEX_PRICING_STANDARD["gpt-5.6-luna"] == (1.00, 0.10, 1.25, 6.00)
+    assert CODEX_PRICING_PRIORITY["gpt-5.6-sol"] == (10.00, 1.00, 12.50, 60.00)
+    assert CODEX_PRICING_PRIORITY["gpt-5.6-terra"] == (5.00, 0.50, 6.25, 30.00)
+    assert CODEX_PRICING_PRIORITY["gpt-5.6-luna"] == (2.00, 0.20, 2.50, 12.00)
+    assert CODEX_PRICING_PRIORITY["gpt-5.5"] == (12.50, 1.25, None, 75.00)
+    assert CODEX_PRICING_PRIORITY["gpt-5.4"] == (5.00, 0.50, None, 30.00)
+    assert CODEX_PRICING_PRIORITY["gpt-5.4-mini"] == (1.50, 0.15, None, 9.00)
+
+
+def test_codex_cost_prices_gpt_5_6_cache_writes():
+    from agent.usage_pricing import codex_cost
+
+    usage = CanonicalUsage(
+        input_tokens=1_000_000,
+        output_tokens=200_000,
+        cache_read_tokens=500_000,
+        cache_write_tokens=100_000,
+    )
+
+    usd, key = codex_cost("gpt-5.6-terra", usage, tier="priority")
+
+    expected = (
+        1_000_000 * 5.00 / 1e6
+        + 500_000 * 0.50 / 1e6
+        + 100_000 * 6.25 / 1e6
+        + 200_000 * 30.00 / 1e6
+    )
+    assert key == "gpt-5.6-terra"
+    assert usd == expected
 
 
 def test_codex_cost_uses_verbatim_float_arithmetic():

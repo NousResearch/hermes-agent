@@ -776,21 +776,27 @@ def _normalize_bedrock_model_name(model: str) -> str:
 # openai-codex model to subscription_included ($0), which is correct for a
 # normal user but WRONG for this setup. These tables reprice at official OpenAI
 # API rates (Standard + Priority tiers), USD per 1M tokens: (input, cached_input,
-# output). Kept identical to spend_core's tables — the frozen golden oracle was
-# captured from these values, so any drift breaks parity.
-CODEX_PRICING_STANDARD: Dict[str, tuple[float, float, float]] = {
-    "gpt-5.5": (5.00, 0.50, 30.00),
-    "gpt-5.4": (2.50, 0.25, 15.00),
-    "gpt-5.4-mini": (0.75, 0.075, 4.50),
-    "gpt-5.4-nano": (0.20, 0.02, 1.25),
-    "gpt-5": (5.00, 0.50, 30.00),  # alias safety -> 5.5-class flagship
+# cache_write, output). Cache-write pricing is None when OpenAI does not publish
+# a separate rate. Source: https://developers.openai.com/api/docs/pricing
+CODEX_PRICING_STANDARD: Dict[str, tuple[float, float, Optional[float], float]] = {
+    "gpt-5.6-sol": (5.00, 0.50, 6.25, 30.00),
+    "gpt-5.6-terra": (2.50, 0.25, 3.125, 15.00),
+    "gpt-5.6-luna": (1.00, 0.10, 1.25, 6.00),
+    "gpt-5.5": (5.00, 0.50, None, 30.00),
+    "gpt-5.4": (2.50, 0.25, None, 15.00),
+    "gpt-5.4-mini": (0.75, 0.075, None, 4.50),
+    "gpt-5.4-nano": (0.20, 0.02, None, 1.25),
+    "gpt-5": (5.00, 0.50, None, 30.00),  # alias safety -> 5.5-class flagship
 }
-CODEX_PRICING_PRIORITY: Dict[str, tuple[float, float, float]] = {
-    "gpt-5.5": (12.50, 1.25, 75.00),
-    "gpt-5.4": (5.00, 0.50, 30.00),
-    "gpt-5.4-mini": (1.50, 0.15, 9.00),
-    "gpt-5.4-nano": (0.50, 0.05, 3.125),  # not officially listed; 2.5x standard
-    "gpt-5": (12.50, 1.25, 75.00),
+CODEX_PRICING_PRIORITY: Dict[str, tuple[float, float, Optional[float], float]] = {
+    "gpt-5.6-sol": (10.00, 1.00, 12.50, 60.00),
+    "gpt-5.6-terra": (5.00, 0.50, 6.25, 30.00),
+    "gpt-5.6-luna": (2.00, 0.20, 2.50, 12.00),
+    "gpt-5.5": (12.50, 1.25, None, 75.00),
+    "gpt-5.4": (5.00, 0.50, None, 30.00),
+    "gpt-5.4-mini": (1.50, 0.15, None, 9.00),
+    "gpt-5.4-nano": (0.50, 0.05, None, 3.125),  # not officially listed; 2.5x standard
+    "gpt-5": (12.50, 1.25, None, 75.00),
 }
 
 
@@ -820,11 +826,17 @@ def codex_cost(
     rates = table.get(key)
     if rates is None:
         return None, None
-    c_in, c_cached, c_out = rates
+    c_in, c_cached, c_write, c_out = rates
     inp = usage.input_tokens or 0
     out = usage.output_tokens or 0
     cr = usage.cache_read_tokens or 0
-    usd = inp * c_in / 1e6 + cr * c_cached / 1e6 + out * c_out / 1e6
+    cw = usage.cache_write_tokens or 0
+    usd = (
+        inp * c_in / 1e6
+        + cr * c_cached / 1e6
+        + (cw * c_write / 1e6 if c_write is not None else 0)
+        + out * c_out / 1e6
+    )
     return usd, key
 
 
@@ -1004,14 +1016,18 @@ def _codex_repriced_result(
         if (cfg.codex_tier or "priority").strip().lower() == "priority"
         else CODEX_PRICING_STANDARD
     )
-    c_in, c_cached, c_out = table[key]
+    c_in, c_cached, c_write, c_out = table[key]
     inp = usage.input_tokens or 0
     out = usage.output_tokens or 0
     cr = usage.cache_read_tokens or 0
+    cw = usage.cache_write_tokens or 0
     breakdown = CostBreakdown(
         input_usd=Decimal(str(inp * c_in / 1e6)),
         output_usd=Decimal(str(out * c_out / 1e6)),
         cache_read_usd=Decimal(str(cr * c_cached / 1e6)),
+        cache_write_usd=Decimal(
+            str(cw * c_write / 1e6 if c_write is not None else 0)
+        ),
     )
     amount = Decimal(str(usd))
     return CostResult(
@@ -1019,7 +1035,7 @@ def _codex_repriced_result(
         status="estimated",
         source="official_docs_snapshot",
         label=f"~${amount:.2f}",
-        pricing_version=f"openai-api-2026-06 (company OAuth real API price, tier={cfg.codex_tier})",
+        pricing_version=f"openai-api-2026-07-14 (company OAuth real API price, tier={cfg.codex_tier})",
         breakdown=breakdown,
         base_amount_usd=base.amount_usd,
         adjustments=("codex-real-api-price",),

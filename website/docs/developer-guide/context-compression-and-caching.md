@@ -84,6 +84,9 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
+  codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
+  codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -101,6 +104,56 @@ auxiliary:
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
+| `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
+
+### Codex gpt-5.5 threshold autoraise
+
+The ChatGPT Codex OAuth backend hard-caps gpt-5.5 at a **272K** context window
+(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
+GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
+half the window the model can actually use. When the active route is Codex
+OAuth (`provider: openai-codex`) and the model is gpt-5.5, Hermes raises the
+trigger to **85%** (~231K) and shows a notice with the opt-out command. The
+notice is shown once per profile — a marker under `$HERMES_HOME`
+(`.codex_gpt55_autoraise_notice`) records that it ran, so repeated agent/session
+inits (e.g. every inbound gateway message) don't re-emit it; if the raised
+threshold later changes it re-notifies once. Only this exact route is affected;
+gpt-5.5 on any other provider keeps your global `threshold`. To opt back down to
+the global value:
+
+```bash
+hermes config set compression.codex_gpt55_autoraise false
+```
+
+To keep the 85% autoraise but hide only the one-time notice:
+
+```bash
+hermes config set compression.codex_gpt55_autoraise_notice false
+```
+
+### Codex app-server thread compaction
+
+Codex app-server sessions (`api_mode: codex_app_server` — the codex CLI/agent
+runtime) are different from every other route: the codex agent owns the backing
+thread context, so Hermes' auxiliary summarizer cannot shrink it — rewriting the
+local transcript mirror leaves the real thread growing unbounded until a hard
+context reset. For this runtime, compaction goes through the app-server's own
+mechanism instead:
+
+- Manual compaction (`/compress`) asks the app-server to compact the thread
+  (`thread/compact/start`) and waits for the compaction turn to complete.
+- Automatic compaction is controlled by `compression.codex_app_server_auto`:
+  the default `native` lets the app-server decide when to compact and Hermes
+  records the resulting compaction events (compression counters, session
+  events). Set `hermes` to let Hermes' compression threshold initiate
+  app-server compaction, or `off` to disable Hermes-initiated automatic
+  compaction entirely (codex may still compact natively).
+
+Hermes' local transcript is never rewritten on this runtime — state.db records
+the compaction boundary while the visible transcript stays intact. All other
+routes (including Codex OAuth chat sessions) keep Hermes' summary compressor.
 
 ### Computed Values (for a 200K context model at defaults)
 
@@ -110,6 +163,17 @@ threshold_tokens     = 200,000 × 0.50 = 100,000
 tail_token_budget    = 100,000 × 0.20 = 20,000
 max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 ```
+
+:::note Threshold is derived from the MAIN model's context window
+`threshold_tokens` is always `threshold × context_length`, where `context_length`
+is the **main agent model's** context window — never the auxiliary/summary
+model's. On a 262,144-token model at the default `0.50`, the threshold is
+`262,144 × 0.50 = 131,072`. That number being close to a common "128K context"
+is a coincidence of the percentage, not a sign that the auxiliary model's window
+is the trigger. The auxiliary model's context window is a separate concern — see
+the "Summary model context length" warning below for how it affects whether a
+summary can be produced, not when compression fires.
+:::
 
 
 ## Compression Algorithm
@@ -324,6 +388,16 @@ The marker is applied differently based on content type:
 
 4. **TTL selection**: Default is `5m` (5 minutes). Use `1h` for long-running
    sessions where the user takes breaks between turns.
+
+5. **Model identity is part of the cache key**: Provider-side caches are scoped
+   to the model (and account/API key) serving the request. Any mid-conversation
+   model change — an explicit `/model` switch, primary-model fallback, or a
+   credential-pool rotation onto a different account — means the next request
+   gets zero cache hits and re-reads the full conversation at undiscounted
+   input price. This is inherent to how provider caches work, not something
+   Hermes can avoid; user-facing docs for `/model`, fallback providers, and
+   credential pools carry cost warnings for this reason. Don't add features
+   that silently swap the model or credentials mid-session.
 
 ### Enabling Prompt Caching
 

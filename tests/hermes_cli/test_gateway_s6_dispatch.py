@@ -361,28 +361,6 @@ def _stub_s6(monkeypatch: pytest.MonkeyPatch, *, on_s6: bool) -> _CallRecorder:
     return rec
 
 
-class _ExecvpCalled(BaseException):
-    """Sentinel raised by the os.execvp stub so tests can assert on it
-    without actually replacing the test runner process. Inherits from
-    BaseException so it bypasses generic ``except Exception`` blocks in
-    the code under test (just like a real exec would)."""
-
-    def __init__(self, argv: list[str]) -> None:
-        self.argv = argv
-
-
-def _stub_execvp(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Replace os.execvp with a recorder that raises _ExecvpCalled."""
-    calls: list[list[str]] = []
-
-    def fake_execvp(file: str, args: list[str]) -> None:  # noqa: ANN401
-        calls.append([file, *args])
-        raise _ExecvpCalled([file, *args])
-
-    monkeypatch.setattr("hermes_cli.gateway.os.execvp", fake_execvp)
-    return calls
-
-
 def test_redirect_noop_on_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Host runs (non-s6) must not redirect. Returns False; caller
     continues to the foreground gateway code path unchanged."""
@@ -407,14 +385,31 @@ def test_redirect_fires_inside_s6_container(
 
     1. Dispatch `start` to the service manager.
     2. Print the loud breadcrumb to stderr.
-    3. exec `sleep infinity` to keep the CMD alive without binding
-       container lifetime to gateway PID lifetime.
+    3. exec `sleep infinity` to keep the CMD alive (the cheap heartbeat;
+       no resident Python interpreter) without binding container
+       lifetime to gateway PID lifetime.
     """
     from hermes_cli import gateway as gw
 
     rec = _stub_s6(monkeypatch, on_s6=True)
     monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
-    execvp_calls = _stub_execvp(monkeypatch)
+
+    class _ExecvpCalled(BaseException):
+        def __init__(self, argv: list[str]) -> None:
+            self.argv = argv
+
+    execvp_calls: list[list[str]] = []
+
+    def fake_execvp(file: str, args: list[str]) -> None:
+        execvp_calls.append([file, *args])
+        raise _ExecvpCalled([file, *args])
+
+    monkeypatch.setattr("hermes_cli.gateway.os.execvp", fake_execvp)
+    # If the fallback ran, the normal sleep path was wrongly skipped.
+    monkeypatch.setattr(
+        "hermes_cli.gateway._block_until_terminated",
+        lambda: pytest.fail("fallback should not run when sleep is available"),
+    )
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
 
@@ -428,9 +423,88 @@ def test_redirect_fires_inside_s6_container(
     assert "s6 supervision" in err
     assert "--no-supervise" in err
     assert "HERMES_GATEWAY_NO_SUPERVISE" in err
-    # 3. exec'd `sleep infinity`.
+    # 3. exec'd `sleep infinity` (the preferred cheap heartbeat).
     assert execvp_calls == [["sleep", "sleep", "infinity"]]
     assert excinfo.value.argv == ["sleep", "sleep", "infinity"]
+
+
+def test_redirect_falls_back_when_sleep_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression guard for issue #36208: when ``os.execvp("sleep", ...)``
+    raises (no `sleep` on a clobbered/empty PATH, or a minimal image
+    without it), the redirect must NOT crash the container — it falls
+    back to the in-process ``_block_until_terminated`` heartbeat so the
+    container keeps running.
+    """
+    from hermes_cli import gateway as gw
+
+    rec = _stub_s6(monkeypatch, on_s6=True)
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+
+    def missing_sleep(file: str, args: list[str]) -> None:
+        raise FileNotFoundError(2, "No such file or directory", file)
+
+    monkeypatch.setattr("hermes_cli.gateway.os.execvp", missing_sleep)
+    block_calls: list[bool] = []
+    monkeypatch.setattr(
+        "hermes_cli.gateway._block_until_terminated",
+        lambda: block_calls.append(True),
+    )
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+    # Must not raise FileNotFoundError — that was the #36208 crash.
+    result = gw._maybe_redirect_run_to_s6_supervision(_Args())
+
+    assert result is True
+    assert rec.calls == [("start", "gateway-default")]
+    # Fell back to the in-process heartbeat instead of crashing.
+    assert block_calls == [True]
+    err = capsys.readouterr().err
+    assert "`sleep` is unavailable" in err
+
+
+def test_block_until_terminated_installs_sigterm_handler_and_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_block_until_terminated`` must register a SIGTERM handler (so
+    `docker stop` exits cleanly) and then block on signal.pause() — never
+    touching an external binary. Regression guard for issue #36208, where
+    os.execvp("sleep", ...) crashed the container with FileNotFoundError
+    when PATH lacked a directory containing `sleep`.
+    """
+    import signal as _signal
+    from hermes_cli import gateway as gw
+
+    registered: dict[int, object] = {}
+    monkeypatch.setattr(
+        "hermes_cli.gateway.signal.signal",
+        lambda signum, handler: registered.__setitem__(signum, handler),
+    )
+
+    # Make signal.pause() raise after the first call so the infinite loop
+    # terminates deterministically instead of hanging the test.
+    pause_calls = {"n": 0}
+
+    def fake_pause() -> None:
+        pause_calls["n"] += 1
+        raise KeyboardInterrupt  # break out of the `while True: pause()` loop
+
+    monkeypatch.setattr("hermes_cli.gateway.signal.pause", fake_pause)
+
+    with pytest.raises(KeyboardInterrupt):
+        gw._block_until_terminated()
+
+    # A SIGTERM handler was installed...
+    assert _signal.SIGTERM in registered
+    # ...and it exits with the conventional 128+signum code.
+    handler = registered[_signal.SIGTERM]
+    with pytest.raises(SystemExit) as exc:
+        handler(_signal.SIGTERM, None)  # type: ignore[operator]
+    assert exc.value.code == 128 + _signal.SIGTERM
+    # ...and we actually blocked on pause().
+    assert pause_calls["n"] == 1
 
 
 def test_redirect_short_circuits_supervised_child(
@@ -516,10 +590,25 @@ def test_redirect_no_supervise_env_falsy_values_dont_opt_out(
 
     _stub_s6(monkeypatch, on_s6=True)
     monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
-    _stub_execvp(monkeypatch)
+
+    # The redirect reaching its `sleep` heartbeat means it did NOT opt
+    # out. Stub execvp to record + raise (so it doesn't replace the test
+    # process) rather than actually exec.
+    class _ExecvpCalled(BaseException):
+        pass
+
+    execvp_calls: list[str] = []
+
+    def fake_execvp(file: str, args: list[str]) -> None:
+        execvp_calls.append(file)
+        raise _ExecvpCalled
+
+    monkeypatch.setattr("hermes_cli.gateway.os.execvp", fake_execvp)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
 
     for falsy in ("", "0", "false", "no", "off", "garbage"):
+        execvp_calls.clear()
         monkeypatch.setenv("HERMES_GATEWAY_NO_SUPERVISE", falsy)
         with pytest.raises(_ExecvpCalled):
             gw._maybe_redirect_run_to_s6_supervision(_Args())
+        assert execvp_calls == ["sleep"], f"redirect should fire for {falsy!r}"

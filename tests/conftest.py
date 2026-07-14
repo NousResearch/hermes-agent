@@ -182,12 +182,15 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
     "HERMES_GATEWAY_SESSION",
+    "HERMES_CRON_SESSION",
+    "_HERMES_GATEWAY",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
     "HERMES_INFERENCE_MODEL",
     "HERMES_INFERENCE_PROVIDER",
     "HERMES_TUI_PROVIDER",
     "HERMES_MANAGED",
+    "HERMES_MANAGED_DIR",
     "HERMES_DEV",
     "HERMES_CONTAINER",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT",
@@ -532,6 +535,14 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "behaviour — e.g. PTY tests that signal their own child).",
     )
 
+    # The pyproject addopts pin ``--timeout-method=signal`` relies on
+    # ``signal.SIGALRM``, which does not exist on Windows — pytest-timeout
+    # raises AttributeError at timer setup and the whole run aborts before any
+    # test executes. Fall back to the thread-based timer on Windows so the
+    # suite runs natively there (POSIX keeps the more reliable signal method).
+    if sys.platform == "win32" and getattr(config.option, "timeout_method", None) == "signal":
+        config.option.timeout_method = "thread"
+
 
 @pytest.fixture(autouse=True)
 def _live_system_guard(request, monkeypatch):
@@ -605,6 +616,13 @@ def _live_system_guard(request, monkeypatch):
     real_kill = _os.kill
 
     def _guarded_kill(pid, sig, *args, **kwargs):
+        # Signal 0 is a pure liveness probe — it cannot terminate anything.
+        # psutil.pid_exists() uses os.kill(pid, 0) on POSIX, and probing a
+        # just-killed grandchild that was reparented to init (zombie with a
+        # foreign parent chain) must not trip the guard. Flaked in CI on
+        # test_entire_tree_is_sigkilled_not_just_parent.
+        if int(sig) == 0:
+            return real_kill(pid, sig, *args, **kwargs)
         if _is_own_subtree(int(pid)):
             return real_kill(pid, sig, *args, **kwargs)
         raise RuntimeError(
@@ -630,6 +648,9 @@ def _live_system_guard(request, monkeypatch):
         own_pgid = _os.getpgrp()
 
         def _guarded_killpg(pgid, sig, *args, **kwargs):
+            # Signal 0 is a pure liveness probe — never destructive.
+            if int(sig) == 0:
+                return real_killpg(pgid, sig, *args, **kwargs)
             if int(pgid) == own_pgid or _is_own_subtree(int(pgid)):
                 return real_killpg(pgid, sig, *args, **kwargs)
             raise RuntimeError(
@@ -728,6 +749,41 @@ def _live_system_guard(request, monkeypatch):
                 "targeting hermes/python could hit the live gateway. "
                 "Mark with @pytest.mark.live_system_guard_bypass if "
                 "intentional."
+            )
+        # Block any subprocess that would run `hermes update` (or the
+        # equivalent `python -m hermes_cli.main update`).  These commands
+        # run `git fetch origin + git pull` against the REAL checkout,
+        # overwriting files like pyproject.toml mid-test-run and corrupting
+        # every subsequent subprocess that reads them.  The corruption is
+        # especially insidious because the spawned process uses setsid/
+        # start_new_session=True, making it invisible to pytest's process
+        # tree (PPid=1) and nearly impossible to trace without explicit
+        # inotify/SHA watchdogs.  Any test that legitimately needs to exercise
+        # the update-spawn path must mock subprocess.Popen explicitly.
+        cmd_str = _cmd_to_string(cmd)
+        low = cmd_str.lower()
+        if "update" in low and (
+            # hermes update / hermes update --gateway / setsid bash -c ... hermes update
+            ("hermes" in low and "update" in low.split())
+            or
+            # python -m hermes_cli.main update --gateway
+            ("hermes_cli" in low and "update" in low.split())
+            or
+            # venv/bin/hermes update  (absolute path variant used in tests)
+            (".venv/bin/hermes" in low and "update" in low)
+        ):
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked "
+                f"subprocess.{name}({cmd!r}) — this command would run "
+                "`hermes update` against the real checkout, fetching "
+                "from origin and overwriting repo files (e.g. "
+                "pyproject.toml) mid-test-run. This corrupts every "
+                "subsequent subprocess in the same runner. "
+                "Mock subprocess.Popen (and subprocess.run if used) "
+                "in the test instead, or mark with "
+                "@pytest.mark.live_system_guard_bypass if genuinely "
+                "needed (e.g. an integration test testing the update "
+                "flow against a dedicated throwaway repo)."
             )
 
     def _wrap_subprocess(name, real):

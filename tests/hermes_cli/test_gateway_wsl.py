@@ -167,6 +167,14 @@ class TestGatewayCommandWSLMessages:
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
         monkeypatch.setattr(gateway, "is_managed", lambda: False)
+        # CRITICAL: also stub is_windows. Without this, running this test on a
+        # real Windows host falls through to the is_windows() branch *before*
+        # the WSL guidance branch, invoking gateway_windows.install() which
+        # writes a Startup-folder .cmd into the real user's Startup folder
+        # (NOT tmp_path) pointing at a now-vanished pytest fixture path.
+        # The user then sees a broken Hermes_Gateway.cmd flash a cmd.exe
+        # window on every login. See fix/windows-gateway-reliability.
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
 
         args = SimpleNamespace(
             gateway_command="install", force=False, system=False,
@@ -189,6 +197,10 @@ class TestGatewayCommandWSLMessages:
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
+        # See test_install_wsl_no_systemd: stub is_windows so a Windows host
+        # running this test does NOT actually spawn a detached gateway via
+        # gateway_windows.start().
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
 
         args = SimpleNamespace(gateway_command="start", system=False)
         with pytest.raises(SystemExit) as exc_info:
@@ -206,6 +218,9 @@ class TestGatewayCommandWSLMessages:
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
+        # Stub is_windows so a Windows host running this test does NOT take
+        # the Windows status branch (which reads gateway_windows.is_installed()).
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [12345])
         monkeypatch.setattr(gateway, "_runtime_health_lines", lambda: [])
         # Stub out the systemd unit path check
@@ -231,6 +246,8 @@ class TestGatewayCommandWSLMessages:
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
+        # See test_status_wsl_running_manual.
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [])
         monkeypatch.setattr(gateway, "_runtime_health_lines", lambda: [])
         monkeypatch.setattr(

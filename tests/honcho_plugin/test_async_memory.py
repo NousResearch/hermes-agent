@@ -155,15 +155,31 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_id=None)
         assert result == "dir"
 
-    def test_title_beats_session_id(self):
+    def test_per_session_id_beats_title(self):
+        # per-session: the run's session_id is authoritative; an (auto-)generated
+        # title must NOT remap a live conversation onto a second Honcho session.
         cfg = HonchoClientConfig(session_strategy="per-session")
+        result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
+        assert result == "20260309_175514_9797dd"
+
+    def test_per_session_id_beats_manual_map(self):
+        # per-session: session_id also wins over a stale cwd map entry (e.g. the
+        # desktop launching from a mapped home dir).
+        cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})
+        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
+        assert result == "20260309_175514_9797dd"
+
+    def test_title_still_applies_for_non_per_session(self):
+        # Outside per-session, /title still names the Honcho session.
+        cfg = HonchoClientConfig(session_strategy="per-directory")
         result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
         assert result == "my-title"
 
-    def test_manual_beats_session_id(self):
-        cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})
-        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
-        assert result == "pinned"
+    def test_gateway_key_beats_per_session_id(self):
+        # Gateways keep per-chat isolation even in per-session.
+        cfg = HonchoClientConfig(session_strategy="per-session")
+        result = cfg.resolve_session_name("/some/dir", gateway_session_key="agent:main:telegram:dm:42", session_id="20260309_175514_9797dd")
+        assert result == "agent-main-telegram-dm-42"
 
     def test_global_strategy_returns_workspace(self):
         cfg = HonchoClientConfig(session_strategy="global", workspace_id="my-workspace")
@@ -249,9 +265,12 @@ class TestFlushAll:
         mgr = _make_manager(write_frequency="async")
         sess = _make_session()
         sess.add_message("user", "pending")
-        mgr._async_queue.put(sess)
 
         with patch.object(mgr, "_flush_session") as mock_flush:
+            # Put the item AFTER the mock is installed so the background
+            # writer thread (if it dequeues before flush_all) still hits
+            # the mock rather than the real _flush_session.
+            mgr._async_queue.put(sess)
             mgr.flush_all()
             # Called at least once for the queued item
             assert mock_flush.call_count >= 1

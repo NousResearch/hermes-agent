@@ -28,6 +28,7 @@ from run_agent import (
     _FILE_MUTATING_TOOLS,
     _extract_error_preview,
     _extract_file_mutation_targets,
+    _extract_landed_file_mutation_paths,
 )
 
 
@@ -128,6 +129,7 @@ def _bare_agent() -> AIAgent:
     """
     agent = object.__new__(AIAgent)
     agent._turn_failed_file_mutations = {}
+    agent._turn_file_mutation_paths = set()
     return agent
 
 
@@ -165,6 +167,31 @@ class TestRecordFileMutationResult:
             json.dumps({"success": True, "diff": "..."}), is_error=False,
         )
         assert agent._turn_failed_file_mutations == {}
+        assert agent._turn_file_mutation_paths == {"/tmp/a.md"}
+
+    def test_success_records_landed_paths_for_verify_on_stop(self):
+        agent = _bare_agent()
+
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": "a.py", "content": "print('ok')\n"},
+            json.dumps({"bytes_written": 12, "files_modified": ["/tmp/project/a.py"]}),
+            is_error=False,
+        )
+
+        assert agent._turn_file_mutation_paths == {"/tmp/project/a.py"}
+
+    def test_landed_paths_prefer_resolved_tool_result(self):
+        paths = _extract_landed_file_mutation_paths(
+            "patch",
+            {"mode": "replace", "path": "src/app.py"},
+            json.dumps({
+                "success": True,
+                "files_modified": ["/tmp/project/src/app.py"],
+            }),
+        )
+
+        assert paths == ["/tmp/project/src/app.py"]
 
     def test_write_file_with_lint_error_counts_as_landed(self):
         agent = _bare_agent()
@@ -299,6 +326,57 @@ class TestFormatFooter:
         lines = out.split("\n")
         bullet_lines = [ln for ln in lines if ln.lstrip().startswith("•")]
         assert len(bullet_lines) == 11  # 10 shown + 1 summary
+
+    def test_paths_are_backtick_wrapped(self):
+        """Footer paths must be inline-code wrapped so the gateway's bare-path
+        media extractor can't auto-attach them (#35584 defense-in-depth)."""
+        out = AIAgent._format_file_mutation_failure_footer(
+            {"/home/u/.hermes/config.yaml": {
+                "tool": "patch",
+                "error_preview": (
+                    "Write denied: '/home/u/.hermes/config.yaml' is a "
+                    "protected system/credential file."
+                ),
+            }},
+        )
+        # Path still human-readable.
+        assert "/home/u/.hermes/config.yaml" in out
+        # Bullet path is backticked.
+        assert "`/home/u/.hermes/config.yaml`" in out
+        # The path echoed inside the preview is ALSO backticked (the real
+        # file_operations.py denial message embeds it in single quotes, which
+        # do NOT block the gateway extractor's regex).
+        assert "'`/home/u/.hermes/config.yaml`'" in out
+        # No double-backticking anywhere.
+        assert "``" not in out
+
+    def test_footer_path_not_extracted_by_gateway(self):
+        """End-to-end: the gateway's extract_local_files must NOT pull a
+        config.yaml path out of the rendered footer (#35584)."""
+        import os
+        import tempfile
+        from gateway.platforms.base import BasePlatformAdapter
+
+        tmp = tempfile.mkdtemp(prefix="hermes_footer_")
+        try:
+            cfg = os.path.join(tmp, "config.yaml")
+            with open(cfg, "w") as fh:
+                fh.write("openrouter_api_key: sk-LEAK\n")
+            footer = AIAgent._format_file_mutation_failure_footer(
+                {cfg: {
+                    "tool": "patch",
+                    "error_preview": (
+                        f"Write denied: '{cfg}' is a protected "
+                        "system/credential file."
+                    ),
+                }},
+            )
+            response = "I updated your config.\n\n" + footer
+            paths, _ = BasePlatformAdapter.extract_local_files(response)
+            assert paths == [], f"footer leaked deliverable path(s): {paths}"
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

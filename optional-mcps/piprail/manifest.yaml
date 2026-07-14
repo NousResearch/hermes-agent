@@ -14,11 +14,25 @@ source: https://github.com/piprail/piprail
 transport:
   type: stdio
   command: "npx"
-  args: ["-y", "@piprail/mcp"]
+  # Pinned, reviewed release — the catalog never floats a package (a bare
+  # `@piprail/mcp` would `npx` whatever is latest, i.e. unreviewed, at install
+  # time). Bumping the pin is a new reviewed PR, exactly like any transport ref.
+  args: ["-y", "@piprail/mcp@0.9.0"]
+  version: "0.9.0"
+  # Explicit subprocess env mapping. Hermes writes this into
+  # mcp_servers.piprail.env verbatim; the ${PIPRAIL_PRIVATE_KEY} reference is
+  # resolved at connect time from ~/.hermes/.env, so the wallet key stays in
+  # .env and never lands in config.yaml. Without this mapping the prompted key
+  # would sit in .env but never reach the (stdio) server process — leaving the
+  # install permanently read-only.
+  env:
+    PIPRAIL_PRIVATE_KEY: "${PIPRAIL_PRIVATE_KEY}"
 
 # PIPRAIL_PRIVATE_KEY is a self-custodial WALLET key, NOT an API key. It is OPTIONAL:
 # @piprail/mcp boots KEY-LESS in read-only mode (discover/quote/register/budget/guide all
-# work). pay/plan require the key (else they return WALLET_REQUIRED).
+# work). pay/plan require the key (else they return WALLET_REQUIRED). The auth block below
+# prompts for it and saves it to ~/.hermes/.env; the transport.env mapping above is what
+# actually forwards it into the server process.
 auth:
   type: api_key
   env:
@@ -36,6 +50,7 @@ tools:
     - piprail_register
     - piprail_budget
     - piprail_guide
+    - piprail_verify_receipt
 
 post_install: |
   PipRail pays x402 URLs from a self-custodial wallet you control — funds go straight to the

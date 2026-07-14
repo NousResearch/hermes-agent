@@ -143,6 +143,35 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+    def test_transport_env_mapping_parsed(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "demo-mcp@1.2.3"],
+                "env": {"DEMO_TOKEN": "${DEMO_TOKEN}"},
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.transport.env == {"DEMO_TOKEN": "${DEMO_TOKEN}"}
+
+    def test_transport_env_must_be_mapping(self, catalog_dir):
+        body = _basic_manifest()
+        body["transport"] = {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "demo-mcp"],
+            "env": ["DEMO_TOKEN=x"],  # a list, not a mapping → invalid
+        }
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        # Invalid manifests are silently skipped at list_catalog level
+        assert list_catalog() == []
+
     def test_install_block(self, catalog_dir):
         body = _basic_manifest(
             install={
@@ -217,6 +246,73 @@ class TestInstall:
         assert servers["demo"]["command"] == "npx"
         assert servers["demo"]["args"] == ["-y", "demo-mcp"]
         assert servers["demo"]["enabled"] is True
+
+    def test_install_stdio_env_mapping_written_to_config(self, catalog_dir, monkeypatch):
+        """A transport.env mapping is written into mcp_servers.<name>.env so the
+        stdio subprocess actually receives it. Values are verbatim ${VAR}
+        references: the secret stays in ~/.hermes/.env (interpolated at connect
+        time) and is never inlined into config.yaml."""
+        body = _basic_manifest(
+            transport={
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "demo-mcp@1.2.3"],
+                "env": {"DEMO_KEY": "${DEMO_KEY}"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "required": False, "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path, get_env_value
+
+        install_entry(_entry("demo"), enable=True)
+
+        # Read the RAW on-disk config — NOT load_config(), which resolves ${VAR}
+        # at read time. The persisted env value must be the verbatim reference.
+        on_disk = yaml.safe_load(get_config_path().read_text())
+        assert on_disk["mcp_servers"]["demo"]["env"] == {"DEMO_KEY": "${DEMO_KEY}"}
+        # The secret lives ONLY in ~/.hermes/.env, never inlined into config.yaml.
+        assert get_env_value("DEMO_KEY") == "secret-val"
+        assert "secret-val" not in get_config_path().read_text()
+
+    def test_install_env_mapping_expands_install_dir(self, catalog_dir, tmp_path):
+        """${INSTALL_DIR} is substituted inside transport.env values too, so a
+        git-installed server can point env at files in its own clone."""
+        body = _basic_manifest(
+            install={
+                "type": "git",
+                "url": "https://example.com/x.git",
+                "ref": "main",
+                "bootstrap": [],
+            },
+            transport={
+                "type": "stdio",
+                "command": "${INSTALL_DIR}/run.sh",
+                "args": [],
+                "env": {"DATA_DIR": "${INSTALL_DIR}/data"},
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        fake_clone = tmp_path / "clone"
+        fake_clone.mkdir()
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        with patch.object(mcp_catalog, "_do_git_install", return_value=fake_clone):
+            install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["env"] == {"DATA_DIR": f"{fake_clone}/data"}
 
     def test_install_with_install_dir_substitution(self, catalog_dir, tmp_path):
         body = _basic_manifest(

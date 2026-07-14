@@ -77,6 +77,11 @@ class TransportSpec:
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
     version: Optional[str] = None  # informational, pinned
+    # Explicit subprocess env mapping for stdio servers (env-var name -> value).
+    # Written verbatim into mcp_servers.<name>.env; values are typically
+    # ${VAR} references resolved at connect time from ~/.hermes/.env, so a
+    # prompted secret stays in .env and never lands in config.yaml.
+    env: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -184,12 +189,21 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
+    env_raw = transport_raw.get("env") or {}
+    if not isinstance(env_raw, dict):
+        raise CatalogError(f"{path}: transport.env must be a mapping")
+    t_env: Dict[str, str] = {}
+    for k, v in env_raw.items():
+        if not isinstance(k, str) or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
+            raise CatalogError(f"{path}: invalid transport.env key: {k!r}")
+        t_env[k] = str(v)
     transport = TransportSpec(
         type=t_type,
         command=transport_raw.get("command"),
         args=[str(a) for a in args],
         url=transport_raw.get("url"),
         version=transport_raw.get("version"),
+        env=t_env,
     )
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
@@ -468,6 +482,17 @@ def _build_server_config(
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
+        if t.env:
+            # Explicit subprocess env mapping. Values are written verbatim —
+            # typically ${VAR} references — so a secret prompted into
+            # ~/.hermes/.env stays there; only the reference lives in
+            # config.yaml, and _interpolate_env_vars() (hermes_cli/mcp_config.py)
+            # resolves it from the loaded .env at connect time. Without this,
+            # a stdio server never receives the prompted credential (the child
+            # gets only mcp_servers.<name>.env, not the global .env).
+            cfg["env"] = {
+                k: _expand_install_dir(v, install_dir) for k, v in t.env.items()
+            }
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":

@@ -20,11 +20,78 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import atexit
+import json
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+# Install a session sandbox before pytest imports any test modules. Autouse
+# fixtures run after collection, which is too late for modules that resolve
+# cron paths at import time. Preserve a structural snapshot of the real
+# registry as a final blast-radius assertion. Runtime fields legitimately move
+# while the production gateway ticks, so byte equality would be a false alarm.
+_ORIGINAL_HERMES_HOME = os.environ.get("HERMES_HOME")
+_LIVE_HERMES_HOME = Path(
+    _ORIGINAL_HERMES_HOME or (Path.home() / ".hermes")
+).expanduser().resolve()
+_LIVE_CRON_REGISTRY = _LIVE_HERMES_HOME / "cron" / "jobs.json"
+_CRON_RUNTIME_FIELDS = {
+    "last_run_at",
+    "next_run_at",
+    "last_status",
+    "last_error",
+    "last_output",
+    "fire_claim",
+}
+
+
+def _stable_cron_job(job):
+    stable = {key: value for key, value in job.items() if key not in _CRON_RUNTIME_FIELDS}
+    repeat = job.get("repeat")
+    if isinstance(repeat, dict):
+        stable["repeat"] = {
+            key: value for key, value in repeat.items() if key != "completed"
+        }
+    return stable
+
+
+def _cron_registry_structure(path: Path):
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("jobs", []) if isinstance(payload, dict) else payload
+    return tuple(sorted(
+        json.dumps(_stable_cron_job(job), sort_keys=True)
+        for job in rows if isinstance(job, dict)
+    ))
+
+
+_LIVE_CRON_REGISTRY_BEFORE = _cron_registry_structure(_LIVE_CRON_REGISTRY)
+_PRECOLLECTION_HERMES_HOME = Path(
+    tempfile.mkdtemp(prefix="hermes-pytest-home-")
+).resolve()
+for _name in ("sessions", "cron", "memories", "skills"):
+    (_PRECOLLECTION_HERMES_HOME / _name).mkdir(parents=True, exist_ok=True)
+os.environ["HERMES_HOME"] = str(_PRECOLLECTION_HERMES_HOME)
+atexit.register(shutil.rmtree, _PRECOLLECTION_HERMES_HOME, ignore_errors=True)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    after = _cron_registry_structure(_LIVE_CRON_REGISTRY)
+    if after != _LIVE_CRON_REGISTRY_BEFORE:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(
+                f"ERROR: tests modified live cron registry: {_LIVE_CRON_REGISTRY}",
+                red=True,
+            )
 
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent

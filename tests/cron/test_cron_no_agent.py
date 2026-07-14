@@ -281,6 +281,115 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
 
 
 # ---------------------------------------------------------------------------
+# scheduler incident lifecycle: edge-triggered failure/recovery delivery
+# ---------------------------------------------------------------------------
+
+
+def test_failure_notification_opens_suppresses_and_reminds():
+    from cron.scheduler import _cron_failure_notification
+
+    job = {"id": "job-1", "name": "Five Minute Watchdog"}
+    first, state, action = _cron_failure_notification(job, "boom", now=1000)
+    assert action == "opened"
+    assert "failed" in first
+    assert state["count"] == 1
+
+    job["failure_alert_state"] = state
+    repeated, state, action = _cron_failure_notification(job, "boom", now=1300)
+    assert action == "silent"
+    assert repeated == ""
+    assert state["count"] == 2
+
+    job["failure_alert_state"] = state
+    reminder, state, action = _cron_failure_notification(job, "boom", now=1000 + 86_401)
+    assert action == "reminder"
+    assert "failed" in reminder
+    assert state["count"] == 3
+
+
+def test_failure_notification_supports_consecutive_failure_threshold():
+    from cron.scheduler import _cron_failure_notification
+
+    job = {
+        "id": "job-1",
+        "name": "High Frequency Pull",
+        "alert_after_failures": 3,
+    }
+    for index in range(2):
+        content, state, action = _cron_failure_notification(job, "transient", now=1000 + index)
+        assert content == ""
+        assert action == "silent"
+        assert state["status"] == "observing"
+        job["failure_alert_state"] = state
+
+    content, state, action = _cron_failure_notification(job, "transient", now=1002)
+    assert action == "opened"
+    assert content
+    assert state["status"] == "open"
+    assert state["count"] == 3
+
+
+def test_recovery_notification_is_once_and_clears_state():
+    from cron.scheduler import _cron_recovery_notification
+
+    job = {
+        "id": "job-1",
+        "name": "Watchdog",
+        "failure_alert_state": {
+            "status": "open",
+            "fingerprint": "abc",
+            "count": 7,
+            "first_seen": 1,
+            "last_seen": 2,
+            "last_alert": 1,
+        },
+    }
+    content, state, action = _cron_recovery_notification(job, now=3)
+    assert action == "recovery"
+    assert "recovered after 7 failed run(s)" in content
+    assert state == {}
+
+    job.pop("failure_alert_state")
+    content, state, action = _cron_recovery_notification(job, now=4)
+    assert (content, state, action) == ("", None, "silent")
+
+
+def test_run_one_job_delivers_one_failure_then_one_recovery(hermes_env):
+    from cron.jobs import create_job, get_job
+    from cron.scheduler import run_one_job
+
+    script_path = hermes_env / "scripts" / "flaky.sh"
+    script_path.write_text("#!/bin/bash\necho broken >&2\nexit 2\n")
+    job = create_job(
+        prompt=None,
+        name="Flaky watchdog",
+        schedule="every 5m",
+        script="flaky.sh",
+        no_agent=True,
+        deliver="telegram:123",
+    )
+
+    with patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock:
+        assert run_one_job(job) is True
+        assert deliver_mock.call_count == 1
+
+        reloaded = get_job(job["id"])
+        assert reloaded["failure_alert_state"]["status"] == "open"
+        assert reloaded["failure_alert_state"]["count"] == 1
+
+        assert run_one_job(reloaded) is True
+        assert deliver_mock.call_count == 1  # identical failure is suppressed
+
+        script_path.write_text("#!/bin/bash\n# healthy and silent\n")
+        reloaded = get_job(job["id"])
+        assert run_one_job(reloaded) is True
+        assert deliver_mock.call_count == 2
+        assert "recovered after 2 failed run(s)" in deliver_mock.call_args.args[1]
+
+    assert "failure_alert_state" not in get_job(job["id"])
+
+
+# ---------------------------------------------------------------------------
 # _run_job_script: shell-script support
 # ---------------------------------------------------------------------------
 

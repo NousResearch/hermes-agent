@@ -3,9 +3,8 @@
 Three fixes under test:
 
 1. ``_jobs_lock()`` bounds its cross-process flock: when another process holds
-   ``.jobs.lock`` indefinitely, acquisition times out, logs at ERROR, and falls
-   through to in-process-only locking — instead of blocking the calling thread
-   (and, transitively, the cron ticker heartbeat) forever.
+   ``.jobs.lock`` indefinitely, acquisition times out and fails closed instead
+   of performing an unlocked write or blocking the ticker forever.
 
 2. Claim freshness checks are bounded on both sides (``0 <= age < ttl``): a
    ``fire_claim``/``run_claim`` stamped in the FUTURE (clock/TZ skew across a
@@ -65,8 +64,8 @@ def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event
 
 
 class TestBoundedJobsLock:
-    def test_lock_acquisition_times_out_and_degrades(self, monkeypatch, caplog):
-        """A foreign holder of .jobs.lock must NOT block _jobs_lock forever."""
+    def test_lock_acquisition_times_out_and_fails_closed(self, monkeypatch, caplog):
+        """A foreign holder must bound the wait without entering unlocked."""
         jobs_mod.ensure_dirs()
         lock_path = jobs_mod._jobs_lock_file()
         lock_path.touch()
@@ -83,16 +82,15 @@ class TestBoundedJobsLock:
 
         try:
             start = time.monotonic()
-            entered = False
             with caplog.at_level("ERROR", logger="cron.jobs"):
-                with _jobs_lock():
-                    entered = True
+                with pytest.raises(TimeoutError):
+                    with _jobs_lock():
+                        pytest.fail("critical section must not run without the flock")
             elapsed = time.monotonic() - start
 
-            assert entered, "critical section must still run in degraded mode"
             assert elapsed < 10, f"lock wait was not bounded (took {elapsed:.1f}s)"
             assert any("Timed out" in r.message for r in caplog.records), (
-                "degraded-mode fallback must be logged at ERROR"
+                "lock timeout must be logged at ERROR"
             )
         finally:
             release.set()

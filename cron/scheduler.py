@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -46,6 +47,10 @@ from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+
+_DEFAULT_FAILURE_ALERT_AFTER = 1
+_DEFAULT_FAILURE_ALERT_COOLDOWN_SECONDS = 86_400
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
@@ -99,6 +104,107 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if len(cleaned) > 180:
         cleaned = cleaned[:177].rstrip() + "..."
     return f"⚠️ Cron '{job_name}' failed: {cleaned}"
+
+
+def _bounded_job_int(job: dict, key: str, default: int, *, minimum: int, maximum: int) -> int:
+    """Return a bounded integer alert-policy value from a job record."""
+    try:
+        value = int(job.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _cron_failure_notification(
+    job: dict,
+    error: str | None,
+    *,
+    now: float | None = None,
+) -> tuple[str, dict, str]:
+    """Return edge-triggered failure content and the next persisted state.
+
+    Cron historically delivered every non-zero script result on every tick.
+    A five-minute job could therefore send 288 identical alerts per day.  The
+    scheduler is the only layer that sees every job, so deduplication belongs
+    here rather than in an optional per-script wrapper.
+
+    The persisted state contains hashes and counters only; raw errors remain in
+    the normal cron output file and ``last_error`` field.
+    """
+    ts = float(time.time() if now is None else now)
+    summary = _summarize_cron_failure_for_delivery(job, error)
+    fingerprint = hashlib.sha256(summary.encode("utf-8", errors="replace")).hexdigest()
+    prior = job.get("failure_alert_state")
+    prior = prior if isinstance(prior, dict) else {}
+
+    same_incident = (
+        prior.get("fingerprint") == fingerprint
+        and prior.get("status") in {"observing", "open"}
+    )
+    count = int(prior.get("count") or 0) + 1 if same_incident else 1
+    first_seen = float(prior.get("first_seen") or ts) if same_incident else ts
+    last_alert = prior.get("last_alert") if same_incident else None
+    try:
+        last_alert = float(last_alert) if last_alert is not None else None
+    except (TypeError, ValueError):
+        last_alert = None
+
+    open_after = _bounded_job_int(
+        job,
+        "alert_after_failures",
+        _DEFAULT_FAILURE_ALERT_AFTER,
+        minimum=1,
+        maximum=100,
+    )
+    cooldown = _bounded_job_int(
+        job,
+        "alert_cooldown_seconds",
+        _DEFAULT_FAILURE_ALERT_COOLDOWN_SECONDS,
+        minimum=60,
+        maximum=30 * 86_400,
+    )
+
+    action = "silent"
+    status = "observing"
+    if count >= open_after:
+        status = "open"
+        if not same_incident or prior.get("status") != "open":
+            action = "opened"
+            last_alert = ts
+        elif last_alert is None or ts - last_alert >= cooldown:
+            action = "reminder"
+            last_alert = ts
+
+    state = {
+        "status": status,
+        "fingerprint": fingerprint,
+        "count": count,
+        "first_seen": first_seen,
+        "last_seen": ts,
+        "last_alert": last_alert,
+    }
+    return (summary if action != "silent" else ""), state, action
+
+
+def _cron_recovery_notification(
+    job: dict,
+    *,
+    now: float | None = None,
+) -> tuple[str, dict | None, str]:
+    """Return one recovery message for an open scheduler failure incident."""
+    prior = job.get("failure_alert_state")
+    if not isinstance(prior, dict) or not prior:
+        return "", None, "silent"
+    if prior.get("status") != "open":
+        # A sub-threshold observing streak disappears silently on success.
+        return "", {}, "silent"
+    job_name = job.get("name") or job.get("id") or "cron job"
+    count = max(1, int(prior.get("count") or 1))
+    return (
+        f"✅ Cron '{job_name}' recovered after {count} failed run(s).",
+        {},
+        "recovery",
+    )
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -3529,6 +3635,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
+        alert_state_update = None
+        alert_action = "silent"
         try:
             output_file = save_job_output(job["id"], output)
             if verbose:
@@ -3548,23 +3656,32 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                     "(tool subprocess was killed mid-flight)."
                 )
 
-            # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # Deliver the final response to the origin/target chat. Successful
+            # business output keeps its historical behavior. Scheduler failures
+            # are edge-triggered: one opening alert, one cooldown reminder, and
+            # one recovery instead of one alert per scheduled attempt.
+            if success:
+                normal_content = final_response
+                if normal_content.strip() and _is_cron_silence_response(normal_content):
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    normal_content = ""
+                recovery_content, alert_state_update, alert_action = _cron_recovery_notification(job)
+                if recovery_content and normal_content.strip():
+                    deliver_content = f"{recovery_content}\n\n{normal_content}"
+                else:
+                    deliver_content = recovery_content or normal_content
+            else:
+                deliver_content, alert_state_update, alert_action = _cron_failure_notification(job, error)
+                if not deliver_content:
+                    logger.info(
+                        "Job '%s': repeated failure suppressed by incident cooldown",
+                        job["id"],
+                    )
+
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
-            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-            # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                should_deliver = False
 
             if should_deliver:
                 try:
@@ -3586,8 +3703,20 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+        # If a recovery notification itself could not be delivered, keep the
+        # incident open so a later successful tick can retry the recovery.
+        if alert_action == "recovery" and delivery_error:
+            prior_state = job.get("failure_alert_state")
+            alert_state_update = prior_state if isinstance(prior_state, dict) else None
+
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            mark_job_run(
+                job["id"],
+                success,
+                error,
+                delivery_error=delivery_error,
+                alert_state=alert_state_update,
+            )
         return True
 
     except Exception as e:

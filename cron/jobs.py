@@ -99,14 +99,19 @@ _jobs_lock_state = threading.local()
 # worst-case stall well under one status-alarm threshold.
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
+_COMPAT_CRON_DIR = CRON_DIR
+_COMPAT_JOBS_FILE = JOBS_FILE
+_COMPAT_OUTPUT_DIR = OUTPUT_DIR
 ONESHOT_GRACE_SECONDS = 120
 
 
 @dataclass(frozen=True)
 class _CronStorePaths:
+    home: Path
     cron_dir: Path
     jobs_file: Path
     output_dir: Path
+    owner_profile: str
 
 
 _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
@@ -115,23 +120,63 @@ _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
 )
 
 
+def _profile_name_for_home(home: Path) -> str:
+    """Return the canonical cron owner represented by a Hermes home path."""
+    return home.name if home.parent.name == "profiles" else "default"
+
+
 def _current_cron_store() -> _CronStorePaths:
     """Return paths pinned to this execution context's profile."""
     override = _cron_store_override.get()
     if override is not None:
         return override
-    return _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    home = get_hermes_home().expanduser().resolve()
+    if (
+        CRON_DIR != _COMPAT_CRON_DIR
+        or JOBS_FILE != _COMPAT_JOBS_FILE
+        or OUTPUT_DIR != _COMPAT_OUTPUT_DIR
+    ):
+        # Preserve the documented test/integration override globals. Production
+        # profile routing uses context-local use_cron_store(); explicit global
+        # monkeypatches remain an opt-in compatibility path.
+        return _CronStorePaths(
+            home=home,
+            cron_dir=Path(CRON_DIR),
+            jobs_file=Path(JOBS_FILE),
+            output_dir=Path(OUTPUT_DIR),
+            owner_profile=_profile_name_for_home(home),
+        )
+    cron_dir = home / "cron"
+    return _CronStorePaths(
+        home=home,
+        cron_dir=cron_dir,
+        jobs_file=cron_dir / "jobs.json",
+        output_dir=cron_dir / "output",
+        owner_profile=_profile_name_for_home(home),
+    )
 
 
 @contextlib.contextmanager
-def use_cron_store(home: Union[str, Path]):
+def use_cron_store(
+    home: Union[str, Path], *, owner_profile: Optional[str] = None
+):
     """Route cron storage to ``home`` without mutating process globals."""
-    cron_dir = Path(home).expanduser().resolve() / "cron"
+    resolved_home = Path(home).expanduser().resolve()
+    path_owner = _profile_name_for_home(resolved_home)
+    requested_owner = str(owner_profile or path_owner).strip() or "default"
+    if requested_owner != path_owner:
+        raise ValueError(
+            f"Cron owner_profile {requested_owner!r} does not match store path "
+            f"{resolved_home} (owner {path_owner!r})"
+        )
+    cron_dir = resolved_home / "cron"
     token = _cron_store_override.set(
         _CronStorePaths(
+            home=resolved_home,
             cron_dir=cron_dir,
             jobs_file=cron_dir / "jobs.json",
             output_dir=cron_dir / "output",
+            owner_profile=requested_owner,
         )
     )
     try:
@@ -239,6 +284,13 @@ def _jobs_lock():
     """
     depth = getattr(_jobs_lock_state, "depth", 0)
     if depth:
+        current_lock_path = _jobs_lock_file().resolve()
+        held_lock_path = getattr(_jobs_lock_state, "lock_path", None)
+        if held_lock_path != current_lock_path:
+            raise RuntimeError(
+                "Nested cron jobs lock attempted for a different cron store: "
+                f"held {held_lock_path}, requested {current_lock_path}"
+            )
         _jobs_lock_state.depth = depth + 1
         try:
             yield
@@ -248,6 +300,7 @@ def _jobs_lock():
 
     with _jobs_file_lock:
         _jobs_lock_state.depth = 1
+        _jobs_lock_state.lock_path = _jobs_lock_file().resolve()
         lock_fd = None
         try:
             try:
@@ -279,8 +332,8 @@ def _jobs_lock():
                                 logger.error(
                                     "Timed out after %.0fs waiting for the cron "
                                     "jobs lock (%s) — another process is holding "
-                                    "it. Proceeding with in-process locking only "
-                                    "so the scheduler stays alive (#60703).",
+                                    "it. Refusing to continue without the "
+                                    "cross-process lock.",
                                     _JOBS_LOCK_TIMEOUT_SECONDS,
                                     _jobs_lock_file(),
                                 )
@@ -289,13 +342,36 @@ def _jobs_lock():
                                 except OSError:
                                     pass
                                 lock_fd = None
-                                break
+                                raise TimeoutError(
+                                    f"Timed out waiting for cron jobs lock: "
+                                    f"{_jobs_lock_file()}"
+                                )
                             time.sleep(0.1)
                 elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+                    _deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+                    while True:
+                        try:
+                            getattr(msvcrt, "locking")(
+                                lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                            )
+                            break
+                        except (OSError, IOError):
+                            if time.monotonic() >= _deadline:
+                                try:
+                                    lock_fd.close()
+                                except OSError:
+                                    pass
+                                lock_fd = None
+                                raise TimeoutError(
+                                    f"Timed out waiting for cron jobs lock: {_jobs_lock_file()}"
+                                )
+                            time.sleep(0.1)
             except (OSError, IOError) as e:
-                # Never let a locking failure take down cron writes — fall back to
-                # in-process-only protection (still held via _jobs_file_lock).
+                if isinstance(e, TimeoutError):
+                    raise
+                # If advisory locking is unavailable on this platform, retain
+                # the historical in-process protection. A real contention
+                # timeout above is different: it must fail closed.
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
                                "proceeding with in-process lock only", e)
             try:
@@ -313,12 +389,33 @@ def _jobs_lock():
                         lock_fd.close()
         finally:
             _jobs_lock_state.depth = 0
+            _jobs_lock_state.lock_path = None
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
-_IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+_IMMUTABLE_JOB_FIELDS = frozenset({"id", "owner_profile"})
+
+
+def _validate_job_owners(jobs: List[Dict[str, Any]]) -> None:
+    """Fail closed when explicit job ownership disagrees with the active store.
+
+    Jobs written before owner metadata was introduced remain readable. Once an
+    owner is present, however, a profile-scoped reader/writer may not silently
+    operate on a record from another profile.
+    """
+    expected = _current_cron_store().owner_profile
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        owner = job.get("owner_profile")
+        if owner is not None and str(owner).strip() != expected:
+            raise RuntimeError(
+                f"Cron job {job.get('id', '<unknown>')!r} owner_profile "
+                f"{owner!r} does not match active store owner {expected!r} "
+                f"({_current_cron_store().jobs_file})"
+            )
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -782,13 +879,14 @@ def record_ticker_heartbeat(success: bool = False) -> None:
 
     Best-effort: a write failure must never disrupt the tick loop.
     """
+    store = _current_cron_store()
     try:
-        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+        _atomic_write_epoch(store.cron_dir / "ticker_heartbeat")
     except Exception:
         pass
     if success:
         try:
-            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+            _atomic_write_epoch(store.cron_dir / "ticker_last_success")
         except Exception:
             pass
 
@@ -807,12 +905,12 @@ def get_ticker_heartbeat_age() -> Optional[float]:
     None = heartbeat file missing/unreadable (older build, never ran, or a
     torn read). Callers treat None as "cannot determine", not "dead".
     """
-    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+    return _epoch_file_age(_current_cron_store().cron_dir / "ticker_heartbeat")
 
 
 def get_ticker_success_age() -> Optional[float]:
     """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
-    return _epoch_file_age(TICKER_SUCCESS_FILE)
+    return _epoch_file_age(_current_cron_store().cron_dir / "ticker_last_success")
 
 
 # =============================================================================
@@ -854,6 +952,7 @@ def load_jobs() -> List[Dict[str, Any]]:
             # Hit control-character corruption — rewrite with proper escaping.
             save_jobs(jobs)
             logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+        _validate_job_owners(jobs)
         return jobs
     if isinstance(data, list):
         # Bare array — likely saved/edited outside save_jobs(). Wrap it back
@@ -861,6 +960,7 @@ def load_jobs() -> List[Dict[str, Any]]:
         if data:
             save_jobs(data)
             logger.warning("Auto-repaired jobs.json (bare list wrapped as dict)")
+        _validate_job_owners(data)
         return data
 
     raise RuntimeError(
@@ -870,6 +970,7 @@ def load_jobs() -> List[Dict[str, Any]]:
 
 def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
+    _validate_job_owners(jobs)
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
@@ -1177,6 +1278,7 @@ def create_job(
 
     job = {
         "id": job_id,
+        "owner_profile": _current_cron_store().owner_profile,
         "name": name or label_source[:50].strip(),
         "prompt": prompt_text,
         "skills": normalized_skills,
@@ -1466,7 +1568,8 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 alert_state: Optional[Dict[str, Any]] = None):
     """
     Mark a job as having been run.
     
@@ -1475,6 +1578,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``alert_state`` is scheduler-owned incident lifecycle metadata. ``None``
+    preserves the existing state, an empty dict clears it after recovery, and
+    a non-empty dict replaces it. Raw error text is never stored there.
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -1486,6 +1593,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                if alert_state is not None:
+                    if alert_state:
+                        job["failure_alert_state"] = dict(alert_state)
+                    else:
+                        job.pop("failure_alert_state", None)
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None

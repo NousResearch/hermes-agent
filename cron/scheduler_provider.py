@@ -161,6 +161,13 @@ class InProcessCronScheduler(CronScheduler):
     for the next allowed tick.
     """
 
+    def __init__(self) -> None:
+        self._should_tick = lambda: True
+
+    def set_tick_predicate(self, predicate) -> None:
+        """Install the Desktop ownership gate without changing start()'s ABC."""
+        self._should_tick = predicate
+
     @property
     def name(self) -> str:
         return "builtin"
@@ -172,10 +179,16 @@ class InProcessCronScheduler(CronScheduler):
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
-        # Heartbeat once before the first sleep so `hermes cron status` sees a
-        # live ticker immediately after startup, not only after the first tick.
-        record_ticker_heartbeat()
+        may_tick = getattr(self, "_should_tick", None) or (lambda: True)
+        if may_tick():
+            # Heartbeat once before the first sleep so `hermes cron status` sees
+            # a live ticker immediately after startup. A desktop fallback that
+            # currently yields to a gateway must not impersonate its owner.
+            record_ticker_heartbeat()
         while not stop_event.is_set():
+            if not may_tick():
+                stop_event.wait(interval if interval > 0 else 0.01)
+                continue
             ok = False
             try:
                 if can_dispatch is not None and not can_dispatch():

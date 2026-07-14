@@ -2407,6 +2407,21 @@ def cmd_chat(args):
 
     _pin_kanban_board_env()
 
+    query_file = getattr(args, "query_file", None)
+    if query_file:
+        query_path = Path(query_file).expanduser()
+        if not query_path.is_file():
+            print(f"Error: query file not found: {query_path}", file=sys.stderr)
+            raise SystemExit(2)
+        if query_path.stat().st_size > 1_048_576:
+            print("Error: query file exceeds 1 MiB", file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            args.query = query_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            print(f"Error: unable to read query file: {type(exc).__name__}", file=sys.stderr)
+            raise SystemExit(2) from None
+
     if use_tui:
         _launch_tui(
             getattr(args, "resume", None),

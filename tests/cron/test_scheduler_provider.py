@@ -489,26 +489,21 @@ def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     getters read them back as small positive ages."""
     import cron.jobs as jobs
 
-    cron_dir = tmp_path / "cron"
-    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
-    monkeypatch.setattr(jobs, "OUTPUT_DIR", cron_dir / "output")
-    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", cron_dir / "ticker_heartbeat")
-    monkeypatch.setattr(jobs, "TICKER_SUCCESS_FILE", cron_dir / "ticker_last_success")
+    with jobs.use_cron_store(tmp_path):
+        # No files yet -> unknown (None), NOT "dead"
+        assert jobs.get_ticker_heartbeat_age() is None
+        assert jobs.get_ticker_success_age() is None
 
-    # No files yet -> unknown (None), NOT "dead"
-    assert jobs.get_ticker_heartbeat_age() is None
-    assert jobs.get_ticker_success_age() is None
+        # liveness-only: heartbeat set, success still unknown
+        jobs.record_ticker_heartbeat(success=False)
+        hb = jobs.get_ticker_heartbeat_age()
+        assert hb is not None and 0.0 <= hb < 5.0
+        assert jobs.get_ticker_success_age() is None
 
-    # liveness-only: heartbeat set, success still unknown
-    jobs.record_ticker_heartbeat(success=False)
-    hb = jobs.get_ticker_heartbeat_age()
-    assert hb is not None and 0.0 <= hb < 5.0
-    assert jobs.get_ticker_success_age() is None
-
-    # success: both set
-    jobs.record_ticker_heartbeat(success=True)
-    ok = jobs.get_ticker_success_age()
-    assert ok is not None and 0.0 <= ok < 5.0
+        # success: both set
+        jobs.record_ticker_heartbeat(success=True)
+        ok = jobs.get_ticker_success_age()
+        assert ok is not None and 0.0 <= ok < 5.0
 
 
 def test_heartbeat_age_detects_staleness(tmp_path, monkeypatch):
@@ -518,12 +513,11 @@ def test_heartbeat_age_detects_staleness(tmp_path, monkeypatch):
     cron_dir = tmp_path / "cron"
     cron_dir.mkdir(parents=True)
     hb = cron_dir / "ticker_heartbeat"
-    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
-    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", hb)
 
     import time as _t
     hb.write_text(str(_t.time() - 10_000), encoding="utf-8")
-    age = jobs.get_ticker_heartbeat_age()
+    with jobs.use_cron_store(tmp_path):
+        age = jobs.get_ticker_heartbeat_age()
     assert age is not None and age > 9_000
 
 
@@ -538,16 +532,11 @@ def test_heartbeat_write_failure_is_silent(tmp_path, monkeypatch):
 
     blocker = tmp_path / "not_a_dir"
     blocker.write_text("i am a file, not a directory")
-    bad_cron_dir = blocker / "cron"  # parent is a file -> mkdir/mkstemp fail
-    monkeypatch.setattr(jobs, "CRON_DIR", bad_cron_dir)
-    monkeypatch.setattr(jobs, "OUTPUT_DIR", bad_cron_dir / "output")
-    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", bad_cron_dir / "ticker_heartbeat")
-    monkeypatch.setattr(jobs, "TICKER_SUCCESS_FILE", bad_cron_dir / "ticker_last_success")
+    with jobs.use_cron_store(blocker):
+        jobs.record_ticker_heartbeat(success=True)  # must not raise
 
-    jobs.record_ticker_heartbeat(success=True)  # must not raise
-
-    # The write never succeeded, so no heartbeat is recorded...
-    assert jobs.get_ticker_heartbeat_age() is None
+        # The write never succeeded, so no heartbeat is recorded...
+        assert jobs.get_ticker_heartbeat_age() is None
     # ...and no stray temp file leaked anywhere under tmp_path.
     assert not list(tmp_path.rglob(".hb_*.tmp")), "atomic write leaked a temp file on failure"
 

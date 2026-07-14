@@ -271,8 +271,13 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent",
     )
-    chat_parser.add_argument(
+    query_group = chat_parser.add_mutually_exclusive_group()
+    query_group.add_argument(
         "-q", "--query", help="Single query (non-interactive mode)"
+    )
+    query_group.add_argument(
+        "--query-file",
+        help="Read the single query from a UTF-8 file instead of process argv",
     )
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"

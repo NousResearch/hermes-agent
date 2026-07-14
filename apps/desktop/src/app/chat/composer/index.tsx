@@ -55,7 +55,7 @@ import {
 import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
-import { extractClipboardImageBlobs } from './text-utils'
+import { extractClipboardImageBlobs, shouldTryHostClipboardImage } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -353,18 +353,36 @@ export function ChatBar({
     // preserved — only the edges are cleaned up.
     const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
 
+    // WSLg may surface a Windows screenshot as path-shaped text while hiding the
+    // bitmap from Chromium. Ask Electron for the real host clipboard image first;
+    // if the host has no bitmap, preserve the original text exactly as before.
+    if (shouldTryHostClipboardImage(pastedText) && onPasteClipboardImage) {
+      event.preventDefault()
+      triggerHaptic('selection')
+
+      const editor = event.currentTarget
+      const insertFallbackText = () => {
+        if (!pastedText) {
+          return
+        }
+
+        insertPlainTextAtCaret(editor, pastedText)
+        scheduleFlushEditorToDraft(editor)
+      }
+
+      void Promise.resolve(onPasteClipboardImage({ silent: true }))
+        .then(attached => {
+          if (!attached) {
+            insertFallbackText()
+          }
+        })
+        .catch(insertFallbackText)
+
+      return
+    }
+
     if (!pastedText) {
       event.preventDefault()
-
-      // Under WSL2/WSLg the Windows host clipboard doesn't bridge *images* to
-      // the Linux clipboard the DOM paste event reads, so a host screenshot
-      // arrives as an empty paste (no blobs, no text). Fall back to the main
-      // process, which pulls the image straight off the Windows clipboard.
-      // Silent so a genuinely-empty paste doesn't pop a "no image" warning.
-      if (onPasteClipboardImage) {
-        triggerHaptic('selection')
-        void onPasteClipboardImage({ silent: true })
-      }
 
       return
     }

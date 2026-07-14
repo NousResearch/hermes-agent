@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs } from './text-utils'
+import {
+  blobDedupeKey,
+  detectTrigger,
+  extractClipboardImageBlobs,
+  shouldTryHostClipboardImage
+} from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -100,6 +105,23 @@ describe('extractClipboardImageBlobs', () => {
     } as unknown as DataTransfer
 
     expect(extractClipboardImageBlobs(clipboard)).toEqual([image])
+  })
+})
+
+describe('shouldTryHostClipboardImage', () => {
+  it('tries the host clipboard when WSL exposes a pasted screenshot as a Linux image path', () => {
+    expect(shouldTryHostClipboardImage('/tmp/screenshot_20260714_155955_245.png')).toBe(true)
+  })
+
+  it('tries the host clipboard for Windows and file URL image paths', () => {
+    expect(shouldTryHostClipboardImage('C:\\Users\\Nick\\Pictures\\capture.webp')).toBe(true)
+    expect(shouldTryHostClipboardImage('file:///home/nick/Pictures/capture.jpg')).toBe(true)
+  })
+
+  it('keeps ordinary pasted text on the text path', () => {
+    expect(shouldTryHostClipboardImage('spiegami questa immagine')).toBe(false)
+    expect(shouldTryHostClipboardImage('notes.txt')).toBe(false)
+    expect(shouldTryHostClipboardImage('prima riga\n/tmp/capture.png')).toBe(false)
   })
 })
 

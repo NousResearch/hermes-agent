@@ -90,6 +90,24 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   return blobs
 }
 
+const CLIPBOARD_IMAGE_PATH_RE = /\.(?:avif|bmp|gif|jpe?g|png|tiff?|webp)$/i
+
+/**
+ * WSLg can expose a Windows clipboard image to Chromium only as path-shaped
+ * text while the Electron main process can still read the actual host bitmap.
+ * Prefer that bitmap for a single image path; if none exists the caller falls
+ * back to inserting the original text unchanged.
+ */
+export function shouldTryHostClipboardImage(pastedText: string): boolean {
+  const value = pastedText.trim()
+
+  if (!value) {
+    return true
+  }
+
+  return !/[\r\n]/.test(value) && CLIPBOARD_IMAGE_PATH_RE.test(value)
+}
+
 /** Caret-anchored text before the cursor, or null if the selection isn't a collapsed caret inside `editor`. */
 export function textBeforeCaret(editor: HTMLDivElement): string | null {
   const sel = window.getSelection()

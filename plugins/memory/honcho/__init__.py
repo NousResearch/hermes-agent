@@ -241,6 +241,10 @@ class HonchoMemoryProvider(MemoryProvider):
         self._session_initialized = False
         self._lazy_init_kwargs: Optional[dict] = None
         self._lazy_init_session_id: Optional[str] = None
+        # Resolver inputs outlive lazy initialization. In particular, gateway
+        # session keys stay stable while API/WebUI transcript IDs rotate.
+        self._session_title: Optional[str] = None
+        self._gateway_session_key: Optional[str] = None
         self._init_thread: Optional[threading.Thread] = None
         self._init_lock = threading.Lock()
         self._init_error = ""
@@ -342,6 +346,8 @@ class HonchoMemoryProvider(MemoryProvider):
             # aiPeer comes from honcho.json (host block or root) only.
             # SOUL.md is persona content, not identity config.
 
+            self._session_title = kwargs.get("session_title") or None
+            self._gateway_session_key = kwargs.get("gateway_session_key") or None
             self._lazy_init_kwargs = dict(kwargs)
             self._lazy_init_session_id = session_id
             self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
@@ -1108,6 +1114,55 @@ class HonchoMemoryProvider(MemoryProvider):
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""
         self._turn_count = turn_number
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Rebind cached Honcho state after Hermes changes session_id."""
+        if self._cron_skipped or not new_session_id:
+            return
+
+        if "session_title" in kwargs:
+            self._session_title = kwargs.get("session_title") or None
+        if "gateway_session_key" in kwargs:
+            self._gateway_session_key = kwargs.get("gateway_session_key") or None
+
+        switch_kwargs = dict(kwargs)
+        switch_kwargs.setdefault("session_title", self._session_title)
+        switch_kwargs.setdefault("gateway_session_key", self._gateway_session_key)
+
+        self._lazy_init_session_id = new_session_id
+        if self._lazy_init_kwargs is not None:
+            self._lazy_init_kwargs.update(switch_kwargs)
+
+        if self._config:
+            self._session_key = self._resolve_session_key(
+                self._config,
+                new_session_id,
+                **switch_kwargs,
+            )
+        else:
+            self._session_key = new_session_id
+
+        with self._base_context_lock:
+            self._base_context_cache = None
+        with self._prefetch_lock:
+            self._prefetch_result = ""
+            self._prefetch_result_fired_at = -999
+        self._last_context_turn = -999
+        self._last_dialectic_turn = -999
+        self._dialectic_empty_streak = 0
+        self._prefetch_thread_started_at = 0.0
+        if reset:
+            self._turn_count = 0
+
+        self._init_error = ""
+        logger.debug("Honcho session switched: %s", self._session_key)
 
     @staticmethod
     def _chunk_message(content: str, limit: int) -> list[str]:

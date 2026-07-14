@@ -13,7 +13,8 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-
+from agent.memory_manager import MemoryManager
+from plugins.memory.honcho import HonchoMemoryProvider
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import (
     HonchoSession,
@@ -44,6 +45,35 @@ def _make_manager(write_frequency="turn") -> HonchoSessionManager:
     mgr = HonchoSessionManager(config=cfg)
     mgr._honcho = MagicMock()
     return mgr
+
+
+def _initialize_ready_provider(
+    **initialize_kwargs,
+) -> tuple[HonchoMemoryProvider, MagicMock]:
+    cfg = HonchoClientConfig(
+        api_key="test-key",
+        enabled=True,
+        recall_mode="tools",
+        init_on_session_start=True,
+        session_strategy="per-session",
+    )
+    remote_manager = MagicMock()
+    remote_manager.get_or_create.return_value = MagicMock(messages=[])
+
+    with (
+        patch.object(HonchoClientConfig, "from_global_config", return_value=cfg),
+        patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()),
+        patch(
+            "plugins.memory.honcho.session.HonchoSessionManager",
+            return_value=remote_manager,
+        ),
+    ):
+        provider = HonchoMemoryProvider()
+        provider.initialize("transcript-old", **initialize_kwargs)
+
+    assert provider._session_initialized is True
+    assert provider._lazy_init_kwargs is None
+    return provider, remote_manager
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +215,43 @@ class TestResolveSessionNameTitle:
         cfg = HonchoClientConfig(session_strategy="global", workspace_id="my-workspace")
         result = cfg.resolve_session_name("/some/dir")
         assert result == "my-workspace"
+
+
+class TestHonchoProviderSessionSwitch:
+    def test_memory_manager_switch_rebinds_initialized_per_session_provider(self):
+        provider, remote_manager = _initialize_ready_provider()
+        manager = MemoryManager()
+        manager.add_provider(provider)
+
+        manager.on_session_switch("transcript-new", parent_session_id="transcript-old")
+        provider.sync_turn("after switch", "new response")
+        assert provider._sync_thread is not None
+        provider._sync_thread.join(timeout=2)
+
+        assert provider._session_key == "transcript-new"
+        assert [call.args[0] for call in remote_manager.get_or_create.call_args_list] == [
+            "transcript-old",
+            "transcript-new",
+        ]
+
+    def test_memory_manager_switch_preserves_initialized_gateway_key(self):
+        provider, remote_manager = _initialize_ready_provider(
+            gateway_session_key="api:session:stable",
+            platform="api",
+        )
+        manager = MemoryManager()
+        manager.add_provider(provider)
+
+        manager.on_session_switch("transcript-new", parent_session_id="transcript-old")
+        provider.sync_turn("after switch", "new response")
+        assert provider._sync_thread is not None
+        provider._sync_thread.join(timeout=2)
+
+        assert provider._session_key == "api-session-stable"
+        assert [call.args[0] for call in remote_manager.get_or_create.call_args_list] == [
+            "api-session-stable",
+            "api-session-stable",
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useEffect, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -8,6 +9,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip, TipHintLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -27,8 +29,30 @@ import {
   type TerminalEntry
 } from './terminals'
 
+type TerminalMode = 'smart' | 'wsl2' | 'windows-native'
+
+interface TerminalModeInfo {
+  configuredMode: TerminalMode
+  distribution: null | string
+  resolvedMode: 'windows-native' | 'wsl2'
+  supported: boolean
+  wslDistributions: string[]
+}
+
 const RAIL_ACTION =
   'grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring [-webkit-app-region:no-drag]'
+
+const TERMINAL_MODE_LABELS: Record<TerminalMode, string> = {
+  smart: 'Smart',
+  wsl2: 'WSL2',
+  'windows-native': 'Windows Native'
+}
+
+const TERMINAL_MODE_ICONS: Record<TerminalMode, string> = {
+  smart: 'server-environment',
+  wsl2: 'terminal-linux',
+  'windows-native': 'terminal-powershell'
+}
 
 /** Thin icon "bookmark" strip blended into the terminal surface, shown whenever a
  *  terminal exists. Each square is a tab (name + hotkey on hover); close via the
@@ -40,6 +64,34 @@ export function TerminalRail() {
   const bindings = useStore($bindings)
   const toggleHint = bindings['view.showTerminal']?.[0]
   const newHint = bindings['view.newTerminal']?.[0]
+
+  const [modeInfo, setModeInfo] = useState<TerminalModeInfo | null>(null)
+
+  useEffect(() => {
+    const api = window.hermesDesktop?.terminal?.mode
+
+    if (!api) {
+      return
+    }
+
+    void api
+      .get()
+      .then(setModeInfo)
+      .catch(() => setModeInfo(null))
+  }, [])
+
+  const selectMode = (mode: TerminalMode) => {
+    const api = window.hermesDesktop?.terminal?.mode
+
+    if (!api) {
+      return
+    }
+
+    void api
+      .set(mode)
+      .then(setModeInfo)
+      .catch(() => undefined)
+  }
 
   return (
     <div
@@ -82,7 +134,43 @@ export function TerminalRail() {
         </li>
       </ul>
 
-      <div className="flex shrink-0 flex-col items-center pb-1.5">
+      <div className="flex shrink-0 flex-col items-center gap-0.5 pb-1.5">
+        {modeInfo?.supported && (
+          <DropdownMenu>
+            <Tip
+              label={`Terminal mode: ${TERMINAL_MODE_LABELS[modeInfo.configuredMode]} (new terminals; agent commands update immediately)`}
+              side="left"
+            >
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label={`Terminal mode: ${TERMINAL_MODE_LABELS[modeInfo.configuredMode]}`}
+                  className={RAIL_ACTION}
+                  type="button"
+                >
+                  <Codicon name={TERMINAL_MODE_ICONS[modeInfo.configuredMode]} size="0.8125rem" />
+                </button>
+              </DropdownMenuTrigger>
+            </Tip>
+            <DropdownMenuContent align="end" side="left">
+              {(Object.keys(TERMINAL_MODE_LABELS) as TerminalMode[]).map(mode => (
+                <DropdownMenuItem
+                  disabled={mode === 'wsl2' && modeInfo.wslDistributions.length === 0}
+                  key={mode}
+                  onSelect={() => selectMode(mode)}
+                >
+                  <Codicon name={TERMINAL_MODE_ICONS[mode]} />
+                  <span className="flex-1">{TERMINAL_MODE_LABELS[mode]}</span>
+                  {modeInfo.configuredMode === mode && <Codicon name="check" />}
+                </DropdownMenuItem>
+              ))}
+              {modeInfo.configuredMode === 'smart' && (
+                <div className="max-w-56 px-2 py-1 text-[0.65rem] text-(--ui-text-tertiary)">
+                  Smart uses WSL2 for projects opened through a WSL UNC path; other projects stay Windows native.
+                </div>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
         <Tip label={t.rightSidebar.terminalHide} side="left">
           <button
             aria-label={t.rightSidebar.terminalHide}

@@ -14,6 +14,12 @@ from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
+from tools.environments.windows_execution_mode import (
+    build_wsl_bash_args,
+    resolve_windows_execution_mode,
+    windows_to_wsl_path,
+    wsl_to_windows_path,
+)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -1105,6 +1111,19 @@ class LocalEnvironment(BaseEnvironment):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        self._windows_execution = resolve_windows_execution_mode(self.cwd) if _IS_WINDOWS else None
+        self.init_session()
+
+    def _before_execute(self) -> None:
+        if not _IS_WINDOWS:
+            return
+        current = resolve_windows_execution_mode(self.cwd)
+        previous = self._windows_execution
+        if previous and (current.resolved, current.distribution) == (previous.resolved, previous.distribution):
+            return
+        self._windows_execution = current
+        self._snapshot_ready = False
+        self._prefer_nonlogin = False
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -1157,45 +1176,31 @@ class LocalEnvironment(BaseEnvironment):
 
     @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:
-        """Use native paths for Python, but Git Bash-friendly paths for cd."""
+        """Translate the host cwd for the currently selected Windows environment."""
+        if _IS_WINDOWS:
+            mode = resolve_windows_execution_mode(cwd)
+            if mode.resolved == "wsl2":
+                return BaseEnvironment._quote_cwd_for_cd(windows_to_wsl_path(cwd, mode.distribution))
         return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
 
     def _quote_shell_path(self, path: str) -> str:
-        """Rewrite native/mixed Windows paths before quoting for Git Bash."""
+        """Rewrite host paths for Git Bash or WSL2 before shell interpolation."""
+        if _IS_WINDOWS:
+            mode = resolve_windows_execution_mode(self.cwd)
+            if mode.resolved == "wsl2":
+                import shlex
+                return shlex.quote(windows_to_wsl_path(path, mode.distribution))
         return _quote_bash_path(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        bash = _find_bash()
-        # For login-shell invocations (used by init_session to build the
-        # environment snapshot), prepend sources for the user's bashrc /
-        # custom init files so tools registered outside bash_profile
-        # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
-        # Non-login invocations are already sourcing the snapshot and
-        # don't need this.
-        if login:
-            init_files = _resolve_shell_init_files()
-            if init_files:
-                cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
+        mode = resolve_windows_execution_mode(self.cwd) if _IS_WINDOWS else None
 
         # Recover when the cwd has been deleted out from under us — usually by
-        # a previous tool call that ran ``rm -rf`` on its own working dir
-        # (issue #17558).  Popen would otherwise raise FileNotFoundError on
-        # the cwd before bash starts, wedging every subsequent call until the
-        # gateway restarts.
-        #
-        # On Windows, ``_resolve_safe_cwd`` also normalises Git Bash-style
-        # POSIX paths (``/c/Users/...``) to native form so a perfectly valid
-        # ``pwd -P`` result from bash isn't mistakenly treated as "missing"
-        # and spammed as a warning on every command.
+        # a previous tool call that ran ``rm -rf`` on its own working dir.
         safe_cwd = _resolve_safe_cwd(self.cwd)
         if safe_cwd != self.cwd:
-            # MSYS → Windows translation alone shouldn't surface as a warning
-            # (it's a benign normalization, not a recovery). Only warn when
-            # the directory really doesn't exist on disk.
             normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
             if safe_cwd != normalized:
                 logger.warning(
@@ -1206,7 +1211,31 @@ class LocalEnvironment(BaseEnvironment):
                 )
             self.cwd = safe_cwd
 
+        if mode and mode.resolved == "wsl2":
+            if not mode.distribution:
+                raise RuntimeError("WSL2 mode is selected, but no WSL2 distribution is installed")
+            args = build_wsl_bash_args(
+                cmd_string,
+                self.cwd,
+                login=login,
+                distribution=mode.distribution,
+            )
+        else:
+            bash = _find_bash()
+            # For native login-shell invocations, source the user's configured
+            # shell init files so nvm/asdf/pyenv additions reach the snapshot.
+            if login:
+                init_files = _resolve_shell_init_files()
+                if init_files:
+                    cmd_string = _prepend_shell_init(cmd_string, init_files)
+            args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+
+        run_env = _make_run_env(self.env)
         _popen_cwd = self.cwd
+        if mode and mode.resolved == "wsl2" and self.cwd.startswith("\\"):
+            # CreateProcess cannot reliably use a WSL UNC directory as the host
+            # working directory. wsl.exe --cd still enters the requested path.
+            _popen_cwd = tempfile.gettempdir()
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
@@ -1332,7 +1361,12 @@ class LocalEnvironment(BaseEnvironment):
             with open(self._cwd_file, encoding="utf-8") as f:
                 cwd_path = f.read().strip()
             if _IS_WINDOWS:
-                cwd_path = _msys_to_windows_path(cwd_path)
+                mode = resolve_windows_execution_mode(self.cwd)
+                cwd_path = (
+                    wsl_to_windows_path(cwd_path, mode.distribution)
+                    if mode.resolved == "wsl2"
+                    else _msys_to_windows_path(cwd_path)
+                )
             if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):
@@ -1357,7 +1391,15 @@ class LocalEnvironment(BaseEnvironment):
         prev_cwd = self.cwd
         super()._extract_cwd_from_output(result)
         if self.cwd != prev_cwd:
-            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if _IS_WINDOWS:
+                mode = resolve_windows_execution_mode(prev_cwd)
+                normalized = (
+                    wsl_to_windows_path(self.cwd, mode.distribution)
+                    if mode.resolved == "wsl2"
+                    else _msys_to_windows_path(self.cwd)
+                )
+            else:
+                normalized = self.cwd
             if normalized and os.path.isdir(normalized):
                 self.cwd = normalized
             else:

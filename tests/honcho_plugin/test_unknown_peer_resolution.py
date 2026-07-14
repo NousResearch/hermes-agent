@@ -100,6 +100,51 @@ class TestUnknownPeerResolution:
         assert mgr._resolve_peer_id(s, "AI") == "AI"
         assert mgr._resolve_peer_id(s, "ai") == "AI"
 
+    def test_case_colliding_configured_ids_resolve_deterministically(self):
+        """Regression (#43086 review): config parsing permits peer IDs that
+        differ only by case. A case-insensitive query must resolve the SAME
+        winner on every call — lexicographically-first among configured IDs —
+        never whichever came out of set iteration."""
+        mgr = HonchoSessionManager()
+        mgr._config = SimpleNamespace(
+            peer_name=None,
+            user_peer_aliases={"a": "First-Mate", "b": "first-mate"},
+        )
+        s = _session()
+        # Exact matches always return themselves.
+        assert mgr._resolve_peer_id(s, "First-Mate") == "First-Mate"
+        assert mgr._resolve_peer_id(s, "first-mate") == "first-mate"
+        # A third casing hits the case-insensitive map: sorted() puts
+        # "First-Mate" first ("F" < "f"), and that winner is stable.
+        for _ in range(20):
+            assert mgr._resolve_peer_id(s, "FIRST-MATE") == "First-Mate"
+
+    def test_session_peer_outranks_case_colliding_configured_id(self):
+        """On a case-insensitive collision between a session peer and a
+        configured ID, the session's own peer wins deterministically."""
+        mgr = HonchoSessionManager()
+        mgr._config = SimpleNamespace(
+            peer_name="USER-DISCORD-42",  # collides with the session user peer
+            user_peer_aliases={},
+        )
+        s = _session()  # user_peer_id="user-discord-42"
+        assert mgr._resolve_peer_id(s, "User-Discord-42") == s.user_peer_id
+
+    def test_resolved_peer_label_for_user_peer_named_ai(self):
+        """The friendly label follows the resolver's known-peers-first rule: a
+        session user peer literally named "AI" is labeled "user", so the
+        empty-card hint reports the settings that actually applied."""
+        mgr = HonchoSessionManager()
+        s = HonchoSession(
+            key="x:1",
+            user_peer_id="AI",
+            assistant_peer_id="hermes-assistant",
+            honcho_session_id="x-1",
+        )
+        mgr._cache[s.key] = s
+        assert mgr.resolved_peer_label(s.key, "AI") == "user"
+        assert mgr.resolved_peer_label(s.key, "ai") == "user"
+
     def test_create_conclusion_for_unknown_peer_writes_to_user_scope(self):
         """End-to-end through the WRITE path: a conclusion for an invented name
         must land in the user's conclusion scope, and ``_get_or_create_peer``

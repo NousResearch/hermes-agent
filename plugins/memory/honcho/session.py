@@ -1070,11 +1070,17 @@ class HonchoSessionManager:
         # before the reserved-word aliases means a real peer that happens to be
         # named "ai"/"user" is never hijacked to the wrong session peer.
         normalized = self._sanitize_id(candidate)
-        known_ids = {session.user_peer_id, session.assistant_peer_id}
-        known_ids |= self._explicit_user_peer_ids()
-        if normalized in known_ids:
+        # Ordered so a case-insensitive collision resolves deterministically:
+        # session peers outrank configured IDs, and configured IDs that differ
+        # only by case (config parsing allows them) tie-break lexicographically
+        # instead of by set-iteration order.
+        ordered_known = [session.user_peer_id, session.assistant_peer_id]
+        ordered_known += sorted(self._explicit_user_peer_ids())
+        if normalized in ordered_known:
             return normalized
-        known_by_lower = {k.lower(): k for k in known_ids}
+        known_by_lower: dict[str, str] = {}
+        for known_id in ordered_known:
+            known_by_lower.setdefault(known_id.lower(), known_id)
         match = known_by_lower.get(normalized.lower())
         if match is not None:
             return match

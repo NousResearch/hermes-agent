@@ -1173,12 +1173,16 @@ class HonchoMemoryProvider(MemoryProvider):
         reasons: List[str] = []
 
         if cfg is not None:
-            # Mirror _resolve_peer_id's collapse: only the AI alias targets the
-            # assistant; everything else (including unknown free-form names)
-            # resolves to the user. Report a safe label, never the raw — possibly
-            # invented — peer string.
-            is_ai = (peer or "user").strip().lower() in ("ai", "assistant")
-            label = "ai" if is_ai else "user"
+            # Ask the resolver which peer the request actually targeted instead
+            # of re-deriving it here: a session user peer literally named "AI"
+            # resolves to the user, and the hint must report the same peer the
+            # card lookup used. The label is always resolver-safe — never the
+            # raw, possibly invented, peer string.
+            if self._manager and self._session_key:
+                label = self._manager.resolved_peer_label(self._session_key, peer)
+            else:
+                label = "user"
+            is_ai = label == "ai"
             if is_ai:
                 observe_me = bool(getattr(cfg, "ai_observe_me", True))
                 observe_others = bool(getattr(cfg, "ai_observe_others", True))

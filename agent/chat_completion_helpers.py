@@ -2315,8 +2315,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         reasoning_parts: list = []
         usage_obj = None
         for chunk in stream:
-            last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
+            _now_chunk = time.time()
+            # Reset the stale-stream timer ONLY on chunks that carry real
+            # progress (content / reasoning / tool-call deltas).  A
+            # content-less SSE keepalive ping must NOT reset it: the
+            # ChatGPT codex backend (chatgpt.com/backend-api/codex) keeps a
+            # stalled stream alive with pings while delivering zero tokens.
+            # Resetting on every raw chunk (the previous behaviour) let
+            # those pings defeat both this detector AND the httpx read
+            # timeout, leaving a hung request alive until the backend gave
+            # up (~10 min) instead of killing+reconnecting at the stale
+            # threshold (the immediate retry succeeds in seconds).
+            _pg = chunk.choices[0].delta if chunk.choices else None
+            if _pg is not None and (
+                getattr(_pg, "content", None)
+                or getattr(_pg, "reasoning_content", None)
+                or getattr(_pg, "reasoning", None)
+                or getattr(_pg, "tool_calls", None)
+                or getattr(_pg, "function_call", None)
+            ):
+                last_chunk_time["t"] = _now_chunk
 
             # Update per-attempt diagnostic counters.  Best-effort —
             # failures are swallowed so the streaming hot path is never
@@ -2324,7 +2343,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             try:
                 _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
                 if _diag.get("first_chunk_at") is None:
-                    _diag["first_chunk_at"] = last_chunk_time["t"]
+                    _diag["first_chunk_at"] = _now_chunk
                 # Approximate byte size from the chunk's repr — exact wire
                 # bytes aren't exposed by the SDK, but len(repr(chunk)) is
                 # a stable proxy for "how much content arrived" that

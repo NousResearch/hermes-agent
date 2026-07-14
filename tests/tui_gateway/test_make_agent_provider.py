@@ -60,6 +60,82 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
 
 
+def test_make_agent_forwards_effective_max_tokens():
+    """TUI/desktop agents must inherit provider output caps without
+    overriding the documented global/env caps."""
+
+    fake_runtime = {
+        "provider": "custom",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+        "max_output_tokens": 12000,
+    }
+    fake_cfg = {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "glm-5"},
+    }
+
+    with (
+        patch.dict(os.environ, {}, clear=False),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        os.environ.pop("HERMES_MAX_TOKENS", None)
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-max", "key-max")
+
+        assert mock_agent.call_args.kwargs["max_tokens"] == 12000
+
+
+def test_make_agent_env_max_tokens_beats_provider_cap():
+    fake_runtime = {
+        "provider": "custom",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+        "max_output_tokens": 12000,
+    }
+    fake_cfg = {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "glm-5", "max_tokens": 16000},
+    }
+
+    with (
+        patch.dict(os.environ, {"HERMES_MAX_TOKENS": "2048"}),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-env-max", "key-env-max")
+
+        assert mock_agent.call_args.kwargs["max_tokens"] == 2048
+
+
 def test_make_agent_forwards_provider_routing():
     """Parity with the messaging gateway + CLI: ``provider_routing`` in
     config.yaml must reach AIAgent so OpenRouter honors the user's sort /

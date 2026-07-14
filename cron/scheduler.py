@@ -3027,6 +3027,7 @@ def run_job(
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
+            resolve_effective_max_tokens,
             format_runtime_provider_error,
         )
         from hermes_cli.auth import AuthError
@@ -3073,6 +3074,12 @@ def run_job(
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        model_cfg = _cfg.get("model") if isinstance(_cfg, dict) else None
+        max_tokens = resolve_effective_max_tokens(
+            runtime,
+            model_cfg if isinstance(model_cfg, dict) else None,
+        )
 
         # Provider/model-drift fail-closed guard (#44585).
         #
@@ -3175,6 +3182,7 @@ def run_job(
             api_mode=runtime.get("api_mode"),
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
+            max_tokens=max_tokens,
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,

@@ -1235,7 +1235,8 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
                 "base_url": None,
                 "api_key": None,
                 "api_mode": None,
-            }
+            },
+            resolve_effective_max_tokens=lambda _runtime, _model_cfg: None,
         ),
     )
     monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"system_prompt": ["one", "two"]}})

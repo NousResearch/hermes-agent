@@ -4621,9 +4621,17 @@ def _make_agent(
             "target_model": model or None,
         })
     _pr = _load_provider_routing()
+    from hermes_cli.runtime_provider import resolve_effective_max_tokens
+
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+    max_tokens = resolve_effective_max_tokens(
+        runtime,
+        model_cfg if isinstance(model_cfg, dict) else None,
+    )
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
+        max_tokens=max_tokens,
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),

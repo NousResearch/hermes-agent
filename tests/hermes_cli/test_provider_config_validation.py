@@ -239,6 +239,17 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert "models" not in result
 
+    def test_max_output_tokens_preserved(self):
+        """Provider output caps must survive normalization for runtime routing."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "max_output_tokens": 12000,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["max_output_tokens"] == 12000
+
     def test_env_var_placeholder_in_base_url_not_rejected(self):
         """A base_url that is an un-expanded ${ENV_VAR} placeholder must not be
         rejected as an invalid URL — it is expanded at runtime, so a caller

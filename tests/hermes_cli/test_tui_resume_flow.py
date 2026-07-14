@@ -870,6 +870,7 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
                 "api_mode": "chat_completions",
                 "credential_pool": None,
             },
+            resolve_effective_max_tokens=lambda _runtime, _model_cfg: None,
         ),
     )
     monkeypatch.setitem(

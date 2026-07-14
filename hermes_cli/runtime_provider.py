@@ -604,6 +604,41 @@ def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> No
             return
 
 
+def resolve_effective_max_tokens(
+    runtime: Optional[Dict[str, Any]] = None,
+    model_cfg: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Resolve the output-token cap with the shared runtime precedence.
+
+    Precedence is intentionally the same across gateway, CLI, cron, TUI,
+    oneshot, and ACP:
+
+    ``HERMES_MAX_TOKENS`` > ``model.max_tokens`` > provider
+    ``max_output_tokens``/``max_tokens``.
+    """
+    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+    if _env_mt:
+        try:
+            max_tokens = int(_env_mt)
+            if max_tokens > 0:
+                return max_tokens
+        except (ValueError, TypeError):
+            pass
+
+    if isinstance(model_cfg, dict):
+        mt = model_cfg.get("max_tokens")
+        if isinstance(mt, int) and mt > 0:
+            return mt
+
+    if isinstance(runtime, dict):
+        for key in ("max_output_tokens", "max_tokens"):
+            value = runtime.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+
+    return None
+
+
 def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     """Copy a validated ``extra_headers`` dict from a provider entry.
 

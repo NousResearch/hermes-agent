@@ -78,6 +78,7 @@ def _install_prompt_toolkit_stubs():
     layout.Window = _Dummy
     layout.FormattedTextControl = _Dummy
     layout.ConditionalContainer = _Dummy
+    layout.WindowAlign = SimpleNamespace(RIGHT="RIGHT")
     processors.Processor = _Dummy
     processors.Transformation = _Dummy
     processors.PasswordProcessor = _Dummy
@@ -200,6 +201,38 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_runtime_uses_provider_max_tokens_only_as_fallback(monkeypatch):
+    cli = _import_cli()
+
+    monkeypatch.delenv("HERMES_MAX_TOKENS", raising=False)
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "gpt-5"})
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://local.test/v1",
+            "api_key": "test-key",
+            "source": "config",
+            "max_output_tokens": 12000,
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.max_tokens == 12000
+
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "gpt-5", "max_tokens": 16384})
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.max_tokens == 16384
+
+    monkeypatch.setenv("HERMES_MAX_TOKENS", "2048")
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.max_tokens == 2048
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
@@ -207,11 +240,41 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     shell.api_mode = "chat_completions"
     shell.base_url = "https://openrouter.ai/api/v1"
     shell.api_key = "sk-primary"
+    shell.max_tokens = 8192
 
     result = shell._resolve_turn_agent_config("what time is it in tokyo?")
 
     assert result["model"] == "gpt-5"
     assert result["runtime"]["provider"] == "openrouter"
+    assert result["runtime"]["max_tokens"] == 8192
+
+
+def test_cli_runtime_max_tokens_change_rebuilds_agent(monkeypatch):
+    cli = _import_cli()
+    cap = {"value": 12000}
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://local.test/v1",
+            "api_key": "test-key",
+            "source": "config",
+            "max_output_tokens": cap["value"],
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "gpt-5"})
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    assert shell._ensure_runtime_credentials() is True
+    shell.agent = object()
+    cap["value"] = 16000
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.agent is None
+    assert shell.max_tokens == 16000
 
 
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):

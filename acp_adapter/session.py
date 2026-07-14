@@ -596,7 +596,7 @@ class SessionManager:
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.runtime_provider import resolve_effective_max_tokens, resolve_runtime_provider
 
         config = load_config()
         model_cfg = config.get("model")
@@ -636,6 +636,10 @@ class SessionManager:
                     "api_key": runtime.get("api_key"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
+                    "max_tokens": resolve_effective_max_tokens(
+                        runtime,
+                        model_cfg if isinstance(model_cfg, dict) else None,
+                    ),
                 }
             )
         except Exception:

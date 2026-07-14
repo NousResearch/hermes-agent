@@ -8,6 +8,20 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_resolve_effective_max_tokens_precedence(monkeypatch):
+    runtime = {"max_output_tokens": 12000, "max_tokens": 9000}
+    model_cfg = {"max_tokens": 16384}
+
+    monkeypatch.setenv("HERMES_MAX_TOKENS", "2048")
+    assert rp.resolve_effective_max_tokens(runtime, model_cfg) == 2048
+
+    monkeypatch.delenv("HERMES_MAX_TOKENS", raising=False)
+    assert rp.resolve_effective_max_tokens(runtime, model_cfg) == 16384
+    assert rp.resolve_effective_max_tokens(runtime, {}) == 12000
+    assert rp.resolve_effective_max_tokens({"max_tokens": 9000}, {}) == 9000
+    assert rp.resolve_effective_max_tokens({"max_output_tokens": 0}, {}) is None
+
+
 def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
     """A saved provider must not resolve as another authenticated provider."""
     monkeypatch.setattr(

@@ -32,6 +32,7 @@ class CLIAgentSetupMixin:
         from cli import ChatConsole, _cprint, logger
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
+            resolve_effective_max_tokens,
             format_runtime_provider_error,
         )
 
@@ -82,6 +83,13 @@ class CLIAgentSetupMixin:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        from cli import CLI_CONFIG
+
+        _model_config = CLI_CONFIG.get("model", {}) if isinstance(CLI_CONFIG, dict) else {}
+        resolved_max_tokens = resolve_effective_max_tokens(
+            runtime,
+            _model_config if isinstance(_model_config, dict) else None,
+        )
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
         # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
@@ -117,12 +125,14 @@ class CLIAgentSetupMixin:
             or resolved_api_mode != self.api_mode
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
+            or resolved_max_tokens != self.max_tokens
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
+        self.max_tokens = resolved_max_tokens
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -189,6 +199,7 @@ class CLIAgentSetupMixin:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            "max_tokens": getattr(self, "max_tokens", None),
         }
         route = {
             "model": self.model,

@@ -102,6 +102,7 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
                 "command": None,
                 "args": [],
             },
+            resolve_effective_max_tokens=lambda _runtime, _model_cfg: None,
         ),
     )
 
@@ -112,6 +113,60 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+
+
+def test_acp_real_agent_gets_effective_max_tokens(monkeypatch):
+    captured = {}
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+            captured.update(kwargs)
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {
+                "model": {
+                    "default": "m",
+                    "provider": "p",
+                    "max_tokens": 16384,
+                }
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "base_url": "u",
+                "api_key": "k",
+                "command": None,
+                "args": [],
+                "max_output_tokens": 12000,
+            },
+            resolve_effective_max_tokens=lambda _runtime, _model_cfg: 16384,
+        ),
+    )
+
+    manager = SessionManager(db=NoopDb())
+    agent = manager._make_agent(session_id="acp-session", cwd=".")
+
+    assert isinstance(agent, CapturingAgent)
+    assert captured["max_tokens"] == 16384
 
 
 @pytest.mark.asyncio

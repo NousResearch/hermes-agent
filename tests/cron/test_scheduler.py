@@ -1003,6 +1003,47 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_passes_effective_max_tokens(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-test\n"
+            "  provider: custom\n"
+            "  max_tokens: 16384\n",
+            encoding="utf-8",
+        )
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "custom",
+                     "api_mode": "chat_completions",
+                     "max_output_tokens": 12000,
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["max_tokens"] == 16384
+
     def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
         For cron, that abnormal-empty explainer must be treated as empty so it

@@ -206,9 +206,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         try:
             from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
-                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
+                _scoped = _tool_search_scoped_names(agent)
+                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(
+                    function_args, allowed_names=_scoped
+                )
                 if not _err and _underlying:
-                    if _underlying in _tool_search_scoped_names(agent):
+                    if _underlying in _scoped:
                         function_name = _underlying
                         function_args = _underlying_args
                     else:
@@ -629,9 +632,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         try:
             from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
-                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
+                _scoped = _tool_search_scoped_names(agent)
+                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(
+                    function_args, allowed_names=_scoped
+                )
                 if not _err and _underlying:
-                    if _underlying in _tool_search_scoped_names(agent):
+                    if _underlying in _scoped:
                         function_name = _underlying
                         function_args = _underlying_args
                     else:

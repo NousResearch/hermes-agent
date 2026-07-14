@@ -646,3 +646,91 @@ class TestRegression_ProviderToolsBridgeScope:
         assert "fact_feedback" in second, (
             "stale cache served after provider tool set changed"
         )
+
+    # ── resolve_underlying_call must actually admit provider names ──────
+    #
+    # Maintainer review of PR #34523: the executor's scope union at
+    # _tool_search_scoped_names was unreachable for provider-injected names,
+    # because resolve_underlying_call() rejected them via
+    # is_deferrable_tool_name() (no registry entry) *before* the executor's
+    # scope gate ran. These cover the resolution layer + both executor paths.
+
+    def test_resolve_admits_provider_name_via_allowed_names(self):
+        """A provider-injected name (no registry entry) resolves cleanly when
+        the caller vouches for it via allowed_names."""
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call(
+            {"name": "fact_store", "arguments": {"text": "hi"}},
+            allowed_names=frozenset({"fact_store", "fact_feedback"}),
+        )
+        assert err is None
+        assert name == "fact_store"
+        assert args == {"text": "hi"}
+
+    def test_resolve_still_rejects_provider_name_out_of_scope(self):
+        """Without vouching, the provider name is still rejected — the caller's
+        scope remains the gate, so #5544 is preserved."""
+        from tools.tool_search import resolve_underlying_call
+        _, _, err = resolve_underlying_call(
+            {"name": "fact_store", "arguments": {}},
+            allowed_names=frozenset({"lcm_grep"}),
+        )
+        assert err is not None
+        assert "not a deferrable" in err
+
+    def test_resolve_allowed_names_does_not_admit_core_tool(self):
+        """allowed_names must never let a core/bridge tool through even if a
+        buggy caller lists it."""
+        from tools.tool_search import resolve_underlying_call, TOOL_CALL_NAME
+        _, _, err = resolve_underlying_call(
+            {"name": TOOL_CALL_NAME, "arguments": {}},
+            allowed_names=frozenset({TOOL_CALL_NAME}),
+        )
+        assert err is not None
+
+    def _executor_agent(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            _memory_manager=SimpleNamespace(
+                get_all_tool_names=lambda: {"fact_store", "fact_feedback"},
+            ),
+            _context_engine_tool_names=set(),
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+            _tool_search_scope_cache=None,
+        )
+
+    def test_executor_unwraps_provider_tool_end_to_end(self):
+        """End-to-end: the sequential executor's resolve+scope block resolves
+        a bridged provider tool to its underlying name (previously blocked).
+        Mirrors agent/tool_executor.py handle_function_call unwrap."""
+        from tools import tool_search as _ts
+        from agent.tool_executor import _tool_search_scoped_names
+        agent = self._executor_agent()
+        scoped = _tool_search_scoped_names(agent)
+        assert "fact_store" in scoped
+
+        function_args = {"name": "fact_store", "arguments": {"text": "remember"}}
+        underlying, uargs, err = _ts.resolve_underlying_call(
+            function_args, allowed_names=scoped
+        )
+        assert err is None
+        # Executor's own scope gate (both paths do `if underlying in scoped`).
+        assert underlying in scoped
+        assert underlying == "fact_store"
+        assert uargs == {"text": "remember"}
+
+    def test_executor_blocks_ungranted_tool_end_to_end(self):
+        """A tool the session was never granted is still blocked at the
+        executor scope gate even if resolution is attempted."""
+        from tools import tool_search as _ts
+        from agent.tool_executor import _tool_search_scoped_names
+        agent = self._executor_agent()
+        scoped = _tool_search_scoped_names(agent)
+
+        underlying, _uargs, err = _ts.resolve_underlying_call(
+            {"name": "lcm_grep", "arguments": {}}, allowed_names=scoped
+        )
+        # Not vouched (agent has no ce tools) → resolution rejects it, and
+        # even a bypass would fail the `underlying in scoped` executor gate.
+        assert err is not None or underlying not in scoped

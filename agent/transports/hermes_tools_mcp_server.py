@@ -227,12 +227,11 @@ def _build_server() -> Any:
                 _make_handler(name, params_schema),
                 name=name,
                 description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
             )
         except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style.
+            # Older mcp SDK signature — fall back to decorator-style. The
+            # synthesized __signature__ on the handler still drives schema
+            # generation there.
             handler = _make_handler(name, params_schema)
             handler = mcp.tool(name=name, description=description)(handler)
 

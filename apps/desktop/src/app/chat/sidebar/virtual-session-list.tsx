@@ -1,33 +1,38 @@
-import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { type FC, useCallback, useMemo, useRef } from 'react'
+import { type FC, useCallback, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
+import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
 import { SidebarSessionRow } from './session-row'
 
 interface SessionRowCommonProps {
+  branchStem?: string
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
   onArchive: () => void
+  onBranch?: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
+  reorderable?: boolean
 }
 
 interface VirtualSessionListProps {
   activeSessionId: null | string
   className?: string
+  entries: SidebarSessionEntry[]
   onArchiveSession: (sessionId: string) => void
+  onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
   pinned: boolean
-  sessions: SessionInfo[]
   sortable: boolean
   workingSessionIdSet: Set<string>
 }
@@ -38,22 +43,22 @@ const OVERSCAN_ROWS = 12
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
   className,
+  entries,
   onArchiveSession,
+  onBranchSession,
   onDeleteSession,
   onResumeSession,
   onTogglePin,
   pinned,
-  sessions,
   sortable,
   workingSessionIdSet
 }) => {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
-  const ids = useMemo(() => sessions.map(s => s.id), [sessions])
 
   const virtualizer = useVirtualizer({
-    count: sessions.length,
+    count: entries.length,
     estimateSize: () => ROW_ESTIMATE_PX,
-    getItemKey: index => sessions[index]?.id ?? index,
+    getItemKey: index => entries[index]?.session.id ?? index,
     getScrollElement: () => scrollerRef.current,
     // jsdom-friendly default; the real rect takes over on first observe.
     initialRect: { height: 600, width: 240 },
@@ -66,23 +71,29 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   const paddingBottom = Math.max(0, totalSize - (virtualItems[virtualItems.length - 1]?.end ?? 0))
 
   const rows = virtualItems.map(virtualItem => {
-    const session = sessions[virtualItem.index]
+    const entry = entries[virtualItem.index]
 
-    if (!session) {
+    if (!entry) {
       return null
     }
 
+    const { branchStem, session } = entry
+    const reorderable = sortable && !branchStem
+
     const commonProps: SessionRowCommonProps = {
+      branchStem,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
+      onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id)
+      onResume: () => onResumeSession(session.id),
+      reorderable
     }
 
-    return sortable ? (
+    return reorderable ? (
       <VirtualSortableRow
         index={virtualItem.index}
         key={session.id}
@@ -101,20 +112,18 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     )
   })
 
-  const list = (
-    <div className={cn('relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain', className)} ref={scrollerRef}>
+  // When sortable, the caller wraps this in a ReorderableList that owns the
+  // DndContext + SortableContext (keyed on the same ids); the virtualized rows
+  // just consume that context via useSortable.
+  return (
+    <div
+      className={cn('relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain', className)}
+      ref={scrollerRef}
+    >
       <div className="grid gap-px" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>
         {rows}
       </div>
     </div>
-  )
-
-  return sortable ? (
-    <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-      {list}
-    </SortableContext>
-  ) : (
-    list
   )
 }
 

@@ -1705,6 +1705,9 @@ class TestCaptureAppFilterNoMatch:
              "is_on_screen": True, "title": "Calculator", "z_index": 1},
         ]
         backend = _make_cua_backend_with_windows(windows)
+        backend._active_pid = 999
+        backend._active_window_id = 888
+        backend._last_app = "PreviousApp"
 
         cap = backend.capture(mode="som", app="Calculator")
 
@@ -1715,9 +1718,25 @@ class TestCaptureAppFilterNoMatch:
         assert cap.elements == []
         assert "Calculator" in cap.window_title
         assert "list_apps" in cap.window_title
-        # _active_pid must remain unset so a subsequent click doesn't hit Fuwari.
+        # _active_pid must be cleared so a subsequent click doesn't hit Fuwari
+        # or a stale previously-targeted window.
         assert backend._active_pid is None
         assert backend._active_window_id is None
+        assert backend._last_app is None
+
+    def test_app_filter_no_windows_clears_stale_active_context(self):
+        backend = _make_cua_backend_with_windows([])
+        backend._active_pid = 999
+        backend._active_window_id = 888
+        backend._last_app = "PreviousApp"
+
+        cap = backend.capture(mode="som", app="Calculator")
+
+        assert cap.app == ""
+        assert cap.elements == []
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+        assert backend._last_app is None
 
     def test_app_filter_match_still_works(self):
         windows = [
@@ -1774,14 +1793,20 @@ class TestFocusAppFilterNoMatch:
              "is_on_screen": True, "title": "Calculator", "z_index": 1},
         ]
         backend = _make_cua_backend_with_windows(windows)
+        backend._active_pid = 999
+        backend._active_window_id = 888
+        backend._last_app = "PreviousApp"
 
         res = backend.focus_app("Calculator")
 
         assert res.ok is False
         assert res.action == "focus_app"
         assert "Calculator" in res.message
-        # _active_pid must remain unset so a subsequent click doesn't hit Fuwari.
+        # _active_pid must be cleared so a subsequent click doesn't hit Fuwari
+        # or a stale previously-targeted window.
         assert backend._active_pid is None
+        assert backend._active_window_id is None
+        assert backend._last_app is None
 
     def test_focus_app_match_still_works(self):
         windows = [

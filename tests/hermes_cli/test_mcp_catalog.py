@@ -197,6 +197,32 @@ class TestManifestParsing:
         assert get_entry("official/demo") is not None
         assert get_entry("missing") is None
 
+    def test_transport_env_parsed_and_written_to_server_config(self, catalog_dir):
+        body = _basic_manifest()
+        body["transport"]["env"] = {"DISABLE_TELEMETRY": "true"}
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        e = _entry("demo")
+        assert e.transport.env == {"DISABLE_TELEMETRY": "true"}
+        cfg = _build_server_config(e, None)
+        assert cfg["env"] == {"DISABLE_TELEMETRY": "true"}
+
+    def test_transport_env_absent_leaves_config_without_env_key(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert "env" not in cfg
+
+    def test_transport_env_bad_shape_rejected(self, catalog_dir):
+        body = _basic_manifest()
+        body["transport"]["env"] = ["DISABLE_TELEMETRY=true"]  # list, not mapping
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog() == []
+
 
 # ---------------------------------------------------------------------------
 # Install flow

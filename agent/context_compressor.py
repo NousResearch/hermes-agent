@@ -1620,7 +1620,26 @@ class ContextCompressor(ContextEngine):
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
+            raw_content = msg.get("content")
+            # Multimodal content is a list of blocks (text + image parts).
+            # Extract text explicitly so the summarizer sees the user's words
+            # instead of an unreadable Python repr of the raw list.
+            if isinstance(raw_content, list):
+                text_parts = []
+                has_images = False
+                for part in raw_content:
+                    if _is_image_part(part):
+                        has_images = True
+                    elif isinstance(part, dict):
+                        txt = part.get("text") or ""
+                        if txt:
+                            text_parts.append(txt)
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                raw_content = "\n".join(text_parts)
+                if has_images:
+                    raw_content += "\n[Attached image(s) — not included in summary]"
+            content = redact_sensitive_text(raw_content or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
             # assistant content before it reaches the summarizer. Reasoning

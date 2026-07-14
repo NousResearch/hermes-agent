@@ -619,6 +619,87 @@ def test_resolve_runtime_provider_openrouter_ignores_codex_config_base_url(monke
     assert resolved["base_url"] == rp.OPENROUTER_BASE_URL
 
 
+def test_ollama_cloud_ignores_stale_codex_config_base_url(monkeypatch):
+    """A stale global model.base_url must not hijack Ollama Cloud (#47521)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ollama-cloud")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "ollama-cloud",
+            "default": "deepseek-v4-pro",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test-key")
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="ollama-cloud")
+
+    assert resolved["provider"] == "ollama-cloud"
+    assert resolved["base_url"] == "https://ollama.com/v1"
+    assert resolved["api_key"] == "ollama-test-key"
+
+
+def test_ollama_cloud_honors_matching_config_base_url(monkeypatch):
+    """Same-provider config URLs are still honored when they target Ollama."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ollama-cloud")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "ollama-cloud",
+            "default": "deepseek-v4-pro",
+            "base_url": "https://ollama.com/v1/",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test-key")
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="ollama-cloud")
+
+    assert resolved["base_url"] == "https://ollama.com/v1"
+
+
+def test_ollama_cloud_pool_ignores_stale_codex_config_base_url(monkeypatch):
+    entry = SimpleNamespace(
+        access_token="pool-key",
+        source="manual",
+        base_url="https://ollama.com/v1",
+    )
+    pool = SimpleNamespace(
+        has_credentials=lambda: True,
+        select=lambda: entry,
+    )
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ollama-cloud")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "ollama-cloud",
+            "default": "deepseek-v4-pro",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: pool)
+
+    resolved = rp.resolve_runtime_provider(requested="ollama-cloud")
+
+    assert resolved["provider"] == "ollama-cloud"
+    assert resolved["base_url"] == "https://ollama.com/v1"
+    assert resolved["credential_pool"] is pool
+
+
 def test_resolve_runtime_provider_auto_uses_custom_config_base_url(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(

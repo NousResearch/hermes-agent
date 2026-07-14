@@ -317,6 +317,64 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     return normalized_configured == normalized_provider
 
 
+def _provider_supports_config_base_url_override(
+    provider: str,
+    cfg_base_url: str,
+    default_base_url: str,
+) -> bool:
+    """Return True when ``model.base_url`` is safe for a built-in provider.
+
+    ``model.base_url`` is global and can survive a provider switch.  Trusting it
+    solely because ``model.provider`` now matches the selected provider lets a
+    stale endpoint from the previous provider hijack the new runtime, e.g.
+    ``ollama-cloud`` + ``https://chatgpt.com/backend-api/codex``.
+
+    Preserve the existing provider-specific proxy contract (MiniMax CN,
+    TokenHub proxies, lab gateways, etc.): only reject URLs that point at
+    another known provider's stock endpoint.
+    """
+    provider_norm = (provider or "").strip().lower()
+    cfg_base_url = (cfg_base_url or "").strip()
+    default_base_url = (default_base_url or "").strip()
+    if not cfg_base_url:
+        return False
+
+    cfg_host = base_url_hostname(cfg_base_url)
+    if not cfg_host:
+        return False
+
+    current_host = base_url_hostname(default_base_url)
+    if current_host and cfg_host == current_host:
+        return True
+
+    compatible_provider_families = [
+        {"minimax", "minimax-cn"},
+    ]
+    compatible_providers = {provider_norm}
+    for family in compatible_provider_families:
+        if provider_norm in family:
+            compatible_providers.update(family)
+
+    other_default_hosts = {
+        base_url_hostname(pconfig.inference_base_url)
+        for provider_id, pconfig in PROVIDER_REGISTRY.items()
+        if provider_id not in compatible_providers and getattr(pconfig, "inference_base_url", "")
+    }
+    other_default_hosts.update(
+        base_url_hostname(url)
+        for url in (
+            OPENROUTER_BASE_URL,
+            DEFAULT_CODEX_BASE_URL,
+            DEFAULT_QWEN_BASE_URL,
+            DEFAULT_XAI_OAUTH_BASE_URL,
+        )
+        if url
+    )
+    other_default_hosts.discard("")
+
+    return cfg_host not in other_default_hosts
+
+
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
@@ -487,7 +545,11 @@ def _resolve_runtime_from_pool_entry(
         pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
         if configured_provider == provider and pool_url_is_default:
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
+            if cfg_base_url and _provider_supports_config_base_url_override(
+                provider,
+                cfg_base_url,
+                pconfig.inference_base_url if pconfig else "",
+            ):
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         if provider in {"opencode-zen", "opencode-go"}:
@@ -2028,7 +2090,13 @@ def resolve_runtime_provider(
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == provider:
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            raw_cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if _provider_supports_config_base_url_override(
+                provider,
+                raw_cfg_base_url,
+                pconfig.inference_base_url,
+            ):
+                cfg_base_url = raw_cfg_base_url
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":

@@ -7955,6 +7955,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # Replace any endpoint retained from the previous provider while
+            # preserving legitimate same-provider proxy overrides.
+            save_config_value("model.base_url", result.base_url or None)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -8267,6 +8270,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # Replace any endpoint retained from the previous provider while
+            # preserving legitimate same-provider proxy overrides.
+            save_config_value("model.base_url", result.base_url or None)
             _cprint("    Saved to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")

@@ -40,6 +40,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+from urllib.parse import unquote
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -1796,33 +1797,36 @@ _OWN_POLICY_OPEN_ENV = {
 def _own_policy_open_startup_violation(config) -> Optional[str]:
     """Return a startup-abort reason when open policy lacks allow-all opt-in."""
     for platform, platform_config in getattr(config, "platforms", {}).items():
-        if not getattr(platform_config, "enabled", False):
-            continue
-        open_env = _OWN_POLICY_OPEN_ENV.get(platform)
-        if not open_env:
-            continue
-        dm_env, group_env, allow_all_env = open_env
-        extra = getattr(platform_config, "extra", None) or {}
-        dm_policy = str(
-            extra.get("dm_policy")
-            or (os.getenv(dm_env, "pairing") if dm_env else "pairing")
-        ).strip().lower()
-        group_policy = str(
-            extra.get("group_policy")
-            or (os.getenv(group_env, "pairing") if group_env else "pairing")
-        ).strip().lower()
-        if dm_policy != "open" and group_policy != "open":
-            continue
-        gateway_allow_all = os.getenv(
-            "GATEWAY_ALLOW_ALL_USERS", ""
-        ).lower() in {"true", "1", "yes"}
-        platform_opted_in = gateway_allow_all or (
-            allow_all_env
-            and os.getenv(allow_all_env, "").lower() in {"true", "1", "yes"}
+        platform_configs = (
+            platform_config if isinstance(platform_config, list) else [platform_config]
         )
-        if platform_opted_in:
-            continue
-        return f"{platform.value}: open policy without allow-all opt-in"
+        for concrete_config in platform_configs:
+            if not getattr(concrete_config, "enabled", False):
+                continue
+            open_env = _OWN_POLICY_OPEN_ENV.get(platform)
+            if not open_env:
+                continue
+            dm_env, group_env, allow_all_env = open_env
+            extra = getattr(concrete_config, "extra", None) or {}
+            dm_policy = str(
+                extra.get("dm_policy")
+                or (os.getenv(dm_env, "pairing") if dm_env else "pairing")
+            ).strip().lower()
+            group_policy = str(
+                extra.get("group_policy")
+                or (os.getenv(group_env, "pairing") if group_env else "pairing")
+            ).strip().lower()
+            if dm_policy != "open" and group_policy != "open":
+                continue
+            gateway_allow_all = os.getenv(
+                "GATEWAY_ALLOW_ALL_USERS", ""
+            ).lower() in {"true", "1", "yes"}
+            platform_opted_in = gateway_allow_all or (
+                allow_all_env
+                and os.getenv(allow_all_env, "").lower() in {"true", "1", "yes"}
+            )
+            if not platform_opted_in:
+                return f"{platform.value}: open policy without allow-all opt-in"
     return None
 
 
@@ -2503,7 +2507,9 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
+    adapter_id = None
     if len(parts) >= 6 and parts[3].startswith("adapter="):
+        adapter_id = unquote(parts[3][len("adapter="):]) or None
         parts = parts[:3] + parts[4:]
     if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
         result = {
@@ -2513,6 +2519,8 @@ def _parse_session_key(session_key: str) -> "dict | None":
         }
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
+        if adapter_id:
+            result["adapter_id"] = adapter_id
         return result
     return None
 
@@ -2823,6 +2831,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        self._profile_adapters_by_id: Dict[
+            str, Dict[str, BasePlatformAdapter]
+        ] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -3191,15 +3202,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if source is None:
             return None
         adapter_id = getattr(source, "adapter_id", None)
+        profile_name = (getattr(source, "profile", None) or "").strip() or None
+        if profile_name:
+            profile_adapters_by_id = (
+                getattr(self, "_profile_adapters_by_id", None) or {}
+            )
+            if adapter_id:
+                adapter = profile_adapters_by_id.get(profile_name, {}).get(
+                    str(adapter_id)
+                )
+                if adapter is not None:
+                    return adapter
+            profile_adapters = getattr(self, "_profile_adapters", None) or {}
+            if profile_name in profile_adapters:
+                adapter = profile_adapters[profile_name].get(source.platform)
+                if adapter is not None:
+                    return adapter
         if adapter_id:
             adapter = getattr(self, "adapters_by_id", {}).get(str(adapter_id))
             if adapter is not None:
                 return adapter
-        profile_name = (getattr(source, "profile", None) or "").strip() or None
-        if profile_name:
-            profile_adapters = getattr(self, "_profile_adapters", None) or {}
-            if profile_name in profile_adapters:
-                return profile_adapters[profile_name].get(source.platform)
         return getattr(self, "adapters", {}).get(source.platform)
 
     def _adapter_for_event(self, event: Optional[MessageEvent]) -> Optional[BasePlatformAdapter]:
@@ -8307,13 +8329,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Disconnect secondary-profile adapters (multiplex mode).
             for _prof, _amap in list(getattr(self, "_profile_adapters", {}).items()):
-                for platform, adapter in list(_amap.items()):
+                _id_map = (
+                    getattr(self, "_profile_adapters_by_id", {}).get(_prof, {})
+                )
+                _seen_profile_adapters: set[int] = set()
+                for adapter in [*_amap.values(), *_id_map.values()]:
+                    if id(adapter) in _seen_profile_adapters:
+                        continue
+                    _seen_profile_adapters.add(id(adapter))
                     await self._bounded_adapter_teardown(
-                        adapter, platform, profile=_prof
+                        adapter, adapter.platform, profile=_prof
                     )
                 _amap.clear()
+                _id_map.clear()
             if hasattr(self, "_profile_adapters"):
                 self._profile_adapters.clear()
+            if hasattr(self, "_profile_adapters_by_id"):
+                self._profile_adapters_by_id.clear()
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),
@@ -8332,8 +8364,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._background_tasks.clear()
 
             self.adapters.clear()
-            self.adapters_by_id.clear()
-            self._platform_adapter_ids.clear()
+            getattr(self, "adapters_by_id", {}).clear()
+            getattr(self, "_platform_adapter_ids", {}).clear()
             for _session_key in list(self._running_agents):
                 self._release_running_agent_state(_session_key)
             self._running_agents.clear()
@@ -8590,71 +8622,103 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         profile_map = self._profile_adapters.setdefault(profile_name, {})
+        profile_adapters_by_id = getattr(self, "_profile_adapters_by_id", None)
+        if profile_adapters_by_id is None:
+            self._profile_adapters_by_id = {}
+            profile_adapters_by_id = self._profile_adapters_by_id
+        profile_id_map = profile_adapters_by_id.setdefault(profile_name, {})
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
-            if not platform_config.enabled:
-                continue
-            # A secondary profile must NOT enable a port-binding platform: the
-            # default profile's listener already serves every profile via the
-            # /p/<profile>/ prefix, so a second bind can only collide. This is a
-            # config error, not a transient failure — fail fast and loud.
-            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
-                raise MultiplexConfigError(
-                    f"Profile '{profile_name}' enables the port-binding platform "
-                    f"'{platform.value}', but gateway.multiplex_profiles is on. The "
-                    f"default profile owns the single shared HTTP listener and "
-                    f"serves every profile through the /p/{profile_name}/ URL "
-                    f"prefix — a secondary profile cannot bind its own port. "
-                    f"Remove platforms.{platform.value} from profile "
-                    f"'{profile_name}'s config.yaml (configure it only on the "
-                    f"default profile)."
-                )
-            with _profile_runtime_scope(profile_home):
-                adapter = self._create_adapter(platform, platform_config)
-            if not adapter:
-                continue
+            platform_configs = (
+                platform_config if isinstance(platform_config, list) else [platform_config]
+            )
+            for concrete_config in platform_configs:
+                if not concrete_config.enabled:
+                    continue
+                # A secondary profile must NOT enable a port-binding platform:
+                # the default profile's listener already serves every profile.
+                if platform.value in _PORT_BINDING_PLATFORM_VALUES:
+                    raise MultiplexConfigError(
+                        f"Profile '{profile_name}' enables the port-binding platform "
+                        f"'{platform.value}', but gateway.multiplex_profiles is on. The "
+                        f"default profile owns the single shared HTTP listener and "
+                        f"serves every profile through the /p/{profile_name}/ URL "
+                        f"prefix — a secondary profile cannot bind its own port. "
+                        f"Remove platforms.{platform.value} from profile "
+                        f"'{profile_name}'s config.yaml (configure it only on the "
+                        f"default profile)."
+                    )
+                with _profile_runtime_scope(profile_home):
+                    adapter = self._create_adapter(platform, concrete_config)
+                if not adapter:
+                    continue
 
-            # Same-token conflict detection — refuse a duplicate poll.
-            fp = self._adapter_credential_fingerprint(adapter)
-            if fp is not None:
-                owner = claimed.get((platform, fp))
-                if owner is not None:
+                # Same-token conflict detection — refuse a duplicate poll.
+                fp = self._adapter_credential_fingerprint(adapter)
+                if fp is not None:
+                    owner = claimed.get((platform, fp))
+                    if owner is not None:
+                        logger.error(
+                            "Profile '%s' and '%s' both configure %s with the same "
+                            "credential — refusing to start the duplicate (a single "
+                            "bot token cannot be polled twice). Give each profile its "
+                            "own %s credential.",
+                            owner, profile_name, platform.value, platform.value,
+                        )
+                        await self._safe_adapter_disconnect(adapter, platform)
+                        continue
+                    claimed[(platform, fp)] = profile_name
+
+                # Stamp every inbound event from this adapter with its profile so
+                # the agent turn (and session key) resolves to the right home.
+                adapter.set_message_handler(
+                    self._make_profile_message_handler(profile_name)
+                )
+                adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+                adapter.set_session_store(self.session_store)
+                adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+                adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+                adapter._busy_text_mode = self._busy_text_mode
+
+                try:
+                    with _profile_runtime_scope(profile_home):
+                        success = await self._connect_adapter_with_timeout(adapter, platform)
+                    if success:
+                        adapter_id = self._adapter_instance_id(platform, adapter)
+                        base_adapter_id = adapter_id
+                        suffix = 2
+                        while (
+                            adapter_id in profile_id_map
+                            and profile_id_map[adapter_id] is not adapter
+                        ):
+                            adapter_id = f"{base_adapter_id}:{suffix}"
+                            suffix += 1
+                        adapter.adapter_id = adapter_id
+                        profile_map.setdefault(platform, adapter)
+                        profile_id_map[adapter_id] = adapter
+                        connected += 1
+                        logger.info(
+                            "✓ %s connected (profile: %s, adapter_id=%s)",
+                            platform.value,
+                            profile_name,
+                            adapter_id,
+                        )
+                    else:
+                        logger.warning(
+                            "✗ %s failed to connect (profile: %s)",
+                            platform.value,
+                            profile_name,
+                        )
+                        await self._safe_adapter_disconnect(adapter, platform)
+                except Exception as e:
                     logger.error(
-                        "Profile '%s' and '%s' both configure %s with the same "
-                        "credential — refusing to start the duplicate (a single "
-                        "bot token cannot be polled twice). Give each profile its "
-                        "own %s credential.",
-                        owner, profile_name, platform.value, platform.value,
+                        "✗ %s error (profile: %s): %s",
+                        platform.value,
+                        profile_name,
+                        e,
                     )
                     await self._safe_adapter_disconnect(adapter, platform)
-                    continue
-                claimed[(platform, fp)] = profile_name
-
-            # Stamp every inbound event from this adapter with its profile so
-            # the agent turn (and session key) resolve to the right home.
-            adapter.set_message_handler(
-                self._make_profile_message_handler(profile_name)
-            )
-            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
-            adapter._busy_text_mode = self._busy_text_mode
-
-            try:
-                with _profile_runtime_scope(profile_home):
-                    success = await self._connect_adapter_with_timeout(adapter, platform)
-                if success:
-                    profile_map[platform] = adapter
-                    connected += 1
-                    logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
-                else:
-                    logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
-                    await self._safe_adapter_disconnect(adapter, platform)
-            except Exception as e:
-                logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
-                await self._safe_adapter_disconnect(adapter, platform)
         return connected
 
     def _make_profile_message_handler(self, profile_name: str):
@@ -15240,6 +15304,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         derived_platform = ""
         derived_chat_type = ""
         derived_chat_id = ""
+        derived_adapter_id = ""
 
         if session_key:
             try:
@@ -15263,6 +15328,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 derived_platform = _parsed["platform"]
                 derived_chat_type = _parsed["chat_type"]
                 derived_chat_id = _parsed["chat_id"]
+                derived_adapter_id = _parsed.get("adapter_id", "")
 
         platform_name = str(evt.get("platform") or derived_platform or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()
@@ -15296,6 +15362,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_id=str(evt.get("thread_id") or "").strip() or None,
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
+            adapter_id=(
+                str(evt.get("adapter_id") or derived_adapter_id or "").strip()
+                or None
+            ),
         )
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
@@ -15312,11 +15382,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        adapter = None
-        for p, a in self.adapters.items():
-            if p.value == platform_name:
-                adapter = a
-                break
+        adapter = self._adapter_for_source(source)
         if not adapter:
             return
         try:
@@ -15357,6 +15423,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         evt["chat_id"] = parsed.get("chat_id", "")
         if parsed.get("thread_id"):
             evt["thread_id"] = parsed["thread_id"]
+        if parsed.get("adapter_id"):
+            evt["adapter_id"] = parsed["adapter_id"]
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async-delegation completions and inject them as new turns.
@@ -15431,6 +15499,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message_id = str(watcher.get("message_id") or "").strip() or None
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
+        watcher_source = self._build_process_event_source({
+            "session_id": session_id,
+            "session_key": session_key,
+            "platform": platform_name,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "user_name": user_name,
+            "adapter_id": watcher.get("adapter_id"),
+        })
+        watcher_adapter = self._adapter_for_source(watcher_source)
+        if watcher_adapter is None and platform_name:
+            try:
+                watcher_adapter = self.adapters.get(Platform(platform_name))
+            except Exception:
+                watcher_adapter = None
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
@@ -15490,15 +15574,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     })
                     if not synth_text:
                         break
-                    source = self._build_process_event_source({
-                        "session_id": session_id,
-                        "session_key": session_key,
-                        "platform": platform_name,
-                        "chat_id": chat_id,
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "user_name": user_name,
-                    })
+                    source = watcher_source
                     if not source:
                         logger.warning(
                             "Dropping completion notification with no routing metadata for process %s",
@@ -15506,11 +15582,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         break
 
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p == source.platform:
-                            adapter = a
-                            break
+                    adapter = watcher_adapter
                     if adapter and source.chat_id:
                         try:
                             synth_event = MessageEvent(
@@ -15549,11 +15621,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
                         f"Here's the final output:\n{new_output}]"
                     )
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p.value == platform_name:
-                            adapter = a
-                            break
+                    adapter = watcher_adapter
                     if adapter and chat_id:
                         try:
                             send_meta = {"thread_id": thread_id} if thread_id else None
@@ -15579,11 +15647,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"[Background process {session_id} is still running~ "
                     f"New output:\n{new_output}]"
                 )
-                adapter = None
-                for p, a in self.adapters.items():
-                    if p.value == platform_name:
-                        adapter = a
-                        break
+                adapter = watcher_adapter
                 if adapter and chat_id:
                     try:
                         send_meta = {"thread_id": thread_id} if thread_id else None

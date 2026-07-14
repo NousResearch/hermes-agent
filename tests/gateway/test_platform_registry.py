@@ -790,6 +790,40 @@ class TestPluginEnablementGate:
         finally:
             _reg.unregister("myconfiguredplat")
 
+    def test_plugin_enablement_preserves_list_configs(self, tmp_path, monkeypatch):
+        """Plugin lifecycle enablement must normalize multi-instance configs."""
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="mymultiplat",
+            label="MyMulti",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            is_connected=lambda cfg: True,
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(
+                tmp_path,
+                "platforms:\n"
+                "  mymultiplat:\n"
+                "    - enabled: true\n"
+                "      token: first\n"
+                "    - enabled: true\n"
+                "      token: second\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            concrete = cfg.platforms[Platform("mymultiplat")]
+            assert isinstance(concrete, list)
+            assert [item.enabled for item in concrete] == [True, True]
+            assert [item.token for item in concrete] == ["first", "second"]
+        finally:
+            _reg.unregister("mymultiplat")
+
     def test_plugin_without_is_connected_falls_back_to_check_fn(
         self, tmp_path, monkeypatch
     ):

@@ -87,12 +87,17 @@ class GatewayAuthorizationMixin:
         """
         if not platform:
             return None
-        if adapter_id:
-            adapter = getattr(self, "adapters_by_id", {}).get(str(adapter_id))
-            if adapter is not None:
-                return adapter
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
+            if adapter_id:
+                profile_adapters_by_id = (
+                    getattr(self, "_profile_adapters_by_id", None) or {}
+                )
+                adapter = profile_adapters_by_id.get(profile_name, {}).get(
+                    str(adapter_id)
+                )
+                if adapter is not None:
+                    return adapter
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)
@@ -100,6 +105,10 @@ class GatewayAuthorizationMixin:
             # (e.g. its adapter failed to connect) must NOT fall back to the
             # default profile's adapter — that sends replies out the wrong bot.
             return None
+        if adapter_id:
+            adapter = getattr(self, "adapters_by_id", {}).get(str(adapter_id))
+            if adapter is not None:
+                return adapter
         adapters = getattr(self, "adapters", None) or {}
         return adapters.get(platform)
 

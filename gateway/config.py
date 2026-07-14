@@ -1954,10 +1954,32 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             feishu_cfg = config.platforms[Platform.FEISHU]
         # Multi-app configs may store a list of PlatformConfig instances.
         if isinstance(feishu_cfg, list):
+            # Legacy FEISHU_* env vars describe one concrete app. Match that
+            # app by id instead of applying singleton credentials/home-channel
+            # state to every list entry. A sole unconfigured entry is also a
+            # safe target; multiple non-matching configured apps are ambiguous.
+            matching_cfgs = [
+                cfg
+                for cfg in feishu_cfg
+                if str((cfg.extra or {}).get("app_id") or "").strip()
+                == str(feishu_app_id).strip()
+            ]
+            unconfigured_cfgs = [
+                cfg
+                for cfg in feishu_cfg
+                if not str((cfg.extra or {}).get("app_id") or "").strip()
+            ]
+            env_target = (
+                matching_cfgs[0]
+                if len(matching_cfgs) == 1
+                else unconfigured_cfgs[0]
+                if len(unconfigured_cfgs) == 1
+                else feishu_cfg[0]
+                if len(feishu_cfg) == 1
+                else None
+            )
             for cfg in feishu_cfg:
                 cfg.enabled = True
-                cfg.extra.setdefault("app_id", feishu_app_id)
-                cfg.extra.setdefault("app_secret", feishu_app_secret)
                 cfg.extra.setdefault("domain", getenv("FEISHU_DOMAIN", "feishu"))
                 cfg.extra.setdefault("connection_mode", getenv("FEISHU_CONNECTION_MODE", "websocket"))
                 feishu_encrypt_key = getenv("FEISHU_ENCRYPT_KEY", "")
@@ -1966,7 +1988,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 feishu_verification_token = getenv("FEISHU_VERIFICATION_TOKEN", "")
                 if feishu_verification_token and not cfg.extra.get("verification_token"):
                     cfg.extra["verification_token"] = feishu_verification_token
+            if env_target is not None:
+                env_target.extra.setdefault("app_id", feishu_app_id)
+                env_target.extra.setdefault("app_secret", feishu_app_secret)
         else:
+            env_target = feishu_cfg
             feishu_cfg.enabled = True
             feishu_cfg.extra.update({
                 "app_id": feishu_app_id,
@@ -1982,12 +2008,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 feishu_cfg.extra["verification_token"] = feishu_verification_token
         feishu_home = getenv("FEISHU_HOME_CHANNEL")
         if feishu_home:
-            config.platforms[Platform.FEISHU].home_channel = HomeChannel(
-                platform=Platform.FEISHU,
-                chat_id=feishu_home,
-                name=getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
-                thread_id=getenv("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
-            )
+            if env_target is None:
+                logger.warning(
+                    "Ignoring FEISHU_HOME_CHANNEL because FEISHU_APP_ID=%s "
+                    "does not identify one entry in the multi-app Feishu config",
+                    feishu_app_id,
+                )
+            else:
+                env_target.home_channel = HomeChannel(
+                    platform=Platform.FEISHU,
+                    chat_id=feishu_home,
+                    name=getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
+                    thread_id=getenv("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
+                )
 
     # WeCom (Enterprise WeChat)
     wecom_bot_id = getenv("WECOM_BOT_ID")
@@ -2239,7 +2272,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             except Exception as e:
                 logger.debug("unknown platform name %r: %s", entry.name, e)
                 continue
-            existing_cfg = config.platforms.get(platform)
+            existing_cfgs = config.iter_platform_configs(platform)
+            explicit_disabled_cfgs = [
+                cfg
+                for cfg in existing_cfgs
+                if not cfg.enabled
+                and bool((cfg.extra or {}).get("_enabled_explicit", False))
+            ]
+            candidate_cfgs = [
+                cfg for cfg in existing_cfgs if cfg not in explicit_disabled_cfgs
+            ]
             # Respect an explicit ``enabled: false`` (YAML / gateway.json /
             # dashboard PUT).  ``_enabled_explicit`` is set in
             # load_gateway_config() (via _merge_platform_map / the shared-key
@@ -2247,11 +2289,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # explicitly disabled it, never re-enable here just because
             # check_fn() / is_connected() pass (e.g. a token is present but the
             # user set telegram.enabled: false). #41112.
-            if (
-                existing_cfg is not None
-                and not existing_cfg.enabled
-                and bool((existing_cfg.extra or {}).get("_enabled_explicit", False))
-            ):
+            if existing_cfgs and not candidate_cfgs:
                 continue
             # Seed candidate extras from ``env_enablement_fn`` so plugins
             # whose ``is_connected`` reads ``config.extra`` (e.g. Google
@@ -2276,7 +2314,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # explicitly configured in YAML / env (existing_cfg with
             # enabled=True means the user wrote it themselves or another
             # env-var bridge enabled it — keep that decision).
-            if existing_cfg is None or not existing_cfg.enabled:
+            if not any(cfg.enabled for cfg in candidate_cfgs):
                 if entry.is_connected is not None:
                     try:
                         # Probe with ``enabled=True`` since we're asking
@@ -2286,8 +2324,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         # ``config.enabled`` being False, which on the
                         # default ``PlatformConfig()`` would fail the
                         # gate even with proper env vars set.
-                        if existing_cfg is not None:
-                            probe_cfg = existing_cfg
+                        if candidate_cfgs:
+                            probe_cfg = candidate_cfgs[0]
                             if not probe_cfg.enabled:
                                 probe_cfg = PlatformConfig(
                                     enabled=True,
@@ -2340,7 +2378,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 continue
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+                candidate_cfgs = config.iter_platform_configs(platform)
+            for cfg in candidate_cfgs:
+                cfg.enabled = True
             # Commit env-seeded extras onto the now-enabled platform.
             # We've already called ``env_enablement_fn`` above (for the
             # probe); reuse that result instead of calling it twice.
@@ -2350,18 +2390,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 # up as a proper HomeChannel dataclass.  Everything else is
                 # merged into ``extra``.
                 home = seed.pop("home_channel", None)
-                config.platforms[platform].extra.update(seed)
-                if isinstance(home, dict) and home.get("chat_id"):
-                    config.platforms[platform].home_channel = HomeChannel(
-                        platform=platform,
-                        chat_id=str(home["chat_id"]),
-                        name=str(home.get("name") or "Home"),
-                        thread_id=(
-                            str(home["thread_id"])
-                            if home.get("thread_id")
-                            else None
-                        ),
-                    )
+                for cfg in candidate_cfgs:
+                    cfg.extra.update(seed)
+                    if isinstance(home, dict) and home.get("chat_id"):
+                        cfg.home_channel = HomeChannel(
+                            platform=platform,
+                            chat_id=str(home["chat_id"]),
+                            name=str(home.get("name") or "Home"),
+                            thread_id=(
+                                str(home["thread_id"])
+                                if home.get("thread_id")
+                                else None
+                            ),
+                        )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)
 

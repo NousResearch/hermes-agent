@@ -140,6 +140,82 @@ class TestPortBindingHardError:
         assert connected == 0  # nothing connected, but no MultiplexConfigError
 
     @pytest.mark.asyncio
+    async def test_secondary_profile_starts_each_list_config(self, monkeypatch):
+        """Secondary-profile startup must not treat a config list as disabled."""
+        from types import SimpleNamespace
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _Adapter:
+            def __init__(self, cfg):
+                self.config = cfg
+                self.token = cfg.token
+                self.platform = Platform.TELEGRAM
+
+            def set_message_handler(self, handler):
+                self.message_handler = handler
+
+            def set_fatal_error_handler(self, handler):
+                self.fatal_error_handler = handler
+
+            def set_session_store(self, store):
+                self.session_store = store
+
+            def set_busy_session_handler(self, handler):
+                self.busy_handler = handler
+
+            def set_topic_recovery_fn(self, handler):
+                self.topic_recovery = handler
+
+            def set_authorization_check(self, handler):
+                self.authorization_check = handler
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.adapters = {}
+        runner.adapters_by_id = {}
+        runner._platform_adapter_ids = {}
+        runner._profile_adapters = {}
+        runner._profile_adapters_by_id = {}
+        runner.session_store = SimpleNamespace()
+        runner._busy_text_mode = "off"
+
+        first_cfg = PlatformConfig(
+            enabled=True,
+            token="first-token",
+            extra={"adapter_id": "first"},
+        )
+        second_cfg = PlatformConfig(
+            enabled=True,
+            token="second-token",
+            extra={"adapter_id": "second"},
+        )
+        reviewer_cfg = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={Platform.TELEGRAM: [first_cfg, second_cfg]},
+        )
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reviewer_cfg
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda _p, cfg: _Adapter(cfg))
+        monkeypatch.setattr(runner, "_make_adapter_auth_check", lambda _p: None)
+
+        async def _connect(_adapter, _platform):
+            return True
+
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/x", {}
+        )
+
+        assert connected == 2
+        assert runner._profile_adapters["reviewer"][Platform.TELEGRAM].config is first_cfg
+        assert set(runner._profile_adapters_by_id["reviewer"]) == {
+            "telegram:first",
+            "telegram:second",
+        }
+
+    @pytest.mark.asyncio
     async def test_secondary_same_config_token_is_refused(self, monkeypatch):
         """Adapters that keep their token on config still trip the mux guard."""
         from gateway.config import GatewayConfig, Platform, PlatformConfig

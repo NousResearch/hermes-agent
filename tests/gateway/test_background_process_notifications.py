@@ -534,7 +534,12 @@ def test_parse_session_key_with_adapter_namespace():
     result = _parse_session_key(
         "agent:main:feishu:adapter=feishu%3Acli_app2:dm:oc_same"
     )
-    assert result == {"platform": "feishu", "chat_type": "dm", "chat_id": "oc_same"}
+    assert result == {
+        "platform": "feishu",
+        "chat_type": "dm",
+        "chat_id": "oc_same",
+        "adapter_id": "feishu:cli_app2",
+    }
 
 
 def test_parse_session_key_with_user_id_part():

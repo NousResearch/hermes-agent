@@ -4,8 +4,11 @@ Regression guard: when platforms.feishu is a list, several code paths used to
 raise AttributeError: 'list' object has no attribute 'extra'.
 """
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import patch
 
 from gateway.config import (
     GatewayConfig,
@@ -238,6 +241,36 @@ class TestMultiAppListConfig:
         assert feishu_cfgs[0].extra["domain"] == "lark"
         assert feishu_cfgs[1].extra["domain"] == "lark"
 
+    def test_env_home_channel_targets_matching_feishu_app(self):
+        config = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "feishu": [
+                        {"enabled": True, "app_id": "cli_app1", "app_secret": "secret1"},
+                        {"enabled": True, "app_id": "cli_app2", "app_secret": "secret2"},
+                    ]
+                }
+            }
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "FEISHU_APP_ID": "cli_app2",
+                "FEISHU_APP_SECRET": "secret2",
+                "FEISHU_HOME_CHANNEL": "chat-app2",
+                "FEISHU_HOME_CHANNEL_NAME": "App 2 Home",
+            },
+            clear=False,
+        ):
+            _apply_env_overrides(config)
+
+        first, second = config.platforms[Platform.FEISHU]
+        assert first.home_channel is None
+        assert second.home_channel is not None
+        assert second.home_channel.chat_id == "chat-app2"
+        assert second.home_channel.name == "App 2 Home"
+
     def test_get_home_channel_list(self, multi_config):
         """get_home_channel should iterate list and return first match."""
         # Default home_channel is None; test that it doesn't crash
@@ -357,3 +390,65 @@ class TestMultiAppListConfig:
         assert ("feishu", "chat-app2", None) in delivered
         assert [call[0] for call in app1.send_calls] == ["chat-app1"]
         assert [call[0] for call in app2.send_calls] == ["chat-app2"]
+
+    @pytest.mark.asyncio
+    async def test_background_completion_uses_source_feishu_app_adapter(
+        self, monkeypatch
+    ):
+        import tools.process_registry as process_registry_module
+
+        config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: [
+                    PlatformConfig(enabled=True, extra={"app_id": "cli_app1"}),
+                    PlatformConfig(enabled=True, extra={"app_id": "cli_app2"}),
+                ]
+            }
+        )
+        runner = GatewayRunner(config)
+        app1 = DummyAdapter(config.platforms[Platform.FEISHU][0], Platform.FEISHU)
+        app2 = DummyAdapter(config.platforms[Platform.FEISHU][1], Platform.FEISHU)
+        app1.handle_message = AsyncMock()
+        app2.handle_message = AsyncMock()
+        runner._register_connected_adapter(Platform.FEISHU, app1)
+        runner._register_connected_adapter(Platform.FEISHU, app2)
+        runner._load_background_notifications_mode = lambda: "all"
+
+        session = SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo done",
+        )
+
+        class _Registry:
+            def get(self, _session_id):
+                return session
+
+            def is_completion_consumed(self, _session_id):
+                return False
+
+        monkeypatch.setattr(process_registry_module, "process_registry", _Registry())
+
+        async def _instant_sleep(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+        await runner._run_process_watcher(
+            {
+                "session_id": "proc-app2",
+                "check_interval": 0,
+                "session_key": (
+                    "agent:main:feishu:adapter=feishu%3Acli_app2:dm:oc_same"
+                ),
+                "platform": "feishu",
+                "chat_id": "oc_same",
+                "notify_on_complete": True,
+            }
+        )
+
+        app1.handle_message.assert_not_awaited()
+        app2.handle_message.assert_awaited_once()
+        event = app2.handle_message.await_args.args[0]
+        assert event.source.adapter_id == "feishu:cli_app2"

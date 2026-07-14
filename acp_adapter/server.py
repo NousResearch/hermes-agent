@@ -162,6 +162,13 @@ def _path_from_file_uri(uri: str) -> Path | None:
     if not raw:
         return None
 
+    if len(raw) >= 3 and raw[1] == ":" and raw[0].isalpha() and raw[2] in {"/", "\\"}:
+        if os.name == "nt":
+            return Path(raw)
+        drive = raw[0].lower()
+        rest = raw[2:].lstrip("/\\").replace("\\", "/")
+        return Path("/mnt") / drive / rest
+
     parsed = urlparse(raw)
     if parsed.scheme and parsed.scheme != "file":
         return None

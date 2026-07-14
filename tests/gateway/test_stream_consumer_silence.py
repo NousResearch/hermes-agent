@@ -237,3 +237,29 @@ class TestStreamedSilenceSuppression:
         delivered = "".join(_sent_and_edited(adapter))
         assert "the build is already green" in delivered
         assert consumer.final_content_delivered is True
+
+
+class TestInterruptedPreviewRetraction:
+    @pytest.mark.asyncio
+    async def test_interrupted_preview_is_deleted_and_delivery_flags_reset(self):
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1", StreamConsumerConfig())
+        consumer._message_id = "preview_1"
+        consumer._preview_message_ids = {"preview_1"}
+        consumer._segment_preview_message_ids = {"preview_1"}
+        consumer._accumulated = "obsolete partial answer"
+        consumer._last_sent_text = "obsolete partial answer"
+        consumer._already_sent = True
+        consumer._final_response_sent = True
+        consumer._final_content_delivered = True
+
+        await consumer.discard_interrupted_preview()
+
+        adapter.delete_message.assert_awaited_once_with("chat_1", "preview_1")
+        assert consumer._message_id is None
+        assert consumer._preview_message_ids == set()
+        assert consumer._segment_preview_message_ids == set()
+        assert consumer._accumulated == ""
+        assert consumer.already_sent is False
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False

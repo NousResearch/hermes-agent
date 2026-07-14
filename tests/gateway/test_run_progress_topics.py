@@ -1329,6 +1329,80 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_skips_provider_when_generation_changes_during_setup(
+    monkeypatch,
+    tmp_path,
+):
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_progress": "off"}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***"},
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="dm-setup-race",
+        chat_type="dm",
+        thread_id=None,
+    )
+    session_key = "agent:main:telegram:dm:dm-setup-race"
+    runner._session_run_generation[session_key] = 1
+    pending = MessageEvent(
+        text="replacement prompt",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    adapter._pending_messages[session_key] = pending
+    provider_calls = []
+
+    class InvalidatingSetupAgent:
+        def __init__(self, **kwargs):
+            self.tools = []
+            runner._invalidate_session_run_generation(
+                session_key,
+                reason="test_interrupt_during_setup",
+            )
+
+        def run_conversation(self, *args, **kwargs):
+            provider_calls.append((args, kwargs))
+            raise AssertionError("superseded turn must not enter provider call")
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = InvalidatingSetupAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    result = await runner._run_agent(
+        message="obsolete prompt",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-setup-race",
+        session_key=session_key,
+        run_generation=1,
+    )
+
+    assert result["superseded"] is True
+    assert result["api_calls"] == 0
+    assert provider_calls == []
+    assert adapter._pending_messages[session_key] is pending
+
+
+@pytest.mark.asyncio
 async def test_keep_typing_stops_immediately_when_interrupt_event_is_set():
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     stop_event = asyncio.Event()

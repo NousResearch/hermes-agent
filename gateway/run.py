@@ -2746,6 +2746,59 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+async def _retract_interrupted_stream_preview(
+    stream_consumer: Any,
+    stream_task: Any,
+) -> None:
+    """Stop stale streaming and retract any preview from an interrupted turn.
+
+    The agent result can be marked ``interrupted`` only after the provider
+    stream has already emitted text.  Cancel the consumer first so it cannot
+    race another edit onto the platform, then ask it to delete any preview it
+    delivered.  Retraction is best-effort for adapters without message-delete
+    support; the replacement turn must still continue.
+    """
+    if stream_consumer is None:
+        return
+
+    if stream_task is not None and not stream_task.done():
+        stream_task.cancel()
+    if stream_task is not None:
+        try:
+            await asyncio.wait_for(stream_task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            stream_task.cancel()
+        except Exception as exc:
+            logger.debug("Interrupted stream shutdown failed: %s", exc)
+
+    retract = getattr(stream_consumer, "discard_interrupted_preview", None)
+    if callable(retract):
+        try:
+            await retract()
+        except Exception as exc:
+            logger.debug("Interrupted stream preview retraction failed: %s", exc)
+
+
+def _superseded_agent_run_result(
+    *,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return a no-delivery result for a turn superseded during setup."""
+    return {
+        "final_response": "",
+        "messages": list(messages or []),
+        "api_calls": 0,
+        "completed": False,
+        "interrupted": True,
+        "interrupt_message": None,
+        "tools": [],
+        "history_offset": len(messages or []),
+        "session_id": session_id,
+        "superseded": True,
+    }
+
+
 async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None:
     """Best-effort dispose for an adapter that never made it onto ``self.adapters``.
 
@@ -5249,6 +5302,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return False
 
+    def _signal_busy_interrupt(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        running_agent: Any,
+    ) -> None:
+        """Signal one interrupt across both gateway message guards.
+
+        A follow-up can arrive while ``_running_agents`` still contains the
+        pending sentinel, before an ``AIAgent`` exists.  Invalidate that run's
+        generation so setup cannot proceed into an obsolete API call.  Also set
+        the adapter guard event: the base adapter uses it to suppress stale
+        non-streaming delivery and the runner's monitor uses it as a backup
+        interrupt once agent construction completes.
+        """
+        if running_agent is _AGENT_PENDING_SENTINEL:
+            self._invalidate_session_run_generation(
+                session_key,
+                reason="busy_interrupt_during_agent_start",
+            )
+
+        adapter = self._adapter_for_source(event.source)
+        interrupt_event = (
+            getattr(adapter, "_active_sessions", {}).get(session_key)
+            if adapter
+            else None
+        )
+        if interrupt_event is not None:
+            try:
+                interrupt_event.set()
+            except Exception:
+                pass
+
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                running_agent.interrupt(event.text)
+            except Exception:
+                pass
+
     async def _session_has_compression_in_flight(self, session_key: str) -> bool:
         """Return True when a compression lock is held for this session's id.
 
@@ -5498,6 +5590,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(event, "internal", False):
             return False
 
+        # Photo bursts/albums are merged by BasePlatformAdapter after this
+        # hook returns. They must never supersede or interrupt the active
+        # turn: Telegram can deliver one album as several near-simultaneous
+        # PHOTO events, including while the first turn still has only the
+        # pending-agent sentinel. Returning False preserves the adapter's
+        # native media queue/merge path and avoids losing the first image.
+        if event.message_type == MessageType.PHOTO:
+            return False
+
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
@@ -5586,11 +5687,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
         # at the next check point.
-        if effective_mode == "interrupt" and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            try:
-                running_agent.interrupt(event.text)
-            except Exception:
-                pass  # don't let interrupt failure block the ack
+        if effective_mode == "interrupt":
+            self._signal_busy_interrupt(session_key, event, running_agent)
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
@@ -9593,6 +9691,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
+            running_agent = self._running_agents.get(_quick_key)
+            if running_agent is _AGENT_PENDING_SENTINEL:
+                # The first turn is still in async setup. In interrupt mode,
+                # supersede it before it can enter the provider API; otherwise
+                # queue normally for the selected busy-input semantics.
+                self._queue_or_replace_pending_event(_quick_key, event)
+                if self._busy_input_mode == "interrupt":
+                    self._signal_busy_interrupt(_quick_key, event, running_agent)
+                return None
+
             _telegram_followup_grace = float(
                 os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
             )
@@ -9622,25 +9730,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 return None
 
-            running_agent = self._running_agents.get(_quick_key)
-            if running_agent is _AGENT_PENDING_SENTINEL:
-                # Agent is being set up but not ready yet.
-                if event.get_command() == "stop":
-                    # Force-clean the sentinel so the session is unlocked.
-                    self._release_running_agent_state(_quick_key)
-                    logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
-                    return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
-                # Queue the message so it will be picked up after the
-                # agent starts.
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
-                    )
-                return None
             if self._draining:
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
@@ -9704,7 +9793,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
-            running_agent.interrupt(event.text)
+            self._signal_busy_interrupt(_quick_key, event, running_agent)
             # NOTE: self._pending_messages was write-only (never consumed).
             # The actual interrupt message is delivered via adapter._pending_messages
             # which is read by _run_agent. Removed to prevent unbounded growth.
@@ -11735,6 +11824,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)
+
+            # A busy interrupt may have arrived while this turn was still in
+            # async setup and represented only by _AGENT_PENDING_SENTINEL.
+            # Do not let the superseded turn enter the provider API. The base
+            # adapter owns the queued replacement and will drain it once this
+            # handler returns.
+            if not self._is_session_run_current(_quick_key, run_generation):
+                logger.info(
+                    "Skipping superseded agent start for %s — generation %d is no longer current",
+                    _quick_key or "?",
+                    run_generation,
+                )
+                return None
 
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
@@ -18231,6 +18333,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
+            # A busy interrupt can invalidate the turn before the executor
+            # thread begins.  Stop before config/model setup and, critically,
+            # before any provider request.  Keep the pending event in the
+            # adapter; the outer active-session drain owns its next turn.
+            if not _run_still_current():
+                result = _superseded_agent_run_result(
+                    messages=history,
+                    session_id=session_id,
+                )
+                result_holder[0] = result
+                logger.info(
+                    "Skipping superseded agent setup for %s — generation %s is no longer current",
+                    session_key or "?",
+                    run_generation,
+                )
+                return result
+
             # session_key is propagated via contextvars in _set_session_env()
             # (_SESSION_KEY) and via set_current_session_key() (_approval_session_key)
             # below — both concurrency-safe and inherited by tool worker threads.
@@ -19118,6 +19237,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _superseded_before_provider = False
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -19166,7 +19286,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                # Agent construction can take long enough for a follow-up to
+                # arrive while the runner still exposes the pending sentinel.
+                # Re-check immediately at the provider boundary so the
+                # obsolete prompt cannot consume a model request after the
+                # user has already replaced it.
+                if not _run_still_current():
+                    _superseded_before_provider = True
+                    result = _superseded_agent_run_result(
+                        messages=agent_history,
+                        session_id=session_id,
+                    )
+                    logger.info(
+                        "Skipping superseded provider call for %s — generation %s is no longer current",
+                        session_key or "?",
+                        run_generation,
+                    )
+                else:
+                    result = agent.run_conversation(
+                        _api_run_message,
+                        **_conversation_kwargs,
+                    )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -19183,6 +19323,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
+
+            if _superseded_before_provider:
+                return result
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
@@ -19895,6 +20038,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "failed": True,
                 }
 
+            # Generation invalidation means the adapter, not this stale run,
+            # owns the queued replacement.  Retract any preview emitted before
+            # invalidation and return without consuming _pending_messages;
+            # otherwise the recursive in-band drain would reuse the obsolete
+            # generation and could drop the user's replacement turn.
+            if not _run_still_current():
+                logger.info(
+                    "Leaving queued follow-up to adapter drain for superseded session %s generation %s",
+                    session_key or "?",
+                    run_generation,
+                )
+                await _retract_interrupted_stream_preview(
+                    stream_consumer_holder[0],
+                    stream_task,
+                )
+                return result_holder[0] or response
+
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
             # the actually-active model instead of the config default.
@@ -19933,6 +20093,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
+            if result and result.get("interrupted"):
+                await _retract_interrupted_stream_preview(
+                    stream_consumer_holder[0],
+                    stream_task,
+                )
             adapter = self._adapter_for_source(source)
             
             # Get pending message from adapter.

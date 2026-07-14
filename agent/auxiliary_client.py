@@ -3249,8 +3249,9 @@ def _evict_cached_clients(provider: str) -> None:
             if client is not None:
                 _force_close_async_httpx(client)
                 try:
+                    import inspect
                     close_fn = getattr(client, "close", None)
-                    if callable(close_fn):
+                    if close_fn and not inspect.iscoroutinefunction(close_fn):
                         close_fn()
                 except Exception:
                     pass
@@ -5620,8 +5621,9 @@ def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[
         if old_entry is not None and old_entry[0] is not client:
             _force_close_async_httpx(old_entry[0])
             try:
+                import inspect
                 close_fn = getattr(old_entry[0], "close", None)
-                if callable(close_fn):
+                if close_fn and not inspect.iscoroutinefunction(close_fn):
                     close_fn()
             except Exception:
                 pass

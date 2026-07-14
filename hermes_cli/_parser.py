@@ -384,6 +384,15 @@ def build_top_level_parser():
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
     )
+    chat_parser.add_argument(
+        "--usage-file",
+        metavar="PATH",
+        default=argparse.SUPPRESS,
+        help=(
+            "After a single-query run, write a JSON usage report (estimated cost, "
+            "token counts, model, api_calls) to PATH."
+        ),
+    )
     _inherited_flag(
         chat_parser,
         "--yolo",

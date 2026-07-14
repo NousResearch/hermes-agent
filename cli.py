@@ -15932,6 +15932,7 @@ def main(
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
+    usage_file: str = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
@@ -16399,6 +16400,10 @@ def main(
                                     _exit_code = _RL_CODE
                                 except Exception:
                                     _exit_code = 1
+                        if usage_file:
+                            from hermes_cli.usage_report import write_usage_file
+
+                            write_usage_file(usage_file, result if isinstance(result, dict) else {})
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails

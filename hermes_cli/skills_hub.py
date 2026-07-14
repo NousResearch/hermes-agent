@@ -1063,8 +1063,22 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
 
+def do_inventory(as_json: bool = False,
+                 console: Optional[Console] = None) -> dict:
+    """Report the active profile's skill inventory."""
+    from hermes_cli.skills_inventory import (
+        collect_skill_inventory,
+        print_skill_inventory,
+    )
+
+    c = console or _console
+    report = collect_skill_inventory()
+    print_skill_inventory(report, console=c, as_json=as_json)
+    return report
+
+
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
-             deep: bool = False) -> None:
+             deep: bool = False, all_active: bool = False) -> int:
     """Re-run security scan on installed hub skills.
 
     When ``deep=True``, also runs an opt-in AST-level diagnostic on Python
@@ -1075,19 +1089,63 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
     from tools.skills_guard import scan_skill, format_scan_report
 
     c = console or _console
+
+    if all_active:
+        from hermes_cli.skills_inventory import collect_skill_inventory
+
+        report = collect_skill_inventory()
+        active_entries = [e for e in report["entries"] if e["active"]]
+        if name:
+            active_entries = [e for e in active_entries if e["name"] == name]
+            if not active_entries:
+                c.print(f"[bold red]Error:[/] '{name}' is not an active skill.\n")
+                return 1
+
+        skipped = report["counts"]["total"] - len(active_entries)
+        c.print(f"\n[bold]Auditing {len(active_entries)} active skill(s)...[/]\n")
+
+        if deep:
+            from tools.skills_ast_audit import ast_scan_path, format_ast_report
+
+        scanned = 0
+        errors = 0
+        for entry in active_entries:
+            skill_path = Path(entry["path"])
+            if not skill_path.exists():
+                errors += 1
+                c.print(f"[bold red]Error:[/] {entry['name']} — path missing: {skill_path}")
+                continue
+            c.print(f"[dim]{entry['name']}: {skill_path}[/]")
+            if entry.get("symlinked"):
+                c.print(f"[dim]  real path: {entry['real_path']}[/]")
+            try:
+                result = scan_skill(skill_path, source=entry.get("source", "active"))
+            except Exception as exc:
+                errors += 1
+                c.print(f"[bold red]Error:[/] {entry['name']} — scan failed: {exc}")
+                continue
+            scanned += 1
+            c.print(format_scan_report(result))
+            if deep:
+                c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
+            c.print()
+
+        c.print(f"[dim]Summary: scanned={scanned} skipped={skipped} errors={errors}[/]\n")
+        return 1 if errors else 0
+
     lock = HubLockFile()
     installed = lock.list_installed()
 
     if not installed:
         c.print("[dim]No hub-installed skills to audit.[/]\n")
-        return
+        return 0
 
     targets = installed
     if name:
         targets = [e for e in installed if e["name"] == name]
         if not targets:
             c.print(f"[bold red]Error:[/] '{name}' is not a hub-installed skill.\n")
-            return
+            return 0
 
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
 
@@ -1107,6 +1165,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
 
         c.print()
+    return 0
 
 
 def do_uninstall(name: str, console: Optional[Console] = None,
@@ -1723,9 +1782,13 @@ def skills_command(args) -> None:
         do_check(name=getattr(args, "name", None))
     elif action == "update":
         do_update(name=getattr(args, "name", None))
+    elif action == "inventory":
+        do_inventory(as_json=getattr(args, "json", False))
+        return 0
     elif action == "audit":
-        do_audit(name=getattr(args, "name", None),
-                 deep=getattr(args, "deep", False))
+        return do_audit(name=getattr(args, "name", None),
+                        deep=getattr(args, "deep", False),
+                        all_active=getattr(args, "all_active", False))
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1765,8 +1828,9 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|inventory|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1901,6 +1965,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                 source_filter = args[idx + 1]
         do_list(source_filter=source_filter, enabled_only=enabled_only, console=c)
 
+    elif action == "inventory":
+        do_inventory(as_json="--json" in args, console=c)
+
     elif action == "check":
         name = args[0] if args else None
         do_check(name=name, console=c)
@@ -1912,7 +1979,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     elif action == "audit":
         name = args[0] if args and not args[0].startswith("--") else None
         deep = "--deep" in args
-        do_audit(name=name, console=c, deep=deep)
+        all_active = "--all-active" in args
+        do_audit(name=name, console=c, deep=deep, all_active=all_active)
 
     elif action == "uninstall":
         if not args:
@@ -1999,9 +2067,10 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
+        "  [cyan]inventory[/] [--json]          Report active, disabled, archived, external, and duplicate skills\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
-        "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+        "  [cyan]audit[/] [name] [--all-active] Re-scan hub or active skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"
         "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"

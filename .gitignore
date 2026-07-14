@@ -97,6 +97,7 @@ website/static/api/automation-blueprints-index.json
 models-dev-upstream/
 
 # Local editor / agent tooling (machine-specific; keep in global config, not the repo)
+.hardening-task.txt
 .codex/
 .cursor/
 .gemini/

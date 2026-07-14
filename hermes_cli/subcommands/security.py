@@ -39,9 +39,9 @@ def build_security_parser(subparsers, *, cmd_security: Callable) -> None:
     )
     audit_parser.add_argument(
         "--fail-on",
-        default="critical",
+        default="high",
         choices=["low", "moderate", "high", "critical"],
-        help="Exit non-zero when any finding meets this severity (default: critical)",
+        help="Exit non-zero when any finding meets this severity (default: high)",
     )
     audit_parser.add_argument(
         "--skip-venv",

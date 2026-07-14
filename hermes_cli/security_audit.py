@@ -532,7 +532,7 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
     skip_plugins = bool(getattr(args, "skip_plugins", False))
     skip_mcp = bool(getattr(args, "skip_mcp", False))
     output_json = bool(getattr(args, "json", False))
-    fail_on = (getattr(args, "fail_on", None) or "critical").upper()
+    fail_on = (getattr(args, "fail_on", None) or "high").upper()
     if fail_on not in SEVERITY_ORDER:
         print(
             f"unknown --fail-on value: {fail_on.lower()} "

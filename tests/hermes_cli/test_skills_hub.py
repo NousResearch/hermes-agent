@@ -1,3 +1,4 @@
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -5,7 +6,15 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_audit,
+    do_check,
+    do_install,
+    do_inventory,
+    do_list,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -220,6 +229,108 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     _capture()
 
     assert seen["platform"] is None
+
+
+def _write_skill(root, rel, name, *, extra=""):
+    skill_dir = root / rel
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name}\n---\n\n# {name}\n",
+        encoding="utf-8",
+    )
+    if extra:
+        script = skill_dir / extra
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        script.chmod(0o644)
+    return skill_dir
+
+
+def test_inventory_reports_active_external_symlink_shadowed_and_inactive_paths(
+    tmp_path,
+    monkeypatch,
+):
+    from agent import skill_utils
+
+    home = tmp_path / "home"
+    local_root = home / "skills"
+    external_root = tmp_path / "external-skills"
+    local_root.mkdir(parents=True)
+    external_root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [external_root])
+    skill_utils._external_dirs_cache_clear()
+
+    _write_skill(local_root, "productivity/alpha", "alpha")
+    _write_skill(local_root, "disabled", "disabled-skill")
+    _write_skill(local_root, ".archive/old-alpha", "old-alpha")
+    _write_skill(local_root, ".hub/quarantine/bad", "bad-skill")
+    external_duplicate = _write_skill(external_root, "alpha-copy", "alpha")
+    external_unique = _write_skill(external_root, "beta", "beta")
+    symlink_path = local_root / "linked-beta"
+    symlink_path.symlink_to(external_unique, target_is_directory=True)
+
+    monkeypatch.setattr(
+        skill_utils,
+        "get_disabled_skill_names",
+        lambda platform=None: {"disabled-skill"},
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=40)
+    report = do_inventory(as_json=True, console=console)
+    rendered = json.loads(sink.getvalue())
+    paths = {entry["path"] for entry in report["entries"]}
+
+    assert report["counts"]["active"] == 2
+    assert report["counts"]["disabled"] == 1
+    assert report["counts"]["archived"] == 1
+    assert report["counts"]["quarantined"] == 1
+    assert report["counts"]["external"] >= 2
+    assert report["counts"]["symlinked"] == 1
+    assert report["counts"]["shadowed"] >= 2
+    assert str(external_duplicate) in paths
+    assert str(symlink_path) in paths
+    linked = next(entry for entry in report["entries"] if entry["path"] == str(symlink_path))
+    assert linked["external"] is True
+    assert str(external_duplicate) in sink.getvalue()
+    assert str(symlink_path) in sink.getvalue()
+    assert rendered == report
+
+
+def test_all_active_audit_scans_external_root_and_reports_symlink_duplicate(
+    tmp_path,
+    monkeypatch,
+):
+    from agent import skill_utils
+
+    home = tmp_path / "home"
+    local_root = home / "skills"
+    external_root = tmp_path / "external-skills"
+    local_root.mkdir(parents=True)
+    external_root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [external_root])
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda platform=None: set())
+    skill_utils._external_dirs_cache_clear()
+
+    _write_skill(local_root, "alpha", "alpha")
+    external_skill = _write_skill(external_root, "beta", "beta")
+    symlink_path = local_root / "linked-beta"
+    symlink_path.symlink_to(external_skill, target_is_directory=True)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=240)
+    code = do_audit(all_active=True, console=console)
+    output = sink.getvalue()
+
+    assert code == 0
+    assert "Auditing 2 active skill(s)" in output
+    assert "alpha:" in output
+    assert "beta:" in output
+    assert str(symlink_path) in output
+    assert "scanned=2" in output
+    assert "errors=0" in output
 
 
 def test_do_check_reports_available_updates(monkeypatch):
@@ -780,4 +891,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

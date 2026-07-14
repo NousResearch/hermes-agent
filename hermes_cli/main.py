@@ -12776,7 +12776,9 @@ def cmd_skills(args):
     else:
         from hermes_cli.skills_hub import skills_command
 
-        skills_command(args)
+        code = skills_command(args)
+        if code:
+            sys.exit(int(code))
 
 
 def cmd_pairing(args):

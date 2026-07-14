@@ -60,11 +60,12 @@ False-friend traps
 Per-event ``extra`` keys (derived from the actual emit kwargs)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The lifecycle events below build a stdin payload with a populated ``extra``.
-Each entry lists the **source file** that emits it and the **full** set of
+Each entry lists the **emitting source file(s)** and the **full** set of
 ``extra`` keys passed there.  ``tool_name`` and ``tool_input`` (from ``args``)
 are always promoted to the top level and so are omitted from the lists.
 
-``pre_tool_call`` — ``hermes_cli/plugins.py`` (``get_pre_tool_call_block_message``)
+``pre_tool_call`` — ``hermes_cli/plugins.py``
+(``_get_pre_tool_call_directive_details``)
     * ``task_id`` — id of the originating delegate task (``""`` if none)
     * ``tool_call_id`` — id of this specific tool call
     * ``turn_id`` — id of the agent turn that issued the call
@@ -73,10 +74,11 @@ are always promoted to the top level and so are omitted from the lists.
 
 ``post_tool_call`` — ``model_tools.py`` (``_emit_post_tool_call_hook``)
     * ``result`` — the tool's raw result (usually a JSON string)
-    * ``status`` — ``"ok"`` or ``"error"`` (derived from the result when not
-      supplied by the caller)
-    * ``error_type`` — exception/category name when ``status == "error"``
-    * ``error_message`` — human-readable error detail when erroring
+    * ``status`` — caller-supplied status; current values include ``"ok"``,
+      ``"error"``, ``"blocked"``, ``"cancelled"``, and ``"timeout"``.  When
+      omitted, it is derived as ``"ok"`` or ``"error"`` from the result.
+    * ``error_type`` — exception/category name for a non-``"ok"`` status
+    * ``error_message`` — human-readable detail for a non-``"ok"`` status
     * ``duration_ms`` — tool execution time in milliseconds
     * ``task_id`` — originating delegate task id (``""`` if none)
     * ``tool_call_id`` — id of this tool call
@@ -90,7 +92,7 @@ are always promoted to the top level and so are omitted from the lists.
       ``""`` when unknown)
 
 ``on_session_end`` — ``agent/turn_finalizer.py`` (also ``cli.py`` on
-interrupt / shutdown)
+interrupt / shutdown and ``tui_gateway/server.py`` on gateway shutdown)
     * ``task_id`` — id of the task being finalised
     * ``turn_id`` — id of the final turn
     * ``completed`` — ``bool``; the session finished normally

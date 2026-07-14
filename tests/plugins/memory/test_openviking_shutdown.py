@@ -68,3 +68,43 @@ def test_shutdown_waits_for_runtime_start_thread():
 
     assert finished.is_set()
     assert not t.is_alive()
+
+
+def test_shutdown_during_pending_runtime_start_does_not_launch_waiter(monkeypatch):
+    """A waiter reserved before shutdown must not start after shutdown returns."""
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1934"
+    status_entered = threading.Event()
+    release_status = threading.Event()
+    waiter_calls = []
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        lambda endpoint: (True, "started"),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_start_runtime_openviking_waiter",
+        lambda **kwargs: waiter_calls.append(kwargs),
+    )
+
+    def status_callback(_message):
+        status_entered.set()
+        assert release_status.wait(2.0)
+
+    starter = threading.Thread(
+        target=provider._handle_runtime_openviking_unreachable,
+        kwargs={"status_callback": status_callback},
+        name="openviking-pending-start",
+    )
+    starter.start()
+    assert status_entered.wait(2.0)
+
+    provider.shutdown()
+    release_status.set()
+    starter.join(timeout=2.0)
+
+    assert not starter.is_alive()
+    assert provider._runtime_start_pending is False
+    assert waiter_calls == []

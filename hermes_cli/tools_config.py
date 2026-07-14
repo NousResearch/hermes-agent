@@ -1063,7 +1063,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         # keep streaming live.
         if verbose:
             proc = subprocess.Popen(
-                install_cmd, shell=use_shell, env=_cua_driver_env(), **popen_kwargs
+                install_cmd, env=_cua_driver_env(), **popen_kwargs
             )
             try:
                 proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
@@ -1076,7 +1076,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
             )
         else:
             proc = subprocess.Popen(
-                install_cmd, shell=use_shell, env=_cua_driver_env(),
+                install_cmd, env=_cua_driver_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", **popen_kwargs
             )

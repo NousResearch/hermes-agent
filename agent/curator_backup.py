@@ -618,20 +618,23 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # Step 4: extract the snapshot into skills/
     try:
         with tarfile.open(archive, "r:gz") as tf:
-            # Python 3.12+ supports filter='data' for safer extraction.
-            # Fall back to the unfiltered call for older interpreters but
-            # still reject absolute paths and .. components defensively.
+            # Defensively reject absolute paths and .. components before extraction.
+            safe_members = []
             for member in tf.getmembers():
                 name = member.name
                 if name.startswith("/") or ".." in Path(name).parts:
                     raise tarfile.TarError(
                         f"refusing to extract unsafe path: {name!r}"
                     )
+                safe_members.append(member)
             try:
-                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
+                # Python 3.12+: filter='data' strips dangerous metadata.
+                tf.extractall(
+                    str(skills), members=safe_members, filter="data"  # type: ignore[call-arg]  # nosec B202
+                )
             except TypeError:
-                # Python < 3.12 — no filter kwarg
-                tf.extractall(str(skills))
+                # Python < 3.12 — no filter kwarg, but members list is still validated.
+                tf.extractall(str(skills), members=safe_members)  # nosec B202
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover: move staged contents back
         for orig, dest in moved:

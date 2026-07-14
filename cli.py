@@ -26,9 +26,11 @@ except ModuleNotFoundError:
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import json
 import re
+import shlex
 import concurrent.futures
 import base64
 import atexit
@@ -8931,17 +8933,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
-                            # shell=True is intentional: quick_commands are user-defined
-                            # shell snippets from config.yaml — not agent/LLM controlled.
-                            # Sanitize env to prevent credential leakage —
-                            # quick commands run in the CLI process which
-                            # has all API keys in os.environ.
+                            # quick_commands are user-defined snippets from config.yaml.
+                            # Use list-mode when possible; fall back to shell only for
+                            # explicit shell syntax (pipes, redirections, etc.).
                             from tools.environments.local import _sanitize_subprocess_env
                             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-                            result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30, env=sanitized_env
-                            )
+                            if re.search(r"[|&;<>()`$\\]", exec_cmd):
+                                result = subprocess.run(  # noqa: S602  # nosec
+                                    exec_cmd, shell=True, capture_output=True,
+                                    text=True, timeout=30, env=sanitized_env
+                                )
+                            else:
+                                result = subprocess.run(
+                                    shlex.split(exec_cmd), capture_output=True,
+                                    text=True, timeout=30, env=sanitized_env
+                                )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
                                 from agent.redact import redact_sensitive_text
@@ -12854,7 +12860,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Fallback: shell clear command (rarely needed — escapes work on every
         # VT-capable terminal, but this covers exotic stdout wrappers).
         try:
-            os.system("cls" if os.name == "nt" else "clear")
+            if os.name == "nt":
+                # cls is a cmd.exe internal command; no independent executable exists.
+                subprocess.run("cls", shell=True, check=False)  # noqa: S602,S605  # nosec
+            else:
+                subprocess.run(["clear"], check=False)
         except Exception:
             pass
 

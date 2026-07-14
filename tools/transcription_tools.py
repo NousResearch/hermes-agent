@@ -1252,8 +1252,8 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             )
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
-            if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+            if use_shell and any(ch in command for ch in "|&;<>()`$\\"):
+                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())  # noqa: S602  # nosec
             else:
                 subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             

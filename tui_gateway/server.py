@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import shlex
 import subprocess
 import sys
 import threading
@@ -11927,15 +11928,26 @@ def _(rid, params: dict) -> dict:
             # has all API keys in os.environ.
             from tools.environments.local import _sanitize_subprocess_env
             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-            r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                stdin=subprocess.DEVNULL,
-                env=sanitized_env,
-            )
+            qc_cmd = qc.get("command", "")
+            if any(ch in qc_cmd for ch in "|&;<>()`$\\"):
+                r = subprocess.run(  # noqa: S602  # nosec
+                    qc_cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                    env=sanitized_env,
+                )  # noqa: S602  # nosec
+            else:
+                r = subprocess.run(
+                    shlex.split(qc_cmd),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                    env=sanitized_env,
+                )
             output = (
                 (r.stdout or "")
                 + ("\n" if r.stdout and r.stderr else "")
@@ -14478,7 +14490,9 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
-        r = subprocess.run(
+        # shell.exec is an explicit remote shell execution endpoint gated by
+        # detect_dangerous_command / detect_hardline_command approval.
+        r = subprocess.run(  # noqa: S602  # nosec
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
         )

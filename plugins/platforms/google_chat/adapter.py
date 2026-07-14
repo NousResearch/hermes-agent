@@ -2009,7 +2009,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         "​"          # Zero-Width Space
         "‌"          # Zero-Width Non-Joiner
         "‍"          # Zero-Width Joiner (ZWJ)
-        "‎‏"    # LTR / RTL marks
+        "\u200e\u200f"  # LTR / RTL marks
         "⁠"          # Word Joiner
         "﻿"          # BOM / Zero-Width No-Break Space
         "︀-️"   # Variation Selectors 1-16 (VS1–VS16)

@@ -375,7 +375,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         notification: Dict[str, Any],
         receipt_key: Optional[str],
     ) -> MessageEvent:
-        message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
+        message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8'), usedforsecurity=False).hexdigest()}"
         source = self.build_source(
             chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}",
             chat_name="msgraph/webhook",

@@ -364,7 +364,9 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """
     for cmd in commands:
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        # Bootstrap commands come from the catalog manifest and intentionally
+        # support shell syntax (&&, |, etc.). The catalog is a trust boundary.
+        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)  # noqa: S602  # nosec
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"

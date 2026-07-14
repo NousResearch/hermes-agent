@@ -56,6 +56,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from gateway.pairing import PairingStore
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 

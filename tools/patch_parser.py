@@ -341,6 +341,8 @@ def _validate_operations(
     return errors
 
 
+from tools.file_operations import PatchResult  # noqa: E402 imported late to avoid cycles
+
 def apply_v4a_operations(operations: List[PatchOperation],
                           file_ops: Any) -> 'PatchResult':
     """Apply V4A patch operations using a file operations interface.

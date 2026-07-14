@@ -90,6 +90,142 @@ def _reset_background_review_read_marks() -> None:
     """Test helper: clear read-before-write marks for the current context."""
     _background_review_read_paths.set(frozenset())
 
+
+# ---------------------------------------------------------------------------
+# Skill write journal + autonomous-write cooldown (local patch 10, F008)
+# ---------------------------------------------------------------------------
+# Every successful mutating skill_manage action is appended to a per-profile
+# JSONL journal next to .usage.json, with enough content to revert it
+# (old/new strings for patches, prior file content for full rewrites).
+# Autonomous background-review content writes are additionally rate-limited
+# per skill via HERMES_BG_SKILL_WRITE_COOLDOWN_HOURS (default 24; 0 disables).
+
+_JOURNAL_MAX_BYTES = 5 * 1024 * 1024
+_JOURNALED_ACTIONS = {"create", "edit", "patch", "write_file", "remove_file", "delete"}
+_COOLDOWN_ACTIONS = {"edit", "patch", "write_file"}
+
+
+def _skill_journal_path() -> Path:
+    return get_hermes_home() / "skills" / ".patch-journal.jsonl"
+
+
+def _journal_write_origin() -> str:
+    try:
+        from tools.skill_provenance import is_background_review
+        return "background_review" if is_background_review() else "foreground"
+    except Exception:
+        return "unknown"
+
+
+def _journal_skill_write(entry: Dict[str, Any]) -> None:
+    """Append one entry to the skill write journal. Best-effort: never raises."""
+    try:
+        import fcntl as _fcntl
+    except ImportError:  # pragma: no cover - platform-specific
+        _fcntl = None
+    try:
+        from datetime import datetime, timezone
+        path = _skill_journal_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "origin": _journal_write_origin(),
+        }
+        record.update(entry)
+        line = json.dumps(record, ensure_ascii=False)
+        try:
+            if path.exists() and path.stat().st_size > _JOURNAL_MAX_BYTES:
+                os.replace(path, path.with_suffix(".jsonl.1"))
+        except OSError:
+            pass
+        with open(path, "a", encoding="utf-8") as fh:
+            if _fcntl is not None:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+            try:
+                fh.write(line + "\n")
+            finally:
+                if _fcntl is not None:
+                    _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+    except Exception:
+        logger.debug("skill write journal append failed", exc_info=True)
+
+
+def _last_background_write_ts(name: str) -> Optional[str]:
+    """Most recent background-review journal ts for content writes to a skill."""
+    try:
+        path = _skill_journal_path()
+        if not path.exists():
+            return None
+        last = None
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    rec.get("skill") == name
+                    and rec.get("origin") == "background_review"
+                    and rec.get("action") in _COOLDOWN_ACTIONS
+                ):
+                    last = rec.get("ts") or last
+        return last
+    except Exception:
+        return None
+
+
+def _read_prior_for_journal(action: str, name: str, file_path: Optional[str]) -> Optional[str]:
+    """Current content of the file a full-rewrite action is about to replace."""
+    try:
+        existing = _find_skill(name)
+        if not existing:
+            return None
+        skill_dir = existing["path"]
+        if action == "edit" or not file_path:
+            target = skill_dir / "SKILL.md"
+        else:
+            target, err = _resolve_skill_target(skill_dir, file_path)
+            if err or target is None:
+                return None
+        return target.read_text(encoding="utf-8") if target.exists() else None
+    except Exception:
+        return None
+
+
+def _background_review_cooldown_guard(name: str, action: str) -> Optional[Dict[str, Any]]:
+    """Rate-limit autonomous content writes per skill (journal + trim, F008)."""
+    if action not in _COOLDOWN_ACTIONS:
+        return None
+    try:
+        hours = float(os.environ.get("HERMES_BG_SKILL_WRITE_COOLDOWN_HOURS", "24"))
+    except ValueError:
+        hours = 24.0
+    if hours <= 0:
+        return None
+    last = _last_background_write_ts(name)
+    if not last:
+        return None
+    try:
+        from datetime import datetime, timezone
+        age_h = (
+            datetime.now(timezone.utc) - datetime.fromisoformat(last)
+        ).total_seconds() / 3600.0
+    except Exception:
+        return None
+    if age_h >= hours:
+        return None
+    return {
+        "success": False,
+        "error": (
+            f"Refusing background curator {action} for skill '{name}': it was "
+            f"already patched autonomously {age_h:.1f}h ago (cooldown "
+            f"{hours:g}h, HERMES_BG_SKILL_WRITE_COOLDOWN_HOURS). Note the "
+            "improvement in your review summary instead; it can be applied "
+            "after the cooldown or by the user."
+        ),
+    }
+
+
 # Import security scanner — external hub installs always get scanned;
 # agent-created skills only get scanned when skills.guard_agent_created is on.
 try:
@@ -376,6 +512,14 @@ def _background_review_write_guard(
             }
     except Exception:
         logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
+
+    # Journal + trim (F008): autonomous content writes to any one skill are
+    # rate-limited so the review fork cannot re-patch the same skill every
+    # conversation (scheduled-agent-jobs accrued 168 unaudited patches in 11
+    # days before this guard existed).
+    cooldown = _background_review_cooldown_guard(name, action)
+    if cooldown:
+        return cooldown
     return None
 
 
@@ -1351,6 +1495,13 @@ def skill_manage(
     if gate_result is not None:
         return gate_result
 
+    # Journal support (local patch 10): full-rewrite actions need the prior
+    # content captured up front to be revertible; patch carries its own
+    # old/new strings.
+    _journal_prior = None
+    if action in {"edit", "write_file"}:
+        _journal_prior = _read_prior_for_journal(action, name, file_path)
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -1392,6 +1543,20 @@ def skill_manage(
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
             pass
+        # Journal every mutating write with revert data (local patch 10, F008).
+        if action in _JOURNALED_ACTIONS:
+            rec: Dict[str, Any] = {
+                "action": action,
+                "skill": name,
+                "file": file_path or "SKILL.md",
+            }
+            if action == "patch":
+                rec["old_string"] = old_string
+                rec["new_string"] = new_string
+                rec["replace_all"] = bool(replace_all)
+            elif action in {"edit", "write_file"}:
+                rec["prior_content"] = _journal_prior
+            _journal_skill_write(rec)
         # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
         # that mutate an existing skill's guidance), drop the record on delete.
         # Only mark a skill as agent-created when the background self-improvement

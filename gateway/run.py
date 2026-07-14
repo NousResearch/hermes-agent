@@ -44,7 +44,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Callable, Dict, Optional, Any, List, Union
+from typing import Callable, Dict, Optional, Any, List, Union, cast
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -1773,6 +1773,7 @@ from gateway.config import (
 )
 from gateway.session import (
     AsyncSessionStore,
+    SessionEntry,
     SessionStore,
     SessionSource,
     SessionContext,
@@ -8950,6 +8951,156 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _resolve_async_delegation_session(
+        self,
+        session_entry: SessionEntry,
+        pinned_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """Resolve an async completion to its verified owning gateway session.
+
+        A compression rotation ends the physical parent row while continuing
+        the same logical conversation in a child.  Follow that lineage, but
+        never let a late completion override an unrelated /new or restored
+        route.  Unknown ownership remains fail-closed; the result is still
+        available in the delegation records.
+        """
+        session_db = cast(Any, self._session_db)
+        if session_db is None:
+            logger.warning(
+                "Async-delegation completion has no session database; "
+                "dropping injection (#55578 fail-closed)."
+            )
+            return None
+
+        pinned_row = None
+        try:
+            pinned_row = await session_db.get_session(pinned_session_id)
+        except Exception:
+            logger.debug(
+                "Async-delegation parent lookup failed for %s",
+                pinned_session_id,
+                exc_info=True,
+            )
+
+        if pinned_row is None:
+            logger.warning(
+                "Async-delegation completion has unknown spawning session %s; "
+                "dropping injection (#55578 fail-closed).",
+                pinned_session_id,
+            )
+            return None
+
+        target_session_id = pinned_session_id
+        follows_compression = False
+        if pinned_row.get("ended_at"):
+            if pinned_row.get("end_reason") != "compression":
+                logger.warning(
+                    "Async-delegation completion pinned to ended session %s "
+                    "(end_reason=%r); dropping injection instead of resurrecting it "
+                    "(#55578 fail-closed).",
+                    pinned_session_id,
+                    pinned_row.get("end_reason"),
+                )
+                return None
+
+            follows_compression = True
+            try:
+                target_session_id = await session_db.get_compression_tip(
+                    pinned_session_id
+                )
+            except Exception:
+                logger.debug(
+                    "Async-delegation compression-tip lookup failed for %s",
+                    pinned_session_id,
+                    exc_info=True,
+                )
+                target_session_id = None
+
+            if not target_session_id or target_session_id == pinned_session_id:
+                logger.warning(
+                    "Async-delegation completion pinned to compressed session %s "
+                    "without a continuation; dropping injection.",
+                    pinned_session_id,
+                )
+                return None
+
+            try:
+                tip_row = await session_db.get_session(target_session_id)
+            except Exception:
+                tip_row = None
+            if tip_row is None or tip_row.get("ended_at"):
+                logger.warning(
+                    "Async-delegation compression continuation %s is %s; "
+                    "dropping injection.",
+                    target_session_id,
+                    "unknown" if tip_row is None else "ended",
+                )
+                return None
+
+            route_owns_lineage = session_entry.session_id in {
+                pinned_session_id,
+                target_session_id,
+            }
+            if not route_owns_lineage:
+                # A long-running delegation may survive multiple compression
+                # rotations.  Accept an intermediate stale route only when its
+                # own verified compression tip is the same live target.
+                try:
+                    route_row = await session_db.get_session(session_entry.session_id)
+                    route_tip = (
+                        await session_db.get_compression_tip(session_entry.session_id)
+                        if route_row is not None
+                        and route_row.get("ended_at")
+                        and route_row.get("end_reason") == "compression"
+                        else None
+                    )
+                except Exception:
+                    route_tip = None
+                route_owns_lineage = route_tip == target_session_id
+
+            if not route_owns_lineage:
+                logger.warning(
+                    "Async-delegation completion for compression lineage %s -> %s "
+                    "does not own current route %s; dropping injection.",
+                    pinned_session_id,
+                    target_session_id,
+                    session_entry.session_id,
+                )
+                return None
+
+        if target_session_id == session_entry.session_id:
+            return session_entry
+
+        prior_session_id = session_entry.session_id
+        if follows_compression:
+            switched = await self.async_session_store.advance_compression_session(
+                session_entry.session_key,
+                prior_session_id,
+                target_session_id,
+            )
+        else:
+            switched = await self.async_session_store.switch_session(
+                session_entry.session_key,
+                target_session_id,
+            )
+        if switched is None:
+            logger.warning(
+                "Async-delegation completion could not bind routing key %s to "
+                "owning session %s; dropping injection.",
+                session_entry.session_key,
+                target_session_id,
+            )
+            return None
+
+        logger.info(
+            "Pinned async-delegation completion to owning session %s "
+            "(was %s) for routing key %s (#57498)",
+            target_session_id,
+            prior_session_id,
+            session_entry.session_key,
+        )
+        return switched
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -10904,43 +11055,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         pinned_session_id = str(
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
         ).strip()
-        if pinned_session_id and pinned_session_id != session_entry.session_id:
-            # Fail closed (#55578): the spawning session may have ENDED since
-            # dispatch (user /new-reset, compression rotation whose parent was
-            # closed). switch_session() re-opens ended sessions, so pinning
-            # blindly would RESURRECT a conversation the user explicitly
-            # ended and inject into it — the same illicit-revival class as
-            # the ws_orphan_reap loop (#60609). A completion whose spawning
-            # session is dead is dropped from injection; the subagent's
-            # output remains in the delegation records.
-            pinned_row = None
-            try:
-                if self._session_db is not None:
-                    # AsyncSessionDB already offloads to a thread.
-                    pinned_row = await self._session_db.get_session(pinned_session_id)
-            except Exception:
-                pinned_row = None
-            if pinned_row is None or pinned_row.get("ended_at"):
-                logger.warning(
-                    "Async-delegation completion pinned to session %s, which is "
-                    "%s — dropping injection instead of resurrecting it "
-                    "(#55578 fail-closed; result remains in the delegation "
-                    "records).",
-                    pinned_session_id,
-                    "unknown" if pinned_row is None else "ended",
-                )
+        if pinned_session_id:
+            resolved_entry = await self._resolve_async_delegation_session(
+                session_entry,
+                pinned_session_id,
+            )
+            if resolved_entry is None:
                 return
-            prior_session_id = session_entry.session_id
-            switched = await self.async_session_store.switch_session(session_key, pinned_session_id)
-            if switched is not None:
-                session_entry = switched
-                logger.info(
-                    "Pinned async-delegation completion to spawning session %s "
-                    "(was %s) for routing key %s (#57498)",
-                    pinned_session_id,
-                    prior_session_id,
-                    session_key,
-                )
+            session_entry = resolved_entry
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:

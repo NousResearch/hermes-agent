@@ -394,6 +394,7 @@ gateway:
     nothing:               "Nothing to undo."
     removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
     invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+    draining:              "⏳ The last turn was stopped but is still finishing its current step — /undo can't run yet. Try again in a moment."
     now_at:                "↦ Now at — {who}:\n“{preview}”"
     now_at_notext:         "↦ Now at — {who} (no text)."
     now_empty:             "↦ Now at — start of the thread (no messages left)."
@@ -408,6 +409,7 @@ gateway:
     restart_lost:          "Nothing to redo — redo history does not survive a restart."
     restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
     invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
+    draining:              "⏳ The last turn was stopped but is still finishing its current step — /redo can't run yet. Try again in a moment."
 
   update:
     platform_not_messaging:  "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."

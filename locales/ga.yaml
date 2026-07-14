@@ -387,6 +387,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Nothing to undo."
     removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
     invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+    draining:              "⏳ Stopadh an seal deireanach ach tá sé fós ag críochnú a chéim reatha — ní féidir /undo a rith go fóill. Bain triail eile as i gceann nóiméid."
     now_at:                "↦ Now at — {who}:\n“{preview}”"
     now_at_notext:         "↦ Now at — {who} (no text)."
     now_empty:             "↦ Now at — start of the thread (no messages left)."
@@ -401,6 +402,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     restart_lost:          "Nothing to redo — redo history does not survive a restart."
     restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
     invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
+    draining:              "⏳ Stopadh an seal deireanach ach tá sé fós ag críochnú a chéim reatha — ní féidir /redo a rith go fóill. Bain triail eile as i gceann nóiméid."
 
   update:
     platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."

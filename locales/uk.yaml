@@ -383,6 +383,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Nothing to undo."
     removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
     invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+    draining:              "⏳ Останній хід зупинено, але він ще завершує поточний крок — /undo поки недоступний. Повторіть за мить."
     now_at:                "↦ Now at — {who}:\n“{preview}”"
     now_at_notext:         "↦ Now at — {who} (no text)."
     now_empty:             "↦ Now at — start of the thread (no messages left)."
@@ -397,6 +398,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     restart_lost:          "Nothing to redo — redo history does not survive a restart."
     restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
     invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
+    draining:              "⏳ Останній хід зупинено, але він ще завершує поточний крок — /redo поки недоступний. Повторіть за мить."
 
   update:
     platform_not_messaging:  "✗ /update доступний лише на платформах обміну повідомленнями. Виконайте `hermes update` у терміналі."

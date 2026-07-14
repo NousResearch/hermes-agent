@@ -383,6 +383,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Nothing to undo."
     removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
     invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+    draining:              "⏳ Die laaste beurt is gestop maar voltooi steeds sy huidige stap — /undo kan nog nie loop nie. Probeer netnou weer."
     now_at:                "↦ Now at — {who}:\n“{preview}”"
     now_at_notext:         "↦ Now at — {who} (no text)."
     now_empty:             "↦ Now at — start of the thread (no messages left)."
@@ -397,6 +398,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     restart_lost:          "Nothing to redo — redo history does not survive a restart."
     restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
     invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
+    draining:              "⏳ Die laaste beurt is gestop maar voltooi steeds sy huidige stap — /redo kan nog nie loop nie. Probeer netnou weer."
 
   update:
     platform_not_messaging:  "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `hermes update` vanaf die terminale uit."

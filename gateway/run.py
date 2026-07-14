@@ -3479,6 +3479,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # background reaper to evict ONLY entries whose task is genuinely done()/cancelled
         # (a leaked slot), never a live long-running turn. Cleared in _release_running_agent_state.
         self._running_agent_tasks: Dict[str, Any] = {}
+        # A turn that was /stop'd but whose coroutine is still DRAINING (the
+        # cooperative interrupt hasn't been reached yet). /stop releases the
+        # _running_agents slot immediately, so the running-agent guard can't see
+        # this state — but the draining turn is still appending transcript rows.
+        # /undo and /redo consult this to refuse a rewind that would race a
+        # still-writing turn (the 2026-07-14 undo-clobber incident). Populated in
+        # _interrupt_and_clear_session; cleared in _release_running_agent_state
+        # (the turn's true exit) and pruned-on-access once the task is done().
+        self._draining_turns: Dict[str, Any] = {}
         self._session_initiated_restart: Dict[str, bool] = {}
         self._resumed_this_boot: set[str] = set()
         self._active_session_leases: Dict[str, Any] = {}
@@ -19820,6 +19829,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # outlives the slot. Idempotent: pop-on-absent is harmless, so a reaper eviction
         # racing this finally double-releases safely (AC-10).
         getattr(self, "_running_agent_tasks", {}).pop(session_key, None)
+        # Clear a DRAINING-turn marker ONLY when its task is None or actually
+        # done(). /stop calls this release immediately after registering the
+        # drain (task still not-done) — popping unconditionally here would erase
+        # the marker the instant it's set, defeating the /undo guard, so the
+        # not-done entry is preserved.
+        #
+        # Lifecycle note (Greptile #339 P2): the draining turn's OWN finally
+        # re-enters this method, but `Task.done()` is still False *inside* that
+        # finally (the coroutine hasn't returned yet), so this block does NOT
+        # clear the entry on the stopped turn's own unwind. Cleanup therefore
+        # happens via two other paths: (1) PRIMARY — prune-on-access in
+        # `_session_turn_draining` (the /undo·/redo guard) pops a done entry the
+        # next time either command runs; (2) the NEXT turn for the same session
+        # completes and re-enters here with the (now truly done) task → cleared.
+        # Net: in active sessions accumulation is bounded to a single
+        # (session_key → done-Task) entry; a session that is /stop'd and then
+        # goes dormant retains one stale entry until its next turn/undo — a
+        # bounded, harmless leak (the guard prunes it on the next access).
+        try:
+            _draining = getattr(self, "_draining_turns", None)
+            if _draining is not None:
+                _dt = _draining.get(session_key)
+                if _dt is None or _dt.done():
+                    _draining.pop(session_key, None)
+        except Exception:
+            logger.debug("draining-turn clear skipped for %s", session_key, exc_info=True)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
         # Boot-resume protection marker is owned by the turn lifecycle: this
@@ -20015,6 +20050,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.get_pending_message(session_key)  # consume and discard
         self._pending_messages.pop(session_key, None)
         if release_running_state:
+            # Register a DRAINING turn BEFORE releasing state (which pops the
+            # task handle). If the turn's coroutine is still mid-flight (its
+            # asyncio Task is not done()), the cooperative interrupt hasn't been
+            # reached yet, so it will keep appending transcript rows for a short
+            # window. Record it so /undo·/redo refuse a rewind that would race
+            # the still-writing turn. A turn's OWN normal exit also flows through
+            # here, but with a done/finishing task, so it never registers a
+            # false drain. Best-effort: never let this break /stop.
+            try:
+                _task = getattr(self, "_running_agent_tasks", {}).get(session_key)
+                if _task is not None and not _task.done():
+                    self._draining_turns[session_key] = _task
+            except Exception:
+                logger.debug("draining-turn capture skipped for %s", session_key, exc_info=True)
             self._release_running_agent_state(session_key)
             # Evict the cached agent: ``_interrupt_requested`` is only
             # cleared by the turn finalizer, so on a hung or still-draining

@@ -2778,9 +2778,42 @@ class GatewaySlashCommandsMixin:
         idx = len(mgr.state.subgoals) if mgr.state else 0
         return f"✓ Added subgoal {idx}: {text}"
 
+    def _session_turn_draining(self, source: "SessionSource") -> bool:
+        """True if this source's session has a /stop'd-but-still-draining turn.
+
+        After /stop, the running-agent slot is released immediately but the turn
+        coroutine keeps appending transcript rows until it reaches its next
+        cooperative interrupt checkpoint. A rewind (/undo) or restore (/redo)
+        during that window races the still-writing turn and produces a landing
+        the drain immediately clobbers (the 2026-07-14 undo-clobber incident).
+        Reads `_draining_turns`, pruning the entry on access once its task is
+        done. FAIL-OPEN: any lookup/introspection error returns False so a guard
+        bug can never wedge /undo — the worst case reverts to prior behavior.
+        """
+        try:
+            session_key = self._session_key_for_source(source)
+            draining = getattr(self, "_draining_turns", None)
+            if not draining:
+                return False
+            task = draining.get(session_key)
+            if task is None:
+                return False
+            if task.done():
+                draining.pop(session_key, None)  # prune-on-access
+                return False
+            return True
+        except Exception as e:  # pragma: no cover - defensive fail-open
+            logger.debug("undo/redo drain-guard lookup skipped: %s", e)
+            return False
+
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] by delegating to the shared half-turn undo core."""
         source = event.source
+
+        # Refuse while a /stop'd turn is still draining (still writing rows) —
+        # a rewind here would race it and land somewhere the drain clobbers.
+        if self._session_turn_draining(source):
+            return t("gateway.undo.draining")
 
         # Parse optional half-turn count: "/undo" → 1, "/undo 3" → 3.
         n = 1
@@ -2851,6 +2884,10 @@ class GatewaySlashCommandsMixin:
     async def _handle_redo_command(self, event: MessageEvent) -> str:
         """Handle /redo [N] by delegating to the shared redo core."""
         source = event.source
+        # Same drain guard as /undo: a restore during a /stop'd turn's drain
+        # window races the still-writing turn.
+        if self._session_turn_draining(source):
+            return t("gateway.redo.draining")
         n = 1
         raw_args = event.get_command_args().strip()
         if raw_args:

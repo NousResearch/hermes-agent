@@ -383,6 +383,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Nothing to undo."
     removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
     invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+    draining:              "⏳ 直前のターンは停止されましたが、現在のステップをまだ完了中です — /undo はまだ実行できません。少し待ってから再試行してください。"
     now_at:                "↦ Now at — {who}:\n“{preview}”"
     now_at_notext:         "↦ Now at — {who} (no text)."
     now_empty:             "↦ Now at — start of the thread (no messages left)."
@@ -397,6 +398,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     restart_lost:          "Nothing to redo — redo history does not survive a restart."
     restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
     invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
+    draining:              "⏳ 直前のターンは停止されましたが、現在のステップをまだ完了中です — /redo はまだ実行できません。少し待ってから再試行してください。"
 
   update:
     platform_not_messaging:  "✗ /update はメッセージングプラットフォームでのみ利用可能です。ターミナルで `hermes update` を実行してください。"

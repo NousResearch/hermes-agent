@@ -170,6 +170,26 @@ export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
   return { content, options };
 }
 
+export function buildReactionPayload({ chatId, messageId, emoji, fromMe = false } = {}) {
+  if (!chatId) throw new Error('chatId is required');
+  if (!messageId) throw new Error('messageId is required');
+  // An empty string is a valid emoji here: WhatsApp retracts an existing
+  // reaction when the react text is ''. Only a missing field is an error.
+  if (emoji === undefined || emoji === null) {
+    throw new Error('emoji is required (use "" to remove a reaction)');
+  }
+  return {
+    react: {
+      text: String(emoji),
+      key: {
+        remoteJid: chatId,
+        fromMe: fromMe === true || fromMe === 'true',
+        id: messageId,
+      },
+    },
+  };
+}
+
 export function buildLocationPayload({ latitude, longitude, name, address } = {}) {
   const lat = Number(latitude);
   const lon = Number(longitude);

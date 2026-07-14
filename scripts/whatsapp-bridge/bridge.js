@@ -9,6 +9,7 @@
  *   GET  /messages       - Long-poll for new incoming messages
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
+ *   POST /react          - React to a message { chatId, messageId, emoji, fromMe? } (emoji "" unreacts)
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
@@ -36,6 +37,7 @@ import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   buildPollPayload,
   buildLocationPayload,
+  buildReactionPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
   extractBridgeEvent,
@@ -875,6 +877,31 @@ app.post('/edit', async (req, res) => {
     }
 
     res.json({ success: true, messageIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// React to a message (emoji "" retracts an existing reaction)
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, emoji, fromMe } = req.body;
+  let payload;
+  try {
+    payload = buildReactionPayload({ chatId, messageId, emoji, fromMe });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    const sent = await sendWithTimeout(chatId, payload);
+    // Same as every other outbound route: without this our own reaction echoes
+    // back as a fromMe inbound message and can be misread as owner-typed.
+    trackSentMessageId(sent);
+    res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

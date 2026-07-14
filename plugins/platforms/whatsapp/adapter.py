@@ -264,7 +264,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-from gateway.whatsapp_identity import to_whatsapp_jid
+from gateway.whatsapp_identity import canonical_whatsapp_identifier, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -388,6 +388,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     # Default bridge location resolved via shared helper
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
+    _LAST_INBOUND_CHATS_MAX = 200
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
@@ -441,6 +442,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Latest inbound (message_id, from_me) per chat (bounded). Lets the
+        # react action default to "the message that triggered me".
+        self._last_inbound_by_chat: Dict[str, tuple] = {}
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
@@ -931,6 +935,133 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     return SendResult(success=False, error=error)
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    @staticmethod
+    def _reaction_chat_key(chat_id: str) -> str:
+        """Key the last-inbound map by identity, not by JID form.
+
+        The bridge may surface the same DM as a phone JID or a LID; keying on
+        either alone makes a react-by-phone miss a LID-recorded message.
+        """
+        return canonical_whatsapp_identifier(chat_id) or to_whatsapp_jid(chat_id)
+
+    def _record_last_inbound(
+        self,
+        chat_id: Optional[str],
+        message_id: Optional[str],
+        from_me: bool = False,
+    ) -> None:
+        if not chat_id or not message_id:
+            return
+        key = self._reaction_chat_key(chat_id)
+        last = self._last_inbound_by_chat
+        if key in last:
+            del last[key]  # refresh insertion order
+        # from_me rides along: a reaction key must match the target's own
+        # fromMe flag, and owner-typed messages arrive with fromMe=true.
+        last[key] = (message_id, from_me)
+        if len(last) > self._LAST_INBOUND_CHATS_MAX:
+            for old in list(last.keys())[
+                : len(last) - self._LAST_INBOUND_CHATS_MAX
+            ]:
+                del last[old]
+
+    def _last_inbound_target(
+        self, chat_id: str, message_id: Optional[str]
+    ) -> Optional[tuple]:
+        """Resolve the (message_id, from_me) a reaction should target."""
+        if message_id:
+            # Caller-supplied ids are assumed to be someone else's message.
+            return (message_id, False)
+        return self._last_inbound_by_chat.get(self._reaction_chat_key(chat_id))
+
+    async def send_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+        *,
+        from_me: bool = False,
+    ) -> SendResult:
+        """React to a message via the bridge's ``/react`` endpoint.
+
+        An empty ``emoji`` retracts our reaction — WhatsApp's native unreact.
+        """
+        if not self._running or not self._http_session:
+            return SendResult(success=False, error="Not connected")
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return SendResult(success=False, error=bridge_exit)
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json={
+                    "chatId": to_whatsapp_jid(chat_id),
+                    "messageId": message_id,
+                    "emoji": emoji,
+                    "fromMe": from_me,
+                },
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status == 200:
+                    return SendResult(success=True, message_id=message_id)
+                else:
+                    error = await resp.text()
+                    return SendResult(success=False, error=error)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    # -- Agent-facing reactions (send_message action="react") ---------------
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """React with ``emoji`` to a message in ``chat_id``.
+
+        Without ``message_id``, targets the chat's most recent inbound message
+        (typically the one the agent is responding to).
+        """
+        target = self._last_inbound_target(chat_id, message_id)
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to react to — pass message_id (no "
+                "inbound message seen in this chat since the gateway started)",
+            }
+        msg_id, from_me = target
+        result = await self.send_reaction(chat_id, msg_id, emoji, from_me=from_me)
+        if not result.success:
+            return {
+                "success": False,
+                "error": result.error or "reaction failed",
+            }
+        return {"success": True, "message_id": msg_id}
+
+    async def remove_reaction(
+        self, chat_id: str, message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Retract our reaction from a message.
+
+        WhatsApp models an unreact as re-reacting with an empty emoji.
+        """
+        target = self._last_inbound_target(chat_id, message_id)
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to unreact — pass message_id",
+            }
+        msg_id, from_me = target
+        result = await self.send_reaction(chat_id, msg_id, "", from_me=from_me)
+        if not result.success:
+            return {
+                "success": False,
+                "error": result.error or "unreact failed",
+            }
+        return {"success": True, "message_id": msg_id}
 
     async def _send_media_to_bridge(
         self,
@@ -1501,6 +1632,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 metadata["whatsapp_from_owner"] = True
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
+
+            # Lets add_reaction()/remove_reaction() default to the message the
+            # agent is currently responding to. fromOwner ⇒ the bridge forwarded
+            # one of our own (fromMe) messages, which the reaction key must match.
+            # Skip reaction events: a reaction is not itself a reactable target.
+            if native_type != "reactionMessage":
+                self._record_last_inbound(
+                    data.get("chatId"),
+                    data.get("messageId"),
+                    from_me=bool(data.get("fromOwner")),
+                )
 
             return MessageEvent(
                 text=body,

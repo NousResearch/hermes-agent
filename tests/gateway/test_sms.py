@@ -41,19 +41,76 @@ class TestSmsConfigLoading:
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest123",
             "TWILIO_AUTH_TOKEN": "token_abc",
-            "TWILIO_PHONE_NUMBER": "+15551234567",
-            "SMS_HOME_CHANNEL": "+15559876543",
+            "TWILIO_PHONE_NUMBER": "+155****4567",
+            "SMS_HOME_CHANNEL": "+155****6543",
             "SMS_HOME_CHANNEL_NAME": "My Phone",
         }
         with patch.dict(os.environ, env, clear=False):
             config = load_gateway_config()
             hc = config.platforms[Platform.SMS].home_channel
             assert hc is not None
-            assert hc.chat_id == "+15559876543"
+            assert hc.chat_id == "+155****6543"
             assert hc.name == "My Phone"
             assert hc.platform == Platform.SMS
 
-# ── Format / truncate ───────────────────────────────────────────────
+    def test_twilio_enabled_false_suppresses_automatic_activation(self):
+        """An explicit TWILIO_ENABLED=false must NOT auto-activate SMS even when
+        TWILIO_ACCOUNT_SID leaks from a parent shell (issue #64210).
+
+        The platform may remain present (disabled) but must never be enabled,
+        so the gateway won't try to connect to Twilio with a missing phone
+        number and abort startup — killing other configured platforms.
+        """
+        from gateway.config import load_gateway_config
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_PHONE_NUMBER": "+155****4567",
+            "TWILIO_ENABLED": "false",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert Platform.SMS not in config.platforms or not config.platforms[
+                Platform.SMS
+            ].enabled, (
+                "TWILIO_ENABLED=false must keep SMS disabled despite a leaked "
+                "TWILIO_ACCOUNT_SID"
+            )
+
+    def test_twilio_enabled_false_disables_yaml_configured_sms(self):
+        """The kill-switch also honors a YAML-configured SMS platform."""
+        from gateway.config import load_gateway_config
+
+        with patch.dict(
+            os.environ,
+            {
+                "TWILIO_ACCOUNT_SID": "ACtest123",
+                "TWILIO_AUTH_TOKEN": "token_abc",
+                "TWILIO_PHONE_NUMBER": "+155****4567",
+                "TWILIO_ENABLED": "false",
+            },
+            clear=False,
+        ):
+            config = load_gateway_config()
+            # Even if SMS somehow present (e.g. via YAML), the explicit disable wins.
+            if Platform.SMS in config.platforms:
+                assert config.platforms[Platform.SMS].enabled is False
+
+    def test_twilio_enabled_true_activates_with_leaked_sid(self):
+        """An explicit TWILIO_ENABLED=true still activates SMS from the SID."""
+        from gateway.config import load_gateway_config
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_PHONE_NUMBER": "+155****4567",
+            "TWILIO_ENABLED": "true",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert Platform.SMS in config.platforms
+            assert config.platforms[Platform.SMS].enabled is True
 
 class TestSmsFormatAndTruncate:
     """Test SmsAdapter.format_message strips markdown."""

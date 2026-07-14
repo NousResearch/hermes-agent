@@ -1737,12 +1737,28 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # SMS (Twilio)
+    # Mirror the WHATSAPP_ENABLED convention (see WhatsApp block above): an
+    # explicit TWILIO_ENABLED=false must suppress auto-activation, even when
+    # TWILIO_ACCOUNT_SID happens to be inherited from a leaking parent shell
+    # (issue #64210). An orphaned credential must not activate a half-configured
+    # platform that then fails non-retryable and kills the whole gateway.
+    twilio_disabled_explicitly = getenv("TWILIO_ENABLED", "").lower() in {"false", "0", "no"}
     twilio_sid = getenv("TWILIO_ACCOUNT_SID")
-    if twilio_sid:
+    if twilio_sid and not twilio_disabled_explicitly:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True
         config.platforms[Platform.SMS].api_key = getenv("TWILIO_AUTH_TOKEN", "")
+    if twilio_disabled_explicitly:
+        # Explicit kill-switch: mark SMS disabled-and-explicit so BOTH this
+        # env block and the later registry-driven plugin-enable pass
+        # (which would otherwise re-enable SMS from the leaked credential via
+        # its is_connected() probe) honor it. Matches the YAML
+        # ``enabled: false`` + ``_enabled_explicit`` guard at the registry pass.
+        if Platform.SMS not in config.platforms:
+            config.platforms[Platform.SMS] = PlatformConfig()
+        config.platforms[Platform.SMS].enabled = False
+        config.platforms[Platform.SMS].extra["_enabled_explicit"] = False
     sms_home = getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
         config.platforms[Platform.SMS].home_channel = HomeChannel(
@@ -2145,6 +2161,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             except Exception as e:
                 logger.debug("unknown platform name %r: %s", entry.name, e)
                 continue
+            # Explicit TWILIO_ENABLED=false kill-switch (issue #64210): do not
+            # let the registry's is_connected() probe re-enable SMS from a
+            # leaked/orphaned TWILIO_ACCOUNT_SID. Mirrors the YAML
+            # ``enabled: false`` + ``_enabled_explicit`` guard below.
+            if entry.name == "sms":
+                _twilio_enabled_raw = getenv("TWILIO_ENABLED", "").lower()
+                if _twilio_enabled_raw in {"false", "0", "no"}:
+                    logger.debug(
+                        "TWILIO_ENABLED=false — skipping registry auto-enable of SMS"
+                    )
+                    continue
             existing_cfg = config.platforms.get(platform)
             # Respect an explicit ``enabled: false`` (YAML / gateway.json /
             # dashboard PUT).  ``_enabled_explicit`` is set in

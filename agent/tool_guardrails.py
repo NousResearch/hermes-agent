@@ -345,7 +345,12 @@ class ToolCallGuardrailController:
             return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
 
         self._exact_failure_counts.pop(signature, None)
-        self._same_tool_failure_counts.pop(tool_name, None)
+        # Do NOT reset _same_tool_failure_counts here — it tracks failures
+        # across varying signatures within a turn.  Resetting the entire
+        # tool counter on a single signature's success allows a model to
+        # bypass the threshold by alternating failing and successful calls
+        # (the success wipes the counter).  The counter naturally resets
+        # at the end of each turn via reset_for_turn().
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)

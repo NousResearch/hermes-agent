@@ -165,6 +165,13 @@ def test_dispatch_rejected_at_capacity():
     assert r3["status"] == "rejected"
     assert "capacity reached" in r3["error"]
     ev.set()
+    # Consume both blockers' completion events before returning: they enqueue
+    # asynchronously after ev.set(), and a completion that lands AFTER the
+    # next test's start-of-test drain is mistaken for that test's own event
+    # (test_crashed_runner_produces_error_completion flakes with
+    # status "completed" instead of "error").
+    assert _drain_one() is not None
+    assert _drain_one() is not None
 
 
 def test_interrupt_all_signals_running_children():

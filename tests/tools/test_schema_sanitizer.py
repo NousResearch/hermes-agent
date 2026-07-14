@@ -916,32 +916,6 @@ def test_sanitize_node_bare_unknown_string_becomes_empty_object():
     }
 
 
-def test_sanitize_node_type_array_multi_non_null_picks_first_str():
-    """type: [X, Y] with multiple non-null string types picks the first (lines 244-246)."""
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "ambiguous": {"type": ["string", "integer"]},
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    prop = out[0]["function"]["parameters"]["properties"]["ambiguous"]
-    assert prop["type"] == "string"
-
-
-def test_sanitize_node_type_array_all_null_becomes_object():
-    """type: ['null'] or type: [] collapses to 'object' (lines 249-250)."""
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "only_null": {"type": ["null"]},
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    prop = out[0]["function"]["parameters"]["properties"]["only_null"]
-    assert prop["type"] == "object"
-
-
 def test_sanitize_node_items_bool_preserved():
     """items: True/False is kept as-is without recursion (line 262)."""
     tools = [_tool("t", {

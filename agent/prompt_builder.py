@@ -945,7 +945,12 @@ def _probe_remote_backend(env_type: str) -> str | None:
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
-        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
+        from tools.terminal_tool import (  # type: ignore
+            _CONTAINER_BACKENDS,
+            _container_config_from_env_config,
+            _create_environment,
+            _get_env_config,
+        )
     except Exception as e:
         logger.debug("Backend probe unavailable (import failed): %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
@@ -981,31 +986,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
             }
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "tenki"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "modal_mode": config.get("modal_mode", "auto"),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                "docker_forward_env": config.get("docker_forward_env", []),
-                "docker_env": config.get("docker_env", {}),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                "docker_extra_args": config.get("docker_extra_args", []),
-                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                "tenki_api_endpoint": config.get("tenki_api_endpoint", ""),
-                "tenki_workspace_id": config.get("tenki_workspace_id", ""),
-                "tenki_project_id": config.get("tenki_project_id", ""),
-                "tenki_name_prefix": config.get("tenki_name_prefix", "hermes"),
-                "tenki_allow_inbound": config.get("tenki_allow_inbound", False),
-                "tenki_allow_outbound": config.get("tenki_allow_outbound", True),
-                "tenki_max_duration": config.get("tenki_max_duration", 3600),
-                "tenki_idle_timeout": config.get("tenki_idle_timeout", 0),
-                "tenki_pause_retention": config.get("tenki_pause_retention", 0),
-            }
+        if env_type in _CONTAINER_BACKENDS:
+            container_config = _container_config_from_env_config(config)
 
         env = _create_environment(
             env_type=env_type,

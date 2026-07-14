@@ -1089,8 +1089,14 @@ class TenkiEnvironment(BaseEnvironment):
 
     @staticmethod
     def _close_client(client: Any) -> None:
+        # Best-effort: a failed close must never propagate — cleanup() resets
+        # _cleanup_in_progress after this call, and an escaping exception would
+        # leave the flag stuck and brick the environment.
         if client is None:
             return
         close = getattr(client, "close", None)
         if callable(close):
-            close()
+            try:
+                close()
+            except Exception as exc:
+                logger.warning("Tenki: client close failed: %s", exc)

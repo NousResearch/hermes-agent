@@ -1296,6 +1296,42 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in line
         assert "root" in line
 
+    def test_probe_container_config_uses_shared_builder(self, monkeypatch):
+        """The probe must pass the canonical container config from
+        ``_container_config_from_env_config`` — a stale inline copy omitted
+        ``tenki_sync_hermes_home`` / ``tenki_forward_env`` (and
+        ``docker_network``), so probe environments were built with different
+        settings than real ones."""
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool as _tt
+
+        monkeypatch.setenv("TERMINAL_ENV", "tenki")
+        _pb._clear_backend_probe_cache()
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/home/tenki\n"
+                        "cwd=/home/tenki\nuser=tenki\n"
+                    ),
+                }
+
+        created = {}
+
+        def _fake_create_environment(*, env_type, **kwargs):
+            created["container_config"] = kwargs.get("container_config")
+            return _FakeEnv()
+
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+
+        assert _pb._probe_remote_backend("tenki") is not None
+        container_config = created["container_config"]
+        assert container_config is not None
+        for key in ("tenki_sync_hermes_home", "tenki_forward_env", "docker_network"):
+            assert key in container_config
+
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb

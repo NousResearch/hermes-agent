@@ -1948,6 +1948,7 @@ class SessionDB:
         chat_id: Optional[str] = None,
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
+        min_last_activity: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer.
 
@@ -1958,23 +1959,52 @@ class SessionDB:
         cleanup's ``agent_close`` bug are treated as recoverable; explicit
         conversation boundaries such as /new, /resume switches, and compression
         splits are not.
+
+        ``min_last_activity`` (epoch seconds, caller-supplied — typically
+        ``time.time() - auto_continue_freshness_window()``) bounds how old a
+        candidate can be. Without it, ``ORDER BY started_at DESC LIMIT 1`` has
+        no staleness cutoff at all: a session with ``ended_at IS NULL`` that
+        was simply superseded without ever being closed, or one ended days ago
+        via the ordinary ``agent_close`` path, is exactly as eligible as one
+        from five minutes ago (real incident, 2026-07-14 — a clean reset
+        resumed an 8-day-old ``agent_close`` session, dragging 74 stale
+        messages into a brand new conversation; fixing one such row just
+        exposed the next-oldest one in line, since none of them were ever
+        actually excluded on age). "Last activity" is the row's own
+        ``ended_at`` if set, else its newest message timestamp, else
+        ``started_at`` — a still-open session with recent messages must not
+        be excluded just because it started long ago.
         """
         if not session_key:
             return None
+        staleness_clause = ""
+        if min_last_activity is not None:
+            staleness_clause = """
+                  AND COALESCE(
+                        ended_at,
+                        (SELECT MAX(timestamp) FROM messages WHERE messages.session_id = sessions.id),
+                        started_at
+                      ) >= :min_last_activity
+            """
         with self._lock:
             row = self._conn.execute(
-                """
+                f"""
                 SELECT * FROM sessions
-                WHERE session_key = ?
-                  AND source = ?
+                WHERE session_key = :session_key
+                  AND source = :source
                   AND (ended_at IS NULL OR end_reason = 'agent_close')
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
+                  {staleness_clause}
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
-                (session_key, source),
+                {
+                    "session_key": session_key,
+                    "source": source,
+                    "min_last_activity": min_last_activity,
+                },
             ).fetchone()
             if row is not None:
                 return dict(row)
@@ -1985,21 +2015,29 @@ class SessionDB:
             if chat_id is None or chat_type is None:
                 return None
             row = self._conn.execute(
-                """
+                f"""
                 SELECT * FROM sessions
-                WHERE source = ?
-                  AND COALESCE(user_id, '') = COALESCE(?, '')
-                  AND COALESCE(chat_id, '') = COALESCE(?, '')
-                  AND COALESCE(chat_type, '') = COALESCE(?, '')
-                  AND COALESCE(thread_id, '') = COALESCE(?, '')
+                WHERE source = :source
+                  AND COALESCE(user_id, '') = COALESCE(:user_id, '')
+                  AND COALESCE(chat_id, '') = COALESCE(:chat_id, '')
+                  AND COALESCE(chat_type, '') = COALESCE(:chat_type, '')
+                  AND COALESCE(thread_id, '') = COALESCE(:thread_id, '')
                   AND (ended_at IS NULL OR end_reason = 'agent_close')
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
+                  {staleness_clause}
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
-                (source, user_id, chat_id, chat_type, thread_id),
+                {
+                    "source": source,
+                    "user_id": user_id,
+                    "chat_id": chat_id,
+                    "chat_type": chat_type,
+                    "thread_id": thread_id,
+                    "min_last_activity": min_last_activity,
+                },
             ).fetchone()
         return dict(row) if row else None
 

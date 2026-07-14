@@ -5036,6 +5036,89 @@ def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
     ) is None
 
 
+def test_gateway_session_recovery_excludes_stale_candidates_with_min_last_activity(db):
+    """Real incident, 2026-07-14: with no staleness bound, a clean reset
+    resumed an 8-day-old agent_close session (74 messages) instead of
+    starting fresh, because ORDER BY started_at DESC LIMIT 1 has no
+    cutoff at all -- any never-closed or agent_close-ended row is an
+    equally valid candidate regardless of age."""
+    db.create_session(
+        "old-agent-close-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("old-agent-close-session", "user", "hello")
+    old_ts = time.time() - (10 * 24 * 60 * 60)  # 10 days ago
+    db.end_session("old-agent-close-session", "agent_close")
+    db._conn.execute(
+        "UPDATE sessions SET ended_at = ? WHERE id = ?",
+        (old_ts, "old-agent-close-session"),
+    )
+    db._conn.commit()
+
+    # No cutoff supplied (backward-compatible default): old row is still found.
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )["id"] == "old-agent-close-session"
+
+    # A cutoff newer than the row's ended_at excludes it entirely.
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        min_last_activity=time.time() - (60 * 60),  # 1 hour window
+    ) is None
+
+    # A cutoff older than the row's ended_at still allows recovery.
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        min_last_activity=time.time() - (30 * 24 * 60 * 60),  # 30 days
+    )["id"] == "old-agent-close-session"
+
+
+def test_gateway_session_recovery_min_last_activity_uses_last_message_not_started_at(db):
+    """A session that started long ago but has a recent message must not be
+    excluded just because started_at is old -- staleness is measured from
+    last activity (ended_at, else newest message, else started_at)."""
+    db.create_session(
+        "long-lived-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    old_ts = time.time() - (10 * 24 * 60 * 60)
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?",
+        (old_ts, "long-lived-session"),
+    )
+    db._conn.commit()
+    db.append_message("long-lived-session", "user", "still going")  # recent
+
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        min_last_activity=time.time() - (60 * 60),
+    )["id"] == "long-lived-session"
+
+
 def test_gateway_metadata_display_name_origin_round_trip(db):
     """record_gateway_session_peer persists display_name/origin_json (#9006)."""
     db.create_session("gw-meta", "telegram", user_id="u1")

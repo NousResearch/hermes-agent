@@ -1305,6 +1305,17 @@ class SessionStore:
         finder = getattr(self._db, "find_latest_gateway_session_for_peer", None)
         if not callable(finder):
             return None
+        # Same freshness gate already used for resume_pending (#46934) — a
+        # never-closed or agent_close-ended session is only a plausible
+        # "the gateway restarted mid-conversation" candidate within this
+        # window. Without it there's no staleness bound at all: a session
+        # last touched days ago is exactly as eligible as one from five
+        # minutes ago (real incident, 2026-07-14 — see hermes_state.py's
+        # find_latest_gateway_session_for_peer docstring). Non-positive
+        # window disables the gate, matching auto_continue_freshness_window's
+        # existing opt-out convention.
+        _fw = auto_continue_freshness_window()
+        _min_last_activity = now.timestamp() - _fw if _fw > 0 else None
         try:
             recovered = finder(
                 source=source.platform.value,
@@ -1313,6 +1324,7 @@ class SessionStore:
                 chat_id=source.chat_id,
                 chat_type=source.chat_type,
                 thread_id=source.thread_id,
+                min_last_activity=_min_last_activity,
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)

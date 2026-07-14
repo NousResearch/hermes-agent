@@ -230,6 +230,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
                args_hint="[reset [--force]]"),
+    CommandDef("copilot-quota", "Show GitHub Copilot premium-interactions quota", "Info",
+               aliases=("cquota",)),
     CommandDef("credits", "Show Nous credit balance and top up", "Info"),
     CommandDef("billing", "Manage Nous terminal billing — buy credits, auto-reload, limits", "Info",
                cli_only=True),

@@ -201,3 +201,150 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+# --- Copilot ---------------------------------------------------------------
+
+import agent.account_usage as _au
+from agent.account_usage import _build_copilot_snapshot, _extract_copilot_quota
+
+
+def _reset_copilot_cache():
+    _au._COPILOT_USAGE_CACHE["snap"] = None
+    _au._COPILOT_USAGE_CACHE["fetched_at"] = 0.0
+
+
+def test_extract_copilot_quota_flat_field_pairs():
+    assert _extract_copilot_quota(
+        {"chat_enabled_quota_remaining": 120, "chat_enabled_quota": 300}
+    ) == (120, 300)
+    assert _extract_copilot_quota(
+        {"premium_interactions_remaining": 5, "premium_interactions_quota": 50}
+    ) == (5, 50)
+    assert _extract_copilot_quota(
+        {"monthly_quota_remaining": 900, "monthly_quota": 1000}
+    ) == (900, 1000)
+
+
+def test_extract_copilot_quota_nested_snapshot_shape():
+    data = {"quota_snapshots": {"premium_interactions": {"remaining": 42, "entitlement": 300}}}
+    assert _extract_copilot_quota(data) == (42, 300)
+
+
+def test_extract_copilot_quota_returns_none_when_absent():
+    assert _extract_copilot_quota({"unrelated": 1}) == (None, None)
+
+
+def test_build_copilot_snapshot_labels_and_ok_level():
+    snap = _build_copilot_snapshot(
+        {
+            "access_type_sku": "copilot_pro",
+            "chat_enabled_quota_remaining": 250,
+            "chat_enabled_quota": 300,
+            "quota_reset_date": "2026-08-01",
+        }
+    )
+    assert snap.provider == "copilot"
+    assert snap.compact_label == "quota 250/300 left · resets Aug 1"
+    assert snap.compact_short_label == "q 250/300 · Aug 1"
+    assert snap.compact_tiny_label == "q 250"
+    assert snap.compact_level == "ok"  # 83% remaining
+    assert snap.windows and snap.windows[0].label == "Premium interactions"
+
+
+def test_build_copilot_snapshot_warn_and_error_levels():
+    warn = _build_copilot_snapshot(
+        {"premium_interactions_remaining": 60, "premium_interactions_quota": 300}
+    )  # 20% remaining
+    assert warn.compact_level == "warn"
+
+    err = _build_copilot_snapshot(
+        {"premium_interactions_remaining": 15, "premium_interactions_quota": 300}
+    )  # 5% remaining
+    assert err.compact_level == "error"
+
+
+def test_build_copilot_snapshot_no_quota_yields_no_compact_label():
+    snap = _build_copilot_snapshot({"access_type_sku": "copilot_pro"})
+    assert snap.compact_label is None
+    assert snap.compact_level is None
+
+
+def test_fetch_account_usage_copilot(monkeypatch):
+    _reset_copilot_cache()
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("tok-abc", "test"),
+    )
+    payload = {
+        "access_type_sku": "copilot_pro",
+        "chat_enabled_quota_remaining": 100,
+        "chat_enabled_quota": 300,
+    }
+    monkeypatch.setattr(_au.httpx, "Client", lambda *a, **k: _Client(payload))
+
+    snap = fetch_account_usage("copilot")
+    assert snap is not None
+    assert snap.provider == "copilot"
+    assert snap.compact_label == "quota 100/300 left"
+
+
+def test_fetch_account_usage_copilot_http_failure_returns_none(monkeypatch):
+    _reset_copilot_cache()
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("tok-abc", "test"),
+    )
+
+    class _FailClient(_Client):
+        def get(self, url, headers=None):
+            return _Response({}, status_code=500)
+
+    monkeypatch.setattr(_au.httpx, "Client", lambda *a, **k: _FailClient({}))
+    assert fetch_account_usage("copilot") is None
+
+
+def test_fetch_account_usage_copilot_no_token_returns_none(monkeypatch):
+    _reset_copilot_cache()
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: (None, None),
+    )
+    assert fetch_account_usage("copilot") is None
+
+
+def test_fetch_account_usage_copilot_caches_within_ttl(monkeypatch):
+    _reset_copilot_cache()
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("tok-abc", "test"),
+    )
+    calls = {"n": 0}
+    payload = {"chat_enabled_quota_remaining": 100, "chat_enabled_quota": 300}
+
+    class _CountingClient(_Client):
+        def get(self, url, headers=None):
+            calls["n"] += 1
+            return _Response(payload)
+
+    monkeypatch.setattr(_au.httpx, "Client", lambda *a, **k: _CountingClient(payload))
+
+    first = fetch_account_usage("copilot")
+    second = fetch_account_usage("copilot")
+    assert first is second
+    assert calls["n"] == 1  # second call served from cache
+
+
+def test_fetch_account_usage_does_not_hit_copilot_for_other_providers(monkeypatch):
+    """Provider gating: a non-copilot provider must never resolve a Copilot
+    token or hit the Copilot endpoint."""
+    _reset_copilot_cache()
+
+    def _boom():
+        raise AssertionError("resolve_copilot_token must not be called for non-copilot providers")
+
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", _boom)
+    # Unknown/blank providers short-circuit before any copilot path.
+    assert fetch_account_usage("") is None
+    assert fetch_account_usage("auto") is None
+

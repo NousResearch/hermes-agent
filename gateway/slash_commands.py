@@ -4114,6 +4114,58 @@ class GatewaySlashCommandsMixin:
             return "\n".join(parts)
         return t("gateway.usage.no_data")
 
+    async def _handle_copilot_quota_command(self, event: MessageEvent) -> str:
+        """Handle /copilot-quota (alias /cquota) -- Copilot account quota.
+
+        Resolves the active provider first and only renders when it is
+        ``copilot``. Does NOT string-filter generic ``/usage`` output — that
+        would surface another provider's account limits (Codex/Anthropic/
+        OpenRouter) when Copilot isn't the active provider.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+
+        provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        if not provider and getattr(self, "_session_db", None) is not None:
+            try:
+                _entry = await self.async_session_store.get_or_create_session(source)
+                persisted = await self._session_db.get_session(_entry.session_id) or {}
+            except Exception:
+                persisted = {}
+            provider = provider or persisted.get("billing_provider")
+            base_url = base_url or persisted.get("billing_base_url")
+
+        if str(provider or "").strip().lower() != "copilot":
+            return t("gateway.copilot_quota.wrong_provider")
+
+        try:
+            account_snapshot = await asyncio.to_thread(
+                fetch_account_usage,
+                provider,
+                base_url=base_url,
+                api_key=api_key,
+            )
+        except Exception:
+            account_snapshot = None
+
+        account_lines = render_account_usage_lines(account_snapshot, markdown=True)
+        if not account_lines:
+            return t("gateway.copilot_quota.no_data")
+        return "\n".join(account_lines)
+
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
         args = event.get_command_args().strip()

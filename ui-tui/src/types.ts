@@ -170,6 +170,10 @@ export interface SessionInfo {
 }
 
 export interface Usage {
+  account_label?: string
+  account_label_short?: string
+  account_label_tiny?: string
+  account_level?: 'error' | 'ok' | 'warn'
   active_subagents?: number
   calls: number
   compressions?: number

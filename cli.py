@@ -4650,6 +4650,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+        # Provider account quota (e.g. Copilot premium-interactions). Gated on
+        # an active Copilot provider: fetch_account_usage() performs a live
+        # HTTP request for Codex/Anthropic/OpenRouter too, and this snapshot is
+        # rebuilt on every status-bar render — so we only pay the network cost
+        # for the one provider that produces a compact status-bar label. The
+        # fetch is cached (5-min TTL) and any failure is swallowed silently.
+        if str(getattr(agent, "provider", "") or "").strip().lower() == "copilot":
+            try:
+                from agent.account_usage import fetch_account_usage
+
+                account_snapshot = fetch_account_usage(
+                    getattr(agent, "provider", None),
+                    base_url=getattr(agent, "base_url", None),
+                    api_key=getattr(agent, "api_key", None),
+                )
+                if account_snapshot:
+                    if account_snapshot.compact_label:
+                        snapshot["account_label"] = account_snapshot.compact_label
+                    if account_snapshot.compact_short_label:
+                        snapshot["account_label_short"] = account_snapshot.compact_short_label
+                    if account_snapshot.compact_tiny_label:
+                        snapshot["account_label_tiny"] = account_snapshot.compact_tiny_label
+                    if account_snapshot.compact_level:
+                        snapshot["account_level"] = account_snapshot.compact_level
+            except Exception:
+                pass
+
         return snapshot
 
     @staticmethod
@@ -5122,6 +5149,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             idle_since = snapshot.get("idle_since")
             if idle_since:
                 parts.append(idle_since)
+            account_label = (
+                snapshot.get("account_label_short")
+                if width < 96
+                else snapshot.get("account_label")
+            ) or snapshot.get("account_label_tiny") or snapshot.get("account_label")
+            if account_label:
+                parts.append(account_label)
             if yolo_active:
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -5236,6 +5270,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if idle_since:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", idle_since))
+                    # Position 9: provider account quota (e.g. Copilot premium
+                    # interactions). Colored by remaining-quota level.
+                    account_label = (
+                        snapshot.get("account_label_short")
+                        if width < 96
+                        else snapshot.get("account_label")
+                    ) or snapshot.get("account_label_tiny") or snapshot.get("account_label")
+                    if account_label:
+                        level = snapshot.get("account_level")
+                        quota_style = (
+                            "class:status-bar-error" if level == "error"
+                            else "class:status-bar-warn" if level == "warn"
+                            else "class:status-bar-dim"
+                        )
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((quota_style, account_label))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -8723,6 +8773,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._handle_usage_command(cmd_original)
+        elif canonical == "copilot-quota":
+            self._handle_copilot_quota_command(cmd_original)
         elif canonical == "credits":
             self._show_credits()
         elif canonical == "billing":
@@ -9622,6 +9674,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"  ❌ Compression failed: {e}")
 
 
+
+    def _handle_copilot_quota_command(self, cmd_original: str):
+        """Dispatch `/copilot-quota` (alias `/cquota`).
+
+        Verifies the active provider is Copilot, then fetches and renders the
+        Copilot account-limits snapshot directly. Does NOT reuse `/usage`
+        output filtering — that would surface another provider's limits when
+        Copilot isn't active.
+        """
+        provider = (
+            (getattr(self.agent, "provider", None) if self.agent else None)
+            or getattr(self, "provider", None)
+        )
+        normalized = str(provider or "").strip().lower()
+        if normalized != "copilot":
+            print("  /copilot-quota is only available on the copilot provider.")
+            print("  Switch with `/model` or `hermes auth` first.")
+            return
+
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        print("  ⏳ Fetching Copilot quota...")
+        account_snapshot = None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage, provider,
+                    base_url=(getattr(self.agent, "base_url", None) if self.agent else None) or getattr(self, "base_url", None),
+                    api_key=(getattr(self.agent, "api_key", None) if self.agent else None) or getattr(self, "api_key", None),
+                ).result(timeout=10.0)
+            except (concurrent.futures.TimeoutError, Exception):
+                account_snapshot = None
+
+        lines = render_account_usage_lines(account_snapshot)
+        if not lines:
+            print("  No Copilot quota data available.")
+            return
+        for line in lines:
+            print(f"  {line}")
 
     def _handle_usage_command(self, cmd_original: str):
         """Dispatch `/usage [reset [--force]]`.

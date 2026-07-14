@@ -3279,6 +3279,32 @@ def _get_usage(agent) -> dict:
                 usage["dev_credits_spent_micros"] = int(spent)
         except Exception:
             pass
+    # Provider account quota (e.g. Copilot premium-interactions) as compact
+    # status-bar labels. Gated on an active Copilot provider: _get_usage() is
+    # emitted on every completed TUI turn, and fetch_account_usage() performs a
+    # live HTTP request for Codex/Anthropic/OpenRouter too — only Copilot
+    # produces a compact label, so we skip the fetch for every other provider.
+    # The fetch is cached (5-min TTL) and any failure is swallowed silently.
+    if str(getattr(agent, "provider", "") or "").strip().lower() == "copilot":
+        try:
+            from agent.account_usage import fetch_account_usage
+
+            account_snapshot = fetch_account_usage(
+                getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+                api_key=getattr(agent, "api_key", None),
+            )
+            if account_snapshot:
+                if account_snapshot.compact_label:
+                    usage["account_label"] = account_snapshot.compact_label
+                if account_snapshot.compact_short_label:
+                    usage["account_label_short"] = account_snapshot.compact_short_label
+                if account_snapshot.compact_tiny_label:
+                    usage["account_label_tiny"] = account_snapshot.compact_tiny_label
+                if account_snapshot.compact_level:
+                    usage["account_level"] = account_snapshot.compact_level
+        except Exception:
+            pass
     return usage
 
 

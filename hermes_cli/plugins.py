@@ -1072,7 +1072,7 @@ class PluginContext:
             key: stable task key (snake_case). Used in config ``auxiliary.<key>``
                 and env vars ``AUXILIARY_<KEY_UPPER>_*``. Must not shadow a
                 built-in task key (vision, compression, web_extract, approval,
-                mcp, title_generation, skills_hub, curator).
+                mcp, title_generation, curator).
             display_name: human-readable name shown in the picker.
             description: short one-line description shown next to the name.
             defaults: optional dict of default routing fields. Recognized keys:

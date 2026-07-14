@@ -1603,14 +1603,12 @@ DEFAULT_CONFIG = {
         # single-shape tool returns DB content directly). The old
         # ``auxiliary.session_search.*`` block was removed here. Existing
         # values in user config.yaml files are harmless leftovers and ignored.
-        "skills_hub": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-        },
+        # Note: skills_hub likewise no longer uses an auxiliary LLM (#40703 —
+        # Skills Hub routes through deterministic library paths in
+        # ``tools/skills_hub.py`` + ``hermes_cli/skills_hub.py``, with no
+        # ``call_llm(task="skills_hub")`` call site). The old
+        # ``auxiliary.skills_hub.*`` block was removed here; leftover values
+        # in user config.yaml files are harmless and ignored.
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)

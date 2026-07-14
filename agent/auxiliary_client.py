@@ -978,7 +978,7 @@ class _CodexCompletionsAdapter:
                     }
                     resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
-        # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
+        # Tools support for auxiliary callers (e.g. mcp) that pass function schemas
         tools = kwargs.get("tools")
         if tools:
             # xAI's Responses endpoint rejects ``pattern`` and ``format`` JSON Schema
@@ -6473,8 +6473,8 @@ def call_llm(
     handles auth, request formatting, and model-specific arg adjustments.
 
     Args:
-        task: Auxiliary task name ("compression", "vision", "web_extract",
-              "session_search", "skills_hub", "mcp", "title_generation").
+        task: Auxiliary task name (e.g. "compression", "vision", "web_extract",
+              "mcp", "title_generation").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
         model: Explicit model override.

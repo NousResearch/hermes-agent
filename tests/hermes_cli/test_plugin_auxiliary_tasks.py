@@ -103,7 +103,6 @@ def test_register_auxiliary_task_rejects_builtin_keys():
         "approval",
         "mcp",
         "title_generation",
-        "skills_hub",
         "curator",
     ):
         with pytest.raises(ValueError, match="reserved for a built-in task"):

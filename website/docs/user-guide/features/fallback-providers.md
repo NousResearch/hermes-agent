@@ -190,7 +190,6 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
 | Web Extract | Web page summarization | `auxiliary.web_extract` |
 | Compression | Context compression summaries | `auxiliary.compression` |
-| Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
 | Approval | Smart command-approval classification | `auxiliary.approval` |
 | Title Generation | Session title summaries | `auxiliary.title_generation` |
@@ -245,10 +244,6 @@ auxiliary:
     fallback_chain:              # optional, task-specific fallback policy
       - provider: openrouter
         model: inclusionai/ring-2.6-1t:free
-
-  skills_hub:
-    provider: "auto"
-    model: ""
 
   mcp:
     provider: "auto"
@@ -419,7 +414,6 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Layered (see above) + internal OpenRouter retry | `auxiliary.web_extract` |
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
-| Skills hub | Layered (see above) | `auxiliary.skills_hub` |
 | MCP helpers | Layered (see above) | `auxiliary.mcp` |
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |

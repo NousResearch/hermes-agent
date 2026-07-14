@@ -2223,7 +2223,13 @@ DEFAULT_CONFIG = {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
             "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
+            "codec_repo": "neuphonic/neucodec",
             "device": "cpu",  # cpu, cuda, or mps
+            "output_format": "mp3",  # mp3, m4a/aac, wav, ogg, or flac
+            # Opt in to retaining the roughly 500 MB model in this process for
+            # lower latency across repeated synthesis requests.
+            "warm_cache": False,
+            "idle_unload_seconds": 1800,  # Release a warm model after 30 minutes idle
         },
         "piper": {
             # Voice name (e.g. "en_US-lessac-medium") downloaded on first

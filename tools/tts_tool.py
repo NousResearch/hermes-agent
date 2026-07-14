@@ -2009,7 +2009,7 @@ def _bool_config(value: Any, default: bool = False) -> bool:
 
 
 def _neutts_warm_cache_enabled(neutts_config: Dict[str, Any]) -> bool:
-    return _bool_config(neutts_config.get("warm_cache"), default=True)
+    return _bool_config(neutts_config.get("warm_cache"), default=False)
 
 
 def _neutts_idle_unload_seconds(neutts_config: Dict[str, Any]) -> float:
@@ -2120,7 +2120,13 @@ def _convert_neutts_wav(wav_path: str, output_path: str) -> str:
     if suffix == ".m4a":
         cmd += ["-c:a", "aac", "-b:a", "128k"]
     cmd.append(output_path)
-    subprocess.run(cmd, check=True, timeout=30)
+    subprocess.run(
+        cmd,
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+        creationflags=windows_hide_flags(),
+    )
     try:
         os.remove(wav_path)
     except FileNotFoundError:
@@ -2240,7 +2246,7 @@ def _generate_neutts_subprocess(text: str, output_path: str, tts_config: Dict[st
 
 
 def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate speech using NeuTTS, warm-cache by default with subprocess opt-out."""
+    """Generate speech using NeuTTS, with explicit opt-in warm caching."""
     neutts_config = tts_config.get("neutts", {}) if isinstance(tts_config, dict) else {}
     if _neutts_warm_cache_enabled(neutts_config):
         return _generate_neutts_warm(text, output_path, tts_config)

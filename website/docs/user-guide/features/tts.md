@@ -80,7 +80,11 @@ tts:
     ref_audio: ''
     ref_text: ''
     model: neuphonic/neutts-air-q4-gguf
+    codec_repo: neuphonic/neucodec
     device: cpu
+    output_format: mp3            # mp3 | m4a/aac | wav | ogg | flac
+    warm_cache: false             # Opt in to lower repeat latency at a memory cost
+    idle_unload_seconds: 1800     # Release a warm model after 30 minutes idle
   kittentts:
     model: KittenML/kitten-tts-nano-0.8-int8   # 25MB int8; also: kitten-tts-micro-0.8 (41MB), kitten-tts-mini-0.8 (80MB)
     voice: Jasper                               # Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo
@@ -98,6 +102,8 @@ tts:
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+**NeuTTS warm cache**: NeuTTS continues to use a one-shot subprocess by default, so its roughly 500 MB model is released after each synthesis. Set `tts.neutts.warm_cache: true` to keep the model and encoded reference audio in the Hermes process for lower latency on repeated requests. When enabled, `idle_unload_seconds` controls how long the cache remains loaded after the most recent use.
 
 ### Gemini Persona Prompts
 

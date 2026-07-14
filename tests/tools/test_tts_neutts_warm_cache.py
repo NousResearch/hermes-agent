@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import time
 import types
@@ -38,6 +39,59 @@ def _install_fake_neutts(monkeypatch):
 def _reset_neutts_cache():
     if hasattr(tts_tool, "_clear_neutts_cache"):
         tts_tool._clear_neutts_cache("test")
+
+
+def test_neutts_warm_cache_is_opt_in(tmp_path, monkeypatch):
+    used = {"warm": False, "subprocess": False}
+
+    def fake_warm(text, output_path, tts_config):
+        used["warm"] = True
+        return output_path
+
+    def fake_subprocess(text, output_path, tts_config):
+        used["subprocess"] = True
+        return output_path
+
+    monkeypatch.setattr(tts_tool, "_generate_neutts_warm", fake_warm)
+    monkeypatch.setattr(tts_tool, "_generate_neutts_subprocess", fake_subprocess)
+
+    tts_tool._generate_neutts("hello", str(tmp_path / "out.wav"), {"neutts": {}})
+
+    assert used == {"warm": False, "subprocess": True}
+
+
+def test_neutts_warm_cache_config_defaults_to_off():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    neutts_config = DEFAULT_CONFIG["tts"]["neutts"]
+    assert neutts_config["codec_repo"] == "neuphonic/neucodec"
+    assert neutts_config["output_format"] == "mp3"
+    assert neutts_config["warm_cache"] is False
+    assert neutts_config["idle_unload_seconds"] == 1800
+
+
+def test_neutts_conversion_uses_windows_safe_subprocess_kwargs(tmp_path, monkeypatch):
+    wav_path = tmp_path / "source.wav"
+    output_path = tmp_path / "output.mp3"
+    wav_path.write_bytes(b"wav")
+    captured = {}
+
+    monkeypatch.setattr(tts_tool.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(tts_tool, "windows_hide_flags", lambda: 0x08000000)
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        output_path.write_bytes(b"mp3")
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(tts_tool.subprocess, "run", fake_run)
+
+    result = tts_tool._convert_neutts_wav(str(wav_path), str(output_path))
+
+    assert result == str(output_path)
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert captured["kwargs"]["creationflags"] == 0x08000000
 
 
 def test_neutts_warm_cache_reuses_model_and_reference(tmp_path, monkeypatch):

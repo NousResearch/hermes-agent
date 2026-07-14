@@ -1,4 +1,4 @@
-"""Tests for gateway.platforms.telegram_network – fallback transport layer.
+"""Tests for plugins.platforms.telegram.telegram_network – fallback transport layer.
 
 Background
 ----------
@@ -18,7 +18,7 @@ fallback IPs in order, then "stick" to whichever IP works.
 import httpx
 import pytest
 
-from gateway.platforms import telegram_network as tnet
+import plugins.platforms.telegram.telegram_network as tnet
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +354,37 @@ class TestFallbackTransportInit:
         assert len(seen_kwargs) == 2
         assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
+    def test_forwards_limits_to_inner_transports(self, monkeypatch):
+        """Verify that caller-supplied limits reach the inner
+        AsyncHTTPTransport instances (#58790).  httpx ignores the
+        client-level limits kwarg when a custom transport is
+        supplied, so the limits must be forwarded via transport_kwargs.
+        """
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        custom_limits = httpx.Limits(
+            max_connections=42,
+            max_keepalive_connections=10,
+            keepalive_expiry=30.0,
+        )
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220"], limits=custom_limits
+        )
+
+        # 1 primary + 1 fallback = 2 AsyncHTTPTransport instances
+        assert len(seen_kwargs) == 2
+        for kw in seen_kwargs:
+            assert "limits" in kw
+            assert kw["limits"] is custom_limits
+
 
 class TestFallbackTransportClose:
     @pytest.mark.asyncio
@@ -438,7 +469,7 @@ class TestAdapterFallbackIps:
                 sys.modules.setdefault(name, mod)
 
         from gateway.config import PlatformConfig
-        from gateway.platforms.telegram import TelegramAdapter
+        from plugins.platforms.telegram.adapter import TelegramAdapter
 
         config = PlatformConfig(enabled=True, token="test-token")
         if extra:
@@ -674,3 +705,54 @@ class TestDiscoverFallbackIps:
 
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.167.220"]
+
+    @pytest.mark.asyncio
+    async def test_hung_system_dns_does_not_gate_doh_results(self, monkeypatch):
+        """#63309: socket.getaddrinfo has no timeout of its own — a wedged OS
+        resolver must not stall discovery. DoH answers must come back promptly
+        even while the system-DNS worker thread is still hanging."""
+        import time as _time
+
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, _doh_answer("149.154.167.220")),
+            "https://cloudflare-dns.com": (200, _doh_answer()),
+        }, system_dns_ips=["149.154.166.110"])
+        monkeypatch.setattr(tnet, "_DOH_TIMEOUT", 0.2)
+
+        def _hung_getaddrinfo(*a, **kw):
+            _time.sleep(1.5)  # far beyond the discovery bound
+            raise OSError("resolver wedged")
+
+        monkeypatch.setattr(tnet.socket, "getaddrinfo", _hung_getaddrinfo)
+
+        start = _time.monotonic()
+        ips = await tnet.discover_fallback_ips()
+        elapsed = _time.monotonic() - start
+
+        assert ips == ["149.154.167.220"]
+        assert elapsed < 1.0, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
+
+    @pytest.mark.asyncio
+    async def test_hung_system_dns_with_no_doh_answers_bounded_seed_fallback(self, monkeypatch):
+        """Worst case — resolver wedged AND no DoH answers — must still return
+        the seed list within the bound instead of hanging connect()."""
+        import time as _time
+
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, {"Status": 0}),
+            "https://cloudflare-dns.com": (200, {"garbage": True}),
+        }, system_dns_ips=["149.154.166.110"])
+        monkeypatch.setattr(tnet, "_DOH_TIMEOUT", 0.2)
+
+        def _hung_getaddrinfo(*a, **kw):
+            _time.sleep(1.5)
+            raise OSError("resolver wedged")
+
+        monkeypatch.setattr(tnet.socket, "getaddrinfo", _hung_getaddrinfo)
+
+        start = _time.monotonic()
+        ips = await tnet.discover_fallback_ips()
+        elapsed = _time.monotonic() - start
+
+        assert ips == tnet._SEED_FALLBACK_IPS
+        assert elapsed < 1.0, f"seed fallback gated on hung system DNS ({elapsed:.2f}s)"

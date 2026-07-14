@@ -1,0 +1,6 @@
+name: router
+version: 1.0.0
+description: "Configurable image generation router for multiple model aliases via OpenAI-compatible gateways."
+author: NousResearch
+kind: backend
+requires_env: []

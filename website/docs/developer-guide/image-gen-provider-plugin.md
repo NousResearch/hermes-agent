@@ -269,6 +269,40 @@ The tool wrapper JSON-serializes the dict and hands it to the LLM. Errors are su
 
 Some backends return image URLs (fal, Replicate); others return base64 payloads (OpenAI gpt-image-2). For the base64 case, use `save_b64_image()` — it writes to `$HERMES_HOME/cache/images/<prefix>_<timestamp>_<uuid>.<ext>` and returns the absolute `Path`. Pass that path (as `str`) as `image=` in `success_response()`. Gateway delivery (Telegram photo bubble, Discord attachment) recognizes both URLs and absolute paths.
 
+## Built-in router provider
+
+Hermes ships a generic `image_gen/router` backend for users who have an OpenAI-compatible image gateway and want multiple configured model aliases behind one `image_generate` tool.
+
+```yaml
+image_gen:
+  provider: router
+  router:
+    default_model: nano-banana-pro
+    defaults:
+      provider: openai-compatible
+      base_url: https://your-gateway.example/v1
+      api_key_env: IMAGE_GATEWAY_API_KEY
+    models:
+      nano-banana-pro:
+        model: gemini-3-pro-image-preview
+        display: Nano Banana Pro
+        default_params:
+          quality: high
+      gpt-image-2:
+        model: gpt-image-2
+        display: GPT Image 2
+```
+
+`image_generate` may pass optional router hints in `kwargs`:
+
+- `model`: configured model alias; overrides `image_gen.model` for this call
+- `intent`: loose task type such as `poster`, `infographic`, `product`, or `draft`
+- `quality`: `low`, `medium`, or `high`
+- `style`: user-requested visual style
+- `text_heavy`: true when readable text or typography matters
+
+Provider implementations should ignore unknown kwargs. The router currently supports `POST {base_url}/images/generations` and parses `data[0].b64_json`, `data[0].url`, or `data[0].image_url`.
+
 ## User overrides
 
 Drop a user plugin at `~/.hermes/plugins/image_gen/<name>/` with the same `name` property as a bundled one and enable it via `hermes plugins enable <name>` — the registry is last-writer-wins, so your version replaces the built-in. Useful for pointing an `openai` plugin at a private proxy, or swapping in a custom model catalog.

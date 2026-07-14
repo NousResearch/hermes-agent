@@ -1226,6 +1226,31 @@ IMAGE_GENERATE_SCHEMA = {
                     "capped per-model; the description above indicates the max."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional configured image model alias to use when the "
+                    "active image_gen backend supports per-call model routing "
+                    "(e.g. the router provider). Ignored by other backends."
+                ),
+            },
+            "intent": {
+                "type": "string",
+                "description": "Optional routing hint describing the task type, such as poster, infographic, product, draft, or photorealistic.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Optional routing hint for desired quality/cost tradeoff.",
+            },
+            "style": {
+                "type": "string",
+                "description": "Optional routing hint describing the visual style requested by the user.",
+            },
+            "text_heavy": {
+                "type": "boolean",
+                "description": "Set true when the image needs substantial readable text, labels, UI text, or Chinese typography.",
+            },
         },
         "required": ["prompt"],
     },
@@ -1276,6 +1301,7 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    **routing_kwargs: Any,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1337,6 +1363,21 @@ def _dispatch_to_plugin_provider(
     try:
         if configured_model:
             kwargs["model"] = configured_model
+
+        # Router-specific: forward agent-supplied model alias and routing
+        # hints only when the active provider is the router backend. Other
+        # providers use user-configured model from image_gen.model only.
+        if configured == "router":
+            tool_model = routing_kwargs.get("model")
+            if isinstance(tool_model, str) and tool_model.strip():
+                kwargs["model"] = tool_model.strip()
+            elif not configured_model:
+                # Let router resolve its own default_model
+                kwargs.pop("model", None)
+            for key in ("intent", "quality", "style", "text_heavy"):
+                if key in routing_kwargs and routing_kwargs[key] is not None:
+                    kwargs[key] = routing_kwargs[key]
+
         if isinstance(image_url, str) and image_url.strip():
             kwargs["image_url"] = image_url.strip()
         norm_refs = None
@@ -1522,10 +1563,16 @@ def _handle_image_generate(args, **kw):
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this
     # already reaches the Krea plugin's managed gateway path.
+    routing_kwargs = {
+        key: args[key]
+        for key in ("model", "intent", "quality", "style", "text_heavy")
+        if key in args and args[key] is not None
+    }
     dispatched = _dispatch_to_plugin_provider(
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        **routing_kwargs,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)

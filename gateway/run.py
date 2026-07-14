@@ -11405,6 +11405,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not getattr(self.config, "stt_enabled", True):
             notes = []
+            # Deduplicate: when a voice message interrupts the agent, the same
+            # audio file may arrive through both the main handle_message path
+            # and the dequeuer, resulting in duplicate STT calls and duplicate
+            # transcript echoes.
+            seen: set = set()
+            audio_paths = [p for p in audio_paths if p not in seen and not seen.add(p)]
             for path in audio_paths:
                 abs_path = os.path.abspath(path)
                 duration_str = await _probe_audio_duration(abs_path)

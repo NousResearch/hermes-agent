@@ -477,7 +477,7 @@ def save_jobs(jobs: List[Dict[str, Any]]):
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
+            json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, JOBS_FILE)

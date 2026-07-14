@@ -515,7 +515,7 @@
       ? tx(t, "progress.hidden", "hidden")
       : (progress + (achievement.next_threshold ? " / " + achievement.next_threshold : ""));
     const [shareOpen, setShareOpen] = hooks.useState(false);
-    return React.createElement(C.Card, { className: cn("ha-card", "ha-state-" + state, tierClass(achievement.tier || achievement.next_tier)) },
+    return React.createElement(C.Card, { className: cn("ha-card", "ha-state-" + state, tierClass(achievement.tier || achievement.next_tier), shareOpen && "ha-card-share-open") },
       React.createElement(C.CardContent, { className: "ha-card-content" },
         React.createElement("div", { className: "ha-card-head" },
           React.createElement("div", { className: "ha-icon" }, React.createElement(AchievementIcon, { icon: achievement.icon || "secret" })),

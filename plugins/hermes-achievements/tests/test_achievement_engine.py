@@ -151,6 +151,17 @@ class AchievementEngineTests(unittest.TestCase):
         stats = plugin_api.analyze_messages("s2", "Real config", [{"content": "edited config.yaml, manifest.json, and .env.local"}])
         self.assertGreaterEqual(stats["config_events"], 3)
 
+    def test_share_dialog_open_state_disables_card_hover_transform(self):
+        dist_dir = Path(__file__).resolve().parents[1] / "dashboard" / "dist"
+        index_js = (dist_dir / "index.js").read_text(encoding="utf-8")
+        style_css = (dist_dir / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn('shareOpen && "ha-card-share-open"', index_js)
+        self.assertIn(
+            ".ha-card.ha-card-share-open, .ha-card.ha-card-share-open:hover { transform: none; }",
+            style_css,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

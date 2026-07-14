@@ -26,7 +26,15 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
-# Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
+# Runtime-scoped Hermes routing/session variables that must NOT be persisted in
+# the login-shell snapshot (issue #64199). These are task-local ContextVars
+# (gateway/session_context.py) that are authoritative per cron run. If they leak
+# into the snapshot they override the correct per-call values on the next
+# terminal call, causing cross-job delivery interference. They are re-injected
+# for every terminal call via LocalEnvironment._inject_session_context_env, so
+# dropping them from the snapshot is lossless.
+_RUNTIME_SCOPED_ENV_PREFIXES = ("HERMES_CRON_AUTO_DELIVER_",)
+
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
 # every is_interrupted() state change from _wait_for_process.  Off by default
 # to avoid flooding production gateway logs.
@@ -399,7 +407,7 @@ class BaseEnvironment(ABC):
         _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
-            f"export -p > {_snap_tmp}\n"
+            f"export -p | grep -vE '^(export |declare -x )({'|'.join(_RUNTIME_SCOPED_ENV_PREFIXES)})' > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -527,6 +535,17 @@ class BaseEnvironment(ABC):
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
+            # Drop runtime-scoped Hermes routing vars that may have leaked into
+            # the snapshot (issue #64199). They are re-injected per-call by
+            # LocalEnvironment._inject_session_context_env from the authoritative
+            # task-local ContextVars, so unsetting here lets those values win
+            # instead of the stale snapshot copy.
+            _unset_expr = " ".join(
+                f'"{p}"*' for p in _RUNTIME_SCOPED_ENV_PREFIXES
+            )
+            parts.append(
+                f'for __h_var in ${{!{_unset_expr}}}; do unset "$__h_var"; done 2>/dev/null || true'
+            )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
@@ -546,8 +565,14 @@ class BaseEnvironment(ABC):
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
+            # Exclude runtime-scoped Hermes routing vars (issue #64199) so a
+            # stale snapshot can never re-persist another cron job's delivery
+            # target. They are re-injected per call from the task-local
+            # ContextVars, so filtering them here is lossless.
+            _routing_grep = "|".join(_RUNTIME_SCOPED_ENV_PREFIXES)
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ export -p | grep -vE '^(export |declare -x )({_routing_grep})' "
+                f"> {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

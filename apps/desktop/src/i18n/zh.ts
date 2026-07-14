@@ -388,6 +388,8 @@ export const zh: Translations = {
       embedsAlways: '总是',
       embedsOff: '关闭',
       embedsReset: (count: number) => `重置 ${count} 个已允许的服务`,
+      resumeLastSessionTitle: '启动时恢复上次会话',
+      resumeLastSessionDesc: '开启后，应用冷启动时重新打开最近的聊天。关闭则始终从空白新会话开始。',
       product: '产品',
       productDesc: '易读的工具活动与简洁摘要。',
       technical: '技术',

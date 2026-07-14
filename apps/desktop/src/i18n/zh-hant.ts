@@ -297,6 +297,8 @@ export const zhHant = defineLocale({
       embedsAlways: '一律',
       embedsOff: '關閉',
       embedsReset: (count: number) => `重設 ${count} 個已允許的服務`,
+      resumeLastSessionTitle: '啟動時恢復上次會話',
+      resumeLastSessionDesc: '開啟後，應用冷啟動時重新打開最近的聊天。關閉則始終從空白新會話開始。',
       product: '產品',
       productDesc: '易讀的工具活動與精簡摘要。',
       technical: '技術',

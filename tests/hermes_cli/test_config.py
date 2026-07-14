@@ -1328,6 +1328,20 @@ class TestCliRefreshIntervalConfig:
         assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
 
 
+class TestResumeLastSessionConfig:
+    """Test the Desktop resume_last_session config default (#60812)."""
+
+    def test_default_config_enables_resume_last_session(self):
+        """resume_last_session defaults to True so the Desktop app preserves
+        its existing cold-start behavior of reopening the last chat. Users
+        who prefer a fresh new-chat on every launch set it to False."""
+        assert DEFAULT_CONFIG["display"]["resume_last_session"] is True
+
+    def test_tui_auto_resume_recent_still_exists(self):
+        """The TUI's separate toggle must remain untouched."""
+        assert DEFAULT_CONFIG["display"]["tui_auto_resume_recent"] is False
+
+
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}

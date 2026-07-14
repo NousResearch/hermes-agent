@@ -1786,6 +1786,12 @@ DEFAULT_CONFIG = {
         # Mirrors `hermes -c` muscle memory.  Default off so existing
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
+        # When true (default), the Desktop app reopens the last chat
+        # session on cold start instead of landing on a fresh new-chat.
+        # Set false to always start with a blank new session. Mirrors the
+        # TUI's tui_auto_resume_recent but defaults to true so existing
+        # Desktop behavior is preserved.
+        "resume_last_session": True,
         # When true (default), `hermes --tui` drops a one-time hint
         # ("subagents working · /agents to watch live") the first time a turn
         # starts delegating, nudging the user toward the live spawn-tree

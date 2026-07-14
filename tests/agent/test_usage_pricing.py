@@ -40,6 +40,28 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
     assert normalized.output_tokens == 700
 
 
+def test_normalize_usage_codex_responses_reads_cache_write_tokens():
+    usage = SimpleNamespace(
+        input_tokens=1_000_000,
+        output_tokens=200_000,
+        input_tokens_details=SimpleNamespace(
+            cached_tokens=500_000,
+            cache_write_tokens=100_000,
+        ),
+    )
+
+    normalized = normalize_usage(
+        usage,
+        provider="openai-codex",
+        api_mode="codex_responses",
+    )
+
+    assert normalized.input_tokens == 400_000
+    assert normalized.cache_read_tokens == 500_000
+    assert normalized.cache_write_tokens == 100_000
+    assert normalized.output_tokens == 200_000
+
+
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     """Some OpenAI-compatible proxies (OpenRouter, Cline) expose
     Anthropic-style cache token counts at the top level of the usage object when
@@ -444,6 +466,7 @@ def test_codex_pricing_tables_present_and_cover_live_models():
     from agent.usage_pricing import CODEX_PRICING_STANDARD, CODEX_PRICING_PRIORITY
 
     models = (
+        "gpt-5.6",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -463,9 +486,11 @@ def test_codex_pricing_rates_match_openai_official_docs():
     from agent.usage_pricing import CODEX_PRICING_STANDARD, CODEX_PRICING_PRIORITY
 
     assert CODEX_PRICING_STANDARD["gpt-5.6-sol"] == (5.00, 0.50, 6.25, 30.00)
+    assert CODEX_PRICING_STANDARD["gpt-5.6"] == CODEX_PRICING_STANDARD["gpt-5.6-sol"]
     assert CODEX_PRICING_STANDARD["gpt-5.6-terra"] == (2.50, 0.25, 3.125, 15.00)
     assert CODEX_PRICING_STANDARD["gpt-5.6-luna"] == (1.00, 0.10, 1.25, 6.00)
     assert CODEX_PRICING_PRIORITY["gpt-5.6-sol"] == (10.00, 1.00, 12.50, 60.00)
+    assert CODEX_PRICING_PRIORITY["gpt-5.6"] == CODEX_PRICING_PRIORITY["gpt-5.6-sol"]
     assert CODEX_PRICING_PRIORITY["gpt-5.6-terra"] == (5.00, 0.50, 6.25, 30.00)
     assert CODEX_PRICING_PRIORITY["gpt-5.6-luna"] == (2.00, 0.20, 2.50, 12.00)
     assert CODEX_PRICING_PRIORITY["gpt-5.5"] == (12.50, 1.25, None, 75.00)

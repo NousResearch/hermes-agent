@@ -779,6 +779,7 @@ def _normalize_bedrock_model_name(model: str) -> str:
 # cache_write, output). Cache-write pricing is None when OpenAI does not publish
 # a separate rate. Source: https://developers.openai.com/api/docs/pricing
 CODEX_PRICING_STANDARD: Dict[str, tuple[float, float, Optional[float], float]] = {
+    "gpt-5.6": (5.00, 0.50, 6.25, 30.00),
     "gpt-5.6-sol": (5.00, 0.50, 6.25, 30.00),
     "gpt-5.6-terra": (2.50, 0.25, 3.125, 15.00),
     "gpt-5.6-luna": (1.00, 0.10, 1.25, 6.00),
@@ -789,6 +790,7 @@ CODEX_PRICING_STANDARD: Dict[str, tuple[float, float, Optional[float], float]] =
     "gpt-5": (5.00, 0.50, None, 30.00),  # alias safety -> 5.5-class flagship
 }
 CODEX_PRICING_PRIORITY: Dict[str, tuple[float, float, Optional[float], float]] = {
+    "gpt-5.6": (10.00, 1.00, 12.50, 60.00),
     "gpt-5.6-sol": (10.00, 1.00, 12.50, 60.00),
     "gpt-5.6-terra": (5.00, 0.50, 6.25, 30.00),
     "gpt-5.6-luna": (2.00, 0.20, 2.50, 12.00),
@@ -1290,7 +1292,7 @@ def normalize_usage(
         details = getattr(response_usage, "input_tokens_details", None)
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
         cache_write_tokens = _to_int(
-            getattr(details, "cache_creation_tokens", 0) if details else 0
+            getattr(details, "cache_write_tokens", 0) if details else 0
         )
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:

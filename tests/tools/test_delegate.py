@@ -2004,6 +2004,83 @@ class TestDelegateHeartbeat(unittest.TestCase):
     parent's _last_activity_ts freezes when delegate_task starts.
     """
 
+    def test_heartbeat_touches_parent_before_first_interval(self):
+        """The worker touches the parent as soon as it starts."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_times = []
+        child_start_times = []
+        parent._touch_activity = lambda _desc: touch_times.append(time.monotonic())
+
+        child = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 0,
+            "max_iterations": 50,
+            "last_activity_desc": "starting",
+        }
+
+        def short_run(**_kwargs):
+            child_start_times.append(time.monotonic())
+            time.sleep(0.05)
+            return {"final_response": "done", "completed": True, "api_calls": 0}
+
+        child.run_conversation.side_effect = short_run
+
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.2):
+            _run_single_child(
+                task_index=0,
+                goal="Test immediate heartbeat",
+                child=child,
+                parent_agent=parent,
+            )
+
+        self.assertEqual(len(touch_times), 1)
+        self.assertLessEqual(touch_times[0], child_start_times[0])
+
+    def test_heartbeat_call_count_is_interval_bounded(self):
+        """An immediate first touch must not turn the worker into a busy loop."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_times = []
+        parent._touch_activity = lambda _desc: touch_times.append(time.monotonic())
+
+        child = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": "terminal",
+            "api_call_count": 1,
+            "max_iterations": 50,
+            "last_activity_desc": "executing tool: terminal",
+        }
+        child.run_conversation.side_effect = lambda **_kwargs: (
+            time.sleep(0.12)
+            or {"final_response": "done", "completed": True, "api_calls": 1}
+        )
+
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            _run_single_child(
+                task_index=0,
+                goal="Test bounded heartbeat",
+                child=child,
+                parent_agent=parent,
+            )
+
+        self.assertGreaterEqual(len(touch_times), 2)
+        self.assertLessEqual(
+            len(touch_times),
+            3,
+            f"Heartbeat busy-spun: {len(touch_times)} touches in 0.12s",
+        )
+        self.assertTrue(
+            all(
+                later - earlier >= 0.04
+                for earlier, later in zip(touch_times, touch_times[1:])
+            ),
+            f"Heartbeat touches were not interval-bounded: {touch_times}",
+        )
+
     def test_heartbeat_touches_parent_activity_during_child_run(self):
         """Parent's _touch_activity is called while child.run_conversation blocks."""
         from tools.delegate_tool import _run_single_child

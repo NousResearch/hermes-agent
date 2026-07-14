@@ -1792,6 +1792,14 @@ def _run_single_child(
     _stale_count = [0]
 
     def _heartbeat_loop():
+        if parent_agent is not None:
+            touch = getattr(parent_agent, "_touch_activity", None)
+            if touch:
+                try:
+                    touch(f"delegate_task: subagent {task_index} working")
+                except Exception:
+                    pass
+
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
             if parent_agent is None:
                 continue

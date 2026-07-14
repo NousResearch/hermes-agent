@@ -1282,6 +1282,25 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         return bool(value)
 
+    def _coerce_int_extra(
+        self,
+        key: str,
+        default: int,
+        *,
+        min_value: Optional[int] = None,
+        max_value: Optional[int] = None,
+    ) -> int:
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        try:
+            parsed = int(value) if value is not None else int(default)
+        except (TypeError, ValueError):
+            parsed = int(default)
+        if min_value is not None:
+            parsed = max(parsed, min_value)
+        if max_value is not None:
+            parsed = min(parsed, max_value)
+        return parsed
+
     def _coerce_float_extra(
         self,
         key: str,
@@ -1290,12 +1309,16 @@ class TelegramAdapter(BasePlatformAdapter):
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
     ) -> float:
+        import math
+
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
             return default
         try:
             parsed = float(value)
         except (TypeError, ValueError):
+            return default
+        if not math.isfinite(parsed):
             return default
         if min_value is not None:
             parsed = max(parsed, min_value)
@@ -7294,6 +7317,45 @@ class TelegramAdapter(BasePlatformAdapter):
             return note
         return f"{existing}\n\n{note}"
 
+    async def _download_telegram_media_bytes(
+        self,
+        media_source: Any,
+        media_label: str,
+    ) -> bytes:
+        """Download Telegram voice/audio bytes with bounded retry/backoff."""
+        attempts = self._coerce_int_extra(
+            "media_download_attempts",
+            2,
+            min_value=1,
+            max_value=5,
+        )
+        delay = self._coerce_float_extra(
+            "media_download_retry_delay_seconds",
+            0.5,
+            min_value=0.0,
+            max_value=10.0,
+        )
+        for attempt in range(1, attempts + 1):
+            try:
+                file_obj = await media_source.get_file()
+                return bytes(await file_obj.download_as_bytearray())
+            except Exception as exc:
+                if attempt >= attempts:
+                    raise
+                logger.warning(
+                    "[Telegram] %s download failed (attempt %d/%d), "
+                    "retrying in %.2fs: %s",
+                    media_label,
+                    attempt,
+                    attempts,
+                    delay,
+                    exc,
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+        raise RuntimeError("Telegram media download attempts exhausted")
+
     async def _surface_media_cache_failure(
         self,
         msg: Message,
@@ -7853,9 +7915,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.info("[Telegram] Skipped oversized user voice (size=%s)", getattr(msg.voice, "file_size", None))
                     await self.handle_message(event)
                     return
-                file_obj = await msg.voice.get_file()
-                audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                audio_bytes = await self._download_telegram_media_bytes(
+                    msg.voice,
+                    "voice",
+                )
+                cached_path = cache_audio_from_bytes(audio_bytes, ext=".ogg")
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/ogg"]
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
@@ -7870,9 +7934,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.info("[Telegram] Skipped oversized user audio (size=%s)", getattr(msg.audio, "file_size", None))
                     await self.handle_message(event)
                     return
-                file_obj = await msg.audio.get_file()
-                audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                audio_bytes = await self._download_telegram_media_bytes(
+                    msg.audio,
+                    "audio",
+                )
+                cached_path = cache_audio_from_bytes(audio_bytes, ext=".mp3")
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/mp3"]
                 logger.info("[Telegram] Cached user audio at %s", cached_path)

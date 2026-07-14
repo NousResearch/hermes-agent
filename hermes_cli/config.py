@@ -2515,6 +2515,8 @@ DEFAULT_CONFIG = {
         "extra": {
             "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
             "rich_drafts": False,       # Experimental Bot API 10.1 rich draft previews during Telegram DM streaming. Default off because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws.
+            "media_download_attempts": 2,  # Bounded attempts for transient voice/audio get_file + download failures (clamped 1-5).
+            "media_download_retry_delay_seconds": 0.5,  # Delay between voice/audio media download attempts (clamped 0-10s).
         },
     },
 

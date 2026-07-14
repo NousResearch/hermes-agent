@@ -1185,6 +1185,38 @@ class TestLoadGatewayConfig:
         assert config["telegram"]["extra"]["rich_messages"] is False
         assert config["telegram"]["extra"]["rich_drafts"] is False
 
+    def test_load_config_defaults_bound_telegram_media_download_retry(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+
+        assert config["telegram"]["extra"]["media_download_attempts"] == 2
+        assert config["telegram"]["extra"]["media_download_retry_delay_seconds"] == 0.5
+
+    def test_bridges_telegram_media_download_retry_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "telegram:\n"
+            "  extra:\n"
+            "    media_download_attempts: 4\n"
+            "    media_download_retry_delay_seconds: 0.25\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.extra["media_download_attempts"] == 4
+        assert telegram.extra["media_download_retry_delay_seconds"] == 0.25
+
     def test_bridges_telegram_extra_base_url_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -65,8 +65,9 @@ before the script will run them at all.
 
 ## Critical: project identifier quirk
 
-Verified against a live instance — **Commander uses two different project
-identifiers** and the wrong one 404s or resolves to nothing:
+Verified against a live instance — **Commander uses three different project
+identifier formats** across its own routes, and the wrong one either 404s
+or (worse) silently returns an empty/wrong result with a 200:
 
 - Query-string routes (`?project=...` — `board`, `running`) want the
   internal **id**: `owner-repo` with a dash, e.g. `zealchaiwut-commander`.
@@ -74,9 +75,24 @@ identifiers** and the wrong one 404s or resolves to nothing:
   `advisor_suggestions`, `todos`, sprint-scoped `?project=` query params
   like `sprint_state`/`preflight`/`mis_sizing_flags`) want the **bare repo
   name**, e.g. `commander`.
+- `nav_status` (`/api/sprint-nav-status?repo=...`) and `rerun`/`rerun_preview`
+  (`.../rerun`, `.../rerun-preview`, `?project=...`) both want the **full
+  `owner/repo` string**, e.g. `zealchaiwut/commander` — despite `rerun`'s
+  query param being named `project` just like the bare-repo-name group
+  above, it is NOT in that group; passing the bare name 502s with
+  `expected the "[HOST/]OWNER/REPO" format`. `nav_status` fails quieter:
+  the bare name or dashed id both return `{"has_sprint": false}` with a
+  plain `200`, which looks like "no sprint" instead of "wrong identifier".
+  The `status` subcommand already gets `nav_status` right by reading `repo`
+  straight off `GET /api/projects`; the `nav_status`/`rerun_preview`/`rerun`
+  shortcuts in this script all require `--repo`/`--project` in full
+  `owner/repo` form for exactly this reason — don't strip the owner off out
+  of habit from the other two groups.
 
-When unsure, run `call GET /api/projects` first and read `id` vs `repo` off
-the real project list — don't guess.
+Same route family, same-looking `project`/`repo` query param name, three
+different expected value formats depending on the specific route — always
+check this section (or `call GET /api/projects` + trial) before assuming a
+new route follows the same pattern as one you've already used.
 
 ## How to Run
 
@@ -100,10 +116,13 @@ are capped at 15 items so a single call can't blow the context budget.
 
 | Subcommand | Endpoint | Purpose |
 |---|---|---|
+| `status` | `/api/projects` + `/api/sprint-nav-status` × N | **Start here for "what's running/pending"** — one call, every tracked project's current sprint + state + done/total/UAT counts |
 | `health` | `GET /api/health` | Overall health snapshot |
+| `home` | `GET /api/home` | Cross-project rollup (running count, awaiting-UAT, backlog totals) |
+| `nav_status --repo <owner/repo>` | `GET /api/sprint-nav-status` | Current sprint + ticket-column breakdown for one project |
 | `board --project <id>` | `GET /api/board` | Kanban board for a project |
 | `running --project <id>` | `GET /api/running` | Currently-running agents/jobs for a project |
-| `sprints` | `GET /api/sprints` | List sprint labels |
+| `sprints` | `GET /api/sprints` | List **every** sprint label ever created for the default project (not "pending" — see Pitfalls) |
 | `sprint_state <label> --project <repo>` | `GET /api/sprints/{label}/state` | Sprint state snapshot |
 | `sprint_progress` | `GET /api/sprint-progress` | Sprint progress bar data |
 | `issues` | `GET /api/issues` | List issues |
@@ -112,20 +131,60 @@ are capped at 15 items so a single call can't blow the context budget.
 | `advisor_suggestions <repo>` | `GET /api/projects/{project}/advisor/suggestions` | Pre-computed advisor suggestions |
 | `mis_sizing_flags <label> --project <repo>` | `GET .../mis-sizing-flags` | Pre-computed ticket mis-sizing flags |
 | `preflight <label> --project <repo>` | `GET .../preflight` | Full preflight report before dispatch |
+| `rerun_preview <label> --project <owner/repo>` | `GET .../rerun-preview` | Preview what re-running a sprint would do (SAFE) — needs full `owner/repo`, not bare name |
 | `spec [--path <substr>]` | `GET /openapi.json` | Live schema — the source of truth if this doc drifts |
 | `stream <path> [--max-seconds N]` | any SSE route | Capped read of a live stream (default 20s) |
 | `call <METHOD> <path> [--json '<body>'] [--confirm]` | any of the ~155 routes | Escape hatch — see `references/endpoints.md` |
 
 ## Procedure
 
-### Status Check ("what's going on with the board / sprint")
+### Status Check — one or more projects ("what's running/pending on commander")
 
-1. Resolve the project: use what the user named, or `commander_api.default_project`.
-2. Call `board --project <id>` and, if relevant, `running --project <id>`.
-   Two calls, no more.
-3. Narrate: current sprint, ticket counts per column (running / needs_rework
-   / ready_to_merge / draft / backlog), and which agents are active on what.
-4. If the user asks for percent-complete specifically, add `sprint_progress`.
+This is the main use case: a remote status check standing in for opening
+the dashboard UI. Get it right in one shot.
+
+1. Run **`status`** — one call, no project resolution needed, covers every
+   tracked project. Do not call `board`, `running_sprint`, `sprint_state`,
+   or loop over guessed sprint labels for this ask; `status` already did
+   that correctly. If the user named one specific project, still run
+   `status` (it's one call) and just report that project's entry.
+2. Commander does not expose a literal "pending sprints" list — `sprints`
+   returns *every* label ever created (finished ones included), so
+   `all sprints minus the running one` is **wrong** and will list old,
+   already-merged sprints as if they were queued up. The correct read of
+   `status`'s per-project `state` field:
+   - `"running"` — a sprint is actively being worked; nothing else can be
+     dispatched for that project right now.
+   - `"finished"` (or no entry / `has_sprint: false`) — the project is idle;
+     there's room to plan or dispatch the next sprint. This does *not* mean
+     a specific next sprint is already queued — say "idle, room to run
+     something" rather than inventing a next label. If the user wants to
+     know the next label to use, that's a separate ask (see Sprint Dispatch).
+3. Reply in a **compact list, one line per project** — repo name, sprint
+   number, state, `done/total` done, `uat` count if nonzero. Example shape
+   (not literal wording, adapt to what `status` actually returned):
+   `commander: sprint-103 running (0/6 done, 5 in UAT)`
+   `asset-studio: sprint-8 finished (9/9 done)`
+   No headers, no per-project subsections, no restating the question, no
+   paragraph of caveats — this is a status ping, not a report.
+
+**Never do these, on this or any status ask** (this is what broke last
+time — see Pitfalls for why each one specifically matters):
+- Don't show the `terminal`/`python3 .../commander_api.py ...` command or
+  its raw JSON in the reply — run it, then speak the answer in plain
+  language. Only show the command if the user explicitly asks "what
+  command does that" or similar.
+- Don't invent "illustrative" or "assuming the API returns..." example
+  data. Every number in the reply must come from an actual call you just
+  made. If a call fails, say it failed — don't paper over it with a
+  plausible-looking guess.
+- Don't explain how the API/endpoints work unless asked. The user wants
+  the sprint status, not a tutorial on `running` vs `sprints` vs
+  `sprint-nav-status`.
+- If the user asked about "each project"/"all projects", answer for all
+  of them in this one reply. Don't stop after one and ask "which project
+  would you like next" — that's only appropriate if they asked about one
+  project and you're offering to check others.
 
 ### Sprint Dispatch — HIGH-RISK, confirm first
 
@@ -141,12 +200,23 @@ without the user explicitly saying to go ahead on *this specific sprint*.
 3. Summarize the sprint's ticket list and preflight status, then ask: "Dispatch
    `<label>` now? This spawns paid Coder/Tester agent runs." Wait for a yes.
 4. Only after that explicit yes: `call POST /api/sprints/run --json '{"sprint_label": "<label>", "project": "<repo>"}' --confirm`.
-5. Report the response and point to `sprint_state`/`stream` for progress —
+5. Report the response and point to `nav_status`/`stream` for progress —
    don't poll in a loop unattended.
+
+**Re-running** an already-finished/failed sprint is a different call, not
+`/api/sprints/run` again: `rerun_preview <label> --project <owner/repo>`
+first (SAFE, shows what would happen — ticket list and the suggested
+versioned label like `sprint-103.1`), summarize it and get the same
+explicit per-action confirmation, then
+`call POST /api/sprints/{label}/rerun --json '{"project": "<owner/repo>"}' --confirm`.
+Note the full `owner/repo` form here — see the identifier quirk section.
 
 ### Sprint Monitoring ("how's sprint X doing")
 
-1. `sprint_state <label> --project <repo>` for a snapshot.
+1. `nav_status --repo <owner/repo>` for a snapshot with ticket-column
+   breakdown (or `status` if checking multiple projects at once — see
+   Status Check above). Use `sprint_state <label> --project <repo>` only if
+   you need fields `nav_status` doesn't return.
 2. If the user wants a live tail: `stream /api/sprints/<label>/live/stream --max-seconds 20`
    — one capped read, not an open-ended watch.
 3. Relay state fields plainly; don't re-interpret `state`/`dag`/warnings
@@ -181,9 +251,23 @@ schema straight from Commander.
 
 ## Pitfalls
 
-- Don't guess the project identifier — the id-vs-repo-name split above is
-  real and unverified assumptions will silently 404 or hit the wrong
-  project. Run `call GET /api/projects` when unsure.
+- Don't guess the project identifier — the three-format split above is real
+  and unverified assumptions will silently 404 or (for `nav_status`)
+  silently return a wrong-but-valid-looking `has_sprint: false`. Run
+  `call GET /api/projects` when unsure, or just use `status`, which already
+  gets this right.
+- `sprints` is a full historical label list, not a "pending" list — don't
+  compute "pending" as `sprints` minus the running one, and don't guess a
+  next label by incrementing the highest known number. Neither is reliable;
+  see Status Check above for the actual read of `state`.
+- `pending-signoff` timed out during testing against a project with a lot
+  of history — prefer `status`/`home` for awaiting-UAT counts instead of
+  calling it per project.
+- Don't show the raw `terminal` command or JSON response in a status reply,
+  don't fabricate illustrative/example data, don't explain API mechanics
+  unprompted, and don't leave part of a multi-project question unanswered
+  to ask which project to check next — see the "Never do these" list under
+  Status Check, all four came from a real bad reply this skill produced.
 - Never pass `--confirm` on a mutating call without the user having approved
   *that specific action* in chat — a standing "sure, go ahead" earlier in
   the conversation doesn't cover a different sprint/branch/deploy later.
@@ -199,9 +283,13 @@ schema straight from Commander.
 
 - `python3 scripts/commander_api.py health` returns `status: 200` with no
   connection error when Commander is running.
+- `python3 scripts/commander_api.py status` returns a `projects` array
+  covering every project from `/api/projects`, each with a real `state`.
 - `call POST ...` without `--confirm` always exits non-zero and refuses —
   confirming the safety gate is structural, not just documented.
 - A HIGH-RISK path (e.g. `/api/sprints/run`, any `DELETE`) prints the loud
   warning banner even with `--confirm` passed.
-- Status narration after `board`/`running` never invents ticket counts or
-  agent states not present in the response body.
+- A multi-project status reply is a compact list (one short line per
+  project) with zero fabricated numbers, zero shown commands/JSON, and zero
+  unrequested API explanation — and answers every project the user asked
+  about in that one reply, not a subset with a follow-up question.

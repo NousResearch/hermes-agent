@@ -82,6 +82,21 @@ SHORTCUTS = {
         [("project", True)],
         "Full preflight report before dispatching a sprint",
     ),
+    "home": ("/api/home", [], [], "Cross-project rollup: running/awaiting-UAT/backlog counts"),
+    "nav_status": (
+        "/api/sprint-nav-status",
+        [],
+        [("repo", True)],  # API marks this optional but omitting it silently
+        # returns an arbitrary project's data instead of erroring — require
+        # it here so that footgun can't happen through this script.
+        "Current sprint + ticket-column breakdown for one project (repo must be full 'owner/repo')",
+    ),
+    "rerun_preview": (
+        "/api/sprints/{sprint_label}/rerun-preview",
+        ["sprint_label"],
+        [("project", True)],
+        "Preview what a re-run of a sprint would do (SAFE, no side effects)",
+    ),
 }
 
 
@@ -157,6 +172,42 @@ def request(base_url, token, method, path, body=None, query=None, timeout=20):
     return result
 
 
+def status_overview(base_url, token):
+    """One-shot cross-project sprint status: exactly the compact facts a
+    monitoring reply needs, gathered here (not left to the model to
+    orchestrate across several calls, or worse, guess at)."""
+    status, projects_body = _fetch_raw(base_url, token, "GET", "/api/projects")
+    if status != 200:
+        return {"error": "could not list projects", "status": status, "body": projects_body}
+
+    results = []
+    for proj in projects_body.get("projects", []):
+        repo_full = proj.get("repo")  # "owner/repo" — what nav-status requires
+        if not repo_full:
+            continue
+        ns_status, ns_body = _fetch_raw(
+            base_url, token, "GET", "/api/sprint-nav-status", query={"repo": repo_full}
+        )
+        entry = {"repo": repo_full}
+        if ns_status == 200 and isinstance(ns_body, dict):
+            if ns_body.get("has_sprint"):
+                entry["sprint"] = ns_body.get("sprint")
+                entry["state"] = ns_body.get("state")
+                entry["done"] = ns_body.get("done")
+                entry["total"] = ns_body.get("total")
+                entry["uat"] = ns_body.get("uat")
+                entry["backlog_open"] = (ns_body.get("columns") or {}).get("backlog")
+                if ns_body.get("summary_issue"):
+                    entry["summary_issue_url"] = ns_body["summary_issue"].get("url")
+            else:
+                entry["sprint"] = None
+                entry["state"] = "no_sprint"
+        else:
+            entry["error"] = f"nav-status returned {ns_status}"
+        results.append(entry)
+    return {"projects": results}
+
+
 def stream(base_url, token, path, max_seconds):
     url = base_url.rstrip("/") + "/" + path.lstrip("/")
     headers = {"Accept": "text/event-stream"}
@@ -198,6 +249,11 @@ def main():
         for qname, required in query_params:
             sp.add_argument(f"--{qname}", required=required, default=None)
 
+    sub.add_parser(
+        "status",
+        help="Cross-project sprint status in one call (running/finished/UAT counts per project)",
+    )
+
     sp = sub.add_parser("spec", help="Dump Commander's live OpenAPI schema")
     sp.add_argument("--path", default="", help="Optional path filter substring")
 
@@ -217,6 +273,10 @@ def main():
 
     args = p.parse_args()
     base_url = f"http://{args.host}:{args.port}"
+
+    if args.cmd == "status":
+        print(json.dumps(status_overview(base_url, args.token), indent=2))
+        return
 
     if args.cmd == "spec":
         status, parsed = _fetch_raw(base_url, args.token, "GET", "/openapi.json")

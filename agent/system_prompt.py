@@ -40,6 +40,7 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
+    TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
@@ -428,6 +429,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 _default_hint = _entry.platform_hint
         except Exception:
             pass
+
+    # For Telegram: append the rich-messages extension only when the user has
+    # opted in to ``platforms.telegram.extra.rich_messages: true``.  The base
+    # hint covers MarkdownV2-compatible constructs; the extension adds Bot API
+    # 10.1 guidance (tables, task lists, math, collapsible details, etc.).
+    if platform_key == "telegram" and _default_hint:
+        try:
+            from hermes_cli.config import load_config_readonly
+            _cfg = load_config_readonly()
+            _tg_extra = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra") or {}
+            if _tg_extra.get("rich_messages"):
+                _default_hint = _default_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
+        except Exception:
+            pass  # Config read failure — fall back to base hint only
 
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
     if platform_key == "tui" and _effective_hint:

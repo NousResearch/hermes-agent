@@ -696,6 +696,19 @@ def _run_review_in_thread(
             if isinstance(_rt.get("command"), str) and _rt["command"]:
                 _fork_kwargs["acp_command"] = _rt["command"]
                 _fork_kwargs["acp_args"] = _rt.get("args") or []
+            # Match parent's reasoning config so the fork's ``thinking`` /
+            # ``output_config`` are byte-identical in the request body —
+            # Anthropic's cache key is namespaced by ``thinking`` presence.
+            # Same-model path only: when routed to a different aux model the
+            # cache is cold regardless (parity buys nothing) and the parent's
+            # effort vocabulary may not be valid for the routed model/provider
+            # (e.g. OpenRouter ``extra_body.reasoning.effort`` is forwarded
+            # unclamped; codex_responses passes ``max``/``ultra`` through
+            # unmapped except on gpt-5.6/xAI). Let the routed fork use
+            # provider defaults — matching the ``not _routed`` gate on
+            # _cached_system_prompt below.
+            if not _routed:
+                _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,

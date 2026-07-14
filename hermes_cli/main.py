@@ -8136,6 +8136,90 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
+def _npm_manifest_paths() -> tuple[Path, ...]:
+    """Manifests whose changes must defeat the update-skip.
+
+    The lockfile alone is NOT a sufficient key: on a local checkout a dev
+    can edit package.json (root or a workspace) without running npm — the
+    lockfile is then unchanged but `hermes update` is exactly the step
+    expected to sync node_modules (via the `npm install` fallback in
+    _run_npm_install_deterministic).
+
+    The workspace list is pulled from the root package.json's `workspaces`
+    globs (npm's own source of truth) rather than hardcoded, so adding a
+    workspace can never silently escape the skip key. The root install
+    (step 1, --workspaces=false) still hoists shared deps for EVERY
+    workspace — desktop included — so all of them belong in the key, not
+    just the ones step 2 installs. Falls back to hashing just root
+    manifests if package.json is unreadable (never skips more than main
+    would have installed).
+    """
+    root_pkg = PROJECT_ROOT / "package.json"
+    paths = [PROJECT_ROOT / "package-lock.json", root_pkg]
+    try:
+        workspaces = json.loads(root_pkg.read_text(encoding="utf-8")).get(
+            "workspaces", []
+        )
+        if isinstance(workspaces, dict):  # legacy {"packages": [...]} form
+            workspaces = workspaces.get("packages", [])
+        for pattern in workspaces:
+            for match in sorted(PROJECT_ROOT.glob(str(pattern))):
+                manifest = match / "package.json"
+                if manifest.is_file():
+                    paths.append(manifest)
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return tuple(paths)
+
+
+def _npm_manifests_digest() -> str | None:
+    """Combined sha256 over the lockfile + all workspace package.json files.
+
+    Returns None when the lockfile is missing (never skip then).
+    """
+    if not (PROJECT_ROOT / "package-lock.json").exists():
+        return None
+    h = hashlib.sha256()
+    for p in _npm_manifest_paths():
+        h.update(str(p.relative_to(PROJECT_ROOT)).encode())
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()
+
+
+def _npm_lockfile_changed(hermes_root: Path) -> bool:
+    current = _npm_manifests_digest()
+    if current is None:
+        return True
+    # Also check that node_modules exists; a matching hash with missing
+    # node_modules means the cache was recorded by another checkout.
+    if not (PROJECT_ROOT / "node_modules").is_dir():
+        return True
+    try:
+        # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.
+        cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".npm_lock_hash_{cache_key}"
+        if not cache_file.exists():
+            return True
+        return cache_file.read_text(encoding="utf-8").strip() != current
+    except OSError:
+        return True
+
+
+def _record_npm_lockfile_hash(hermes_root: Path) -> None:
+    digest = _npm_manifests_digest()
+    if digest is None:
+        return
+    try:
+        cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".npm_lock_hash_{cache_key}"
+        cache_file.write_text(digest, encoding="utf-8")
+    except OSError:
+        logger.debug("Could not write npm lockfile hash cache")
+
+
 def _update_node_dependencies() -> None:
     from hermes_constants import find_node_executable, with_hermes_node_path
 
@@ -8144,6 +8228,16 @@ def _update_node_dependencies() -> None:
         return
 
     if not (PROJECT_ROOT / "package.json").exists():
+        return
+
+    from hermes_constants import get_default_hermes_root
+
+    # This cache describes PROJECT_ROOT/node_modules, which is shared by every
+    # Hermes profile using this checkout. Keep one per-checkout cache under the
+    # shared Hermes root rather than rerunning npm once per named profile.
+    shared_hermes_root = get_default_hermes_root()
+    if not _npm_lockfile_changed(shared_hermes_root):
+        logger.info("npm lockfile unchanged, skipping npm install")
         return
 
     # With a single workspace lockfile the root install would cover ALL
@@ -8190,6 +8284,7 @@ def _update_node_dependencies() -> None:
         env=nixos_env,
     )
     if ws_result.returncode == 0:
+        _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
     else:
         print("  ⚠ npm workspace install failed")

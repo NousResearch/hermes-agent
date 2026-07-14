@@ -1904,9 +1904,10 @@ class SessionStore:
                     # Stale routing self-heal (#54878): the in-memory entry
                     # points at a session that has ALREADY been ended in
                     # state.db.  Drop it and fall through to recovery/create.
-                    # Recovery finder reopens ``agent_close`` rows (preserving
-                    # the transcript) but returns None for other end_reasons
-                    # (e.g. /new), starting a fresh session.
+                    # Recovery finder reopens ``agent_close`` and mistaken
+                    # ``ws_orphan_reap`` rows (preserving the transcript) but
+                    # returns None for other end_reasons (e.g. /new), starting
+                    # a fresh session.
                     logger.warning(
                         "gateway.session: routing key %r -> %s is ended in "
                         "state.db but still live in sessions.json; dropping "
@@ -2178,6 +2179,10 @@ class SessionStore:
                             "has_active_processes_fn raised during prune for %s: %s",
                             entry.session_key, exc,
                         )
+                        # Fail safe: if we can't tell whether a background
+                        # process is attached, keep the entry rather than
+                        # risk orphaning live work.
+                        continue
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
             for key in removed_keys:

@@ -119,6 +119,9 @@ COPY package.json package-lock.json ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+# apps/shared/ is copied IN FULL because web/package.json references it as a
+# `file:` workspace dependency (same pattern as hermes-ink above).
+COPY apps/shared/ apps/shared/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
 # symlinks instead of copies.  This is the default since npm 10+, which is
@@ -184,12 +187,19 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 # invalidate the (relatively slow) web + ui-tui build layer.
 COPY web/ web/
 COPY ui-tui/ ui-tui/
+COPY apps/shared/ apps/shared/
 RUN cd web && npm run build && \
     cd ../ui-tui && npm run build
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
-COPY . .
+# --link decouples this layer from parents for cache purposes; --chmod bakes
+# the final read-only permissions at copy time so we skip the separate
+# `chmod -R` pass that previously walked ~30k files across the venv +
+# node_modules + source (21s amd64 / 222s arm64 — #49113).  `a+rX,go-w`
+# gives the non-root hermes user read + traverse but no write; root retains
+# write so the build steps below don't need chmod u+w dances.
+COPY --link --chmod=a+rX,go-w . .
 
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
@@ -197,19 +207,15 @@ COPY . .
 # resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
-# Keep /opt/hermes immutable for the runtime hermes user. Hosted/container
-# instances must not be able to self-edit the installed source or venv; user
-# data, skills, plugins, config, logs, and dashboard uploads live under
-# /opt/data instead. Root can still repair the image during build/boot, but
-# supervised Hermes processes drop to the non-root hermes user.
+# Wire the exec shim and install-method stamp.  Files under /opt/hermes are
+# already root-owned (COPY, uv sync, npm install all run as root) and
+# read-only for the hermes user (go-w from the --chmod above).
+
 USER root
 RUN mkdir -p /opt/hermes/bin && \
     cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
     chmod 0755 /opt/hermes/bin/hermes && \
-    printf 'docker\n' > /opt/hermes/.install_method && \
-    chown -R root:root /opt/hermes && \
-    chmod -R a+rX /opt/hermes && \
-    chmod -R a-w /opt/hermes
+    printf 'docker\n' > /opt/hermes/.install_method
 # The ``.install_method`` stamp is baked next to the running code (the install
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
 # volume that is commonly bind-mounted from the host and even shared with a
@@ -236,13 +242,11 @@ RUN mkdir -p /opt/hermes/bin && \
 #
 # The arg is optional — local `docker build` without --build-arg simply
 # omits the file, and the runtime falls back to live-git lookup.  CI
-# (.github/workflows/docker-publish.yml) passes ${{ github.sha }} so
+# (.github/workflows/docker.yml) passes ${{ github.sha }} so
 # every published image has it.
 ARG HERMES_GIT_SHA=
 RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
-        chmod u+w /opt/hermes && \
-        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha && \
-        chmod a-w /opt/hermes /opt/hermes/.hermes_build_sha; \
+        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
     fi
 
 # ---------- s6-overlay service wiring ----------

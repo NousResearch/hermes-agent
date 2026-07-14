@@ -450,7 +450,7 @@ def run_backup(args) -> None:
             print(f"    {p}")
 
     if skipped_dirs:
-        print(f"\n  Excluded directories:")
+        print("\n  Excluded directories:")
         for d in sorted(skipped_dirs):
             print(f"    {d}/")
 
@@ -721,8 +721,8 @@ def run_import(args) -> None:
             except ImportError:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):
-                    print(f"\n  Profiles detected but aliases could not be created.")
-                    print(f"  Run: hermes profile list  (after installing hermes)")
+                    print("\n  Profiles detected but aliases could not be created.")
+                    print("  Run: hermes profile list  (after installing hermes)")
 
         # Guidance
         print()
@@ -762,6 +762,19 @@ _QUICK_STATE_FILES = (
     "channel_directory.json",
     "channel_aliases.json",
     "processes.json",
+    # Per-profile user-created stores that live outside the git checkout and
+    # are therefore destroyed if the update flow removes/replaces the file and
+    # the post-update schema-init re-creates an empty one (issue #52889). All
+    # are at $HERMES_HOME/<name> for the default/root profile; on non-root
+    # profiles the real path is outside HERMES_HOME and the entry is silently
+    # skipped (best-effort, same as the pairing stores). SQLite DBs are copied
+    # WAL-safely via _safe_copy_db.
+    "projects.db",                      # per-profile project store
+    "response_store.db",                # gateway conversation history / tool payloads
+    "memory_store.db",                  # holographic memory facts/entities
+    "verification_evidence.db",         # agent verification audit trail
+    "kanban.db",                        # default board (back-compat <root>/kanban.db)
+    "kanban/boards",                    # non-default boards: each <slug>/kanban.db + board metadata (workspaces/ + attachments/ are skipped as regenerable)
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)
     "platforms/pairing",                # new location (gateway/pairing.py)
@@ -813,10 +826,22 @@ def create_quick_snapshot(
                 if not sub.is_file():
                     continue
                 sub_rel = sub.relative_to(home).as_posix()
+                # Skip heavy, regenerable per-board subtrees (scratch
+                # workspaces and task attachments can be large); we only need
+                # the board databases + their metadata to restore a board.
+                if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
+                    continue
                 dst = snap_dir / sub_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    shutil.copy2(sub, dst)
+                    # Route SQLite DBs through the WAL-safe backup() path so a
+                    # board DB with an open WAL (the gateway may hold it at
+                    # snapshot time) is captured consistently.
+                    if sub.suffix == ".db":
+                        if not _safe_copy_db(sub, dst):
+                            continue
+                    else:
+                        shutil.copy2(sub, dst)
                     manifest[sub_rel] = dst.stat().st_size
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)

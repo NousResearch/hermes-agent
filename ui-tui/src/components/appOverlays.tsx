@@ -180,6 +180,7 @@ export function FloatingOverlays({
         <FloatBox color={theme.color.border}>
           <ModelPicker
             gw={gw}
+            initialRefresh={typeof overlay.modelPicker === 'object' && overlay.modelPicker.refresh === true}
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
             sessionId={sid}

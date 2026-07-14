@@ -1,33 +1,65 @@
 #!/usr/bin/env node
-// bundle-electron-main.mjs — bundles electron/main.cjs into a single
-// self-contained file so the nix build doesn't need to ship node_modules/.
+// bundle-electron-main.mjs — bundles electron/main.ts and electron/preload.ts
+// into self-contained js files in dist/ so the packaged app doesn't need
+// node_modules/ or tsx at runtime.
 //
-// `electron` is provided by the runtime; `node-pty` is staged separately
-// via stage-native-deps.cjs.  `preload.cjs` is NOT require()'d by main —
-// Electron loads it via path.join(__dirname, 'preload.cjs') — so it stays
-// as a separate file and doesn't need bundling.
+// Output:
+//   dist/electron-main.mjs    (MJS bundle — entry point for packaged app)
+//   dist/electron-preload.js (CJS bundle — loaded via BrowserWindow preload)
+//
+// `electron` and `node-pty` are external (provided by the runtime / staged
+// separately via stage-native-deps).
 import { build } from 'esbuild'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { renameSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
-const entry = resolve(root, 'electron/main.cjs')
-const tmp = resolve(root, 'electron/main.bundled.cjs')
+const distDir = resolve(root, 'dist')
+mkdirSync(distDir, { recursive: true })
 
+const mainEntry = resolve(root, 'electron/main.ts')
+const mainOut = resolve(distDir, 'electron-main.mjs')
+const preloadEntry = resolve(root, 'electron/preload.ts')
+const preloadOut = resolve(distDir, 'electron-preload.js')
+
+const external = ['electron', 'node-pty', 'fs']
+// Production bundles bake packaged=true so unpackaged `electron .` still
+// behaves like a packaged build. Dev bundles (`--dev`) leave the env alone
+// so HERMES_DESKTOP_DEV_SERVER / source-tree resolution keep working.
+const isDev = process.argv.includes('--dev')
+const define = isDev
+  ? {}
+  : { 'process.env.HERMES_DESKTOP_IS_PACKAGED': JSON.stringify(true) }
+
+// Bundle main.ts → dist/electron-main.mjs
 await build({
-  entryPoints: [entry],
+  entryPoints: [mainEntry],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  outfile: mainOut,
+  external,
+  banner: {
+    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+  },
+  define,
+  logLevel: 'info',
+})
+console.log(`bundled ${mainOut}${isDev ? ' (dev)' : ''}`)
+
+// Bundle preload.ts → dist/electron-preload.js
+await build({
+  entryPoints: [preloadEntry],
   bundle: true,
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  outfile: tmp,
-  external: ['electron', 'node-pty'],
-  logLevel: 'info'
+  outfile: preloadOut,
+  external,
+  define,
+  logLevel: 'info',
 })
-
-// Overwrite the original with the bundled version.
-renameSync(tmp, entry)
-
-console.log(`bundled ${entry}`)
+console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)

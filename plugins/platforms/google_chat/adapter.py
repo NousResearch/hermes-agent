@@ -583,7 +583,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 )
             if not os.path.exists(sa_path):
                 raise FileNotFoundError(
-                    f"Service Account JSON file not found at configured path."
+                    "Service Account JSON file not found at configured path."
                 )
             # Validate file parses before handing to google-auth for nicer error.
             try:

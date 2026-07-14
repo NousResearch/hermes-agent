@@ -13,7 +13,7 @@ model:
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
   #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
-  #   "nous"         - Nous Portal OAuth (requires: hermes login)
+  #   "nous"         - Nous Portal OAuth (requires: hermes auth add nous)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
@@ -28,6 +28,7 @@ model:
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
+  #   "deepinfra"    - DeepInfra (requires: DEEPINFRA_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
@@ -85,6 +86,25 @@ model:
   #
   # default_headers:
   #   User-Agent: "curl/8.7.1"
+  #
+  # extra_headers: accepted as an alias of default_headers (merged, with
+  #   extra_headers winning when both are set) — matches the per-provider
+  #   extra_headers key below.
+  #
+  # Per-provider variant: named providers / custom_providers entries accept an
+  # extra_headers dict scoped to that endpoint only — for reverse proxies,
+  # gateways, or custom auth (e.g. Cloudflare Access service tokens).
+  # Merged onto SDK/provider defaults with the entry's values winning.
+  # Header values are treated as secrets and are never logged.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "https://llm.internal.example.com/v1"
+  #     key_env: "MY_PROXY_API_KEY"
+  #     extra_headers:
+  #       CF-Access-Client-Id: "xxxx.access"
+  #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
+  #       X-Client-Name: "hermes-agent"
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
@@ -390,8 +410,14 @@ compression:
   
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later
+  # Models with context windows below 512K are floored at 0.75 (raise-only) so
+  # compaction doesn't fire with half the window still free; set above 0.75 to override.
   threshold: 0.50
-  
+
+  # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
+  # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
+  codex_gpt55_autoraise: true
+
   # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
   # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
   # Summary output is separately capped at 12K tokens (Gemini output limit).
@@ -402,6 +428,14 @@ compression:
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.
   protect_last_n: 20
+
+  # Codex app-server (codex CLI runtime) thread-compaction mode. The codex
+  # agent owns the real thread context on this runtime, so Hermes' summarizer
+  # cannot shrink it — compaction goes through the app server instead.
+  #   native = let Codex decide when to compact its own thread (default)
+  #   hermes = let Hermes threshold trigger Codex thread/compact/start
+  #   off    = Hermes will not auto-trigger compaction; Codex may still compact natively
+  codex_app_server_auto: native
 
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
@@ -451,7 +485,7 @@ prompt_caching:
 # Provider options:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
-#   "nous"       - Force Nous Portal (requires: hermes login)
+#   "nous"       - Force Nous Portal (requires: hermes auth add nous)
 #   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
 #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
 #   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
@@ -572,6 +606,41 @@ max_concurrent_sessions: null
 group_sessions_per_user: true
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API Server — per-client model routing
+# ─────────────────────────────────────────────────────────────────────────────
+# Route different API clients to different models/providers on a single
+# Hermes deployment.  Clients choose a backend by sending a specific string
+# as the OpenAI ``model`` field.  Unmapped model values fall back to the
+# global model configured in the ``model:`` section above, and an explicit
+# session /model override always wins over a route.
+#
+# Configure via the ``platforms.api_server.extra.model_routes`` gateway
+# config block:
+#
+#   platforms:
+#     api_server:
+#       enabled: true
+#       extra:
+#         key: "your-api-server-secret"
+#         model_routes:
+#           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
+#           minimax-m2:
+#             model: "minimax/minimax-m1"
+#             provider: "openrouter"          # optional — overrides global provider
+#             # api_key: "sk-..."             # optional — per-route UPSTREAM provider
+#             #                                 key (NOT caller auth; never logged)
+#             # base_url: "https://..."       # optional — per-route base URL
+#           # GPT clients keep their own alias
+#           gpt-5:
+#             model: "openai/gpt-5"
+#             provider: "openrouter"
+#
+# Configured aliases are automatically listed by GET /v1/models so clients
+# can discover them without manual coordination.  Caller authentication is
+# unchanged: every request still authenticates with the global API server
+# key (``extra.key`` / API_SERVER_KEY).
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message
@@ -626,10 +695,10 @@ agent:
   # gateway_timeout_warning: 900
 
   # Graceful drain timeout for gateway stop/restart (seconds).
-  # The gateway stops accepting new work, waits for in-flight agents to
-  # finish, then interrupts anything still running after this timeout.
-  # 0 = no drain, interrupt immediately.
-  # restart_drain_timeout: 60
+  # Default 0 = no drain: a restart interrupts in-flight agents immediately,
+  # cleans up, and exits. Set a positive value only if you want a grace
+  # window on /restart, and keep it well under systemd's TimeoutStopSec.
+  # restart_drain_timeout: 0
 
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
@@ -645,6 +714,25 @@ agent:
   # verification summary would reach a human as chat noise. Set true or false to
   # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
   # verify_on_stop: auto
+
+  # Standing operator instructions for the coding posture (when Hermes is in a
+  # code workspace). Appended to the coding brief as an extra system block, so
+  # you can pin project-wide workflow rules without editing the shipped brief.
+  # Accepts a string or a list of strings. Takes effect next session.
+  # coding_instructions:
+  #   - "For UI work, don't run tsc/lint until I approve the look."
+  #   - "Clean the diff before you commit and push."
+
+  # When verify-on-stop finds edited code without fresh verification evidence,
+  # append guidance for creative UI work (avoid broad tsc/lint/test before visual
+  # approval) and clean-diff expectations. Set false to keep that nudge terse.
+  # verify_guidance: true
+
+  # A `pre_verify` hook (plugin or shell, see Event Hooks docs) can keep the
+  # agent going one more turn to verify/clean before finishing. This caps how
+  # many times one turn may be nudged to continue, so a hook can't trap the loop.
+  # Default 3.
+  # max_verify_nudges: 3
 
   # Enable verbose logging
   verbose: false
@@ -761,6 +849,11 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#   webhook:
+#     extra:
+#       # Route scripts default to a 30 second timeout. Scripts must live under
+#       # the active profile's scripts directory and receive webhook JSON on stdin.
+#       script_timeout_seconds: 30
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
@@ -918,6 +1011,34 @@ stt:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
+  # deepinfra:
+  #   # Model id is discovered live from the DeepInfra catalog filtered
+  #   # by the `stt` surface tag — leave `model` blank to take the first
+  #   # live result. Pin only when you need a specific Whisper variant.
+  #   model: ""
+
+# Text-to-speech. Only the deepinfra block is documented here — the
+# remaining providers (edge, openai, xai, minimax, mistral, gemini,
+# elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
+# DEFAULT_CONFIG in hermes_cli/config.py.
+# tts:
+#   provider: "deepinfra"
+#   deepinfra:
+#     # Model id is discovered live from the DeepInfra catalog filtered
+#     # by the `tts` surface tag — leave `model` blank to take the first
+#     # live result.
+#     model: ""
+#     voice: "default"
+
+# Image generation. Each provider plugin reads its own ``image_gen.<name>``
+# block; deepinfra discovers models live from
+# api.deepinfra.com/v1/openai/models filtered by the ``image-gen`` tag —
+# no model id is hardcoded, so retired models disappear automatically.
+# image_gen:
+#   provider: "deepinfra"
+#   deepinfra:
+#     # Leave `model` blank for the first live `image-gen`-tagged result.
+#     model: ""
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)
@@ -1003,6 +1124,7 @@ display:
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
+  #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
@@ -1276,3 +1398,80 @@ updates:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+#
+# -----------------------------------------------------------------------------
+# Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,
+# Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …). Use this INSTEAD of the
+# nous block above when gating the dashboard with your own identity provider.
+# Each setting can be overridden by an environment variable:
+#
+#   dashboard.oauth.self_hosted.issuer         <-  HERMES_DASHBOARD_OIDC_ISSUER
+#   dashboard.oauth.self_hosted.client_id      <-  HERMES_DASHBOARD_OIDC_CLIENT_ID
+#   dashboard.oauth.self_hosted.scopes         <-  HERMES_DASHBOARD_OIDC_SCOPES
+#   dashboard.oauth.self_hosted.client_secret  <-  HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#
+# dashboard:
+#   oauth:
+#     provider: self-hosted
+#     self_hosted:
+#       issuer: "https://auth.example.com/application/o/hermes/"  # required
+#       client_id: "hermes-dashboard"                             # required
+#       scopes: "openid profile email"                            # optional
+#
+#       # OPTIONAL — set ONLY if your IDP registered the client as
+#       # *confidential* (Authentik / Keycloak often default to this). When
+#       # set, Hermes authenticates the client at the token endpoint
+#       # (client_secret_basic or client_secret_post, auto-selected from the
+#       # IDP's discovery doc) IN ADDITION to PKCE. Leave unset for a public
+#       # (PKCE-only) client — the common case.
+#       #
+#       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#       # in ~/.hermes/.env over putting it here in config.yaml.
+#       #   client_secret: ""
+
+# =============================================================================
+# External secret sources
+# =============================================================================
+# Pull provider credentials from external secret managers at process startup
+# instead of storing them in ~/.hermes/.env. Only the manager's bootstrap
+# credential (e.g. BWS_ACCESS_TOKEN / OP_SERVICE_ACCOUNT_TOKEN) lives in .env
+# (or your shell / desktop session); everything else rotates centrally.
+# Failures never block startup — Hermes warns once and continues with
+# whatever .env already had.
+#
+# Multiple sources can be enabled at once:
+#   - "mapped" sources (explicit VAR -> ref bindings, e.g. 1Password's env:
+#     map) beat "bulk" sources (whole-project dumps like Bitwarden BSM)
+#   - within a shape, the first source to claim a var wins; later claims
+#     are skipped with a startup warning (never a silent clobber)
+#   - a source's override_existing lets it beat .env/shell values, but
+#     never another secret source's claim
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/secrets/
+#
+# secrets:
+#   # Optional explicit ordering of enabled sources.
+#   # sources: [onepassword, bitwarden]
+#
+#   # ---- Bitwarden Secrets Manager (bws CLI) --------------------------------
+#   bitwarden:
+#     enabled: false
+#     access_token_env: BWS_ACCESS_TOKEN   # bootstrap token, sourced from .env
+#     project_id: ""                       # UUID of the BSM project to sync
+#     server_url: ""                       # "" = US Cloud; EU/self-hosted URL otherwise
+#     cache_ttl_seconds: 300               # 0 disables caching
+#     override_existing: true              # BSM values win over existing env
+#     auto_install: true                   # lazy-download bws into ~/.hermes/bin
+#
+#   # ---- 1Password (op CLI) -------------------------------------------------
+#   onepassword:
+#     enabled: false
+#     # Map env-var names to op:// secret references. Each is resolved with a
+#     # single `op read` at startup.
+#     env:
+#       OPENAI_API_KEY: "op://Private/OpenAI/api key"
+#       ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"
+#     account: ""                                   # op --account shorthand; "" = default
+#     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN  # headless auth; unset = desktop session
+#     binary_path: ""                               # "" = resolve op via PATH; else absolute path
+#     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
+#     override_existing: true                       # resolved values win over existing env

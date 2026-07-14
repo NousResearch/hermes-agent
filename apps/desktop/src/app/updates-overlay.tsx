@@ -10,7 +10,7 @@ import { Loader } from '@/components/ui/loader'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
+import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import {
@@ -60,6 +60,7 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
+  const updateAvailable = status?.updateAvailable || behind > 0
 
   const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
@@ -93,10 +94,7 @@ export function UpdatesOverlay() {
 
   return (
     <Dialog onOpenChange={handleClose} open={open}>
-      <DialogContent
-        className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
-        showCloseButton={phase !== 'applying'}
-      >
+      <DialogContent className="max-w-sm overflow-hidden p-0 gap-0" showCloseButton={phase !== 'applying'}>
         {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
 
         {phase === 'manual' && (
@@ -119,6 +117,7 @@ export function UpdatesOverlay() {
             onRetryCheck={() => void check()}
             status={status}
             target={target}
+            updateAvailable={updateAvailable}
           />
         )}
       </DialogContent>
@@ -134,7 +133,8 @@ function IdleView({
   onLater,
   onRetryCheck,
   status,
-  target
+  target,
+  updateAvailable
 }: {
   behind: number
   checking: boolean
@@ -144,6 +144,7 @@ function IdleView({
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
   target: UpdateTarget
+  updateAvailable: boolean
 }) {
   const { t } = useI18n()
   const u = t.updates
@@ -196,11 +197,11 @@ function IdleView({
     )
   }
 
-  if (behind === 0) {
+  if (!updateAvailable) {
     return (
       <CenteredStatus
         body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
-        icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
+        icon={<BrandMark className="size-12" />}
         title={u.allSetTitle}
       />
     )
@@ -225,7 +226,7 @@ function IdleView({
         <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
-      <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
+      <div className="grid gap-3">
         {groups.map(group => (
           <div key={group.id}>
             <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
@@ -300,26 +301,25 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
       </div>
 
       <button
-        className="group flex w-full items-center justify-between gap-3 rounded-xl border border-border/70 bg-muted/30 px-4 py-3 text-left transition-colors hover:border-border hover:bg-muted/50"
+        className={cn(
+          'group flex w-full items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors',
+          copied ? 'border-primary/50' : 'border-(--stroke-nous) hover:border-(--ui-stroke-secondary)'
+        )}
         onClick={handleCopy}
         type="button"
       >
-        <code className="select-all font-mono text-sm text-foreground">
-          <span className="text-muted-foreground">$ </span>
+        <code className="min-w-0 flex-1 truncate select-all font-mono text-sm text-foreground">
+          <span className="select-none text-muted-foreground">$ </span>
           {command}
         </code>
-        <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground transition-colors group-hover:text-foreground">
-          {copied ? (
-            <>
-              <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              {u.copied}
-            </>
-          ) : (
-            <>
-              <Copy className="size-3.5" />
-              {u.copy}
-            </>
+        <span
+          className={cn(
+            'flex shrink-0 items-center gap-1 text-xs font-medium transition-colors',
+            copied ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
           )}
+        >
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          {copied ? u.copied : u.copy}
         </span>
       </button>
 

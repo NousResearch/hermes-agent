@@ -19,7 +19,7 @@ describe('PreviewPane console state', () => {
     vi.unstubAllGlobals()
   })
 
-  it('does not watch backend-only remote filesystem previews locally', () => {
+  it('does not watch backend-only remote filesystem previews locally', async () => {
     const watchPreviewFile = vi.fn(async () => ({ id: 'watch-1', path: '/remote/file.txt' }))
     const onPreviewFileChanged = vi.fn(() => vi.fn())
     $connection.set({ mode: 'remote' } as never)
@@ -31,38 +31,43 @@ describe('PreviewPane console state', () => {
       }
     })
 
-    render(
-      <PreviewPane
-        setTitlebarToolGroup={vi.fn()}
-        target={{
-          kind: 'file',
-          label: 'file.txt',
-          path: '/remote/file.txt',
-          previewKind: 'text',
-          source: '/remote/file.txt',
-          url: 'file:///remote/file.txt'
-        }}
-      />
-    )
+    await act(async () => {
+      render(
+        <PreviewPane
+          setTitlebarToolGroup={vi.fn()}
+          target={{
+            kind: 'file',
+            label: 'file.txt',
+            path: '/remote/file.txt',
+            previewKind: 'text',
+            source: '/remote/file.txt',
+            url: 'file:///remote/file.txt'
+          }}
+        />
+      )
+    })
 
     expect(watchPreviewFile).not.toHaveBeenCalled()
     expect(onPreviewFileChanged).not.toHaveBeenCalled()
   })
 
-  it('does not rebuild the pane titlebar group for streamed console logs', () => {
+  it('does not rebuild the pane titlebar group for streamed console logs', async () => {
     const setTitlebarToolGroup = vi.fn()
 
-    const rendered = render(
-      <PreviewPane
-        setTitlebarToolGroup={setTitlebarToolGroup}
-        target={{
-          kind: 'url',
-          label: 'Preview',
-          source: 'http://localhost:5174',
-          url: 'http://localhost:5174'
-        }}
-      />
-    )
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          setTitlebarToolGroup={setTitlebarToolGroup}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174',
+            url: 'http://localhost:5174'
+          }}
+        />
+      )
+    })
 
     const initialCalls = setTitlebarToolGroup.mock.calls.length
     const webview = rendered.container.querySelector('webview')

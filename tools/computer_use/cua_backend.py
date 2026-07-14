@@ -1243,6 +1243,48 @@ class CuaDriverBackend(ComputerUseBackend):
             return False
         return cua_driver_binary_available()
 
+    def _match_windows_for_app(
+        self, windows: List[Dict[str, Any]], app: str
+    ) -> List[Dict[str, Any]]:
+        """Resolve an ``app=`` filter against window names, then app metadata."""
+
+        def _matches_alias(query: str, candidate: str) -> bool:
+            return query in candidate or candidate in query
+
+        app_lower = app.lower()
+        direct = [w for w in windows if app_lower in w["app_name"].lower()]
+        if direct:
+            return direct
+
+        try:
+            running_apps = self.list_apps()
+        except Exception as exc:
+            logger.debug("computer_use list_apps fallback failed for %r: %s", app, exc)
+            return []
+
+        matching_pids: set[int] = set()
+        for raw_app in running_apps:
+            if not isinstance(raw_app, dict):
+                continue
+            raw_pid = raw_app.get("pid")
+            try:
+                pid = int(raw_pid)
+            except (TypeError, ValueError):
+                continue
+            aliases = []
+            for key in ("name", "bundle_id", "bundleId", "app_name", "display_name"):
+                value = raw_app.get(key)
+                if isinstance(value, str):
+                    lowered = value.strip().lower()
+                    if lowered:
+                        aliases.append(lowered)
+            if any(_matches_alias(app_lower, alias) for alias in aliases):
+                matching_pids.add(pid)
+
+        if not matching_pids:
+            return []
+        return [w for w in windows if w["pid"] in matching_pids]
+
     # ── Capture ────────────────────────────────────────────────────
     def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
         """Capture the frontmost on-screen window (optionally filtered by app name).
@@ -1337,17 +1379,17 @@ class CuaDriverBackend(ComputerUseBackend):
                 ) else 1,
             )
         elif app:
-            app_lower = app.lower()
-            filtered = [w for w in windows if app_lower in w["app_name"].lower()]
+            filtered = self._match_windows_for_app(windows, app)
             if not filtered:
                 return CaptureResult(
                     mode=mode, width=0, height=0, png_b64=None,
                     elements=[], app="",
                     window_title=(
                         f"<no on-screen window matched app={app!r}; "
-                        f"call list_apps to see available app names "
+                        f"call list_apps to see available app names or bundle IDs "
                         f"(macOS reports localized names, e.g. '計算機' "
-                        f"instead of 'Calculator')>"
+                        f"instead of 'Calculator'; some Linux/Qt apps only "
+                        f"resolve via list_apps metadata)>"
                     ),
                     png_bytes_len=0,
                 )
@@ -1756,8 +1798,7 @@ class CuaDriverBackend(ComputerUseBackend):
         windows = _ingest_windows(raw_windows)
         windows.sort(key=lambda w: w["z_index"])
 
-        app_lower = app.lower()
-        matched = [w for w in windows if app_lower in w["app_name"].lower()]
+        matched = self._match_windows_for_app(windows, app)
         # Don't silently fall back to the frontmost window when the filter
         # matches nothing — that hides the real failure (often a localized
         # macOS app name mismatch, e.g. caller passed "Calculator" but

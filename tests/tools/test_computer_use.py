@@ -1421,6 +1421,43 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
+def _make_cua_backend_with_windows_and_apps(
+    windows: List[Dict[str, Any]], apps: List[Dict[str, Any]]
+):
+    """Construct a backend whose mocked session serves list_windows/list_apps."""
+    from tools.computer_use.cua_backend import CuaDriverBackend
+
+    backend = CuaDriverBackend()
+    backend._session = MagicMock()
+
+    def _call_tool(name, args):
+        if name == "list_windows":
+            return {
+                "data": "",
+                "images": [],
+                "structuredContent": {"windows": windows},
+                "isError": False,
+            }
+        if name == "list_apps":
+            return {
+                "data": {"apps": apps},
+                "images": [],
+                "structuredContent": None,
+                "isError": False,
+            }
+        if name == "get_window_state":
+            return {
+                "data": '✅ FreeCAD — 0 elements\n',
+                "images": [],
+                "structuredContent": None,
+                "isError": False,
+            }
+        raise AssertionError(f"unexpected tool call: {name}")
+
+    backend._session.call_tool.side_effect = _call_tool
+    return backend
+
+
 class TestCuaDriverSessionReconnect:
     """Verify reconnect-once on a closed-resource error. After the
     lifecycle-owner refactor (Sun Jun 21 2026) the session no longer goes
@@ -1740,6 +1777,22 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
 
+    def test_app_filter_falls_back_to_list_apps_metadata(self):
+        windows = [
+            {"app_name": "Qt6Application", "pid": 7675, "window_id": 42,
+             "is_on_screen": True, "title": "FreeCAD 1.1.1", "z_index": 0},
+        ]
+        apps = [
+            {"name": "FreeCAD", "bundle_id": "org.freecad.FreeCAD", "pid": 7675},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
+
+        cap = backend.capture(mode="ax", app="org.freecad.FreeCAD")
+
+        assert cap.app == "Qt6Application"
+        assert backend._active_pid == 7675
+        assert backend._active_window_id == 42
+
     def test_no_app_filter_still_picks_frontmost(self):
         """When no app= is given, capture continues to pick the frontmost
         window — the no-match early-return must not fire on the empty case."""
@@ -1797,6 +1850,22 @@ class TestFocusAppFilterNoMatch:
         assert res.ok is True
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
+
+    def test_focus_app_falls_back_to_list_apps_metadata(self):
+        windows = [
+            {"app_name": "Qt6Application", "pid": 7675, "window_id": 42,
+             "is_on_screen": True, "title": "FreeCAD 1.1.1", "z_index": 0},
+        ]
+        apps = [
+            {"name": "FreeCAD", "bundle_id": "org.freecad.FreeCAD", "pid": 7675},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
+
+        res = backend.focus_app("FreeCAD")
+
+        assert res.ok is True
+        assert backend._active_pid == 7675
+        assert backend._active_window_id == 42
 
 
 class TestCuaEnvironmentScrubbing:

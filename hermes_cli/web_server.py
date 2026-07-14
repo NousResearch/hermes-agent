@@ -15,9 +15,9 @@ import asyncio
 import atexit
 import base64
 import binascii
-import concurrent.futures
-import functools
+import sqlite3
 from dataclasses import dataclass
+import functools
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -4182,6 +4182,57 @@ def get_profiles_sessions(
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions (see above).
+                compact_rows=not full,
+            )
+            profile_total = db.session_count(
+                source=source_filter,
+                exclude_sources=exclude_list or None,
+                min_message_count=min_message_count,
+                include_archived=include_archived,
+                archived_only=archived_only,
+                exclude_children=True,
+            )
+            total += profile_total
+            profile_totals[name] = profile_total
+            for s in rows:
+                s["profile"] = name
+                s["is_default_profile"] = name == "default"
+                s["is_active"] = (
+                    s.get("ended_at") is None
+                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                )
+                s["archived"] = bool(s.get("archived"))
+                merged.append(s)
+        except sqlite3.OperationalError as exc:
+            # Schema mismatch — profile DB was last written under an older
+            # Hermes release and is missing columns added since. Only
+            # recover on verified missing-column errors; lock/contention and
+            # other operational errors are left uncaught to preserve the
+            # read-only path's no-write-lock purpose.
+            exc_msg = str(exc)
+            if "no such column" not in exc_msg.lower():
+                # Non-schema error — let it be caught by the outer handler.
+                raise
+            # One-time migration: open the profile DB read-write to trigger
+            # _init_schema(), then re-open read-only and retry the query.
+            db.close()
+            try:
+                migrate_db = SessionDB(db_path=db_path, read_only=False)
+                migrate_db.close()
+            except Exception:
+                # Migration failed — report the original schema error.
+                errors.append({"profile": name, "error": exc_msg})
+                continue
+            db = SessionDB(db_path=db_path, read_only=True)
+            rows = db.list_sessions_rich(
+                source=source_filter,
+                exclude_sources=exclude_list or None,
+                limit=per_profile,
+                offset=0,
+                min_message_count=min_message_count,
+                include_archived=include_archived,
+                archived_only=archived_only,
+                order_by_last_active=order == "recent",
                 compact_rows=not full,
             )
             profile_total = db.session_count(

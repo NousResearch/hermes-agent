@@ -17,7 +17,9 @@ def test_hindsight_runtime_imports_in_baked_image(
             "import hindsight_client; "
             "import hindsight_api.main; "
             "import hindsight_embed.daemon_embed_manager; "
-            "print('ok')"
+            "print('ok', flush=True); "
+            "import os; "
+            "os._exit(0)"
         ),
         timeout=30,
     )

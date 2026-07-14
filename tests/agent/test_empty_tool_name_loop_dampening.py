@@ -132,6 +132,7 @@ def agent_env():
         quiet_mode=True, skip_context_files=True, skip_memory=True,
         save_trajectories=False, platform="cli",
     )
+    agent.context_compressor.context_length = 100_000
     agent.valid_tool_names = {"terminal", "read_file", "write_file", "execute_code", "session_search"}
 
     try:

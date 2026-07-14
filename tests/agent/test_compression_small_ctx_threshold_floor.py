@@ -20,9 +20,11 @@ from agent.context_compressor import ContextCompressor
 
 def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
     with patch.object(cc, "get_model_context_length", return_value=ctx):
-        return ContextCompressor(
+        comp = ContextCompressor(
             model="test/model", threshold_percent=pct, quiet_mode=True,
         )
+        _ = comp.context_length
+        return comp
 
 
 class TestSmallContextThresholdFloor:

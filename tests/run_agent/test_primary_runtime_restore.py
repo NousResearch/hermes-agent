@@ -10,8 +10,10 @@ Verifies that:
 """
 
 import time
+import types
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from run_agent import AIAgent
 
@@ -80,8 +82,9 @@ class TestPrimaryRuntimeSnapshot:
         cc = agent.context_compressor
         assert rt["compressor_model"] == cc.model
         assert rt["compressor_provider"] == cc.provider
-        assert rt["compressor_context_length"] == cc.context_length
-        assert rt["compressor_threshold_tokens"] == cc.threshold_tokens
+        assert rt["compressor_context_length"] == 0
+        assert rt["compressor_threshold_tokens"] == 0
+        assert cc.context_length > 0
 
     def test_snapshot_includes_anthropic_state_when_applicable(self):
         """Anthropic-mode agents should snapshot Anthropic-specific state."""
@@ -104,6 +107,32 @@ class TestPrimaryRuntimeSnapshot:
         assert "anthropic_api_key" in rt
         assert "anthropic_base_url" in rt
         assert "is_anthropic_oauth" in rt
+
+    def test_first_turn_low_context_raises_before_model_io(self):
+        from agent.turn_context import build_turn_context
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=32_000):
+            agent = _make_agent()
+
+            with pytest.raises(ValueError, match="below the minimum"):
+                build_turn_context(
+                    agent=agent,
+                    user_message="hello",
+                    system_message=None,
+                    conversation_history=None,
+                    task_id=None,
+                    stream_callback=None,
+                    persist_user_message=None,
+                    restore_or_build_system_prompt=lambda *a, **k: None,
+                    install_safe_stdio=lambda: None,
+                    sanitize_surrogates=lambda s: s,
+                    summarize_user_message_for_log=lambda s: s,
+                    set_session_context=lambda _sid: None,
+                    set_current_write_origin=lambda _o: None,
+                    ra=lambda: types.SimpleNamespace(_set_interrupt=lambda *a, **k: None),
+                )
+
+        agent.client.chat.completions.create.assert_not_called()
 
     def test_snapshot_omits_anthropic_for_openai_mode(self):
         agent = _make_agent(provider="custom")
@@ -181,6 +210,8 @@ class TestRestorePrimaryRuntime:
         # Manually simulate compressor being changed (as _try_activate_fallback does)
         agent.context_compressor.context_length = 32000
         agent.context_compressor.threshold_tokens = 25600
+        agent._primary_runtime["compressor_context_length"] = original_ctx_len
+        agent._primary_runtime["compressor_threshold_tokens"] = original_threshold
 
         with patch("run_agent.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()

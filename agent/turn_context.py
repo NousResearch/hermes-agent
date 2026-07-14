@@ -173,6 +173,22 @@ def build_turn_context(
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
 
+    # Quiet built-in compressors defer metadata I/O until the first turn.
+    # Resolve and validate before request assembly, then complete the fallback snapshot.
+    from agent.context_compressor import ContextCompressor, MINIMUM_CONTEXT_LENGTH
+    _cc = agent.context_compressor
+    if isinstance(_cc, ContextCompressor):
+        _ctx = _cc.context_length
+        if _ctx < MINIMUM_CONTEXT_LENGTH:
+            raise ValueError(
+                f"Model {agent.model} has a context window of {_ctx:,} tokens, "
+                f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+                "by Hermes Agent.  Choose a model with at least "
+                f"{MINIMUM_CONTEXT_LENGTH // 1000}K context."
+            )
+        agent._primary_runtime["compressor_context_length"] = _ctx
+        agent._primary_runtime["compressor_threshold_tokens"] = _cc.threshold_tokens
+
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
     # connect, missing the bounded startup wait) lands in THIS turn's tool

@@ -35,6 +35,9 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+_SMALL_CTX_WINDOW_LIMIT = 512_000
+_SMALL_CTX_THRESHOLD_PERCENT = 0.75
+
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
@@ -747,6 +750,71 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+    def _resolve_context_length(self) -> int:
+        """Resolve and cache the model's context length on first access."""
+        if self._resolved_context_length is None:
+            self._resolved_context_length = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                config_context_length=self._config_context_length,
+                provider=self.provider,
+            )
+            self.threshold_percent = self._effective_threshold_percent(
+                self._resolved_context_length,
+                getattr(self, "_configured_threshold_percent", self.threshold_percent),
+            )
+        return self._resolved_context_length
+
+    @property
+    def context_length(self) -> int:
+        return self._resolve_context_length()
+
+    @context_length.setter
+    def context_length(self, value: int) -> None:
+        self._resolved_context_length = value
+        self.threshold_percent = self._effective_threshold_percent(
+            value,
+            getattr(self, "_configured_threshold_percent", self.threshold_percent),
+        )
+        self._threshold_tokens = None
+        self._tail_token_budget = None
+        self._max_summary_tokens = None
+
+    @property
+    def threshold_tokens(self) -> int:
+        if self._threshold_tokens is None:
+            self._threshold_tokens = self._compute_threshold_tokens(
+                self.context_length, self.threshold_percent, self.max_tokens,
+            )
+        return self._threshold_tokens
+
+    @threshold_tokens.setter
+    def threshold_tokens(self, value: int) -> None:
+        self._threshold_tokens = value
+
+    @property
+    def tail_token_budget(self) -> int:
+        if self._tail_token_budget is None:
+            self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+        return self._tail_token_budget
+
+    @tail_token_budget.setter
+    def tail_token_budget(self, value: int) -> None:
+        self._tail_token_budget = value
+
+    @property
+    def max_summary_tokens(self) -> int:
+        if self._max_summary_tokens is None:
+            self._max_summary_tokens = min(
+                int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+            )
+        return self._max_summary_tokens
+
+    @max_summary_tokens.setter
+    def max_summary_tokens(self, value: int) -> None:
+        self._max_summary_tokens = value
+
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear all per-session compaction state at a real session boundary.
 
@@ -985,11 +1053,9 @@ class ContextCompressor(ContextEngine):
         # configured threshold and a large -> small switch gains the floor.
         # Guard with getattr: compressors unpickled/constructed before this
         # attribute existed fall back to the live value.
-        _configured_pct = getattr(
-            self, "_configured_threshold_percent", self.threshold_percent,
-        )
         self.threshold_percent = self._effective_threshold_percent(
-            context_length, _configured_pct,
+            context_length,
+            getattr(self, "_configured_threshold_percent", self.threshold_percent),
         )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
@@ -1071,7 +1137,8 @@ class ContextCompressor(ContextEngine):
         Large-context models keep the configured value — at 512K+ the default
         50% trigger already leaves ample post-compaction headroom.
         """
-        if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
+        if isinstance(context_length, (int, float)) \
+                and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
 
@@ -1157,40 +1224,13 @@ class ContextCompressor(ContextEngine):
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
-        self.context_length = get_model_context_length(
-            model, base_url=base_url, api_key=api_key,
-            config_context_length=config_context_length,
-            provider=provider,
-        )
-        # Small-context threshold floor: models under 512K trigger at >=75%
-        # so compaction doesn't fire with half the window still free (the
-        # incompressible floor makes 50%-triggered compaction thrash on
-        # 128K-262K models). Raise-only; must run AFTER context_length is
-        # resolved and BEFORE threshold_tokens is derived. The pre-floor
-        # value is kept so update_model() can re-derive for a new window
-        # (switching small -> large must drop back to the configured value).
-        self._configured_threshold_percent = self.threshold_percent
-        self.threshold_percent = self._effective_threshold_percent(
-            self.context_length, self.threshold_percent,
-        )
-        threshold_percent = self.threshold_percent
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum. _compute_threshold_tokens also
-        # guards the degenerate case where the floor would equal/exceed the
-        # window (small models), so auto-compression can still fire (#14690).
-        self.threshold_tokens = self._compute_threshold_tokens(
-            self.context_length, threshold_percent, self.max_tokens,
-        )
+        self._config_context_length = config_context_length
+        self._configured_threshold_percent = threshold_percent
+        self._resolved_context_length: int | None = None
+        self._threshold_tokens: int | None = None
+        self._tail_token_budget: int | None = None
+        self._max_summary_tokens: int | None = None
         self.compression_count = 0
-
-        # Derive token budgets: ratio is relative to the threshold, not total context
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
-        self.max_summary_tokens = min(
-            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
-        )
 
         if not quiet_mode:
             logger.info(
@@ -1198,7 +1238,7 @@ class ContextCompressor(ContextEngine):
                 "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
                 "provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
+                self.threshold_percent * 100, self.summary_target_ratio * 100,
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )
@@ -1265,6 +1305,73 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+
+    def _resolve_context_length(self) -> int:
+        """Resolve and cache the model's context length on first access."""
+        if self._resolved_context_length is None:
+            self._resolved_context_length = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                config_context_length=self._config_context_length,
+                provider=self.provider,
+            )
+            self.threshold_percent = self._effective_threshold_percent(
+                self._resolved_context_length,
+                getattr(self, "_configured_threshold_percent", self.threshold_percent),
+            )
+        return self._resolved_context_length
+
+    @property
+    def context_length(self) -> int:
+        return self._resolve_context_length()
+
+    @context_length.setter
+    def context_length(self, value: int) -> None:
+        self._resolved_context_length = value
+        self.threshold_percent = self._effective_threshold_percent(
+            value,
+            getattr(self, "_configured_threshold_percent", self.threshold_percent),
+        )
+        self._threshold_tokens = None
+        self._tail_token_budget = None
+        self._max_summary_tokens = None
+
+    @property
+    def threshold_tokens(self) -> int:
+        if self._threshold_tokens is None:
+            self._threshold_tokens = self._compute_threshold_tokens(
+                self.context_length, self.threshold_percent, self.max_tokens,
+            )
+        return self._threshold_tokens
+
+    @threshold_tokens.setter
+    def threshold_tokens(self, value: int) -> None:
+        self._threshold_tokens = value
+
+    @property
+    def tail_token_budget(self) -> int:
+        if self._tail_token_budget is None:
+            self._tail_token_budget = int(
+                self.threshold_tokens * self.summary_target_ratio
+            )
+        return self._tail_token_budget
+
+    @tail_token_budget.setter
+    def tail_token_budget(self, value: int) -> None:
+        self._tail_token_budget = value
+
+    @property
+    def max_summary_tokens(self) -> int:
+        if self._max_summary_tokens is None:
+            self._max_summary_tokens = min(
+                int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+            )
+        return self._max_summary_tokens
+
+    @max_summary_tokens.setter
+    def max_summary_tokens(self, value: int) -> None:
+        self._max_summary_tokens = value
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""

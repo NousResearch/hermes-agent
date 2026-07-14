@@ -57,6 +57,7 @@ class _FakeAgent:
             protect_first_n=2, protect_last_n=2
         )
         self._cached_system_prompt = "SYSTEM"
+        self._primary_runtime = {}
         self._memory_store = None
         self._memory_manager = None
         self._memory_nudge_interval = 0
@@ -124,6 +125,7 @@ def _make_agent_with_cooldown(db_path, session_id, *, cooldown_until=None):
             protect_last_n=2,
             quiet_mode=True,
         )
+        _ = compressor.context_length
     compressor.bind_session_state(db, session_id)
     agent.context_compressor = compressor
     agent._session_db = db

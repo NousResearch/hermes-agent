@@ -52,10 +52,25 @@ export AUTH="Authorization: Bearer $HERMES_KANBAN_API_SECRET"
 |---|---|
 | Status | `GET /health`, `GET /capabilities` |
 | Boards | `GET /boards`, `GET /boards/{id-or-name}` |
+| Profiles | `GET /profiles` |
 | Tasks | `GET /tasks`, `POST /tasks`, `GET /tasks/{id}`, `PATCH /tasks/{id}` |
 | Actions | `POST /tasks/{id}/comment`, `/complete`, `/block`, `/unblock`, `/archive` |
 | Dependencies | `POST /tasks/{parent}/links/{child}`, `DELETE /tasks/{parent}/links/{child}` |
 | Observation | `GET /tasks/{id}/events`, `/runs`, `/log` |
+
+`GET /profiles` returns the sanitized assignee roster: each entry carries only
+`name`, `description` (the operator-facing text from `profile.yaml`, the same
+signal the built-in decomposer routes on), and `has_description`. Models,
+providers, filesystem paths, env/config state, and skill inventories are not
+exposed. Use it to populate an assignee picker; there is still no endpoint
+that manages or executes a profile.
+
+For attribution, task payloads include `created_by` — the profile (or surface,
+e.g. `external-api` / `dashboard`) that created the card — alongside
+`assignee`, so an external control plane can visualise which orchestrator
+created which work, not just who executes it. Each entry in
+`GET /tasks/{id}/runs` likewise names the `profile` that executed that
+attempt (relevant when a task was reassigned between retries).
 
 All task endpoints accept `?board=<board-id>`. Omit it to use the current board.
 `GET /tasks` also supports `status`, `assignee`, `tenant`, `include_archived`,
@@ -152,7 +167,7 @@ curl -fsS -X POST \
 # Poll the workstream without receiving private task bodies or worker output.
 curl -fsS \
   "$HERMES_URL/api/plugins/kanban/tasks?board=default&tenant=catalog-maintenance" \
-  -H "$AUTH" | jq '.tasks[] | {id, title, status, assignee, links}'
+  -H "$AUTH" | jq '.tasks[] | {id, title, status, assignee, created_by, links}'
 
 # Read the sanitized append-only event timeline and run state.
 curl -fsS \

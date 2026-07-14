@@ -190,6 +190,11 @@ def _task_dto(conn: sqlite3.Connection, task: kanban_db.Task) -> dict[str, Any]:
         "id": task.id,
         "title": task.title,
         "assignee": task.assignee,
+        # Attribution: which profile (or surface, e.g. "external-api" /
+        # "dashboard") created the card — this is what lets an external
+        # control plane visualise orchestrator fan-out, not just who the
+        # work was routed to.
+        "created_by": task.created_by,
         "status": task.status,
         "priority": task.priority,
         "tenant": task.tenant,
@@ -279,8 +284,40 @@ def capabilities() -> dict[str, Any]:
         "block_kinds": sorted(kanban_db.VALID_BLOCK_KINDS),
         "idempotent_task_creation": True,
         "profile_execution": False,
-        "profiles_api": False,
+        # Read-only roster (GET /profiles): name + description only, for
+        # assignee pickers in external control planes. No profile
+        # management or execution surface exists here.
+        "profiles_api": True,
     }
+
+
+@router.get("/profiles")
+def list_profiles() -> dict[str, Any]:
+    """Sanitized assignee roster for external control planes.
+
+    Returns only what an external dashboard needs to route work — the
+    profile name and its operator-facing description (the same pair the
+    built-in decomposer feeds its routing LLM). Models, providers,
+    filesystem paths, env/config state, and skill inventories are
+    deliberately not exposed.
+    """
+    from hermes_cli import profiles as profiles_mod  # lazy: heavy CLI import
+
+    try:
+        infos = profiles_mod.list_profiles()
+    except Exception as exc:
+        log.warning("kanban_api profiles listing failed: %s", exc)
+        raise HTTPException(status_code=503, detail="profiles unavailable") from exc
+    roster = [
+        {
+            "name": info.name,
+            "description": (info.description or "").strip(),
+            "has_description": bool((info.description or "").strip()),
+        }
+        for info in infos
+    ]
+    roster.sort(key=lambda item: item["name"])
+    return {"profiles": roster, "count": len(roster)}
 
 
 @router.get("/boards")
@@ -553,6 +590,10 @@ def task_runs(
         items = [
             {
                 "id": run.id,
+                # The profile that executed this attempt. Usually equals the
+                # task's assignee, but reassignment between retries makes the
+                # per-run value the only accurate execution record.
+                "profile": run.profile,
                 "status": run.status,
                 "outcome": run.outcome,
                 "started_at": run.started_at,

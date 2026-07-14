@@ -268,6 +268,21 @@ def _normalize_assignee_choice(
     return chosen
 
 
+def _is_spawnable_assignee(assignee: Optional[str]) -> bool:
+    """True if *assignee* is empty (unassigned) or resolves to a real profile.
+
+    False means the task was deliberately parked under a non-profile name —
+    the same containment convention the dispatcher already respects via
+    ``has_spawnable_ready``/``profile_exists`` (#62985).
+    """
+    if not assignee:
+        return True
+    try:
+        return profiles_mod.profile_exists(assignee)
+    except Exception:
+        return False
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -288,6 +303,15 @@ def decompose_task(
     if task.status != "triage":
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
+        )
+    if not _is_spawnable_assignee(task.assignee):
+        # Mirrors the dispatcher's has_spawnable_ready/profile_exists gate
+        # (#62985): a task deliberately parked under a non-profile assignee
+        # must stay parked, not get silently fanned out and reassigned to
+        # the orchestrator/default_assignee.
+        return DecomposeOutcome(
+            task_id, False,
+            f"assignee {task.assignee!r} is not a spawnable profile — parked",
         )
 
     cfg = _load_config()
@@ -475,3 +499,25 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             limit=1000,
         )
     return [row.id for row in rows]
+
+
+def list_spawnable_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
+    """Like ``list_triage_ids``, but excludes tasks parked under a
+    non-spawnable assignee (see ``_is_spawnable_assignee`` / #62985).
+
+    The auto-decompose tick consumes this so it doesn't burn its
+    per-tick attempt budget on cards ``decompose_task`` will reject every
+    time — parked cards never leave triage, so without this filter enough
+    of them ahead of an eligible card in priority order can starve it
+    indefinitely. Manual/CLI/dashboard listing paths intentionally keep
+    using ``list_triage_ids`` unfiltered, so a user can still see their
+    own parked cards.
+    """
+    with kb.connect_closing() as conn:
+        rows = kb.list_tasks(
+            conn,
+            status="triage",
+            tenant=tenant,
+            limit=1000,
+        )
+    return [row.id for row in rows if _is_spawnable_assignee(row.assignee)]

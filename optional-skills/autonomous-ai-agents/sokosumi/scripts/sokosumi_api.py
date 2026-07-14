@@ -133,7 +133,7 @@ def paginate(path: str, query: dict | None = None, limit: int | None = None) -> 
             return items[:limit] if limit else items
 
 
-def _next_cursor(page: object) -> str | None:
+def _next_cursor(page: dict | list) -> str | None:
     if isinstance(page, dict):
         pagination = (page.get("meta") or {}).get("pagination") or {}
         return pagination.get("nextCursor")

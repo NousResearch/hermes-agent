@@ -12,6 +12,7 @@ import json
 import re
 import sys
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -44,7 +45,7 @@ SPEC_TASK_STATUSES = {
 
 
 def envelope(data, next_cursor=None):
-    meta = {"timestamp": "2021-01-01T00:00:00.000Z", "requestId": "req-1"}
+    meta: dict = {"timestamp": "2021-01-01T00:00:00.000Z", "requestId": "req-1"}
     if next_cursor is not None:
         meta["pagination"] = {
             "cursor": None, "limit": 100, "total": 2, "nextCursor": next_cursor,
@@ -107,7 +108,7 @@ class FakeResponse:
 
 def http_error(code, payload):
     return urllib.error.HTTPError(
-        "https://api.sokosumi.com/v1/x", code, "err", {},
+        "https://api.sokosumi.com/v1/x", code, "err", None,  # type: ignore[arg-type]
         io.BytesIO(json.dumps(payload).encode("utf-8")),
     )
 

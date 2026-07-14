@@ -594,6 +594,7 @@ def test_cli_close_preserves_clean_staged_user_across_noted_worker_turn(tmp_path
     agent._memory_write_origin = "assistant_tool"
     agent._stream_context_scrubber = None
     agent._stream_think_scrubber = None
+    agent._stream_toolcall_scrubber = None
     agent._restore_primary_runtime = lambda: None
     agent._cleanup_dead_connections = lambda: False
     agent._emit_status = lambda _message: None

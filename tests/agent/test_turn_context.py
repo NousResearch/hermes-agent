@@ -70,6 +70,7 @@ class _FakeAgent:
         self._memory_write_origin = "assistant_tool"
         self._stream_context_scrubber = None
         self._stream_think_scrubber = None
+        self._stream_toolcall_scrubber = None
         # Attributes the prologue assigns; recorded for assertions.
         self._invalid_tool_retries = -1
         self._vision_supported = None

@@ -2499,8 +2499,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        # Scrub leaked tool-call opener fragments before delivery.
+                        # in_toolcall_context=True: tool_calls_acc is non-empty here.
+                        _content = delta.content
+                        tc_scrubber = getattr(agent, "_stream_toolcall_scrubber", None)
+                        if tc_scrubber is not None:
+                            _content = tc_scrubber.feed(_content, in_toolcall_context=True)
+                        if _content:
+                            agent.stream_delta_callback(_content)
+                            agent._record_streamed_assistant_text(_content)
                     except Exception:
                         pass
 

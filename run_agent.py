@@ -4729,6 +4729,18 @@ class AIAgent:
                     except Exception:
                         pass
                 self._record_streamed_assistant_text(tail)
+        # Flush any benign partial-tag tail held by the tool-call fragment scrubber.
+        tc_scrubber = getattr(self, "_stream_toolcall_scrubber", None)
+        if tc_scrubber is not None:
+            tc_tail = tc_scrubber.flush()
+            if tc_tail:
+                callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
+                for cb in callbacks:
+                    try:
+                        cb(tc_tail)
+                    except Exception:
+                        pass
+                self._record_streamed_assistant_text(tc_tail)
         self._current_streamed_assistant_text = ""
 
     def _record_streamed_assistant_text(self, text: str) -> None:
@@ -5021,6 +5033,11 @@ class AIAgent:
                 self, "_current_streamed_assistant_text", ""
             ):
                 text = text.lstrip("\n")
+            # Scrub leaked tool-call XML opener fragments (prose passthrough here;
+            # in_toolcall_context defaults False so this is a no-op on normal text).
+            tc_scrubber = getattr(self, "_stream_toolcall_scrubber", None)
+            if tc_scrubber is not None:
+                text = tc_scrubber.feed(text)
         if not text:
             return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]

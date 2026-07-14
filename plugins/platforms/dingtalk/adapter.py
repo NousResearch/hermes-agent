@@ -1641,29 +1641,51 @@ def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     dingtalk_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML (each assignment guarded by not os.getenv(...)).
-    Returns None — everything flows through env.
+    take precedence over YAML, and the shared gateway helper logs when a
+    non-secret env var shadows config.yaml. Returns None, everything flows
+    through env.
     """
     import json as _json
-    if "require_mention" in dingtalk_cfg and not os.getenv("DINGTALK_REQUIRE_MENTION"):
-        os.environ["DINGTALK_REQUIRE_MENTION"] = str(dingtalk_cfg["require_mention"]).lower()
-    if "mention_patterns" in dingtalk_cfg and not os.getenv("DINGTALK_MENTION_PATTERNS"):
-        os.environ["DINGTALK_MENTION_PATTERNS"] = _json.dumps(dingtalk_cfg["mention_patterns"])
+    from gateway.config import _csv_env_str, _lower_env_str, _set_env_from_yaml
+
+    if "require_mention" in dingtalk_cfg:
+        _set_env_from_yaml(
+            "DINGTALK_REQUIRE_MENTION",
+            "dingtalk.require_mention",
+            dingtalk_cfg["require_mention"],
+            _lower_env_str,
+        )
+    if "mention_patterns" in dingtalk_cfg:
+        _set_env_from_yaml(
+            "DINGTALK_MENTION_PATTERNS",
+            "dingtalk.mention_patterns",
+            dingtalk_cfg["mention_patterns"],
+            _json.dumps,
+        )
     frc = dingtalk_cfg.get("free_response_chats")
-    if frc is not None and not os.getenv("DINGTALK_FREE_RESPONSE_CHATS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["DINGTALK_FREE_RESPONSE_CHATS"] = str(frc)
+    if frc is not None:
+        _set_env_from_yaml(
+            "DINGTALK_FREE_RESPONSE_CHATS",
+            "dingtalk.free_response_chats",
+            frc,
+            _csv_env_str,
+        )
     ac = dingtalk_cfg.get("allowed_chats")
-    if ac is not None and not os.getenv("DINGTALK_ALLOWED_CHATS"):
-        if isinstance(ac, list):
-            ac = ",".join(str(v) for v in ac)
-        os.environ["DINGTALK_ALLOWED_CHATS"] = str(ac)
+    if ac is not None:
+        _set_env_from_yaml(
+            "DINGTALK_ALLOWED_CHATS",
+            "dingtalk.allowed_chats",
+            ac,
+            _csv_env_str,
+        )
     allowed = dingtalk_cfg.get("allowed_users")
-    if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
-        if isinstance(allowed, list):
-            allowed = ",".join(str(v) for v in allowed)
-        os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
+    if allowed is not None:
+        _set_env_from_yaml(
+            "DINGTALK_ALLOWED_USERS",
+            "dingtalk.allowed_users",
+            allowed,
+            _csv_env_str,
+        )
     return None
 
 

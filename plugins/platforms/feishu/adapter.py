@@ -5630,10 +5630,19 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
-    Env vars take precedence over YAML. Returns None — flows through env.
+    Env vars take precedence over YAML, and the shared gateway helper logs
+    when a non-secret env var shadows config.yaml. Returns None, flows
+    through env.
     """
-    if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
-        os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+    from gateway.config import _lower_env_str, _set_env_from_yaml
+
+    if "allow_bots" in feishu_cfg:
+        _set_env_from_yaml(
+            "FEISHU_ALLOW_BOTS",
+            "feishu.allow_bots",
+            feishu_cfg["allow_bots"],
+            _lower_env_str,
+        )
     return None
 
 

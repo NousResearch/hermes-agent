@@ -204,6 +204,32 @@ def _getenv_int(name: str, default: int) -> int:
         return default
 
 
+def _set_env_from_yaml(
+    env_name: str,
+    yaml_setting: str,
+    value: Any,
+    formatter: Callable[[Any], str] = str,
+) -> None:
+    if os.getenv(env_name):
+        logger.warning(
+            "%s from the environment shadows config.yaml setting %s",
+            env_name,
+            yaml_setting,
+        )
+        return
+    os.environ[env_name] = formatter(value)
+
+
+def _lower_env_str(value: Any) -> str:
+    return str(value).lower()
+
+
+def _csv_env_str(value: Any) -> str:
+    if isinstance(value, list):
+        return ",".join(str(v) for v in value)
+    return str(value)
+
+
 # Module-level cache for bundled platform plugin names (lives outside the
 # enum so it doesn't become an accidental enum member).
 _Platform__bundled_plugin_names: Optional[set] = None
@@ -1325,8 +1351,12 @@ def load_gateway_config() -> GatewayConfig:
                     # require_mention (not a telegram: block), so the telegram plugin's
                     # apply_yaml_config_fn hook — which only runs when a telegram config
                     # block exists — can't cover the no-telegram-block case (#3979).
-                    if not os.getenv("TELEGRAM_REQUIRE_MENTION"):
-                        os.environ["TELEGRAM_REQUIRE_MENTION"] = str(_tl_require_mention).lower()
+                    _set_env_from_yaml(
+                        "TELEGRAM_REQUIRE_MENTION",
+                        "require_mention",
+                        _tl_require_mention,
+                        _lower_env_str,
+                    )
 
             # Telegram settings → env vars / extra: migrated to the telegram
             # plugin's apply_yaml_config_fn hook
@@ -1339,8 +1369,13 @@ def load_gateway_config() -> GatewayConfig:
             # Signal settings → env vars (env vars take precedence)
             signal_cfg = yaml_cfg.get("signal", {})
             if isinstance(signal_cfg, dict):
-                if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-                    os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+                if "require_mention" in signal_cfg:
+                    _set_env_from_yaml(
+                        "SIGNAL_REQUIRE_MENTION",
+                        "signal.require_mention",
+                        signal_cfg["require_mention"],
+                        _lower_env_str,
+                    )
 
             # DingTalk settings → env vars: migrated to the dingtalk plugin's
             # apply_yaml_config_fn hook (plugins/platforms/dingtalk/adapter.py).

@@ -2936,11 +2936,15 @@ function Install-PlatformSdks {
     if (-not (Test-Path $envPath)) { return }
     $envLines = Get-Content $envPath -ErrorAction SilentlyContinue
 
-    # Map: env var set in .env -> (import name, pip spec matching [messaging] extra).
-    # Specs mirror pyproject.toml to avoid version drift.
+    # Map: env var set in .env -> import name and pip spec matching the
+    # corresponding pyproject extra. Security-sensitive transitives also carry
+    # Dist/Version so an importable but vulnerable stale package is upgraded.
     $sdkMap = @(
         @{ Var = "TELEGRAM_BOT_TOKEN"; Import = "telegram";  Spec = "python-telegram-bot[webhooks]>=22.6,<23" },
-        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Spec = "discord.py[voice]>=2.7.1,<3" },
+        @{ Var = "TELEGRAM_BOT_TOKEN"; Import = "tornado";   Dist = "tornado";   Version = "6.5.7"; Spec = "tornado==6.5.7" },
+        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Dist = "discord.py";Version = "2.7.1"; Spec = "discord.py==2.7.1" },
+        @{ Var = "DISCORD_BOT_TOKEN";  Import = "nacl";      Dist = "PyNaCl";    Version = "1.6.2"; Spec = "PyNaCl==1.6.2" },
+        @{ Var = "DISCORD_BOT_TOKEN";  Import = "davey";     Dist = "davey";     Version = "0.1.4"; Spec = "davey==0.1.4" },
         @{ Var = "SLACK_BOT_TOKEN";    Import = "slack_sdk"; Spec = "slack-sdk>=3.27.0,<4" },
         @{ Var = "SLACK_APP_TOKEN";    Import = "slack_bolt";Spec = "slack-bolt>=1.18.0,<2" },
         @{ Var = "WHATSAPP_ENABLED";   Import = "qrcode";    Spec = "qrcode>=7.0,<8" }
@@ -2971,7 +2975,11 @@ function Install-PlatformSdks {
     try {
         $missing = @()
         foreach ($sdk in $needed) {
-            & $pythonExe -c "import $($sdk.Import)" 2>&1 | Out-Null
+            $probe = "import $($sdk.Import)"
+            if ($sdk.ContainsKey("Dist") -and $sdk.ContainsKey("Version")) {
+                $probe += "; import importlib.metadata as _m; assert _m.version('$($sdk.Dist)') == '$($sdk.Version)'"
+            }
+            & $pythonExe -c $probe 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 $missing += $sdk
                 Write-Warn "  $($sdk.Import) NOT importable (needed for $($sdk.Var))"

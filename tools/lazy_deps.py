@@ -136,7 +136,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
 
     # ─── Image generation backends ─────────────────────────────────────────
-    "image.fal": ("fal-client==0.13.1",),
+    "image.fal": ("fal-client==0.13.1", "msgpack==1.2.1"),
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
@@ -152,14 +152,22 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
+    "platform.telegram": (
+        "python-telegram-bot[webhooks]==22.6",
+        "tornado==6.5.7",
+    ),
     # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
     # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
     # uploaded to the Discord gateway fails to decode at att.read() with
     # "Can not decode content-encoding: br" — see #12511 / #15744.
     "platform.discord": (
-        "discord.py[voice]==2.7.1",
+        # The 2.7.1 voice extra has a stale PyNaCl<1.6 metadata cap. Install
+        # the same runtime pieces explicitly so existing venvs move to the
+        # patched PyNaCl release without dropping voice support.
+        "discord.py==2.7.1",
+        "PyNaCl==1.6.2",
+        "davey==0.1.4",
         "brotlicffi==1.2.0.1",
         # discord.py pulls aiohttp transitively (>=3.7.4,<4) as its HTTP
         # backbone. Pin the patched floor here too so the lazy Discord path
@@ -185,6 +193,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
         "alibabacloud-dingtalk==2.2.42",
+        # tea-openapi 0.4.4 caps cryptography<47; 0.3.16 supports the patched
+        # cryptography floor while satisfying alibabacloud-dingtalk.
+        "alibabacloud-tea-openapi==0.3.16",
         "qrcode==7.4.2",
     ),
     "platform.feishu": (
@@ -199,7 +210,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"),  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
+    "platform.teams": (
+        "microsoft-teams-apps==2.0.13.4",
+        "aiohttp==3.14.1",
+        "pydantic-settings==2.14.2",
+    ),  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -220,8 +235,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "starlette==1.3.1",  # CVE-2026-48710 + subsequent advisories; mirrors [web]
+        "python-multipart==0.0.31",  # FastAPI UploadFile/Form + current OSV fixes
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
@@ -236,7 +251,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==1.26.0",
-        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+        "starlette==1.3.1",  # CVE-2026-48710 + subsequent advisories
+        "pydantic-settings==2.14.2",
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
     "tool.trace_upload": ("huggingface-hub==1.2.3",),
@@ -858,8 +874,10 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
+    A feature counts as "active" when its first declared package (the primary
+    SDK/feature marker) is currently installed in the venv. Secondary specs
+    are often shared security pins such as tornado or pydantic-settings; using
+    any installed spec would falsely activate unrelated heavy backends.
     Features the user has never enabled stay quiet.
 
     Used by ``hermes update`` to figure out which lazy backends need a
@@ -867,7 +885,7 @@ def active_features() -> list[str]:
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        if specs and _is_present(specs[0]):
             active.append(feature)
     return active
 

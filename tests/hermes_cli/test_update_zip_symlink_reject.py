@@ -115,7 +115,8 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     # raising "symlink member".
     with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
          patch("subprocess.run") as fake_run, \
-         patch("subprocess.check_call"):
+         patch("subprocess.check_call"), \
+         patch.object(hermes_main, "_refresh_active_lazy_features") as refresh_lazy:
         fake_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         try:
             hermes_main._update_via_zip(args)
@@ -129,3 +130,4 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     # confirming the extraction + copy phases ran past the validation gate.
     assert (fake_root / "README.md").exists()
     assert (fake_root / "README.md").read_text() == "ok\n"
+    refresh_lazy.assert_called_once_with()

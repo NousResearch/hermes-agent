@@ -6,7 +6,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key supported)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
-- GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
+- GET  /v1/models                  — lists every model enabled on the host
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
@@ -943,6 +943,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
         )
+        # Populated by /v1/models from the same provider inventory used by the
+        # Hermes model pickers.  Keeping these routes separate preserves
+        # explicit model_routes precedence while allowing API clients to select
+        # any model the user has already enabled on this host.
+        self._enabled_model_routes: Dict[str, Dict[str, Any]] = {}
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1361,10 +1366,59 @@ class APIServerAdapter(BasePlatformAdapter):
         return routes
 
     def _resolve_route(self, model_alias: Any) -> Optional[Dict[str, Any]]:
-        """Return the model_routes entry for *model_alias*, or None."""
-        if not self._model_routes or not isinstance(model_alias, str):
+        """Return an explicit or discovered route for *model_alias*."""
+        if not isinstance(model_alias, str):
             return None
-        return self._model_routes.get(model_alias)
+        return self._model_routes.get(model_alias) or self._enabled_model_routes.get(model_alias)
+
+    @staticmethod
+    def _flatten_enabled_model_routes(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Flatten authenticated provider inventory into selectable routes.
+
+        The current provider wins when multiple configured providers expose the
+        same model id.  Models which the inventory marks unavailable for the
+        user's account are never advertised.
+        """
+        provider_rows = payload.get("providers")
+        if not isinstance(provider_rows, list):
+            return {}
+
+        rows = [row for row in provider_rows if isinstance(row, dict)]
+        rows.sort(key=lambda row: not bool(row.get("is_current")))
+        routes: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            if row.get("authenticated") is False:
+                continue
+            provider = str(row.get("slug") or "").strip()
+            models = row.get("models")
+            if not provider or not isinstance(models, list):
+                continue
+            unavailable = {
+                str(model).strip()
+                for model in (row.get("unavailable_models") or [])
+                if str(model).strip()
+            }
+            for raw_model in models:
+                model = str(raw_model).strip()
+                if not model or model in unavailable:
+                    continue
+                routes.setdefault(model, {"model": model, "provider": provider})
+        return routes
+
+    @classmethod
+    def _load_enabled_model_routes(cls) -> Dict[str, Dict[str, Any]]:
+        """Read every model enabled in the user's configured provider inventory."""
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+
+        payload = build_models_payload(
+            load_picker_context(),
+            explicit_only=True,
+            picker_hints=True,
+            canonical_order=True,
+            probe_custom_providers=False,
+            probe_current_custom_provider=False,
+        )
+        return cls._flatten_enabled_model_routes(payload)
 
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
         """Return the gateway's session ``/model`` override for *session_key*, if any.
@@ -1397,9 +1451,14 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        reasoning_override: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
+
+        ``reasoning_override`` replaces the global ``agent.reasoning_effort``
+        config for this agent only (per-run reasoning selection from API
+        clients, e.g. Hermes Mobile).
 
         Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
@@ -1429,7 +1488,10 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        reasoning_config = GatewayRunner._load_reasoning_config()
+        reasoning_config = (
+            reasoning_override if reasoning_override is not None
+            else GatewayRunner._load_reasoning_config()
+        )
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -1586,10 +1648,24 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — list hermes-agent and any configured model_routes aliases."""
+        """GET /v1/models — list all models enabled on this Hermes host."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        try:
+            discovered_routes = await asyncio.to_thread(self._load_enabled_model_routes)
+        except Exception:
+            # Inventory is best-effort. Preserve the last successful snapshot
+            # and explicit aliases rather than failing this OpenAI-compatible
+            # endpoint because one provider's catalog is temporarily offline.
+            logger.exception("api_server failed to discover enabled models")
+        else:
+            self._enabled_model_routes = {
+                alias: route
+                for alias, route in discovered_routes.items()
+                if alias != self._model_name
+            }
 
         now = int(time.time())
         models = [
@@ -1603,10 +1679,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "parent": None,
             }
         ]
-        # Expose configured model route aliases so clients can discover them.
+        # Expose configured and discovered model routes so clients can discover
+        # and select them. Explicit aliases take precedence over provider
+        # inventory when the same id appears in both.
         # Only the alias and resolved model name are exposed — never provider
         # credentials.
-        for alias, route_cfg in self._model_routes.items():
+        routes = dict(self._enabled_model_routes)
+        routes.update(self._model_routes)
+        for alias, route_cfg in routes.items():
             if alias == self._model_name:
                 continue  # already listed above
             models.append({
@@ -1617,6 +1697,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "permission": [],
                 "root": route_cfg.get("model", alias),
                 "parent": self._model_name,
+                "provider": route_cfg.get("provider"),
             })
 
         return web.json_response({"object": "list", "data": models})
@@ -1660,6 +1741,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "run_reasoning_effort": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -4371,6 +4453,22 @@ class APIServerAdapter(BasePlatformAdapter):
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
+        # Optional per-run reasoning effort (run_reasoning_effort capability).
+        reasoning_override = None
+        raw_reasoning_effort = body.get("reasoning_effort")
+        if raw_reasoning_effort is not None:
+            from hermes_constants import parse_reasoning_effort
+
+            reasoning_override = parse_reasoning_effort(raw_reasoning_effort)
+            if reasoning_override is None:
+                return web.json_response(
+                    _openai_error(
+                        f"Invalid reasoning_effort: {raw_reasoning_effort!r}",
+                        code="invalid_reasoning_effort",
+                    ),
+                    status=400,
+                )
+
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
@@ -4487,6 +4585,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    reasoning_override=reasoning_override,
                 )
                 self._active_run_agents[run_id] = agent
 

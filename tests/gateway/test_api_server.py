@@ -920,6 +920,62 @@ class TestModelsEndpoint:
             )
             assert resp.status == 200
 
+    def test_enabled_model_inventory_is_flattened_with_current_provider_first(self):
+        payload = {
+            "providers": [
+                {
+                    "slug": "other",
+                    "authenticated": True,
+                    "models": ["shared", "other-only", "blocked"],
+                    "unavailable_models": ["blocked"],
+                },
+                {
+                    "slug": "openai-codex",
+                    "authenticated": True,
+                    "is_current": True,
+                    "models": ["gpt-5.6-sol", "gpt-5.6-terra", "shared"],
+                },
+                {
+                    "slug": "disabled",
+                    "authenticated": False,
+                    "models": ["must-not-appear"],
+                },
+            ]
+        }
+
+        routes = APIServerAdapter._flatten_enabled_model_routes(payload)
+
+        assert list(routes) == ["gpt-5.6-sol", "gpt-5.6-terra", "shared", "other-only"]
+        assert routes["gpt-5.6-terra"] == {
+            "model": "gpt-5.6-terra",
+            "provider": "openai-codex",
+        }
+        assert routes["shared"]["provider"] == "openai-codex"
+
+    @pytest.mark.asyncio
+    async def test_models_lists_every_enabled_model_and_makes_it_routable(self, adapter):
+        enabled = {
+            "gpt-5.6-sol": {"model": "gpt-5.6-sol", "provider": "openai-codex"},
+            "gpt-5.6-terra": {"model": "gpt-5.6-terra", "provider": "openai-codex"},
+            "gpt-5.6-luna": {"model": "gpt-5.6-luna", "provider": "openai-codex"},
+        }
+        app = _create_app(adapter)
+        with patch.object(adapter, "_load_enabled_model_routes", return_value=enabled):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert [row["id"] for row in data["data"]] == [
+            "hermes-agent",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ]
+        terra = next(row for row in data["data"] if row["id"] == "gpt-5.6-terra")
+        assert terra["provider"] == "openai-codex"
+        assert adapter._resolve_route("gpt-5.6-terra") == enabled["gpt-5.6-terra"]
+
 
 # ---------------------------------------------------------------------------
 # /v1/capabilities endpoint

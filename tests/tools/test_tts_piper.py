@@ -376,6 +376,7 @@ class TestTextToSpeechToolWithPiper:
 class TestCheckTtsRequirementsPiper:
     def test_piper_install_satisfies_requirements(self, monkeypatch):
         # Drop every other provider so we can isolate the piper signal.
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "piper"})
         monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: (_ for _ in ()).throw(ImportError()))
         monkeypatch.setattr(tts_tool, "_import_elevenlabs", lambda: (_ for _ in ()).throw(ImportError()))
         monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: (_ for _ in ()).throw(ImportError()))

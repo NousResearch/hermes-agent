@@ -1301,6 +1301,17 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 /reasoning hide      # Hide model thinking
 ```
 
+## Text Verbosity
+
+Control OpenAI Responses API final-answer length without changing reasoning effort:
+
+```yaml
+agent:
+  text_verbosity: ""   # empty = provider default. Options: low, medium, high
+```
+
+Hermes automatically sends this as top-level `text: {"verbosity": ...}` only for GPT-5 models on the Codex OAuth backend or the exact `api.openai.com` host. It is not injected for xAI/Grok, GitHub Models, Anthropic, or arbitrary custom endpoints.
+
 ## Tool-Use Enforcement
 
 Some models occasionally describe intended actions as text instead of making tool calls ("I would run the tests..." instead of actually calling the terminal). Tool-use enforcement injects system prompt guidance that steers the model back to actually calling tools.

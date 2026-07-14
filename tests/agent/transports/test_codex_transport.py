@@ -4,6 +4,11 @@ import json
 import pytest
 from types import SimpleNamespace
 
+from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+from agent.text_verbosity import (
+    parse_text_verbosity,
+    supports_openai_text_verbosity,
+)
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
 
@@ -53,6 +58,57 @@ class TestCodexBuildKwargs:
         assert kw["instructions"] == "You are helpful."
         assert "input" in kw
         assert kw["store"] is False
+
+    def test_text_verbosity_adds_top_level_text_for_supported_target(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            text_verbosity=" LOW ",
+            supports_text_verbosity=True,
+        )
+        assert kw.get("text") == {"verbosity": "low"}
+
+    def test_text_verbosity_skips_unsupported_target(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            text_verbosity="low",
+            supports_text_verbosity=False,
+        )
+        assert "text" not in kw
+
+    def test_text_verbosity_merges_with_request_override_text(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        request_overrides = {"text": {"format": {"type": "text"}}}
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            text_verbosity="low",
+            supports_text_verbosity=True,
+            request_overrides=request_overrides,
+        )
+        assert kw.get("text") == {
+            "format": {"type": "text"},
+            "verbosity": "low",
+        }
+        assert request_overrides == {"text": {"format": {"type": "text"}}}
+
+    def test_text_verbosity_request_override_verbosity_wins(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            text_verbosity="low",
+            supports_text_verbosity=True,
+            request_overrides={"text": {"verbosity": "high"}},
+        )
+        assert kw.get("text") == {"verbosity": "high"}
 
     def test_system_extracted_from_messages(self, transport):
         messages = [
@@ -829,6 +885,70 @@ class TestCodexTransportTimeout:
         assert kw.get("timeout") == 450.0
 
 
+class TestCodexTextVerbosityPreflight:
+
+    @pytest.mark.parametrize(
+        ("model", "hostname", "is_codex_backend", "expected"),
+        [
+            ("gpt-5.6-sol", "api.openai.com", False, True),
+            ("openai/gpt-5.5", "", True, True),
+            ("o3", "api.openai.com", False, False),
+            ("grok-4.5", "api.x.ai", False, False),
+            ("gpt-5.5", "models.github.ai", False, False),
+            ("gpt-5.5", "proxy.example", False, False),
+        ],
+    )
+    def test_text_verbosity_capability_boundary(
+        self, model, hostname, is_codex_backend, expected
+    ):
+        assert (
+            supports_openai_text_verbosity(
+                model,
+                base_url_hostname=hostname,
+                is_codex_backend=is_codex_backend,
+            )
+            is expected
+        )
+
+    def test_parse_text_verbosity_accepts_openai_values_only(self):
+        assert parse_text_verbosity("") is None
+        assert parse_text_verbosity(" LOW ") == "low"
+        assert parse_text_verbosity("medium") == "medium"
+        assert parse_text_verbosity("high") == "high"
+        assert parse_text_verbosity("verbose") is None
+
+    def test_preflight_allows_text_verbosity_with_timeout_and_extra_body(self):
+        payload = _preflight_codex_api_kwargs(
+            {
+                "model": "gpt-5.5",
+                "instructions": "system",
+                "input": [{"role": "user", "content": "hi"}],
+                "store": False,
+                "timeout": 600,
+                "extra_body": {"prompt_cache_key": "conv-1"},
+                "text": {"verbosity": "HIGH", "format": {"type": "text"}},
+            }
+        )
+        assert payload["timeout"] == 600.0
+        assert payload["extra_body"] == {"prompt_cache_key": "conv-1"}
+        assert payload["text"] == {
+            "verbosity": "high",
+            "format": {"type": "text"},
+        }
+
+    def test_preflight_rejects_invalid_text_verbosity(self):
+        with pytest.raises(ValueError, match="text.verbosity"):
+            _preflight_codex_api_kwargs(
+                {
+                    "model": "gpt-5.5",
+                    "instructions": "system",
+                    "input": [{"role": "user", "content": "hi"}],
+                    "store": False,
+                    "text": {"verbosity": "verbose"},
+                }
+            )
+
+
 class TestCodexTransportXaiServiceTierStrip:
     """xAI Responses API rejects ``service_tier`` (#28490).
 
@@ -929,7 +1049,6 @@ class TestPreflightSlashEnumStrip:
     def test_grok_model_strips_slash_enum_values(self):
         """When the model name is Grok-family, slash-containing enum
         values are stripped so xAI doesn't 400 on the tool schema."""
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
         kwargs = self._make_kwargs(
             "grok-4.3",
             ["Qwen/Qwen3.5-0.8B", "openai/gpt-oss-20b", "plain-id"],
@@ -945,7 +1064,6 @@ class TestPreflightSlashEnumStrip:
 
     def test_aggregator_prefixed_grok_also_strips(self):
         """Aggregator-prefixed (x-ai/grok-*) names hit the same path."""
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
         kwargs = self._make_kwargs(
             "x-ai/grok-4.3",
             ["Qwen/Qwen3.5-0.8B"],
@@ -958,7 +1076,6 @@ class TestPreflightSlashEnumStrip:
         enums.  The safety-net must NOT strip there or we silently
         degrade tool-schema constraints on every codex_responses
         provider that isn't xAI."""
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
         kwargs = self._make_kwargs(
             "gpt-5.5",
             ["Qwen/Qwen3.5-0.8B", "plain-id"],

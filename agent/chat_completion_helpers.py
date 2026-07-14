@@ -831,6 +831,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
+        from agent.text_verbosity import supports_openai_text_verbosity
+
         # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
         # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
         # Most commonly hit when MCP-derived tools carry JSON Schema validation
@@ -872,6 +874,13 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
             request_overrides=agent.request_overrides,
+            text_verbosity=getattr(agent, "text_verbosity", None),
+            base_url=getattr(agent, "base_url", None),
+            supports_text_verbosity=supports_openai_text_verbosity(
+                agent.model,
+                base_url_hostname=agent._base_url_hostname,
+                is_codex_backend=is_codex_backend,
+            ),
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,

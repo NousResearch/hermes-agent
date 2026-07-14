@@ -114,9 +114,9 @@ class ResponsesApiTransport(ProviderTransport):
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
             request_overrides: dict | None — extra kwargs merged in
-            provider: str | None — provider name for backend-specific logic
+            text_verbosity: str | None — OpenAI Responses text.verbosity
+            supports_text_verbosity: bool — resolved target capability
             base_url: str | None — endpoint URL
-            base_url_hostname: str | None — hostname for backend detection
             is_github_responses: bool — Copilot/GitHub models backend
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
@@ -303,6 +303,20 @@ class ResponsesApiTransport(ProviderTransport):
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)
+
+        text_verbosity = params.get("text_verbosity")
+        if text_verbosity and params.get("supports_text_verbosity") is True:
+            from agent.text_verbosity import parse_text_verbosity
+
+            verbosity = parse_text_verbosity(text_verbosity)
+            if verbosity:
+                override_text = kwargs.get("text")
+                if override_text is None:
+                    kwargs["text"] = {"verbosity": verbosity}
+                elif isinstance(override_text, dict):
+                    merged_text = dict(override_text)
+                    merged_text.setdefault("verbosity", verbosity)
+                    kwargs["text"] = merged_text
 
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing

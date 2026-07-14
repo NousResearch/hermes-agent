@@ -741,6 +741,12 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+  # OpenAI Responses API final-answer verbosity.
+  # Empty/unset = provider default. Options: "low", "medium", "high".
+  # Automatically applied only to GPT-5 models on Codex OAuth or the exact
+  # api.openai.com host, not xAI/Grok, GitHub Models, or custom endpoints.
+  text_verbosity: ""
   
   # Predefined personalities (use with /personality command)
   personalities:

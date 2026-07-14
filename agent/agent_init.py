@@ -623,6 +623,7 @@ def init_agent(
     agent.max_tokens = max_tokens  # None = use model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     agent.service_tier = service_tier
+    agent.text_verbosity = None
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
@@ -1463,6 +1464,19 @@ def init_agent(
     if not isinstance(_agent_section, dict):
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+    _config_text_verbosity = _agent_section.get("text_verbosity")
+    if _config_text_verbosity is not None:
+        from agent.text_verbosity import parse_text_verbosity
+
+        agent.text_verbosity = parse_text_verbosity(_config_text_verbosity)
+        if str(_config_text_verbosity or "").strip() and agent.text_verbosity is None:
+            _ra().logger.warning(
+                "Invalid agent.text_verbosity in config.yaml: %r; "
+                "must be one of: low, medium, high. "
+                "Falling back to provider default.",
+                _config_text_verbosity,
+            )
+    agent._session_init_model_config["text_verbosity"] = agent.text_verbosity
 
     # Intent-ack continuation config: "auto" (default — codex_responses only,
     # the historical gate), true (all api_modes), false (never), or a list of

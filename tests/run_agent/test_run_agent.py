@@ -981,6 +981,88 @@ class TestInit:
         assert a.max_tokens == 4096
         assert kwargs["max_tokens"] == 4096
 
+    def test_text_verbosity_from_config_populates_responses_request(self):
+        """agent.text_verbosity config populates OpenAI Responses text.verbosity."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"text_verbosity": "low"}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="openai-api",
+                model="gpt-5.5",
+                base_url="https://api.openai.com/v1",
+                api_mode="codex_responses",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.text_verbosity == "low"
+        assert kwargs["text"] == {"verbosity": "low"}
+
+    def test_text_verbosity_skips_custom_responses_endpoint(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"text_verbosity": "low"}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="gpt-5.5",
+                base_url="https://proxy.example/v1",
+                api_mode="codex_responses",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.text_verbosity == "low"
+        assert "text" not in kwargs
+
+    def test_invalid_text_verbosity_config_falls_back(self, caplog):
+        """Invalid agent.text_verbosity warns and preserves provider default."""
+        with (
+            caplog.at_level(logging.WARNING),
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"text_verbosity": "verbose"}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="openai-api",
+                model="gpt-5.5",
+                base_url="https://api.openai.com/v1",
+                api_mode="codex_responses",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.text_verbosity is None
+        assert "text" not in kwargs
+        assert "Invalid agent.text_verbosity" in caplog.text
+
     def test_constructor_max_tokens_wins_over_config(self):
         """Explicit constructor max_tokens keeps programmatic callers stable."""
         with (

@@ -1019,6 +1019,9 @@ DEFAULT_CONFIG = {
         # provider hiccups on a single provider.
         "api_max_retries": 3,
         "service_tier": "",
+        # OpenAI Responses API final-answer verbosity. Empty/unset preserves
+        # the provider default. Valid values: "low", "medium", "high".
+        "text_verbosity": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false

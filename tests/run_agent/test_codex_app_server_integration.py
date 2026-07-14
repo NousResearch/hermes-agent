@@ -253,6 +253,40 @@ class TestRunConversationCodexPath:
         # Counter should be reset after the review fires
         assert agent._iters_since_skill == 0
 
+    def test_background_review_skill_deferred_when_user_input_is_pending(
+        self, monkeypatch
+    ):
+        """Queued input must suppress the Codex skill-review trigger."""
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text=f"echo: {user_input}",
+                projected_messages=[
+                    {"role": "assistant", "content": f"echo: {user_input}"},
+                ],
+                tool_iterations=10,
+                turn_id="t-pending",
+                thread_id="th-pending",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th-pending"
+        )
+
+        agent = _make_codex_agent()
+        agent._skill_nudge_interval = 10
+        agent._iters_since_skill = 0
+        agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()))
+        agent.valid_tool_names.add("skill_manage")
+        agent._pending_user_message = "queued next turn"
+
+        with patch.object(agent, "_spawn_background_review",
+                          return_value=None) as spawn:
+            agent.run_conversation("do tool work")
+
+        assert not spawn.called
+        assert agent._iters_since_skill == 9
+
     def test_background_review_signature_never_breaks(self, fake_session):
         """Even when no trigger fires, the helper must never call
         _spawn_background_review with the wrong signature. Run a turn,

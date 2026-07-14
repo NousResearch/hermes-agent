@@ -378,7 +378,7 @@ def test_background_review_skill_deferred_when_steer_pending():
 
     assert _has_pending_user_input(agent) is True
 
-    _defer_skill_review_when_input_pending(agent)
+    _defer_skill_review_when_input_pending(agent, True)
 
     assert agent._iters_since_skill == 9
 
@@ -394,7 +394,7 @@ def test_background_review_skill_not_deferred_without_pending_input():
     agent._skill_nudge_interval = 10
     agent.valid_tool_names = ["skill_manage"]
 
-    _defer_skill_review_when_input_pending(agent)
+    _defer_skill_review_when_input_pending(agent, False)
 
     assert agent._iters_since_skill == 10
 
@@ -429,7 +429,7 @@ def test_background_review_skill_not_deferred_below_threshold():
     agent._skill_nudge_interval = 10
     agent.valid_tool_names = ["skill_manage"]
 
-    _defer_skill_review_when_input_pending(agent)
+    _defer_skill_review_when_input_pending(agent, True)
 
     assert agent._iters_since_skill == 9
 

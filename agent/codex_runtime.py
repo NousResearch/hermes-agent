@@ -348,6 +348,14 @@ def run_codex_app_server_turn(
 
     # Now check the skill nudge AFTER iters were incremented — same
     # pattern the chat_completions path uses (line ~15432).
+    from agent.conversation_loop import (
+        _defer_skill_review_when_input_pending,
+        _has_pending_user_input,
+    )
+
+    _defer_skill_review_when_input_pending(
+        agent, _has_pending_user_input(agent)
+    )
     should_review_skills = False
     if (
         agent._skill_nudge_interval > 0

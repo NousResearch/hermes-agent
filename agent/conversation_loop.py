@@ -89,7 +89,9 @@ def _has_pending_user_input(agent) -> bool:
     return False
 
 
-def _defer_skill_review_when_input_pending(agent) -> None:
+def _defer_skill_review_when_input_pending(
+    agent, pending_user_input: bool
+) -> None:
     """Keep queued user turns ahead of background skill review."""
     if getattr(agent, "_skill_nudge_interval", 0) <= 0:
         return
@@ -97,7 +99,7 @@ def _defer_skill_review_when_input_pending(agent) -> None:
         return
     if getattr(agent, "_iters_since_skill", 0) < agent._skill_nudge_interval:
         return
-    if not _has_pending_user_input(agent):
+    if not pending_user_input:
         return
 
     # Leave the counter one step below the threshold so the next eligible turn

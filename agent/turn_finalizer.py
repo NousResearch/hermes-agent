@@ -50,6 +50,7 @@ def finalize_turn(
     """
     from agent.conversation_loop import (
         _defer_skill_review_when_input_pending,
+        _has_pending_user_input,
         logger,
     )
 
@@ -420,6 +421,7 @@ def finalize_turn(
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.
+    _pending_user_input = _has_pending_user_input(agent)
     _leftover_steer = agent._drain_pending_steer()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
@@ -435,7 +437,7 @@ def finalize_turn(
     # Clear stream callback so it doesn't leak into future calls
     agent._stream_callback = None
 
-    _defer_skill_review_when_input_pending(agent)
+    _defer_skill_review_when_input_pending(agent, _pending_user_input)
 
     # Check skill trigger NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = False

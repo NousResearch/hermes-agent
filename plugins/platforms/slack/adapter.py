@@ -441,6 +441,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._channel_info_cache: Dict[str, tuple] = {}  # channel_id → (name, topic)
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -2106,6 +2107,36 @@ class SlackAdapter(BasePlatformAdapter):
             self._user_name_cache[user_id] = user_id
             return user_id
 
+    async def _resolve_channel_info(self, channel_id: str):
+        """Resolve a channel ID to (name, topic), cached.
+
+        Fail-open: any API error caches (None, None) so a dead lookup never
+        retries per message and callers keep today's raw-ID behaviour.
+        Topic falls back to purpose — most channels only fill one of the two.
+        """
+        if not channel_id:
+            return (None, None)
+        if channel_id in self._channel_info_cache:
+            return self._channel_info_cache[channel_id]
+        if not self._app:
+            return (None, None)
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_info(channel=channel_id)
+            channel = result.get("channel", {}) or {}
+            name = channel.get("name") or None
+            topic = (
+                (channel.get("topic") or {}).get("value")
+                or (channel.get("purpose") or {}).get("value")
+                or None
+            )
+            self._channel_info_cache[channel_id] = (name, topic)
+            return (name, topic)
+        except Exception as e:
+            logger.debug("[Slack] conversations.info failed for %s: %s", channel_id, e)
+            self._channel_info_cache[channel_id] = (None, None)
+            return (None, None)
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -3160,11 +3191,19 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
+        # Resolve channel identity (name + topic) so the model knows WHERE
+        # this message came from instead of a raw channel ID. DMs skip the
+        # lookup — conversations.info has no useful name for an IM.
+        chan_name, chan_topic = (None, None)
+        if not is_dm:
+            chan_name, chan_topic = await self._resolve_channel_info(channel_id)
+
         # Build source
         source = self.build_source(
             chat_id=channel_id,
-            chat_name=channel_id,  # Will be resolved later if needed
+            chat_name=f"#{chan_name}" if chan_name else channel_id,
             chat_type="dm" if is_dm else "group",
+            chat_topic=chan_topic,
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
@@ -3957,9 +3996,14 @@ class SlackAdapter(BasePlatformAdapter):
         # keep group semantics so different users do not collide into one
         # session key.
         is_dm = str(channel_id).startswith("D")
+        chan_name, chan_topic = (None, None)
+        if not is_dm:
+            chan_name, chan_topic = await self._resolve_channel_info(channel_id)
         source = self.build_source(
             chat_id=channel_id,
+            chat_name=f"#{chan_name}" if chan_name else channel_id,
             chat_type="dm" if is_dm else "group",
+            chat_topic=chan_topic,
             user_id=user_id,
         )
 

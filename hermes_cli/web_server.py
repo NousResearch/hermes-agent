@@ -745,6 +745,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.
     "computer_use": "agent",
+    # `credential_pool.exhausted_cooldown_seconds` is currently the only
+    # schema-surfaced pool knob — fold into agent (keys live in auth.json).
+    "credential_pool": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

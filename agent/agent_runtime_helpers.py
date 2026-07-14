@@ -2636,7 +2636,10 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     seen_assistant_call_ids.add(cid)
                 kept_tcs.append(tc)
             if len(kept_tcs) != len(msg.get("tool_calls") or []):
-                msg = {**msg, "tool_calls": kept_tcs}
+                if kept_tcs:
+                    msg = {**msg, "tool_calls": kept_tcs}
+                else:
+                    msg = {k: v for k, v in msg.items() if k != "tool_calls"}
             deduped.append(msg)
         elif role == "tool":
             cid = (msg.get("tool_call_id") or "").strip()

@@ -316,6 +316,82 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     )
 
 
+def test_late_concurrent_compressor_cannot_rotate_completed_parent(
+    tmp_path: Path,
+) -> None:
+    """A call started concurrently must not rotate an already-rotated parent.
+
+    The durable lock protects overlapping critical sections, but a starved
+    thread can reach ``try_acquire_compression_lock`` only after the winner has
+    released it. That late caller still holds the old session id and must be
+    rejected rather than acquiring a fresh lock and creating a second child.
+    """
+    db_path = tmp_path / "state.db"
+    winner_db = SessionDB(db_path=db_path)
+    parent_sid = "LATE_CONCURRENT_PARENT"
+    winner_db.create_session(parent_sid, source="discord")
+    stale_db = SessionDB(db_path=db_path)
+
+    winner = _build_agent_with_db(winner_db, parent_sid)
+    stale = _build_agent_with_db(stale_db, parent_sid)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    real_acquire = stale_db.try_acquire_compression_lock
+    stale_waiting = threading.Event()
+    release_stale = threading.Event()
+
+    def sequenced_acquire(*args, **kwargs):
+        if threading.current_thread().name == "stale_turn":
+            stale_waiting.set()
+            assert release_stale.wait(timeout=10), "stale caller was never released"
+        return real_acquire(*args, **kwargs)
+
+    stale_db.try_acquire_compression_lock = sequenced_acquire
+    results: dict[str, list] = {}
+    errors: list[BaseException] = []
+
+    def run(key: str, agent) -> None:
+        try:
+            results[key], _ = agent._compress_context(
+                messages, "sys", approx_tokens=120_000
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    stale_thread = threading.Thread(
+        target=run, args=("stale", stale), name="stale_turn"
+    )
+    winner_thread = threading.Thread(
+        target=run, args=("winner", winner), name="winner_turn"
+    )
+    stale_thread.start()
+    assert stale_waiting.wait(timeout=10), "stale caller never reached lock lookup"
+
+    winner_thread.start()
+    winner_thread.join(timeout=10)
+    assert not winner_thread.is_alive(), "winner compression did not finish"
+
+    # The stale caller must be rejected by durable completed-parent state,
+    # not by the winner still holding its lease.
+    assert winner_db.get_compression_lock_holder(parent_sid) is None
+    parent = winner_db.get_session(parent_sid)
+    assert parent is not None
+    assert parent["end_reason"] == "compression"
+
+    release_stale.set()
+    stale_thread.join(timeout=10)
+    stale_db.try_acquire_compression_lock = real_acquire
+
+    assert not stale_thread.is_alive(), "stale compression did not finish"
+    assert not errors, f"compression raised exceptions: {errors}"
+    assert len(results["winner"]) < len(messages)
+    assert results["stale"] is messages
+    assert winner.session_id != parent_sid
+    assert stale.session_id == parent_sid
+    assert _count_children(winner_db, parent_sid) == 1
+    stale.context_compressor.compress.assert_not_called()
+
+
 def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     """The loser of the lock race must return its input messages verbatim.
 

@@ -4205,18 +4205,21 @@ class SessionDB:
 
         Returns ``True`` on success (caller now owns the lock and must
         release via :meth:`release_compression_lock`).  Returns ``False``
-        if another holder already owns a non-expired lock — the caller
-        MUST NOT proceed with compression in that case (its rotation would
-        race against the holder's, splitting the session lineage).
+        if another holder already owns a non-expired lock or if the session
+        has already completed a compression rotation. The caller MUST NOT
+        proceed in either case: a late AIAgent can still carry the ended
+        parent id after the winner releases its lock, and rotating that stale
+        parent would split the session lineage.
 
         Expired locks (``expires_at < now``) are reclaimed transparently.
         Structured holders whose local ``pid=`` no longer exists are reclaimed
         immediately, so a gateway killed during compression does not stall the
         replacement process for the full lease TTL.
 
-        Implementation: single-transaction DELETE-expired + INSERT-or-IGNORE,
-        followed by a SELECT to confirm we got the row. SQLite serialises
-        writes, so the whole sequence is atomic against other writers.
+        Implementation: one transaction first rejects an already-rotated
+        parent, then performs DELETE-expired + INSERT-or-IGNORE followed by a
+        SELECT to confirm ownership. SQLite serialises writes, so the whole
+        sequence is atomic against other writers and completed rotations.
         """
         if not session_id:
             return False
@@ -4224,6 +4227,21 @@ class SessionDB:
         expires_at = now + ttl_seconds
 
         def _do(conn):
+            # A competing AIAgent can start compression while this session is
+            # live yet reach the lock only after the winner has rotated and
+            # released it. The lock row alone is then gone, but the ended
+            # parent is a durable completion marker. Reject that stale caller
+            # before it can create a second child. In-place compaction leaves
+            # the session open, and a failed rotation reopens it, so both keep
+            # their existing retry semantics.
+            already_rotated = conn.execute(
+                "SELECT 1 FROM sessions "
+                "WHERE id = ? AND ended_at IS NOT NULL "
+                "AND end_reason = 'compression'",
+                (session_id,),
+            ).fetchone()
+            if already_rotated is not None:
+                return False, None
             reclaimed_holder = None
             row = conn.execute(
                 "SELECT holder, expires_at FROM compression_locks "

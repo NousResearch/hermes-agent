@@ -2162,7 +2162,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         should_start_waiter = False
         with self._runtime_start_lock:
             if (
-                self._runtime_start_pending
+                self._shutting_down
+                or self._runtime_start_pending
                 or (self._runtime_start_thread and self._runtime_start_thread.is_alive())
             ):
                 self._client = None
@@ -2195,6 +2196,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if should_start_waiter:
             with self._runtime_start_lock:
                 self._runtime_start_pending = False
+                if self._shutting_down:
+                    return
                 self._start_runtime_openviking_waiter(
                     status_callback=status_callback,
                     warning_callback=warning_callback,

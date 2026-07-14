@@ -208,3 +208,65 @@ def test_stop_registers_only_a_not_done_drain(store):
     assert key not in runner2._draining_turns, (
         "a done task (normal turn exit) must NOT register a false drain"
     )
+
+
+def test_stop_sets_persist_superseded_on_live_agent(store):
+    """Append-time generation gate (Phase 2): /stop sets _persist_superseded on
+    the live agent so _flush_messages_to_session_db suppresses the zombie's
+    continued rows. Drives the real _interrupt_and_clear_session path."""
+    from unittest.mock import MagicMock
+
+    src = _source("supersede")
+    key = build_session_key(src)
+    entry = store.get_or_create_session(src)
+    _seed(store._db, entry.session_id)
+
+    live_agent = MagicMock()
+    runner = _runner(store)
+    runner._draining_turns = {}
+    runner._running_agents = {key: live_agent}
+    runner._running_agents_ts = {key: 0.0}
+    runner._running_agent_tasks = {key: _FakeTask(done=False)}
+    runner._pending_messages = {}
+    runner._active_session_leases = {}
+    runner._evict_cached_agent = lambda *_a, **_k: None
+    runner._adapter_for_source = lambda *_a, **_k: None
+    runner._invalidate_session_run_generation = lambda *a, **k: 1
+    runner.session_store = store
+
+    asyncio.run(
+        runner._interrupt_and_clear_session(
+            key, src, interrupt_reason="Stop requested", invalidation_reason="stop_command"
+        )
+    )
+    assert live_agent._persist_superseded is True, (
+        "/stop must flag the live agent so its continued rows are suppressed"
+    )
+
+
+def test_reaper_direct_invalidate_leaves_persist_superseded_unset(store):
+    """req-4 / R6: the stale-agent reaper calls _invalidate_session_run_generation
+    DIRECTLY (not via _interrupt_and_clear_session), so it must NOT set
+    _persist_superseded — the reaper path is scoped out of the gate by design.
+    Guards against a future refactor silently flagging the reaper path."""
+    from unittest.mock import MagicMock
+
+    src = _source("reaper")
+    key = build_session_key(src)
+    entry = store.get_or_create_session(src)
+    _seed(store._db, entry.session_id)
+
+    live_agent = MagicMock()
+    live_agent._persist_superseded = False
+    runner = _runner(store)
+    runner._session_run_generation = {}
+
+    # The reaper path: a bare _invalidate_session_run_generation call.
+    runner._invalidate_session_run_generation(key, reason="stale_running_agent_eviction")
+
+    # It must NOT have touched the agent's flag (it doesn't even see the agent).
+    assert live_agent._persist_superseded is False, (
+        "the reaper's direct _invalidate must NOT set _persist_superseded (R6 scope-out)"
+    )
+
+

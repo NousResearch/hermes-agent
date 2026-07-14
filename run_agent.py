@@ -1903,6 +1903,43 @@ class AIAgent:
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
             }
+            # Count of superseded-turn CONTENT rows suppressed by the gate below
+            # (a /stop'd zombie's continued writes). Logged after the loop so a
+            # future "why did my stopped turn's rows vanish/appear" is diagnosable.
+            _suppressed_superseded_rows = 0
+            # Resolve the superseded flag ONCE, fail-open: any error reading it
+            # leaves suppression OFF so a guard bug can never lose a real row
+            # (a stray late row is cosmetic — #339 already stops /undo racing it;
+            # a dropped real row is data loss). See I5.
+            try:
+                _persist_superseded = bool(getattr(self, "_persist_superseded", False))
+            except Exception:
+                _persist_superseded = False
+            # Pairing-safety for the superseded gate: track the tool_call ids
+            # whose owning assistant(tool_calls) row WE suppress. A `tool` result
+            # may be suppressed ONLY if its owner was also suppressed (never
+            # persisted) — otherwise it would orphan an already-durable
+            # assistant(tool_calls) row into a dangling tool call (the #48879
+            # role-alternation corruption the whole carve-out exists to prevent).
+            #
+            # 🔴 AGENT-SCOPED, not per-flush (Greptile-B1′): the assistant(tool_calls)
+            # row flushes in a DIFFERENT flush from its tool result within one
+            # iteration (conversation_loop.py: append assistant → flush →
+            # _execute_tool_calls appends result → flush). A per-flush set would be
+            # empty when the result's flush runs, letting it persist orphaned. So
+            # the suppressed-id set lives on the AGENT and survives the whole drain;
+            # it is created lazily ONLY when superseded (a normal turn never
+            # allocates or consults it) and dies with the agent object on eviction
+            # (fresh agent per turn ⇒ naturally reset; clear_interrupt() does NOT
+            # clear _persist_superseded by design, so the drain stays superseded).
+            _suppressed_tool_call_ids = None
+            if _persist_superseded:
+                _suppressed_tool_call_ids = getattr(
+                    self, "_superseded_suppressed_tool_call_ids", None
+                )
+                if not isinstance(_suppressed_tool_call_ids, set):
+                    _suppressed_tool_call_ids = set()
+                    self._superseded_suppressed_tool_call_ids = _suppressed_tool_call_ids
 
             for _msg_idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
@@ -1965,6 +2002,69 @@ class AIAgent:
                 if id(msg) in history_ids or id(msg) in seed_ids:
                     msg[_DB_PERSISTED_MARKER] = True
                     continue
+                # ── Superseded-turn write gate (append-time generation gate) ──
+                # Runs AFTER every "already durable" skip above, so it only ever
+                # sees a genuinely NEW, about-to-be-written row. When the gateway
+                # invalidated this turn's run generation (/stop, /new, stale-agent
+                # eviction — see _persist_superseded), the turn is a "zombie" whose
+                # continued writes are unwanted: they land AFTER the user stopped
+                # the turn and (pre-#339) let a later /undo land somewhere the drain
+                # clobbers. Suppress a superseded turn's NEW rows — PAIRING-SAFELY.
+                #
+                # 🔴 LOAD-BEARING CARVE-OUT (I1): the interrupt-close tail
+                # (finish_reason == _INTERRUPT_CLOSE_FINISH_REASON, written by
+                # close_interrupted_tool_sequence) MUST still persist — it is the
+                # role-alternation repair AND the deliberate restart-loop backstop
+                # / auto-continue signal (hermes #45230/#49201/#49243). Never gate it.
+                #
+                # 🔴 PAIRING SAFETY (I1 / Greptile-B1): a `tool` result must NOT be
+                # suppressed if its owning assistant(tool_calls) is already durable
+                # (persisted in a PRIOR flush, before /stop) — that would orphan the
+                # call = the #48879 corruption. Because this gate now runs only on
+                # NEW rows, an already-persisted owner is skipped above and its id
+                # is never added to _suppressed_tool_call_ids, so its result passes
+                # through. Only a pair whose BOTH halves are new (arrived after
+                # /stop) is dropped atomically. Fail-open: _persist_superseded was
+                # resolved with getattr-default-False in a try/except above.
+                if _persist_superseded and (
+                    msg.get("finish_reason") != _INTERRUPT_CLOSE_FINISH_REASON
+                ):
+                    if msg.get("role") == "tool":
+                        # Suppress ONLY when the owning assistant(tool_calls) is
+                        # also being suppressed (this or any prior drain flush);
+                        # otherwise the owner is already durable and this result
+                        # must land (no orphan).
+                        if msg.get("tool_call_id") in _suppressed_tool_call_ids:
+                            _suppressed_superseded_rows += 1
+                            continue
+                        # else: owner already persisted → let the result through.
+                    elif msg.get("role") == "assistant":
+                        # The zombie's continued content: suppress. If it carries
+                        # tool_calls, record their ids so the matching results
+                        # (this or a later drain flush) are suppressed too,
+                        # keeping the pair atomic (agent-scoped set, B1′).
+                        _tcs = msg.get("tool_calls")
+                        if isinstance(_tcs, list):
+                            for _tc in _tcs:
+                                if isinstance(_tc, dict):
+                                    _tcid = _tc.get("id") or _tc.get("tool_call_id")
+                                else:
+                                    _tcid = getattr(_tc, "id", None)
+                                if _tcid:
+                                    _suppressed_tool_call_ids.add(_tcid)
+                        _suppressed_superseded_rows += 1
+                        continue
+                    else:
+                        # 🔴 FAIL-OPEN on any OTHER role (user/system/unexpected):
+                        # a zombie turn only ever writes assistant + tool rows, so
+                        # a NEW user/system row here is anomalous — and dropping a
+                        # real user message would be data loss (I5). Persist it
+                        # normally; log for diagnosability. Greptile-P2.
+                        logger.debug(
+                            "persist gate: superseded turn produced an unexpected "
+                            "new %r row for session %s — persisting (fail-open)",
+                            msg.get("role"), getattr(self, "session_id", "?"),
+                        )
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 _row_timestamp = msg.get("timestamp")
@@ -2043,6 +2143,13 @@ class AIAgent:
                         _row_id,
                     )
                 msg[_DB_PERSISTED_MARKER] = True
+            if _suppressed_superseded_rows:
+                logger.info(
+                    "persist: suppressed %d superseded-turn content row(s) for session %s "
+                    "(turn was /stop'd or /new'd; interrupt-close tail preserved)",
+                    _suppressed_superseded_rows,
+                    getattr(self, "session_id", "?"),
+                )
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.

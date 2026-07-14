@@ -599,6 +599,13 @@ def init_agent(
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt
+    # Append-time generation gate: set True by the gateway when THIS turn's run
+    # generation is invalidated (/stop, /new, stale-agent eviction). While set,
+    # _flush_messages_to_session_db suppresses the turn's continued CONTENT rows
+    # (the "zombie" writes after a /stop) but ALWAYS persists the interrupt-close
+    # tail (the restart-loop backstop / auto-continue signal). Fresh per agent, so
+    # the next turn's agent starts unset.
+    agent._persist_superseded = False
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()

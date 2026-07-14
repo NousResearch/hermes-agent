@@ -458,7 +458,9 @@ export function useMessageStream({
       }
 
       dispatchNativeNotification({
-        body: text.slice(0, 140) || translateNow('notifications.native.turnDoneBody'),
+        // Keep OS notification-center history generic: assistant replies can
+        // contain private transcript text, credentials, or tool output snippets.
+        body: translateNow('notifications.native.turnDoneBody'),
         kind: 'turnDone',
         sessionId,
         title: translateNow('notifications.native.turnDoneTitle')

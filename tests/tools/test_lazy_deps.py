@@ -100,6 +100,25 @@ class TestAllowlist:
         assert cmd.startswith("uv pip install")
         assert "honcho-ai" in cmd
 
+    def test_daytona_pins_one_compatible_opentelemetry_release_train(self):
+        specs = set(ld.LAZY_DEPS["terminal.daytona"])
+
+        assert specs == {
+            "daytona==0.155.0",
+            "opentelemetry-api==1.39.1",
+            "opentelemetry-sdk==1.39.1",
+            "opentelemetry-exporter-otlp-proto-http==1.39.1",
+            "opentelemetry-semantic-conventions==0.60b1",
+            "opentelemetry-instrumentation==0.60b1",
+            "opentelemetry-instrumentation-aiohttp-client==0.60b1",
+        }
+
+    def test_optional_backends_include_current_security_floors(self):
+        assert "msgpack==1.2.1" in ld.LAZY_DEPS["image.fal"]
+        assert "tornado==6.5.7" in ld.LAZY_DEPS["platform.telegram"]
+        assert "discord.py==2.7.1" in ld.LAZY_DEPS["platform.discord"]
+        assert all("[voice]" not in spec for spec in ld.LAZY_DEPS["platform.discord"])
+
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
 

@@ -40,6 +40,14 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# WhatsApp JIDs: group chats (<digits>@g.us), individual users
+# (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
+# newsletter chats. These are explicit native targets the bridge accepts
+# verbatim — they must NOT fall through to home-channel resolution.
+_WHATSAPP_JID_RE = re.compile(
+    r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
+    re.IGNORECASE,
+)
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -58,6 +66,62 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
+
+# Extensions that carry a native caption on the media bubble itself
+# (photo/video/document). Voice/audio notes are excluded: a caption on a
+# voice note reads as a separate label rather than a bubble caption, and the
+# established convention is to keep the accompanying text as its own message.
+_CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
+    ".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip",
+}
+
+# Per-platform native caption length limits (characters). Text longer than
+# the limit can't ride on the media bubble and stays a separate body message.
+# Telegram's photo/video caption cap is 1024; WhatsApp and Discord are far
+# more generous, so a conservative shared ceiling keeps behavior predictable.
+_TELEGRAM_CAPTION_LIMIT = 1024
+_DEFAULT_CAPTION_LIMIT = 4096
+
+
+def _media_caption_split(text, media_files, *, max_caption_len):
+    """Decide whether the accompanying text should ride on the media bubble.
+
+    Single enforced chokepoint for the ``MEDIA:<path> caption`` behavior
+    across every standalone sender. ``hermes send`` (and the send_message
+    tool / cron) strips the ``MEDIA:`` tag and leaves the remaining prose as
+    ``text``; historically each platform sent that ``text`` as a *separate*
+    message before an uncaptioned media bubble, splitting the reported case
+    ``hermes send --to whatsapp "MEDIA:/x.png This Caption"`` into two parts.
+
+    Returns ``(caption, body_text)``:
+
+    * ``(caption, "")`` — attach ``text`` to the media as its native caption
+      and send *no* separate body message. Only when there is exactly one
+      media file, it is a captionable kind (image/video/document, not a
+      voice/audio note), and ``text`` fits ``max_caption_len``.
+    * ``(None, text)`` — keep the historical behavior: ``text`` is a separate
+      body message and the media carries no caption. Applies to multi-file
+      sends (caption→file association is ambiguous), voice/audio notes, empty
+      text, or text longer than the caption limit.
+    """
+    stripped = (text or "").strip()
+    media = media_files or []
+    if not stripped or len(media) != 1:
+        return None, text
+    media_path, is_voice = media[0]
+    if is_voice:
+        return None, text
+    ext = os.path.splitext(media_path)[1].lower()
+    if ext not in _CAPTIONABLE_EXTS:
+        return None, text
+    # Measure the caption in Unicode codepoints — a portable upper bound that
+    # never under-counts vs Telegram's UTF-16 units for BMP text, so an
+    # over-count only fails safe (falls back to a separate message). The
+    # Telegram call site additionally re-checks the *formatted* caption in
+    # UTF-16 units, since MarkdownV2/HTML escaping can inflate the length.
+    if len(stripped) > max_caption_len:
+        return None, text
+    return stripped, ""
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -79,6 +143,13 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _display_chat_id(platform_name: str, chat_id: str) -> str:
+    """Return a result-safe chat identifier for tool transcripts/log consumers."""
+    if platform_name == "signal" and str(chat_id).startswith("group:"):
+        return "group:***"
+    return chat_id
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -139,8 +210,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "react", "unreact"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
             },
             "target": {
                 "type": "string",
@@ -149,6 +220,14 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment. When the user explicitly wants a file delivered as a downloadable document (rather than inline image/voice), add [[as_document]] to the message — e.g. 'MEDIA:/tmp/song.mp3 [[as_document]]'. On QQBot, [[as_document]] forces all attachments to upload as a plain file (file_type=4) instead of voice/image. QQBot group targets do not support document uploads — using [[as_document]] with a group target will return an explicit error."
+            },
+            "emoji": {
+                "type": "string",
+                "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
             }
         },
         "required": []
@@ -163,6 +242,12 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
+    if action == "react":
+        return _handle_react(args)
+
+    if action == "unreact":
+        return _handle_react(args, remove=True)
+
     return _handle_send(args)
 
 
@@ -173,6 +258,98 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+def _handle_react(args, remove=False):
+    """Attach (or with ``remove=True`` retract) an emoji reaction on a message
+    via a live gateway adapter.
+
+    Only adapters that expose ``add_reaction(chat_id, emoji, message_id)`` /
+    ``remove_reaction(chat_id, message_id)`` coroutines support this (e.g.
+    photon/iMessage tapbacks). Requires the gateway to be running in this
+    process — there is no standalone fallback, since reacting needs the
+    adapter's live message-id state.
+    """
+    target = args.get("target", "")
+    emoji = (args.get("emoji") or "").strip()
+    message_id = (args.get("message_id") or "").strip() or None
+    if not target or (not remove and not emoji):
+        return tool_error(
+            "Both 'target' and 'emoji' are required when action='react'"
+            if not remove
+            else "'target' is required when action='unreact'"
+        )
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    if target_ref:
+        chat_id, _thread_id, _ = _parse_target_ref(platform_name, target_ref)
+        if not chat_id:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name, target_ref)
+            except Exception:
+                resolved = None
+            # Opaque platform-native ids (e.g. photon space GUIDs like
+            # 'any;-;+1555...') match no parser pattern and no directory
+            # entry — pass them through verbatim; the adapter validates.
+            chat_id = resolved or target_ref
+
+    try:
+        from gateway.config import Platform, load_gateway_config
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
+
+    if not chat_id:
+        try:
+            config = load_gateway_config()
+            home = config.get_home_channel(platform)
+        except Exception:
+            home = None
+        if not home:
+            return tool_error(
+                f"No chat specified and no home channel set for {platform_name}. "
+                f"Use '{platform_name}:chat_id'."
+            )
+        chat_id = home.chat_id
+
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    adapter = runner.adapters.get(platform) if runner is not None else None
+    if adapter is None:
+        return tool_error(
+            f"Reactions require a live {platform_name} adapter in the running "
+            "gateway (not available from cron/standalone contexts)."
+        )
+    fn_name = "remove_reaction" if remove else "add_reaction"
+    react_fn = getattr(adapter, fn_name, None)
+    if not callable(react_fn):
+        return tool_error(
+            f"Platform '{platform_name}' does not support message reactions."
+        )
+
+    try:
+        from model_tools import _run_async
+        if remove:
+            result = _run_async(
+                react_fn(chat_id=chat_id, message_id=message_id)
+            )
+        else:
+            result = _run_async(
+                react_fn(chat_id=chat_id, emoji=emoji, message_id=message_id)
+            )
+    except Exception as e:
+        return json.dumps(_error(f"Reaction failed: {e}"))
+    if isinstance(result, dict):
+        return json.dumps(result)
+    return json.dumps({"success": bool(result)})
 
 
 def _handle_send(args):
@@ -363,6 +540,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+        from plugins.platforms.telegram.telegram_ids import (
+            parse_telegram_username_target,
+        )
+
+        username = parse_telegram_username_target(target_ref)
+        if username:
+            return username, None, True
     if platform_name == "feishu":
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -416,6 +600,18 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
+    if platform_name == "whatsapp":
+        # Native WhatsApp JIDs (group @g.us, user @s.whatsapp.net, @lid, etc.)
+        # are explicit targets — pass through verbatim. E.164 '+' numbers fall
+        # through to the _PHONE_PLATFORMS handler below.
+        if _WHATSAPP_JID_RE.fullmatch(target_ref):
+            return target_ref.strip(), None, True
+    stripped_target = target_ref.strip()
+    if platform_name == "signal" and stripped_target.startswith("group:"):
+        group_id = stripped_target[len("group:"):].strip()
+        if group_id:
+            return f"group:{group_id}", None, True
+        return None, None, False
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -691,37 +887,30 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
-    from gateway.platforms.slack import SlackAdapter
 
     # Telegram adapter import is optional (requires python-telegram-bot)
     try:
-        from gateway.platforms.telegram import TelegramAdapter
+        from plugins.platforms.telegram.adapter import TelegramAdapter
         _telegram_available = True
     except ImportError:
         _telegram_available = False
 
-    # Feishu adapter import is optional (requires lark-oapi)
-    try:
-        from gateway.platforms.feishu import FeishuAdapter
-        _feishu_available = True
-    except ImportError:
-        _feishu_available = False
+    # Feishu adapter migrated to a plugin (#41112); its max_message_length
+    # (8000) now flows through the registry fallback below.
 
-    if platform == Platform.SLACK and message:
-        try:
-            slack_adapter = SlackAdapter.__new__(SlackAdapter)
-            message = slack_adapter.format_message(message)
-        except Exception:
-            logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
+    media_files = media_files or []
+
+    # Slack mrkdwn formatting is applied inside the slack plugin's
+    # _standalone_send (the registry standalone_sender_fn) rather than here —
+    # the SlackAdapter moved to plugins/platforms/slack/ in #41112.
 
     # Platform message length limits (from adapter class attributes for
-    # built-in platforms; from PlatformEntry.max_message_length for plugins).
+    # built-in platforms; from PlatformEntry.max_message_length for plugins,
+    # resolved via the registry fallback below — covers Slack and Feishu, both
+    # migrated to plugins in #41112).
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
-        Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
-    if _feishu_available:
-        _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
 
     # Check plugin registry for max_message_length
     if platform not in _MAX_LENGTHS:
@@ -744,24 +933,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         chunks = [message]
 
     # --- Telegram: special handling for media attachments ---
+    # _send_telegram now owns text chunking internally — it formats the full
+    # message (MarkdownV2/HTML) and then splits the *formatted* text on UTF-16
+    # length so escaping inflation can't push a chunk over Telegram's 4096
+    # limit (issue #28557). Pass the whole message in one call; media attaches
+    # after all text chunks.
     if platform == Platform.TELEGRAM:
-        last_result = None
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
-            result = await _send_telegram(
-                pconfig.token,
-                chat_id,
-                chunk,
-                media_files=media_files if is_last else [],
-                thread_id=thread_id,
-                disable_link_previews=disable_link_previews,
-                force_document=force_document,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
+        return await _send_telegram(
+            pconfig.token,
+            chat_id,
+            message,
+            media_files=media_files,
+            thread_id=thread_id,
+            disable_link_previews=disable_link_previews,
+            force_document=force_document,
+        )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
     # The plugin's ``_standalone_send`` (registered in
@@ -775,6 +962,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         entry = platform_registry.get("discord")
         if entry is None or entry.standalone_sender_fn is None:
             return {"error": "Discord plugin not registered or missing standalone_sender_fn"}
+        # MEDIA:<path> caption: single captionable file + short text rides as
+        # the media message content instead of a separate message before the
+        # attachment (single enforced decision in _media_caption_split). Cap on
+        # the platform's own message limit so the caption is always deliverable.
+        _dc_caption, _ = _media_caption_split(
+            message, media_files,
+            max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
+        )
+        if _dc_caption is not None:
+            result = await entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                "",
+                thread_id=thread_id,
+                media_files=media_files,
+                caption=_dc_caption,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            return result
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -790,8 +997,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper when media is present ---
-    if platform == Platform.MATRIX and media_files:
+    # --- Matrix: route ALL sends through the native adapter so text is
+    # encrypted in E2EE rooms too (issue: text-only sends arrived with a red
+    # padlock because they took the raw-HTTP standalone path). The adapter
+    # reuses the live gateway's E2EE session when available (#46310) and falls
+    # back to an encryption-aware ephemeral adapter for standalone/cron. ---
+    if platform == Platform.MATRIX:
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -838,12 +1049,19 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Feishu: native media attachment support via adapter ---
+    # --- Feishu: native media attachment support via the registry's
+    # standalone_sender_fn (plugins/platforms/feishu/adapter.py::_standalone_send). #41112
     if platform == Platform.FEISHU and media_files:
+        from gateway.platform_registry import platform_registry as _pr_feishu
+        from hermes_cli.plugins import discover_plugins as _dp_feishu
+        _dp_feishu()
+        _feishu_entry = _pr_feishu.get("feishu")
+        if _feishu_entry is None or _feishu_entry.standalone_sender_fn is None:
+            return {"error": "Feishu plugin not registered or missing standalone_sender_fn"}
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
-            result = await _send_feishu(
+            result = await _feishu_entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
@@ -870,6 +1088,49 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chunk,
                 thread_id=thread_id,
                 media_files=media_files if is_last else [],
+    # --- WhatsApp: native media attachment support via the registry's
+    # standalone_sender_fn (plugins/platforms/whatsapp/adapter.py::_standalone_send).
+    # The plugin uploads each file through the local Baileys bridge /send-media
+    # endpoint so images/videos/audio arrive as native bubbles, not documents. #41112
+    if platform == Platform.WHATSAPP and media_files:
+        from gateway.platform_registry import platform_registry as _pr_wa
+        from hermes_cli.plugins import discover_plugins as _dp_wa
+        _dp_wa()
+        _wa_entry = _pr_wa.get("whatsapp")
+        if _wa_entry is None or _wa_entry.standalone_sender_fn is None:
+            return {"error": "WhatsApp plugin not registered or missing standalone_sender_fn"}
+        # MEDIA:<path> caption: a single captionable file + short text rides
+        # as the media's native caption instead of a separate message before
+        # the bubble (single enforced decision in _media_caption_split). Cap on
+        # the platform's own message limit so the caption is always deliverable.
+        _wa_caption, _ = _media_caption_split(
+            message, media_files,
+            max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
+        )
+        last_result = None
+        if _wa_caption is not None:
+            # Single-file captioned send: no separate text chunk, caption on
+            # the media itself.
+            result = await _wa_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                "",
+                media_files=media_files,
+                thread_id=thread_id,
+                force_document=force_document,
+                caption=_wa_caption,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            return result
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _wa_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+                thread_id=thread_id,
                 force_document=force_document,
             )
             if isinstance(result, dict) and result.get("error"):
@@ -881,7 +1142,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot and whatsapp; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -889,29 +1150,37 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot and whatsapp"
         )
 
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk, thread_ts=thread_id)
+            # Slack migrated to a bundled plugin (#41112); delivery flows
+            # through the registry's standalone_sender_fn, which applies
+            # mrkdwn formatting and posts via the Slack Web API.
+            from gateway.platform_registry import platform_registry
+            _slack_entry = platform_registry.get("slack")
+            if _slack_entry is None or _slack_entry.standalone_sender_fn is None:
+                result = {"error": "Slack plugin not registered or missing standalone_sender_fn"}
+            else:
+                result = await _slack_entry.standalone_sender_fn(
+                    pconfig, chat_id, chunk, thread_id=thread_id
+                )
         elif platform == Platform.WHATSAPP:
-            result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
+            result = await _registry_standalone_send("whatsapp", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
-            result = await _send_email(pconfig.extra, chat_id, chunk)
+            result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SMS:
-            result = await _send_sms(pconfig.api_key, chat_id, chunk)
-        elif platform == Platform.MATRIX:
-            result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
+            result = await _registry_standalone_send("sms", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.DINGTALK:
-            result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
+            result = await _registry_standalone_send("dingtalk", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
+            result = await _registry_standalone_send("feishu", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.WECOM:
-            result = await _send_wecom(pconfig.extra, chat_id, chunk)
+            result = await _registry_standalone_send("wecom", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.YUANBAO:
@@ -971,7 +1240,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         else:
             # Reuse the gateway adapter's format_message for markdown→MarkdownV2
             try:
-                from gateway.platforms.telegram import TelegramAdapter
+                from plugins.platforms.telegram.adapter import TelegramAdapter
                 _adapter = TelegramAdapter.__new__(TelegramAdapter)
                 formatted = _adapter.format_message(message)
             except Exception:
@@ -1003,7 +1272,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 bot = Bot(token=token)
         else:
             bot = Bot(token=token)
-        int_chat_id = int(chat_id)
+        from plugins.platforms.telegram.telegram_ids import (
+            normalize_telegram_chat_id,
+        )
+
+        # Telegram accepts a numeric chat_id OR an @username string; normalize
+        # rather than force-int so username home channels don't crash (#13206).
+        int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:
@@ -1016,7 +1291,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             # send to a forum group's General topic always errors out
             # (see issue #22267).
             try:
-                from gateway.platforms.telegram import TelegramAdapter
+                from plugins.platforms.telegram.adapter import TelegramAdapter
                 effective_thread_id = TelegramAdapter._message_thread_id_for_send(
                     str(thread_id)
                 )
@@ -1038,61 +1313,112 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         last_msg = None
         warnings = []
 
+        # MEDIA:<path> caption: when a single captionable file is accompanied
+        # by short text, attach the text to the media bubble as its native
+        # caption instead of sending it as a separate message beforehand
+        # (single enforced decision in _media_caption_split). Caption with the
+        # *formatted* text so MarkdownV2/HTML styling is preserved, but guard
+        # the formatted length against Telegram's 1024 cap — formatting can
+        # inflate a raw-<1024 string past it, in which case fall back to a
+        # separate body message.
+        _tg_caption = None
+        from gateway.platforms.base import utf16_len as _utf16_len
+        _cap, _ = _media_caption_split(
+            message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT
+        )
+        if _cap is not None and _utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
+            _tg_caption = formatted
+            formatted = ""  # suppress the separate text send below
+
         if formatted.strip():
-            try:
-                last_msg = await _send_telegram_message_with_retry(
-                    bot,
-                    chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **text_kwargs
-                )
-            except Exception as md_error:
-                # Thread not found — retry without message_thread_id so the
-                # message still delivers (matching the gateway adapter's
-                # fallback behaviour, issue #27012).
-                if _is_telegram_thread_not_found(md_error) and thread_kwargs:
-                    logger.warning(
-                        "Thread %s not found in _send_telegram, retrying without message_thread_id",
-                        thread_kwargs.get("message_thread_id"),
-                    )
-                    text_kwargs.pop("message_thread_id", None)
+            # Chunk *after* formatting: MarkdownV2/HTML escaping inflates the
+            # text (each escaped char like `!`/`.`/`-` becomes `\!`/`\.`/`\-`),
+            # so a message that fit under 4096 UTF-16 units raw can exceed the
+            # Telegram limit once formatted and get rejected as "Message is too
+            # long". Sizing on the formatted text in UTF-16 units guarantees
+            # every chunk is deliverable. (issue #28557)
+            from gateway.platforms.base import BasePlatformAdapter, utf16_len
+
+            text_chunks = BasePlatformAdapter.truncate_message(
+                formatted, 4096, len_fn=utf16_len
+            )
+            for chunk in text_chunks:
+                try:
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
-                        chat_id=int_chat_id, text=formatted,
+                        chat_id=int_chat_id, text=chunk,
                         parse_mode=send_parse_mode, **text_kwargs
                     )
-                elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
-                    logger.warning(
-                        "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
-                        send_parse_mode,
-                        _sanitize_error_text(md_error),
-                    )
-                    if not _has_html:
-                        try:
-                            from gateway.platforms.telegram import _strip_mdv2
-                            plain = _strip_mdv2(formatted)
-                        except Exception:
-                            plain = message
+                except Exception as md_error:
+                    # Thread not found — retry without message_thread_id so the
+                    # message still delivers (matching the gateway adapter's
+                    # fallback behaviour, issue #27012).
+                    if _is_telegram_thread_not_found(md_error) and text_kwargs.get("message_thread_id") is not None:
+                        logger.warning(
+                            "Thread %s not found in _send_telegram, retrying without message_thread_id",
+                            text_kwargs.get("message_thread_id"),
+                        )
+                        text_kwargs.pop("message_thread_id", None)
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot,
+                            chat_id=int_chat_id, text=chunk,
+                            parse_mode=send_parse_mode, **text_kwargs
+                        )
+                    elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                        logger.warning(
+                            "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
+                            send_parse_mode,
+                            _sanitize_error_text(md_error),
+                        )
+                        if not _has_html:
+                            try:
+                                from plugins.platforms.telegram.adapter import _strip_mdv2
+                                plain = _strip_mdv2(chunk)
+                            except Exception:
+                                plain = chunk
+                        else:
+                            plain = chunk
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot,
+                            chat_id=int_chat_id, text=plain,
+                            parse_mode=None, **text_kwargs
+                        )
                     else:
-                        plain = message
-                    last_msg = await _send_telegram_message_with_retry(
-                        bot,
-                        chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **text_kwargs
-                    )
-                else:
-                    raise
+                        raise
 
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warning = f"Media file not found, skipping: {media_path}"
                 logger.warning(warning)
                 warnings.append(warning)
+                # Caption mode suppressed the separate text send; if the file
+                # it was meant to caption is gone, deliver the caption text on
+                # its own so the words aren't silently lost.
+                if _tg_caption is not None and last_msg is None:
+                    try:
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot, chat_id=int_chat_id, text=_tg_caption,
+                            parse_mode=send_parse_mode, **text_kwargs
+                        )
+                        _tg_caption = None  # delivered — don't re-caption a later file
+                    except Exception as _cap_err:
+                        logger.warning(
+                            "Telegram caption-fallback send failed for missing media: %s",
+                            _sanitize_error_text(_cap_err),
+                        )
                 continue
 
             ext = os.path.splitext(media_path)[1].lower()
             try:
                 with open(media_path, "rb") as f:
                     media_kwargs = dict(thread_kwargs)
+                    # Attach the MEDIA:<path> caption to the bubble itself for
+                    # captionable kinds (photo/video/document). _tg_caption is
+                    # only set for a single captionable file, so this never
+                    # double-captions a multi-file send or a voice note.
+                    if _tg_caption is not None and not (ext in _VOICE_EXTS and is_voice):
+                        media_kwargs["caption"] = _tg_caption
+                        media_kwargs["parse_mode"] = send_parse_mode
                     try:
                         if ext in _IMAGE_EXTS and not force_document:
                             last_msg = await bot.send_photo(
@@ -1145,6 +1471,37 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                 last_msg = await bot.send_document(
                                     chat_id=int_chat_id, document=f, **media_kwargs
                                 )
+                        elif media_kwargs.get("parse_mode") and (
+                            "parse" in str(media_err).lower()
+                            or "caption" in str(media_err).lower()
+                        ):
+                            # Caption failed to parse as MarkdownV2/HTML —
+                            # retry with a plain-text caption so the media
+                            # (and its caption) still deliver.
+                            logger.warning(
+                                "Caption parse failed for media send, retrying plain: %s",
+                                _sanitize_error_text(media_err),
+                            )
+                            f.seek(0)
+                            media_kwargs.pop("parse_mode", None)
+                            if not _has_html and media_kwargs.get("caption"):
+                                try:
+                                    from plugins.platforms.telegram.adapter import _strip_mdv2
+                                    media_kwargs["caption"] = _strip_mdv2(media_kwargs["caption"])
+                                except Exception:
+                                    pass
+                            if ext in _IMAGE_EXTS and not force_document:
+                                last_msg = await bot.send_photo(
+                                    chat_id=int_chat_id, photo=f, **media_kwargs
+                                )
+                            elif ext in _VIDEO_EXTS:
+                                last_msg = await bot.send_video(
+                                    chat_id=int_chat_id, video=f, **media_kwargs
+                                )
+                            else:
+                                last_msg = await bot.send_document(
+                                    chat_id=int_chat_id, document=f, **media_kwargs
+                                )
                         else:
                             raise
             except Exception as e:
@@ -1173,57 +1530,28 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message, thread_ts=None):
-    """Send via Slack Web API."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _proxy = resolve_proxy_url()
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        url = "https://slack.com/api/chat.postMessage"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            payload = {"channel": chat_id, "text": message, "mrkdwn": True}
-            if thread_ts:
-                payload["thread_ts"] = thread_ts
-            async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
-                return _error(f"Slack API error: {data.get('error', 'unknown')}")
-    except Exception as e:
-        return _error(f"Slack send failed: {e}")
+# _send_slack moved to the slack plugin as _standalone_send
+# (plugins/platforms/slack/adapter.py), wired via standalone_sender_fn. #41112.
 
 
-async def _send_whatsapp(extra, chat_id, message):
-    """Send via the local WhatsApp bridge HTTP API."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        bridge_port = extra.get("bridge_port", 3000)
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"http://localhost:{bridge_port}/send",
-                json={"chatId": chat_id, "message": message},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return {
-                        "success": True,
-                        "platform": "whatsapp",
-                        "chat_id": chat_id,
-                        "message_id": data.get("messageId"),
-                    }
-                body = await resp.text()
-                return _error(f"WhatsApp bridge error ({resp.status}): {body}")
-    except Exception as e:
-        return _error(f"WhatsApp send failed: {e}")
+async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
+    """Dispatch a one-shot send through a migrated platform plugin's
+    standalone_sender_fn (registry hook).  Used for platforms whose adapter
+    moved out of gateway/platforms/ into plugins/platforms/<name>/ (#41112):
+    the legacy inline ``_send_<platform>`` helper now lives in the plugin as
+    ``_standalone_send`` and is reached via the platform registry.
+    """
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()  # idempotent — ensure the entry is registered
+    entry = platform_registry.get(platform_name)
+    if entry is None or entry.standalone_sender_fn is None:
+        return {"error": f"{platform_name} plugin not registered or missing standalone_sender_fn"}
+    return await entry.standalone_sender_fn(pconfig, chat_id, message, thread_id=thread_id)
+
+
+# _send_whatsapp moved to plugins/platforms/whatsapp/adapter.py::_standalone_send,
+# wired via standalone_sender_fn and reached through _registry_standalone_send. #41112.
 
 
 async def _send_signal(extra, chat_id, message, media_files=None):
@@ -1250,6 +1578,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         _signal_send_timeout,
         get_scheduler,
     )
+    from gateway.platforms.signal_format import markdown_to_signal
 
     try:
         http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
@@ -1276,8 +1605,15 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         else:
             att_batches = [[]]
 
+        plain_text, text_styles = markdown_to_signal(message)
+
         async def _post(batch_attachments, batch_message):
             params = {"account": account, "message": batch_message}
+            if batch_message and text_styles:
+                if len(text_styles) == 1:
+                    params["textStyle"] = text_styles[0]
+                else:
+                    params["textStyles"] = text_styles
             if chat_id.startswith("group:"):
                 params["groupId"] = chat_id[6:]
             else:
@@ -1334,7 +1670,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                         f"for Signal rate limit, batch {idx + 1}/{len(att_batches)}.)"
                     )
 
-            batch_message = message if idx == 0 else ""
+            batch_message = plain_text if idx == 0 else ""
 
             for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
                 try:
@@ -1399,7 +1735,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                 f"no attachments delivered"
             )
 
-        result = {"success": True, "platform": "signal", "chat_id": chat_id}
+        result = {"success": True, "platform": "signal", "chat_id": _display_chat_id("signal", chat_id)}
         if warnings:
             result["warnings"] = warnings
         return result
@@ -1407,190 +1743,81 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return _error(f"Signal send failed: {e}")
 
 
-async def _send_email(extra, chat_id, message):
-    """Send via SMTP (one-shot, no persistent connection needed)."""
-    import smtplib
-    from email.mime.text import MIMEText
-
-    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
-    password = os.getenv("EMAIL_PASSWORD", "")
-    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
-    try:
-        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-    except (ValueError, TypeError):
-        smtp_port = 587
-
-    if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
-
-    try:
-        msg = MIMEText(message, "plain", "utf-8")
-        msg["From"] = address
-        msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
-        msg["Date"] = formatdate(localtime=True)
-
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=ssl.create_default_context())
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
-        return {"success": True, "platform": "email", "chat_id": chat_id}
-    except Exception as e:
-        return _error(f"Email send failed: {e}")
+# _send_email moved to plugins/platforms/email/adapter.py::_standalone_send;
+# _send_sms moved to plugins/platforms/sms/adapter.py::_standalone_send. Both
+# wired via standalone_sender_fn, reached through _registry_standalone_send. #41112.
 
 
-async def _send_sms(auth_token, chat_id, message):
-    """Send a single SMS via Twilio REST API.
-
-    Uses HTTP Basic auth (Account SID : Auth Token) and form-encoded POST.
-    Chunking is handled by _send_to_platform() before this is called.
-    """
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-
-    import base64
-
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
-    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
-    if not account_sid or not auth_token or not from_number:
-        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
-
-    # Strip markdown — SMS renders it as literal characters
-    message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
-    message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
-    message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
-    message = re.sub(r"_(.+?)_", r"\1", message, flags=re.DOTALL)
-    message = re.sub(r"```[a-z]*\n?", "", message)
-    message = re.sub(r"`(.+?)`", r"\1", message)
-    message = re.sub(r"^#{1,6}\s+", "", message, flags=re.MULTILINE)
-    message = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", message)
-    message = re.sub(r"\n{3,}", "\n\n", message)
-    message = message.strip()
-
-    try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _proxy = resolve_proxy_url()
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        creds = f"{account_sid}:{auth_token}"
-        encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
-        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
-        headers = {"Authorization": f"Basic {encoded}"}
-
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            form_data = aiohttp.FormData()
-            form_data.add_field("From", from_number)
-            form_data.add_field("To", chat_id)
-            form_data.add_field("Body", message)
-
-            async with session.post(url, data=form_data, headers=headers, **_req_kw) as resp:
-                body = await resp.json()
-                if resp.status >= 400:
-                    error_msg = body.get("message", str(body))
-                    return _error(f"Twilio API error ({resp.status}): {error_msg}")
-                msg_sid = body.get("sid", "")
-                return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
-    except Exception as e:
-        return _error(f"SMS send failed: {e}")
-
-
-async def _send_matrix(token, extra, chat_id, message):
-    """Send via Matrix Client-Server API.
-
-    Converts markdown to HTML for rich rendering in Matrix clients.
-    Falls back to plain text if the ``markdown`` library is not installed.
-    """
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        homeserver = (extra.get("homeserver") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
-        token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
-        if not homeserver or not token:
-            return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
-        txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
-        from urllib.parse import quote
-        encoded_room = quote(chat_id, safe="")
-        url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-        # Build message payload with optional HTML formatted_body.
-        payload = {"msgtype": "m.text", "body": message}
-        try:
-            import markdown as _md
-            html = _md.markdown(message, extensions=["fenced_code", "tables"])
-            # Convert h1-h6 to bold for Element X compatibility.
-            html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
-            payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = html
-        except ImportError:
-            pass
-
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.put(url, headers=headers, json=payload) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return _error(f"Matrix API error ({resp.status}): {body}")
-                data = await resp.json()
-        return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
-    except Exception as e:
-        return _error(f"Matrix send failed: {e}")
+# _send_matrix moved to plugins/platforms/matrix/adapter.py::_standalone_send,
+# wired via standalone_sender_fn and reached through _registry_standalone_send. #41112.
+# (_send_matrix_via_adapter below stays — it's the native-media upload path.)
 
 
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
-    """Send via the Matrix adapter so native Matrix media uploads are preserved."""
+    """Send via the Matrix adapter so native Matrix media uploads are preserved.
+
+    When a live gateway adapter is available (i.e. the tool runs inside a
+    running gateway), the persistent connection is reused — one olm/megolm
+    session for all sends.  This avoids per-message E2EE re-init storms
+    that exhaust recipient OTKs and silently drop messages (issue #46310).
+
+    Falls back to an ephemeral connect/disconnect cycle only when no gateway
+    is running (standalone cron, ``hermes send`` CLI).
+    """
+    media_files = media_files or []
+    metadata = {"thread_id": thread_id} if thread_id else None
+
+    # --- Try the live gateway adapter first (persistent E2EE session) ---
+    # Reusing the running gateway's already-connected adapter is the whole
+    # point of #46310: it avoids a per-send login + olm/megolm re-init + OTK
+    # claim that, under burst sends, exhausts recipient one-time keys and
+    # silently drops messages. The import is guarded narrowly (gateway code may
+    # be absent in some standalone contexts); a runner that *exists* but whose
+    # adapter lookup fails is logged rather than silently swallowed, because a
+    # silent fall-through here would re-introduce the exact reconnect storm
+    # this fix prevents.
+    live_adapter = None
+    runner = None
     try:
-        from gateway.platforms.matrix import MatrixAdapter
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    if runner is not None:
+        try:
+            from gateway.config import Platform
+            live_adapter = runner.adapters.get(Platform.MATRIX)
+        except Exception:
+            logger.warning(
+                "Matrix: live gateway adapter lookup failed; falling back to an "
+                "ephemeral connect (may re-init E2EE per send, see #46310)",
+                exc_info=True,
+            )
+            live_adapter = None
+
+    if live_adapter is not None:
+        # NOTE: the live adapter is owned by the gateway — we must NOT
+        # disconnect it. Correctness here depends on this branch returning
+        # before the ephemeral ``adapter`` is constructed below, so the
+        # ephemeral ``finally`` disconnect never touches the live session.
+        return await _matrix_send_core(
+            live_adapter, chat_id, message, media_files, metadata
+        )
+
+    # --- Fallback: ephemeral adapter (standalone / cron context) ---
+    try:
+        from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
         return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
 
-    media_files = media_files or []
-
+    adapter = MatrixAdapter(pconfig)
     try:
-        adapter = MatrixAdapter(pconfig)
         connected = await adapter.connect()
         if not connected:
             return _error("Matrix connect failed")
-
-        metadata = {"thread_id": thread_id} if thread_id else None
-        last_result = None
-
-        if message.strip():
-            last_result = await adapter.send(chat_id, message, metadata=metadata)
-            if not last_result.success:
-                return _error(f"Matrix send failed: {last_result.error}")
-
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                return _error(f"Media file not found: {media_path}")
-
-            ext = os.path.splitext(media_path)[1].lower()
-            if ext in _IMAGE_EXTS:
-                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
-            elif ext in _VIDEO_EXTS:
-                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
-            elif ext in _VOICE_EXTS and is_voice:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            elif ext in _AUDIO_EXTS:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            else:
-                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
-
-            if not last_result.success:
-                return _error(f"Matrix media send failed: {last_result.error}")
-
-        if last_result is None:
-            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
-
-        return {
-            "success": True,
-            "platform": "matrix",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id,
-        }
+        return await _matrix_send_core(
+            adapter, chat_id, message, media_files, metadata
+        )
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
     finally:
@@ -1600,62 +1827,51 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             pass
 
 
-async def _send_dingtalk(extra, chat_id, message):
-    """Send via DingTalk robot webhook.
+async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
+    """Core send logic shared by live and ephemeral Matrix adapters."""
+    last_result = None
 
-    Note: The gateway's DingTalk adapter uses per-session webhook URLs from
-    incoming messages (dingtalk-stream SDK).  For cross-platform send_message
-    delivery we use a static robot webhook URL instead, which must be
-    configured via ``DINGTALK_WEBHOOK_URL`` env var or ``webhook_url`` in the
-    platform's extra config.
-    """
-    try:
-        import httpx
-    except ImportError:
-        return {"error": "httpx not installed"}
-    try:
-        webhook_url = extra.get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
-        if not webhook_url:
-            return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                webhook_url,
-                json={"msgtype": "text", "text": {"content": message}},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("errcode", 0) != 0:
-                return _error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
-        return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
-    except Exception as e:
-        return _error(f"DingTalk send failed: {e}")
+    if message.strip():
+        last_result = await adapter.send(chat_id, message, metadata=metadata)
+        if not last_result.success:
+            return _error(f"Matrix send failed: {last_result.error}")
+
+    for media_path, is_voice in media_files:
+        if not os.path.exists(media_path):
+            return _error(f"Media file not found: {media_path}")
+
+        ext = os.path.splitext(media_path)[1].lower()
+        if ext in _IMAGE_EXTS:
+            last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+        elif ext in _VIDEO_EXTS:
+            last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+        elif ext in _VOICE_EXTS and is_voice:
+            last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+        elif ext in _AUDIO_EXTS:
+            last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+        else:
+            last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+
+        if not last_result.success:
+            return _error(f"Matrix media send failed: {last_result.error}")
+
+    if last_result is None:
+        return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+    return {
+        "success": True,
+        "platform": "matrix",
+        "chat_id": chat_id,
+        "message_id": last_result.message_id,
+    }
 
 
-async def _send_wecom(extra, chat_id, message):
-    """Send via WeCom using the adapter's WebSocket send pipeline."""
-    try:
-        from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
-        if not check_wecom_requirements():
-            return {"error": "WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET."}
-    except ImportError:
-        return {"error": "WeCom adapter not available."}
+# _send_dingtalk moved to plugins/platforms/dingtalk/adapter.py::_standalone_send,
+# wired via standalone_sender_fn and reached through _registry_standalone_send. #41112.
 
-    try:
-        from gateway.config import PlatformConfig
-        pconfig = PlatformConfig(extra=extra)
-        adapter = WeComAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error(f"WeCom: failed to connect - {adapter.fatal_error_message or 'unknown error'}")
-        try:
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return _error(f"WeCom send failed: {result.error}")
-            return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
-        finally:
-            await adapter.disconnect()
-    except Exception as e:
-        return _error(f"WeCom send failed: {e}")
+
+# _send_wecom moved to plugins/platforms/wecom/adapter.py::_standalone_send,
+# wired via standalone_sender_fn and reached through _registry_standalone_send. #41112.
 
 
 async def _send_weixin(pconfig, chat_id, message, media_files=None):
@@ -1706,61 +1922,9 @@ async def _send_bluebubbles(extra, chat_id, message):
         return _error(f"BlueBubbles send failed: {e}")
 
 
-async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
-    """Send via Feishu/Lark using the adapter's send pipeline."""
-    try:
-        from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
-        if not FEISHU_AVAILABLE:
-            return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
-        from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN
-    except ImportError:
-        return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
-
-    media_files = media_files or []
-
-    try:
-        adapter = FeishuAdapter(pconfig)
-        domain_name = getattr(adapter, "_domain_name", "feishu")
-        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
-        adapter._client = adapter._build_lark_client(domain)
-        metadata = {"thread_id": thread_id} if thread_id else None
-
-        last_result = None
-        if message.strip():
-            last_result = await adapter.send(chat_id, message, metadata=metadata)
-            if not last_result.success:
-                return _error(f"Feishu send failed: {last_result.error}")
-
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                return _error(f"Media file not found: {media_path}")
-
-            ext = os.path.splitext(media_path)[1].lower()
-            if ext in _IMAGE_EXTS:
-                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
-            elif ext in _VIDEO_EXTS:
-                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
-            elif ext in _VOICE_EXTS and is_voice:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            elif ext in _AUDIO_EXTS:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            else:
-                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
-
-            if not last_result.success:
-                return _error(f"Feishu media send failed: {last_result.error}")
-
-        if last_result is None:
-            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
-
-        return {
-            "success": True,
-            "platform": "feishu",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id,
-        }
-    except Exception as e:
-        return _error(f"Feishu send failed: {e}")
+# _send_feishu moved to plugins/platforms/feishu/adapter.py::_standalone_send,
+# wired via standalone_sender_fn and reached through _registry_standalone_send
+# (and the feishu media branch above). #41112.
 
 
 def _check_send_message():
@@ -1787,45 +1951,3 @@ def _check_send_message():
         return is_gateway_running()
     except Exception:
         return False
-
-
-async def _send_yuanbao(chat_id, message, media_files=None):
-    """Send via Yuanbao using the running gateway adapter's WebSocket connection.
-
-    Yuanbao uses a persistent WebSocket — unlike HTTP-based platforms, we
-    cannot create a throwaway client.  We obtain the running singleton from
-    the adapter module itself (``get_active_adapter``).
-
-    chat_id format:
-      - Group: "group:<group_code>"
-      - DM:    "direct:<account_id>" or just "<account_id>"
-    """
-    try:
-        from gateway.platforms.yuanbao import get_active_adapter, send_yuanbao_direct
-    except ImportError:
-        return _error("Yuanbao adapter module not available.")
-
-    adapter = get_active_adapter()
-    if adapter is None:
-        return _error(
-            "Yuanbao adapter is not running. "
-            "Start the gateway with yuanbao platform enabled first."
-        )
-
-    try:
-        return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
-    except Exception as e:
-        return _error(f"Yuanbao send failed: {e}")
-
-
-# --- Registry ---
-from tools.registry import registry, tool_error
-
-registry.register(
-    name="send_message",
-    toolset="messaging",
-    schema=SEND_MESSAGE_SCHEMA,
-    handler=send_message_tool,
-    check_fn=_check_send_message,
-    emoji="📨",
-)

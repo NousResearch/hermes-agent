@@ -28,9 +28,9 @@ class TestRenderNoticeLine:
         )
         assert (
             render_notice_line(
-                AgentNotice(text="✕ Credit access paused · run /usage for balance", level="error")
+                AgentNotice(text="✕ Credit access paused · run /credits to top up", level="error")
             )
-            == "✕ Credit access paused · run /usage for balance"
+            == "✕ Credit access paused · run /credits to top up"
         )
 
     def test_does_not_prepend_a_second_glyph(self):
@@ -107,6 +107,10 @@ def _make_source(platform_value="telegram", chat_id="555", user_id="u1"):
     src.platform = plat
     src.chat_id = chat_id
     src.user_id = user_id
+    # Real SessionSource.profile is None (single-profile) or a str; a MagicMock
+    # auto-attribute would read as a truthy "stamped profile" and trip the
+    # fail-closed path in _adapter_for_source (see AGENTS.md pitfall #17).
+    src.profile = None
     return src
 
 

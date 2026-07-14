@@ -140,6 +140,29 @@ class TestPortBindingHardError:
         assert connected == 0  # nothing connected, but no MultiplexConfigError
 
     @pytest.mark.asyncio
+    async def test_secondary_feishu_profile_app_ok(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={"app_id": "cli_profile", "app_secret": "secret"},
+            ),
+        }
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reviewer_cfg
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: None)
+
+        connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert connected == 0
+
+    @pytest.mark.asyncio
     async def test_secondary_same_config_token_is_refused(self, monkeypatch):
         """Adapters that keep their token on config still trip the mux guard."""
         from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -190,6 +213,8 @@ class TestPortBindingHardError:
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES
         # Every adapter that binds a TCP port must be in the guard set.
-        for p in ("webhook", "api_server", "msgraph_webhook", "feishu",
+        for p in ("webhook", "api_server", "msgraph_webhook",
                   "wecom_callback", "bluebubbles", "sms"):
             assert p in _PORT_BINDING_PLATFORM_VALUES
+
+        assert "feishu" not in _PORT_BINDING_PLATFORM_VALUES

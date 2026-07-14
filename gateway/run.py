@@ -1419,7 +1419,6 @@ _PORT_BINDING_PLATFORM_VALUES = frozenset({
     "webhook",
     "api_server",
     "msgraph_webhook",
-    "feishu",
     "wecom_callback",
     "bluebubbles",
     "sms",

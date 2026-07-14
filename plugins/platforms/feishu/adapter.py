@@ -1530,7 +1530,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Env-only so adapter and gateway auth bypass share one source; yaml
         # feishu.allow_bots is bridged to this env var at config load.
-        allow_bots = os.getenv("FEISHU_ALLOW_BOTS", "none").strip().lower()
+        allow_bots = str(extra.get("allow_bots") or os.getenv("FEISHU_ALLOW_BOTS", "none")).strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -5632,9 +5632,27 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
     feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
     Env vars take precedence over YAML. Returns None — flows through env.
     """
+    seeded = {}
+    raw_extra = feishu_cfg.get("extra")
+    if isinstance(raw_extra, dict):
+        seeded.update(raw_extra)
+    for key in (
+        "app_id",
+        "app_secret",
+        "domain",
+        "connection_mode",
+        "encrypt_key",
+        "verification_token",
+    ):
+        value = feishu_cfg.get(key)
+        if value:
+            seeded[key] = value
+
+    if "allow_bots" in feishu_cfg:
+        seeded["allow_bots"] = str(feishu_cfg["allow_bots"]).lower()
     if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
-    return None
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

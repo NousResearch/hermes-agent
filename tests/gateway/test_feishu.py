@@ -2691,6 +2691,23 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_uses_post_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "| Name | Score |\n| --- | ---: |\n| Ada | 10 |"
+
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "post")
+        payload = json.loads(raw_payload)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [[{"tag": "md", "text": content}]],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_inline_markdown(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

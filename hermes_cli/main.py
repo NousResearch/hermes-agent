@@ -11593,6 +11593,80 @@ def cmd_profile(args):
             print(f"Alias:   {alias_name} → hermes -p {name}  ({wrapper})")
         print()
 
+    elif action == "audit":
+        from hermes_cli.profiles import audit_profile, format_bytes
+
+        try:
+            audit = audit_profile(args.profile_name, top=getattr(args, "top", 12))
+            compare_name = getattr(args, "compare", None)
+            compare = audit_profile(compare_name, top=getattr(args, "top", 12)) if compare_name else None
+        except (ValueError, FileNotFoundError, OSError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+        if compare:
+            delta = {
+                "total_root_bytes": compare["total_root_bytes"] - audit["total_root_bytes"],
+                "export_excluded_bytes": compare["export_excluded_bytes"] - audit["export_excluded_bytes"],
+                "clone_all_excluded_bytes": compare["clone_all_excluded_bytes"] - audit["clone_all_excluded_bytes"],
+                "skills": compare["skills"] - audit["skills"],
+                "memory_files": compare["memory_files"] - audit["memory_files"],
+                "cron_files": compare["cron_files"] - audit["cron_files"],
+            }
+            if getattr(args, "json", False):
+                print(json.dumps({"base": audit, "compare": compare, "delta": delta}, indent=2, sort_keys=True))
+                return
+
+            print(f"\nProfile audit comparison: {audit['profile']} → {compare['profile']}")
+            print(f"Base path:     {audit['path']}")
+            print(f"Compare path:  {compare['path']}")
+            print("\nMetric deltas:")
+            print(f"  Root size:     {audit['total_root_human']} → {compare['total_root_human']} ({format_bytes(abs(delta['total_root_bytes']))} {'larger' if delta['total_root_bytes'] > 0 else 'smaller' if delta['total_root_bytes'] < 0 else 'no change'})")
+            print(f"  Export skips:  {audit['export_excluded_human']} → {compare['export_excluded_human']}")
+            print(f"  Clone skips:   {audit['clone_all_excluded_human']} → {compare['clone_all_excluded_human']}")
+            print(f"  Skills:        {audit['skills']} → {compare['skills']} ({delta['skills']:+d})")
+            print(f"  Memory files:  {audit['memory_files']} → {compare['memory_files']} ({delta['memory_files']:+d})")
+            print(f"  Cron files:    {audit['cron_files']} → {compare['cron_files']} ({delta['cron_files']:+d})")
+            print("\nUse this comparison as one proof point; still verify model/tool behavior before retiring old state.\n")
+            return
+
+        if getattr(args, "json", False):
+            print(json.dumps(audit, indent=2, sort_keys=True))
+            return
+
+        print(f"\nProfile audit: {audit['profile']}")
+        print(f"Path:          {audit['path']}")
+        if audit.get("model"):
+            provider = audit.get("provider")
+            print(
+                "Model:         "
+                + str(audit["model"])
+                + (f" ({provider})" if provider else "")
+            )
+        print(f"Gateway:       {'running' if audit['gateway_running'] else 'stopped'}")
+        print(f".env:          {'configured' if audit['has_env'] else 'missing'}")
+        print(f"SOUL.md:       {'present' if audit['has_soul'] else 'missing'}")
+        print(f"Skills:        {audit['skills']}")
+        print(f"Memory files:  {audit['memory_files']}")
+        print(f"Cron files:    {audit['cron_files']}")
+        print(f"Root size:     {audit['total_root_human']}")
+        if audit["is_default"]:
+            print(f"Export skips:  {audit['export_excluded_human']} of default-root state")
+        print(f"Clone skips:   {audit['clone_all_excluded_human']} for --clone-all")
+        print("\nLargest root entries:")
+        for entry in audit["top_entries"]:
+            flags = []
+            if entry["export_excluded"]:
+                flags.append("export-skip")
+            if entry["clone_all_excluded"]:
+                flags.append("clone-skip")
+            suffix = f"  [{' / '.join(flags)}]" if flags else ""
+            print(
+                f"  {entry['human']:>9}  {entry['type']:<4}  {entry['name']}{suffix}"
+            )
+        print("\nUse this before/after a cleanup to prove the reset improved size or state noise.")
+        print("Do not delete listed paths until you have a backup and have verified replacement behavior.\n")
+
     elif action == "alias":
         name = args.profile_name
         remove = getattr(args, "remove", False)

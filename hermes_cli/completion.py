@@ -63,7 +63,7 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
             # Profile subcommand: complete actions, then profile names for
             # actions that accept a profile argument.
             subcmds = " ".join(sorted(info["subcommands"]))
-            profile_actions = "use delete show alias rename export"
+            profile_actions = "use delete show audit alias rename export"
             cases.append(
                 f"        profile)\n"
                 f"            case \"$prev\" in\n"
@@ -168,7 +168,7 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
             sub_cases.append(
                 f"                profile)\n"
                 f"                    case ${{line[2]}} in\n"
-                f"                        use|delete|show|alias|rename|export)\n"
+                f"                        use|delete|show|audit|alias|rename|export)\n"
                 f"                            _hermes_profiles\n"
                 f"                            ;;\n"
                 f"                        *)\n"

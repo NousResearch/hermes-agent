@@ -7,7 +7,7 @@ profiles; leaking credentials in the archive is a security issue.
 
 import tarfile
 
-from hermes_cli.profiles import export_profile, _DEFAULT_EXPORT_EXCLUDE_ROOT
+from hermes_cli.profiles import audit_profile, export_profile, _DEFAULT_EXPORT_EXCLUDE_ROOT
 
 
 class TestCredentialExclusion:
@@ -49,3 +49,49 @@ class TestCredentialExclusion:
         assert any("SOUL.md" in n for n in names), "SOUL.md should be in export"
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"
+
+
+class TestProfileAudit:
+    def test_default_audit_follows_current_clone_all_contract(self, tmp_path, monkeypatch):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        (default_home / "config.yaml").write_text("model:\n  default: gpt-4\n")
+        (default_home / "logs").mkdir()
+        (default_home / "logs" / "gateway.log").write_text("log\n")
+        (default_home / "sessions").mkdir()
+        (default_home / "sessions" / "old.json").write_text("{}\n")
+        (default_home / "node_modules").mkdir()
+        (default_home / "node_modules" / "package.json").write_text("{}\n")
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles._get_default_hermes_home", lambda: default_home
+        )
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: default_home)
+        monkeypatch.setattr("hermes_cli.profiles._check_gateway_running", lambda _path: False)
+
+        audit = audit_profile("default", top=20)
+        entries = {entry["name"]: entry for entry in audit["top_entries"]}
+
+        assert entries["sessions"]["clone_all_excluded"] is True
+        assert entries["node_modules"]["clone_all_excluded"] is True
+        assert entries["logs"]["clone_all_excluded"] is False
+
+    def test_named_audit_excludes_history_but_keeps_logs(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / ".env").write_text("SECRET=redacted\n")
+        (profile_dir / "logs").mkdir()
+        (profile_dir / "logs" / "gateway.log").write_text("log\n")
+        (profile_dir / "sessions").mkdir()
+        (profile_dir / "sessions" / "old.json").write_text("{}\n")
+
+        monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: profile_dir)
+        monkeypatch.setattr("hermes_cli.profiles._check_gateway_running", lambda _path: False)
+
+        audit = audit_profile("coder", top=20)
+        entries = {entry["name"]: entry for entry in audit["top_entries"]}
+
+        assert entries["sessions"]["clone_all_excluded"] is True
+        assert entries["logs"]["clone_all_excluded"] is False
+        assert entries[".env"]["export_excluded"] is True

@@ -794,6 +794,132 @@ def _count_skills(profile_dir: Path) -> int:
     return count
 
 
+def _count_files(root: Path) -> int:
+    """Return a best-effort recursive file count for audit output."""
+    if not root.is_dir():
+        return 0
+    count = 0
+    try:
+        for path in root.rglob("*"):
+            try:
+                if path.is_file():
+                    count += 1
+            except OSError:
+                continue
+    except OSError:
+        return count
+    return count
+
+
+def _path_size_bytes(path: Path) -> int:
+    """Return a best-effort size without following symlinked directories."""
+    try:
+        if path.is_symlink() or path.is_file():
+            return path.lstat().st_size
+        if not path.is_dir():
+            return 0
+    except OSError:
+        return 0
+
+    total = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        stat_result = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    total += stat_result.st_size
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+        except OSError:
+            continue
+    return total
+
+
+def format_bytes(num_bytes: int) -> str:
+    """Format a byte count for profile audit output."""
+    value = float(max(num_bytes, 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def audit_profile(name: str, *, top: int = 12) -> dict:
+    """Return a read-only profile cleanup audit without reading file contents."""
+    canon = normalize_profile_name(name)
+    if not profile_exists(canon):
+        raise FileNotFoundError(f"Profile '{name}' does not exist")
+    profile_dir = get_profile_dir(canon)
+    model, provider = _read_config_model(profile_dir)
+    root_entries: list[dict] = []
+    try:
+        for entry in sorted(profile_dir.iterdir(), key=lambda path: path.name.lower()):
+            size = _path_size_bytes(entry)
+            export_excluded = (
+                entry.name not in _DEFAULT_EXPORT_INCLUDE_ROOT
+                if canon == "default"
+                else entry.name in {"auth.json", ".env"}
+            )
+            clone_all_excluded = (
+                entry.name in _CLONE_ALL_HISTORY_EXCLUDE_ROOT
+                or (
+                    canon == "default"
+                    and entry.name in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
+                )
+            )
+            root_entries.append(
+                {
+                    "name": entry.name,
+                    "type": "dir" if entry.is_dir() else "file",
+                    "bytes": size,
+                    "human": format_bytes(size),
+                    "export_excluded": export_excluded,
+                    "clone_all_excluded": clone_all_excluded,
+                }
+            )
+    except OSError as exc:
+        raise OSError(f"Could not inspect profile '{name}': {exc}") from exc
+
+    root_entries.sort(key=lambda item: item["bytes"], reverse=True)
+    top = max(1, int(top))
+    total_bytes = sum(item["bytes"] for item in root_entries)
+    export_excluded_bytes = sum(
+        item["bytes"] for item in root_entries if item["export_excluded"]
+    )
+    clone_all_excluded_bytes = sum(
+        item["bytes"] for item in root_entries if item["clone_all_excluded"]
+    )
+
+    return {
+        "profile": canon,
+        "path": str(profile_dir),
+        "is_default": canon == "default",
+        "model": model,
+        "provider": provider,
+        "gateway_running": _check_gateway_running(profile_dir),
+        "has_env": (profile_dir / ".env").exists(),
+        "has_soul": (profile_dir / "SOUL.md").exists(),
+        "skills": _count_skills(profile_dir),
+        "memory_files": _count_files(profile_dir / "memories"),
+        "cron_files": _count_files(profile_dir / "cron"),
+        "total_root_bytes": total_bytes,
+        "total_root_human": format_bytes(total_bytes),
+        "export_excluded_bytes": export_excluded_bytes,
+        "export_excluded_human": format_bytes(export_excluded_bytes),
+        "clone_all_excluded_bytes": clone_all_excluded_bytes,
+        "clone_all_excluded_human": format_bytes(clone_all_excluded_bytes),
+        "top_entries": root_entries[:top],
+    }
+
+
 # ---------------------------------------------------------------------------
 # profile.yaml — per-profile metadata (description, role, etc.)
 # ---------------------------------------------------------------------------

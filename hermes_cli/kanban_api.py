@@ -244,20 +244,6 @@ def _idempotency_key(
     return key
 
 
-def _existing_idempotent_task(
-    conn: sqlite3.Connection,
-    key: Optional[str],
-) -> Optional[str]:
-    if not key:
-        return None
-    row = conn.execute(
-        "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
-        "ORDER BY created_at DESC, id DESC LIMIT 1",
-        (key,),
-    ).fetchone()
-    return str(row["id"]) if row else None
-
-
 def _sanitize_log(content: str) -> str:
     redacted = redact_sensitive_text(content, force=True)
     redacted = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", redacted)
@@ -348,12 +334,11 @@ def create_task(
 ) -> dict[str, Any]:
     key = _idempotency_key(payload.idempotency_key, idempotency_header)
     with _connection(board) as conn:
-        existing = _existing_idempotent_task(conn, key)
-        if existing:
-            response.status_code = 200
-            return {**_task_response(conn, existing), "created": False}
         try:
-            task_id = kanban_db.create_task(
+            # The storage layer owns idempotency end to end: a repeated key
+            # (fast-path hit or a lost UNIQUE-index race with a concurrent
+            # POST) resolves to the existing task with created=False.
+            task_id, created = kanban_db.create_task_idempotent(
                 conn,
                 title=payload.title,
                 body=payload.body,
@@ -368,22 +353,11 @@ def create_task(
                 max_runtime_seconds=payload.max_runtime_seconds,
                 skills=payload.skills,
             )
-        except sqlite3.IntegrityError as exc:
-            # Lost an idempotency race: a concurrent POST with the same key
-            # committed first and the UNIQUE index on idempotency_key rejected
-            # our insert. Return the winner with created=false, preserving the
-            # documented idempotency semantics instead of surfacing a 500.
-            winner = _existing_idempotent_task(conn, key)
-            if winner:
-                response.status_code = 200
-                return {**_task_response(conn, winner), "created": False}
-            log.warning("kanban_api task insert conflict without a winner: %s", exc)
-            raise HTTPException(
-                status_code=409, detail="task could not be created"
-            ) from exc
         except ValueError as exc:
             raise _client_error(exc, fallback="task could not be created") from exc
-        return {**_task_response(conn, task_id), "created": True}
+        if not created:
+            response.status_code = 200
+        return {**_task_response(conn, task_id), "created": created}
 
 
 @router.get("/tasks/{task_id}")

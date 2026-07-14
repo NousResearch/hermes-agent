@@ -173,6 +173,29 @@ def test_list_of_non_dicts_is_ignored():
     assert out is REQUEST
 
 
+def test_empty_list_keeps_original_request():
+    """An empty list must fall open to the original request.
+
+    ``all([])`` is ``True``, so without an emptiness check a ``[]`` returned by
+    a failing/buggy engine would replace a valid assembled request with an
+    empty message list the downstream sanitizers cannot restore — reaching the
+    provider as an invalid request instead of failing open. Guards the fail-open
+    contract.
+    """
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return []
+
+    logger = MagicMock()
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=logger
+    )
+    assert out is REQUEST
+    assert logger.warning.called
+
+
 def test_persisted_history_not_mutated():
     """The hook must not mutate the persisted conversation history."""
 

@@ -438,3 +438,31 @@ async def test_session_header_rejected_without_api_key(adapter, session_db):
         assert resp.status == 403
         data = await resp.json()
         assert "X-Hermes-Session-Key requires API key" in data["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_session_removes_transcript_files(adapter, session_db, tmp_path, monkeypatch):
+    """DELETE /api/sessions/{id} must remove on-disk transcript/request-dump
+    files, matching the CLI ``hermes sessions delete`` behaviour."""
+    from hermes_cli import config as config_mod
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr(config_mod, "get_hermes_home", lambda: tmp_path)
+
+    sid = session_db.create_session("del-test", "api_server")
+    (sessions_dir / f"{sid}.json").write_text("{}")
+    (sessions_dir / f"{sid}.jsonl").write_text("")
+    (sessions_dir / f"request_dump_{sid}_abc.json").write_text("{}")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.delete(f"/api/sessions/{sid}")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["deleted"] is True
+
+    assert session_db.get_session(sid) is None
+    assert not (sessions_dir / f"{sid}.json").exists()
+    assert not (sessions_dir / f"{sid}.jsonl").exists()
+    assert not (sessions_dir / f"request_dump_{sid}_abc.json").exists()

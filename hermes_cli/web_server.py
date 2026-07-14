@@ -10012,7 +10012,9 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         sid = db.resolve_session_id(session_id)
         if not sid:
             return {"ok": True, "already_absent": True}
-        db.delete_session(sid)
+        profile_home = _cron_profile_home(profile)[1] if profile else get_hermes_home()
+        sessions_dir = profile_home / "sessions"
+        db.delete_session(sid, sessions_dir=sessions_dir if sessions_dir.exists() else None)
         return {"ok": True}
     finally:
         db.close()

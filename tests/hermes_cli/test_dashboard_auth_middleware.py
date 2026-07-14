@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -593,3 +593,117 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Multi-provider refresh: a failure from an earlier provider — unreachable
+# (ProviderError) OR a foreign RT it doesn't own (RefreshExpiredError) — must
+# not abort the refresh chain when a later provider can rotate the token.
+# Mirrors the verify-loop stacked-provider handling above; without it a
+# self-hosted session in a ``[nous, self-hosted]`` deploy bounces to /login on
+# every access-token expiry because ``nous`` (tried first) rejects the RT.
+# ---------------------------------------------------------------------------
+
+
+class _RefreshRejectingProvider(StubAuthProvider):
+    """A reachable provider that does NOT own the RT.
+
+    ``refresh_session`` always raises ``RefreshExpiredError`` — exactly what a
+    real OIDC / Portal provider returns (token-endpoint 400 → invalid_grant)
+    when handed a refresh token it never issued. ``verify_session`` returns
+    None (it recognises no access token). Models the common stacked case: the
+    user's session belongs to a *later* provider, but a different, reachable
+    provider is registered first.
+    """
+
+    name = "rejecting"
+    display_name = "Rejecting IdP (test only)"
+
+    def verify_session(self, *, access_token: str):
+        return None
+
+    def refresh_session(self, *, refresh_token: str):
+        from hermes_cli.dashboard_auth.base import RefreshExpiredError
+
+        raise RefreshExpiredError("simulated: not my refresh token (400)")
+
+
+def _mint_stub_rt() -> str:
+    """A validly-signed, long-lived refresh token any StubAuthProvider will
+    accept (the stubs share the test HMAC secret)."""
+    import time as _t
+
+    from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+    return _sign(
+        {"sub": "stub-user-1", "kind": "refresh", "exp": int(_t.time()) + 30 * 86400}
+    )
+
+
+def test_unreachable_first_provider_does_not_block_refresh(_gated_state):
+    """An unreachable provider registered FIRST must not force a re-login when
+    a later provider can refresh the RT.
+
+    Regression for the refresh-side parity gap: the refresh loop used to
+    ``return None`` on the first provider's ProviderError (forcing re-login)
+    before the working provider ever got a turn — even though the verify loop
+    was already fixed to continue. Now it logs, continues, and the working
+    provider rotates the session.
+    """
+    working = StubAuthProvider(default_ttl=900)
+    register_provider(_UnreachableProvider())  # ProviderError on refresh
+    register_provider(working)  # accepts the RT
+
+    client = _gated_state()
+    # Browser sends ONLY the RT cookie — the AT cookie has aged out.
+    client.cookies.set(SESSION_RT_COOKIE, _mint_stub_rt())
+    r = client.get("/api/sessions", follow_redirects=False)
+    assert r.status_code == 200, (
+        f"expected transparent refresh via the working provider despite the "
+        f"unreachable one being tried first; got {r.status_code}: {r.text}"
+    )
+    # Both cookies rotated onto the response.
+    set_cookies = r.headers.get_list("set-cookie")
+    assert any(SESSION_AT_COOKIE in c for c in set_cookies), set_cookies
+    assert any(SESSION_RT_COOKIE in c for c in set_cookies), set_cookies
+
+
+def test_foreign_rt_rejecting_first_provider_does_not_block_refresh(_gated_state):
+    """A reachable provider that doesn't own the RT (raises
+    RefreshExpiredError on the foreign token) must not abort the chain either.
+
+    This is the *reachable* sibling of the unreachable case and the more
+    common one: in a stacked ``[nous, self-hosted]`` deploy a self-hosted
+    session's RT handed to the ``nous`` provider first yields a token-endpoint
+    400 → RefreshExpiredError. The owning provider is later in the list, so
+    aborting on the first RefreshExpiredError bounced the user to login on
+    every access-token expiry. The chain must continue to the owner.
+    """
+    working = StubAuthProvider(default_ttl=900)
+    register_provider(_RefreshRejectingProvider())  # foreign-RT 400
+    register_provider(working)  # accepts the RT
+
+    client = _gated_state()
+    client.cookies.set(SESSION_RT_COOKIE, _mint_stub_rt())
+    r = client.get("/api/sessions", follow_redirects=False)
+    assert r.status_code == 200, (
+        f"expected the owning provider to refresh despite a foreign-RT "
+        f"rejection from the first provider; got {r.status_code}: {r.text}"
+    )
+    set_cookies = r.headers.get_list("set-cookie")
+    assert any(SESSION_AT_COOKIE in c for c in set_cookies), set_cookies
+    assert any(SESSION_RT_COOKIE in c for c in set_cookies), set_cookies
+
+
+def test_refresh_bounces_when_no_provider_can_refresh(_gated_state):
+    """Guard against over-reach: if EVERY provider declines the RT (none owns
+    it / some unreachable), the gate still forces a clean re-login — not a 200,
+    and not a 500."""
+    register_provider(_RefreshRejectingProvider())  # RefreshExpiredError
+    register_provider(_UnreachableProvider())  # ProviderError
+
+    client = _gated_state()
+    client.cookies.set(SESSION_RT_COOKIE, _mint_stub_rt())
+    r = client.get("/api/sessions", follow_redirects=False)
+    assert r.status_code == 401
+    assert r.json()["error"] == "session_expired"

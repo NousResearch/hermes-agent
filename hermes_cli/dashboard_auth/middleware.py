@@ -424,14 +424,28 @@ def _expires_in_seconds(session) -> int:
 def _attempt_refresh(request: Request, *, refresh_token):
     """Try to rotate an expired session via the refresh token.
 
-    Returns ``(new_session, provider_name)`` on success, or ``None`` if
-    there's no RT or every provider's ``refresh_session`` failed with
-    ``RefreshExpiredError`` (dead/revoked/reuse-detected RT → force re-login).
+    Returns ``(new_session, provider_name)`` on success, or ``None`` when no
+    registered provider can refresh the token (no RT present, or every
+    provider declined). On ``None`` the caller clears the cookies and forces a
+    clean re-login.
 
-    A ``ProviderError`` (Portal unreachable) is NOT swallowed into a re-login
-    here — re-raising would 500 the request; instead we log and return None so
-    the caller forces a clean re-login, which is the safer UX than a hard
-    error on a transient network blip during the narrow refresh window.
+    The session cookie carries no provider identity (see
+    ``read_session_cookies``), so — exactly like the verify loop above — the
+    RT must be offered to every registered provider in turn. A provider that
+    doesn't own the RT cannot be distinguished from one whose RT is genuinely
+    dead: both surface as a token-endpoint 400 → ``RefreshExpiredError`` (and
+    an unreachable IDP raises ``ProviderError``). So neither failure may abort
+    the chain — a *later* provider may own the RT and be able to rotate it.
+    Concretely, in a stacked ``[nous, self-hosted]`` deploy a self-hosted
+    session's RT handed to the ``nous`` provider first yields a 400, but the
+    owning ``self-hosted`` provider is later in the list. We keep going and
+    only give up once no provider has succeeded.
+
+    A ``ProviderError`` (IDP unreachable) is deliberately NOT re-raised —
+    re-raising would 500 the request; we log it and treat it like any other
+    per-provider miss, so a transient network blip on one provider during the
+    narrow refresh window degrades to a clean re-login rather than a hard
+    error.
     """
     if not refresh_token:
         return None
@@ -439,16 +453,23 @@ def _attempt_refresh(request: Request, *, refresh_token):
         try:
             new_session = provider.refresh_session(refresh_token=refresh_token)
         except RefreshExpiredError:
-            # This provider owns the RT but it's dead — stop trying others
-            # (an RT belongs to exactly one provider) and force re-login.
+            # This provider rejected the RT — either it's genuinely dead, or
+            # it belongs to a *different* registered provider (a foreign RT
+            # looks identical: both are a token-endpoint 400). Record it and
+            # try the next provider; only if none can refresh do we fall
+            # through to a re-login.
             audit_log(
                 AuditEvent.REFRESH_FAILURE,
                 provider=provider.name,
                 reason="refresh_expired",
                 ip=_client_ip(request),
             )
-            return None
+            continue
         except ProviderError as e:
+            # IDP unreachable — can't confirm or deny ownership of the RT. A
+            # different, reachable provider may still own it, so keep going
+            # (mirrors the verify loop's stacked-provider handling) rather
+            # than bouncing to login on a transient blip.
             _log.warning(
                 "dashboard-auth: provider %r unreachable during refresh: %s",
                 provider.name, e,
@@ -459,7 +480,7 @@ def _attempt_refresh(request: Request, *, refresh_token):
                 reason="provider_unreachable",
                 ip=_client_ip(request),
             )
-            return None
+            continue
         if new_session is not None:
             return new_session, provider.name
     return None

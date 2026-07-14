@@ -792,7 +792,17 @@ def run_conversation(
         api_messages = []
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
-
+            
+            # clear not current loop tool results AND their originating calls.
+            # Skipping old tool results without stripping the corresponding
+            # tool_calls from old assistant messages causes the pre-call
+            # sanitizer to inject "[Result unavailable]" stubs.
+            if msg.get("role") == "tool" and idx < current_turn_user_idx:
+                continue
+            if msg.get("role") == "assistant" and idx < current_turn_user_idx:
+                if api_msg.get("tool_calls"):
+                    api_msg.pop("tool_calls", None)
+  
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
             # with target="user_message" (the default).  Both are

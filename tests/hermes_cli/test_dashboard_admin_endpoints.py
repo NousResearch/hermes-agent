@@ -94,9 +94,31 @@ class TestMcpEndpoints:
         body = r.json()
         assert "entries" in body and "diagnostics" in body
         # The shipped optional-mcps/ catalog has at least one entry; each must
-        # carry the install/enabled status fields the UI relies on.
+        # carry the install/enabled status fields plus the inspection detail
+        # the dashboard renders (transport target, install source, guidance) so
+        # users can vet an entry before installing.
         for e in body["entries"]:
-            assert {"name", "transport", "installed", "enabled", "needs_install"} <= set(e)
+            assert {
+                "name",
+                "transport",
+                "auth_type",
+                "installed",
+                "enabled",
+                "needs_install",
+                "command",
+                "args",
+                "url",
+                "install_url",
+                "install_ref",
+                "bootstrap",
+                "default_enabled",
+                "post_install",
+            } <= set(e)
+            # http entries expose a url; stdio entries expose a command.
+            if e["transport"] == "http":
+                assert e["url"]
+            elif e["transport"] == "stdio":
+                assert e["command"]
 
     def test_catalog_install_unknown_404(self):
         r = self.client.post("/api/mcp/catalog/install", json={"name": "no-such-mcp-xyz"})
@@ -200,6 +222,30 @@ class TestWebhookEndpoints:
         assert data["enabled"] is False
         r = self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"})
         assert r.status_code == 400
+
+    def test_create_webhook_persists_script(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("platforms", {})["webhook"] = {
+            "enabled": True,
+            "extra": {"host": "0.0.0.0", "port": 8644},
+        }
+        save_config(cfg)
+
+        r = self.client.post(
+            "/api/webhooks",
+            json={
+                "name": "todoist",
+                "deliver": "log",
+                "script": "todoist_filter.py",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["script"] == "todoist_filter.py"
+
+        subs = self.client.get("/api/webhooks").json()["subscriptions"]
+        assert subs[0]["script"] == "todoist_filter.py"
 
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         import hermes_cli.web_server as ws
@@ -429,6 +475,36 @@ class TestSessionManagementEndpoints:
         assert self.client.post(
             "/api/sessions/prune", json={"older_than_days": 0}
         ).status_code == 400
+
+    def test_prune_attr_filter_suppresses_default_cutoff(self):
+        # An attribute filter without an explicit older_than_days matches all
+        # ages (mirrors the CLI: any filter disables the implicit 90-day
+        # default). dry_run so nothing is deleted; the seeded session is
+        # recent + ended, so it would be invisible under a 90-day cutoff.
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.create_session(session_id="sess-recent-ended", source="cli")
+        db.end_session("sess-recent-ended", "completed")
+        db.close()
+
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"source": "cli", "dry_run": True},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["matched"] >= 1
+        assert "oldest_started_at" in body and "newest_started_at" in body
+
+    def test_prune_explicit_older_than_kept_with_attr_filter(self):
+        # Explicit older_than_days is honored even alongside attribute filters.
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"source": "cli", "older_than_days": 9999, "dry_run": True},
+        )
+        assert r.status_code == 200
+        assert r.json()["matched"] == 0
 
 
 class TestSkillsHubSearchEndpoint:
@@ -771,6 +847,25 @@ class TestUpdateCheckEndpoint:
         assert body["can_apply"] is False
         assert body["message"]
         assert body["behind"] is None
+
+    def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_dashboard_local_update_managed_externally", lambda: True)
+        monkeypatch.setattr(
+            ws,
+            "detect_install_method",
+            lambda *a, **k: pytest.fail(
+                "managed runtime update check should not probe install method"
+            ),
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["install_method"] == "managed-runtime"
+        assert body["can_apply"] is False
+        assert body["update_available"] is False
+        assert body["behind"] is None
+        assert "managed outside this dashboard" in body["message"]
 
     def test_check_failure_is_soft(self, monkeypatch):
         import hermes_cli.web_server as ws

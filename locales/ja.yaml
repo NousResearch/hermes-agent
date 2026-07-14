@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]今回のみ  |  [s]セッション中  |  [d]拒否"
   prompt_long:     "      選択 [o/s/a/D]: "
   prompt_short:    "      選択 [o/s/D]: "
+  choose_smart_deny: "      [o]今回のみ  |  [d]拒否"
+  prompt_smart_deny: "      選択 [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ タイムアウト — コマンドを拒否しました"
   allowed_once:    "      ✓ 今回のみ許可"
   allowed_session: "      ✓ このセッション中は許可"
@@ -88,6 +92,7 @@ gateway:
     not_enough:            "圧縮するための会話が不十分です (少なくとも 4 件のメッセージが必要)。"
     no_provider:           "プロバイダーが構成されていません — 圧縮できません。"
     nothing_to_do:         "まだ圧縮するものがありません (トランスクリプトはすべて保護されたコンテキストのままです)。"
+    aggressive_unsupported: "--aggressive はサポートされていません。'/compress here [N]' で直近のやり取りだけを残すか、/undo でターンを削除してください。"
     focus_line:            "フォーカス: \"{topic}\""
     summary_failed:        "⚠️ 要約の生成に失敗しました ({error})。{count} 件の履歴メッセージが削除され、プレースホルダーに置き換えられました。以前のコンテキストは復元できません。auxiliary.compression モデルの設定を確認してください。"
     aborted:               "⚠️ 圧縮が中止されました ({error})。メッセージは削除されていません — 会話はそのままです。再試行するには /compress、新しいセッションを開始するには /reset を実行するか、auxiliary.compression モデル設定を確認してください。"
@@ -106,6 +111,8 @@ gateway:
     no_pending:            "拒否待ちのコマンドはありません。"
     denied_singular:       "❌ コマンドを拒否しました。"
     denied_plural:         "❌ コマンドを拒否しました ({count} 件)。"
+    denied_reason_singular: "❌ コマンドを拒否しました。 理由をエージェントに伝達しました: \"{reason}\""
+    denied_reason_plural:  "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"
@@ -149,6 +156,15 @@ gateway:
     subscribed_suffix:     "(購読しました — {task_id} が完了またはブロックされたときに通知されます)"
     truncated_suffix:      "… (切り詰めました; 完全な出力にはターミナルで `hermes kanban …` を使用してください)"
     no_output:             "(出力なし)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "`{path}/config.yaml` に人格が設定されていません"
@@ -227,6 +243,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "名前付きセッションが見つかりません。\n`/title セッション名` で現在のセッションに名前を付けると、後で `/resume セッション名` で戻れます。"
     list_header:           "📋 **名前付きセッション**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -269,6 +286,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     title:                 "**タイトル:** {title}"
     created:               "**作成日時:** {timestamp}"
     last_activity:         "**最終アクティビティ:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**トークン:** {tokens}"
     agent_running:         "**エージェント実行中:** {state}"
     state_yes:             "はい ⚡"
@@ -328,11 +349,24 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_cost_included:      "コスト: 含まれています"
     label_context:            "コンテキスト: {used} / {total} ({pct}%)"
     label_compressions:       "圧縮回数: {count}"
+    breakdown_header: "🧩 **コンテキスト内訳** _(推定)_"
+    breakdown_line: "• {label}: 約{count} ({pct}%)"
+    breakdown_cat_system_prompt: "システムプロンプト"
+    breakdown_cat_tool_definitions: "ツール定義"
+    breakdown_cat_rules: "ルール"
+    breakdown_cat_skills: "スキル"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "サブエージェント定義"
+    breakdown_cat_memory: "メモリ"
+    breakdown_cat_conversation: "会話"
     header_session_info:      "📊 **セッション情報**"
     label_messages:           "メッセージ数: {count}"
     label_estimated_context:  "推定コンテキスト: ~{count} トークン"
     detailed_after_first:     "_(詳細な使用状況は最初のエージェント応答後に利用可能)_"
     no_data:                  "このセッションの使用データはありません。"
+
+  credits:
+    not_logged_in:            "Nous Portal にログインしていません。ログインすると残高の確認とチャージができます。"
 
   verbose:
     not_enabled:           "`/verbose` コマンドはメッセージングプラットフォームで有効になっていません。\n\n`config.yaml` で有効にしてください:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -340,6 +374,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ ツール進捗: **NEW** — ツールが変わったときに表示 (プレビュー長: `display.tool_preview_length`、デフォルト 40)。"
     mode_all:              "⚙️ ツール進捗: **ALL** — すべてのツール呼び出しを表示 (プレビュー長: `display.tool_preview_length`、デフォルト 40)。"
     mode_verbose:          "⚙️ ツール進捗: **VERBOSE** — すべてのツール呼び出しを完全な引数とともに表示。"
+    mode_log:              "⚙️ ツール進捗: **LOG** — チャットには表示せず、ツール呼び出しを ~/.hermes/logs/tool_calls.log に記録します。"
     saved_suffix:          "_(**{platform}** に保存しました — 次のメッセージから有効)_"
     save_failed:           "_(設定に保存できませんでした: {error})_"
 

@@ -46,11 +46,6 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
-            os.path.join(home, ".bashrc"),
-            os.path.join(home, ".zshrc"),
-            os.path.join(home, ".profile"),
-            os.path.join(home, ".bash_profile"),
-            os.path.join(home, ".zprofile"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -82,40 +77,35 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     ]
 
 
-def get_safe_write_root() -> Optional[str]:
-    """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset."""
-    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not root:
-        return None
-    try:
-        return os.path.realpath(os.path.expanduser(root))
-    except Exception:
-        return None
+def get_safe_write_roots() -> set[str]:
+    """Return resolved HERMES_WRITE_SAFE_ROOT paths. Supports multiple directories
+    separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).
+    E.g., ``/opt/data:/var/www/html`` on Unix, ``C:\\data;D:\\www`` on Windows."""
+    env = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
+    if not env:
+        return set()
+    roots: set[str] = set()
+    for path in env.split(os.pathsep):
+        if path:
+            try:
+                resolved = os.path.realpath(os.path.expanduser(path))
+                roots.add(resolved)
+            except (OSError, ValueError):
+                continue
+    return roots
 
 
-def is_write_denied(path: str) -> bool:
-    """Return True if path is blocked by the write denylist or safe root."""
+def _classify_write_denial(path: str) -> Optional[str]:
+    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
     if resolved in build_write_denied_paths(home):
-        return True
+        return "credential"
     for prefix in build_write_denied_prefixes(home):
         if resolved.startswith(prefix):
-            return True
+            return "credential"
 
-    # Hermes control-plane files: block both the ACTIVE profile's view
-    # (hermes_home) AND the global root view. Without the root pass, a
-    # profile-mode session leaves <root>/auth.json + <root>/config.yaml
-    # writable — letting a prompt-injected write_file overwrite the global
-    # files that every profile inherits from (same shape as #15981).
-    control_file_names = (
-        "auth.json",
-        "config.yaml",
-        "webhook_subscriptions.json",
-        os.path.join("auth", "google_oauth.json"),
-        os.path.join("cache", "bws_cache.json"),
-    )
     mcp_tokens_dir_name = "mcp-tokens"
 
     hermes_dirs = []
@@ -128,30 +118,49 @@ def is_write_denied(path: str) -> bool:
             continue
 
     for base_real in hermes_dirs:
-        for name in control_file_names:
-            try:
-                if resolved == os.path.realpath(os.path.join(base_real, name)):
-                    return True
-            except Exception:
-                continue
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
-                return True
+                return "credential"
         except Exception:
             pass
         try:
             pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
             if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
-                return True
+                return "credential"
         except Exception:
             pass
 
-    safe_root = get_safe_write_root()
-    if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
-        return True
+    safe_roots = get_safe_write_roots()
+    if safe_roots:
+        allowed = False
+        for safe_root in safe_roots:
+            if resolved == safe_root or resolved.startswith(safe_root + os.sep):
+                allowed = True
+                break
+        if not allowed:
+            return "safe_root"
 
-    return False
+    return None
+
+
+def is_write_denied(path: str) -> bool:
+    """Return True if path is blocked by the write denylist or safe root."""
+    return _classify_write_denial(path) is not None
+
+
+def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
+    """Return a user/model-facing error when writes to ``path`` are blocked."""
+    denial = _classify_write_denial(path)
+    if denial is None:
+        return None
+    if denial == "safe_root":
+        roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
+        return (
+            f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
+            f"({roots_display}). Unset the variable or add this path's directory prefix."
+        )
+    return f"{verb} denied: '{path}' is a protected system/credential file."
 
 
 # Common secret-bearing project-local environment file basenames.
@@ -303,7 +312,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     # .env contents — .env.example is the documented-shape substitute. The
     # terminal tool can still ``cat .env``; this is defense-in-depth, not a
     # boundary (see module docstring).
-    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
+    if resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
         return (
             f"Access denied: {path} is a secret-bearing environment file "
             "and cannot be read to prevent credential leakage. "
@@ -312,6 +321,30 @@ def get_read_block_error(path: str) -> Optional[str]:
         )
 
     return None
+
+
+def raise_if_read_blocked(path: str) -> None:
+    """Raise ``ValueError`` if ``path`` is a denied Hermes read (see
+    :func:`get_read_block_error`), else return.
+
+    Shared chokepoint for provider input-loading sites that read a local
+    file the model/tool supplied (e.g. image-gen ``image_url`` /
+    ``reference_image_urls`` paths). Centralizes the guard so every provider
+    enforces the same read boundary with identical semantics instead of each
+    open-coding the try/except block (#57698).
+
+    Best-effort by design: if ``agent.file_safety`` machinery is somehow
+    unavailable at the call site the guard no-ops rather than breaking local
+    image loading — consistent with the defense-in-depth (not security
+    boundary) framing of the denylist itself. The blocking ``ValueError`` from
+    a real hit still propagates; only unexpected internal errors are swallowed.
+    """
+    try:
+        blocked = get_read_block_error(path)
+    except Exception:  # noqa: BLE001 - guard must never break local-file loading
+        return
+    if blocked:
+        raise ValueError(blocked)
 
 
 # ---------------------------------------------------------------------------

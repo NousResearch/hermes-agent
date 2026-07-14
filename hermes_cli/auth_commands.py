@@ -13,6 +13,7 @@ from agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CUSTOM_POOL_PREFIX,
     SOURCE_MANUAL,
+    SOURCE_MANUAL_DEVICE_CODE,
     STATUS_EXHAUSTED,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
@@ -33,7 +34,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -312,66 +313,60 @@ def auth_add_command(args) -> None:
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
-        auth_mod._save_codex_tokens(
-            creds["tokens"],
-            last_refresh=creds.get("last_refresh"),
-            label=label,
-        )
-        pool = load_pool(provider)
-        entry = next((item for item in pool.entries() if item.source == "device_code"), None)
-        shown_label = entry.label if entry is not None else label
-        print(f'Saved {provider} OAuth device-code credentials: "{shown_label}"')
-        return
-
-    if provider == "xai-oauth":
-        creds = auth_mod._xai_oauth_loopback_login(
-            timeout_seconds=getattr(args, "timeout", None) or 20.0,
-            open_browser=not getattr(args, "no_browser", False),
-            manual_paste=bool(getattr(args, "manual_paste", False)),
-        )
-        label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds["tokens"]["access_token"],
-            _oauth_default_label(provider, len(pool.entries()) + 1),
-        )
+        # Add a distinct, self-contained pool entry per account (matching the
+        # xai-oauth / qwen-oauth patterns) instead of
+        # routing through the singleton ``_save_codex_tokens`` save path.
+        # The singleton round-trip collapsed every added account into the
+        # latest login: a second ``hermes auth add openai-codex`` overwrote
+        # the first account's singleton-mirrored ``device_code`` entry rather
+        # than creating an independent one (#39236). ``manual:device_code``
+        # entries refresh from their own token pair, so they need no singleton
+        # shadow.
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
             label=label,
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
-            source=f"{SOURCE_MANUAL}:xai_pkce",
+            source=SOURCE_MANUAL_DEVICE_CODE,
             access_token=creds["tokens"]["access_token"],
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
             last_refresh=creds.get("last_refresh"),
         )
+        first_credential = not pool.entries()
         pool.add_entry(entry)
+        # Adding the first Codex credential should make it the active provider
+        # (the old singleton save path did this implicitly via
+        # _save_provider_state). Subsequent adds leave the active provider as-is.
+        if first_credential:
+            auth_mod.mark_provider_active_if_unset(provider)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
-    if provider == "google-gemini-cli":
-        from agent.google_oauth import run_gemini_oauth_login_pure
-
-        creds = run_gemini_oauth_login_pure()
-        label = (getattr(args, "label", None) or "").strip() or (
-            creds.get("email") or _oauth_default_label(provider, len(pool.entries()) + 1)
+    if provider == "xai-oauth":
+        creds = auth_mod._xai_oauth_device_code_login(
+            timeout_seconds=getattr(args, "timeout", None) or 20.0,
+            open_browser=not getattr(args, "no_browser", False),
         )
-        entry = PooledCredential(
-            provider=provider,
-            id=uuid.uuid4().hex[:6],
-            label=label,
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source=f"{SOURCE_MANUAL}:google_pkce",
-            access_token=creds["access_token"],
-            refresh_token=creds.get("refresh_token"),
+        auth_mod._save_xai_oauth_tokens(
+            creds["tokens"],
+            discovery=creds.get("discovery"),
+            redirect_uri=creds.get("redirect_uri", ""),
+            last_refresh=creds.get("last_refresh"),
+            auth_mode="oauth_device_code",
         )
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        pool = load_pool(provider)
+        entry = next((e for e in pool.entries() if getattr(e, "source", "") == "device_code"), None)
+        shown_label = entry.label if entry is not None else label_from_token(
+            creds["tokens"]["access_token"], _oauth_default_label(provider, 1)
+        )
+        print(f'Saved {provider} OAuth credentials: "{shown_label}"')
         return
 
     if provider == "qwen-oauth":
         creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        auth_mod._mark_qwen_oauth_active(creds)
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["api_key"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
@@ -541,7 +536,7 @@ def _interactive_auth() -> None:
         if has_aws_credentials():
             auth_source = resolve_aws_auth_env_var() or "unknown"
             region = resolve_bedrock_region()
-            print(f"bedrock (AWS SDK credential chain):")
+            print("bedrock (AWS SDK credential chain):")
             print(f"  Auth: {auth_source}")
             print(f"  Region: {region}")
             try:
@@ -551,7 +546,7 @@ def _interactive_auth() -> None:
                 arn = identity.get("Arn", "unknown")
                 print(f"  Identity: {arn}")
             except Exception:
-                print(f"  Identity: (could not resolve — boto3 STS call failed)")
+                print("  Identity: (could not resolve — boto3 STS call failed)")
             print()
     except ImportError:
         pass  # boto3 or bedrock_adapter not available
@@ -579,7 +574,7 @@ def _interactive_auth() -> None:
                     str(_entra.get("scope") or "").strip()
                     or SCOPE_AI_AZURE_DEFAULT
                 )
-                print(f"azure-foundry (Microsoft Entra ID):")
+                print("azure-foundry (Microsoft Entra ID):")
                 print(f"  Endpoint: {_base_url or '(not configured)'}")
                 print(f"  Scope: {_scope}")
                 if not has_azure_identity_installed():

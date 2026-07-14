@@ -1,23 +1,30 @@
 import { useStore } from '@nanostores/react'
-import { IconBookmark, IconBookmarkFilled, IconDownload, IconTrash } from '@tabler/icons-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import {
-  getActionStatus,
-  getLogs,
-  getStatus,
-  getUsageAnalytics,
-  restartGateway,
-  updateHermes
-} from '@/hermes'
+import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
+import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, type IconComponent, Pin } from '@/lib/icons'
+import { compactNumber } from '@/lib/format'
+import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  Bookmark,
+  BookmarkFilled,
+  Download,
+  MessageCircle,
+  Trash2,
+  Wrench
+} from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
+import { fmtDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -25,12 +32,17 @@ import { $sessions, sessionPinId } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
-import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
+import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
-export type CommandCenterSection = 'sessions' | 'system' | 'usage'
+import { MaintenancePanel } from './maintenance'
 
-const SECTIONS = ['sessions', 'system', 'usage'] as const satisfies readonly CommandCenterSection[]
+export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+
+const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+
+const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
+const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
@@ -39,28 +51,10 @@ interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
   onClose: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
+  // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
+  onNavigateRoute?: (path: string) => void
   onOpenSession: (sessionId: string) => void
 }
-
-const SECTION_LABELS: Record<CommandCenterSection, string> = {
-  sessions: 'Sessions',
-  system: 'System',
-  usage: 'Usage'
-}
-
-const SECTION_DESCRIPTIONS: Record<CommandCenterSection, string> = {
-  sessions: 'Search and manage sessions',
-  system: 'Status, logs, and system actions',
-  usage: 'Token, cost, and skill activity over time'
-}
-
-const SECTION_ICONS: Record<CommandCenterSection, IconComponent> = {
-  sessions: Pin,
-  system: Activity,
-  usage: BarChart3
-}
-
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 function formatTimestamp(value?: number | null): string {
   if (!value) {
@@ -73,7 +67,7 @@ function formatTimestamp(value?: number | null): string {
     return ''
   }
 
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return fmtDateTime.format(date)
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -114,11 +108,13 @@ function RowIconButton({
   )
 }
 
-function EmptyPanel({ action, description, title }: { action?: ReactNode; description: string; title: string }) {
+function EmptyPanel({ action, description, title }: { action?: ReactNode; description: string; title?: string }) {
   return (
     <div className="grid min-h-48 place-items-center px-6 text-center">
       <div>
-        <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
+        {title && (
+          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
+        )}
         <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
           {description}
         </div>
@@ -128,12 +124,9 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
   )
 }
 
-export function CommandCenterView({
-  initialSection,
-  onClose,
-  onDeleteSession,
-  onOpenSession
-}: CommandCenterViewProps) {
+export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
+  const { t } = useI18n()
+  const cc = t.commandCenter
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
@@ -142,6 +135,9 @@ export function CommandCenterView({
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
+  const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
+  const [logLevel, setLogLevel] = useState<(typeof LOG_LEVELS)[number]>('ALL')
+  const [logQuery, setLogQuery] = useState('')
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
   const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
@@ -182,19 +178,20 @@ export function CommandCenterView({
       const [nextStatus, nextLogs] = await Promise.all([
         getStatus(),
         getLogs({
-          file: 'agent',
-          lines: 120
+          file: logFile,
+          level: logLevel,
+          lines: 200
         })
       ])
 
       setStatus(nextStatus)
       setLogs(nextLogs.lines)
     } catch (error) {
-      setSystemError(errorText(error))
+      setSystemError(error instanceof Error ? error.message : String(error))
     } finally {
       setSystemLoading(false)
     }
-  }, [])
+  }, [logFile, logLevel])
 
   const refreshUsage = useCallback(async (days: UsagePeriod) => {
     const requestId = usageRequestRef.current + 1
@@ -210,7 +207,7 @@ export function CommandCenterView({
       }
     } catch (error) {
       if (usageRequestRef.current === requestId) {
-        setUsageError(errorText(error))
+        setUsageError(error instanceof Error ? error.message : String(error))
       }
     } finally {
       if (usageRequestRef.current === requestId) {
@@ -220,10 +217,12 @@ export function CommandCenterView({
   }, [])
 
   useEffect(() => {
-    if (section === 'system' && !status && !systemLoading) {
+    // Refetch when the panel opens and whenever the log file/level filters
+    // change (refreshSystem's identity tracks them).
+    if (section === 'system') {
       void refreshSystem()
     }
-  }, [refreshSystem, section, status, systemLoading])
+  }, [refreshSystem, section])
 
   useEffect(() => {
     if (section === 'usage') {
@@ -240,6 +239,17 @@ export function CommandCenterView({
   })
 
   const sessionListHasResults = filteredSessions.length > 0
+
+  // Client-side substring filter over the fetched tail (matches `hermes logs --search`).
+  const visibleLogs = useMemo(() => {
+    const needle = logQuery.trim().toLowerCase()
+
+    if (!needle) {
+      return logs
+    }
+
+    return logs.filter(line => line.toLowerCase().includes(needle))
+  }, [logQuery, logs])
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
@@ -264,7 +274,7 @@ export function CommandCenterView({
         if (!nextStatus) {
           const pendingStatus = {
             exit_code: null,
-            lines: ['Action started, waiting for status...'],
+            lines: [cc.actionStartedWaiting],
             name: started.name,
             pid: started.pid,
             running: true
@@ -274,52 +284,58 @@ export function CommandCenterView({
           upsertDesktopActionTask(pendingStatus)
         }
       } catch (error) {
-        setSystemError(errorText(error))
+        setSystemError(error instanceof Error ? error.message : String(error))
       } finally {
         void refreshSystem()
       }
     },
-    [refreshSystem]
+    [cc, refreshSystem]
   )
 
   return (
-    <OverlayView closeLabel="Close command center" onClose={onClose}>
+    <OverlayView closeLabel={cc.close} onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlaySidebar>
-          {SECTIONS.map(value => (
-            <OverlayNavItem
-              active={section === value}
-              icon={SECTION_ICONS[value]}
-              key={value}
-              label={SECTION_LABELS[value]}
-              onClick={() => setSection(value)}
-            />
-          ))}
-        </OverlaySidebar>
+        <OverlayNav
+          groups={SECTIONS.map(value => ({
+            active: section === value,
+            icon:
+              value === 'sessions'
+                ? MessageCircle
+                : value === 'system'
+                  ? Activity
+                  : value === 'maintenance'
+                    ? Wrench
+                    : BarChart3,
+            id: value,
+            label: cc.sections[value],
+            onSelect: () => setSection(value)
+          }))}
+        />
 
         <OverlayMain>
-          <header className="mb-4 flex items-center justify-between gap-3">
-            <div className="min-w-0">
+          <header className="mb-4 flex items-center justify-between gap-3 max-[47.5rem]:mb-2">
+            {/* Redundant on narrow — the nav dropdown already names the section. */}
+            <div className="min-w-0 max-[47.5rem]:hidden">
               <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
-                {SECTION_LABELS[section]}
+                {cc.sections[section]}
               </h2>
               <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {SECTION_DESCRIPTIONS[section]}
+                {cc.sectionDescriptions[section]}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {section === 'sessions' && sessions.length > 0 && (
+              {section === 'sessions' && (
                 <SearchField
                   containerClassName="max-w-[40vw]"
                   onChange={next => setQuery(next)}
-                  placeholder="Search sessions…"
+                  placeholder={cc.searchPlaceholder}
                   value={query}
                 />
               )}
               {section === 'usage' && (
                 <SegmentedControl
                   onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
-                  options={USAGE_PERIODS.map(value => ({ id: String(value), label: `${value}d` }))}
+                  options={USAGE_PERIODS.map(value => ({ id: String(value), label: cc.days(value) }))}
                   value={String(usagePeriod)}
                 />
               )}
@@ -329,14 +345,7 @@ export function CommandCenterView({
           {section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
-                <EmptyPanel
-                  description={
-                    debouncedQuery
-                      ? 'No sessions match your search.'
-                      : 'Sessions you start will show up here to search, pin, and export.'
-                  }
-                  title={debouncedQuery ? 'No matches' : 'No sessions yet'}
-                />
+                <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
               ) : (
                 <ul>
                   {filteredSessions.map(session => {
@@ -360,26 +369,22 @@ export function CommandCenterView({
                         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                           <RowIconButton
                             onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-                            title={pinned ? 'Unpin session' : 'Pin session'}
+                            title={pinned ? cc.unpinSession : cc.pinSession}
                           >
-                            {pinned ? (
-                              <IconBookmarkFilled className="size-3.5" />
-                            ) : (
-                              <IconBookmark className="size-3.5" />
-                            )}
+                            {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
                           </RowIconButton>
                           <RowIconButton
                             onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                            title="Export session"
+                            title={cc.exportSession}
                           >
-                            <IconDownload className="size-3.5" />
+                            <Download className="size-3.5" />
                           </RowIconButton>
                           <RowIconButton
                             className="hover:text-destructive"
                             onClick={() => void onDeleteSession(session.id)}
-                            title="Delete session"
+                            title={cc.deleteSession}
                           >
-                            <IconTrash className="size-3.5" />
+                            <Trash2 className="size-3.5" />
                           </RowIconButton>
                         </div>
                       </li>
@@ -396,54 +401,83 @@ export function CommandCenterView({
               period={usagePeriod}
               usage={usage}
             />
+          ) : section === 'maintenance' ? (
+            <MaintenancePanel />
           ) : (
             <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
-              <div className="border-b border-(--ui-stroke-tertiary) pb-4">
+              <div>
                 {status ? (
                   <div className="grid gap-2">
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start justify-between gap-3 max-[47.5rem]:flex-col max-[47.5rem]:gap-2">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span
                             className={cn(
-                              'size-2 rounded-full',
+                              'size-2 shrink-0 rounded-full',
                               status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
                             )}
                           />
                           <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {status.gateway_running ? 'Messaging gateway running' : 'Messaging gateway stopped'}
+                            {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
                           </span>
                         </div>
                         <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          Hermes {status.version} · Active sessions {status.active_sessions}
+                          {cc.hermesActiveSessions(status.version, status.active_sessions)}
                         </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
                         <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
-                          Restart messaging
+                          {cc.restartGateway}
                         </Button>
                         <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
-                          Update Hermes
+                          {cc.updateHermes}
                         </Button>
                       </div>
                     </div>
                     {systemAction && (
                       <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                         {systemAction.name} ·{' '}
-                        {systemAction.running ? 'running' : systemAction.exit_code === 0 ? 'done' : 'failed'}
+                        {systemAction.running
+                          ? cc.actionRunning
+                          : systemAction.exit_code === 0
+                            ? cc.actionDone
+                            : cc.actionFailed}
                       </div>
                     )}
                   </div>
                 ) : (
-                  <PageLoader className="min-h-32" label="Loading status" />
+                  <PageLoader className="min-h-32" label={cc.loadingStatus} />
                 )}
               </div>
 
-              <div className="flex min-h-0 flex-col">
-                <div className="mb-2 flex items-center justify-between">
+              <div className="flex min-h-0 flex-col pt-2">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                   <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-                    Recent logs
+                    {cc.recentLogs}
                   </span>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <ResponsiveTabs
+                      align="end"
+                      onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
+                      tabs={LOG_FILES.map(value => ({ id: value, label: value }))}
+                      value={logFile}
+                    />
+                    <ResponsiveTabs
+                      align="end"
+                      onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
+                      tabs={LOG_LEVELS.map(value => ({
+                        id: value,
+                        label: value === 'ALL' ? 'all' : value.toLowerCase()
+                      }))}
+                      value={logLevel}
+                    />
+                    <SearchField
+                      containerClassName="w-44"
+                      onChange={next => setLogQuery(next)}
+                      placeholder={cc.logSearchPlaceholder}
+                      value={logQuery}
+                    />
+                  </div>
                   {systemError && (
                     <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
                       <AlertCircle className="size-3.5" />
@@ -451,9 +485,11 @@ export function CommandCenterView({
                     </span>
                   )}
                 </div>
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)">
-                  {logs.length ? logs.join('\n') : 'No logs loaded yet.'}
-                </pre>
+                <LogTail
+                  className="flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)"
+                  emptyLabel={cc.noLogs}
+                  lines={systemLoading && logs.length === 0 ? null : visibleLogs}
+                />
               </div>
             </div>
           )}
@@ -461,38 +497,6 @@ export function CommandCenterView({
       </OverlaySplitLayout>
     </OverlayView>
   )
-}
-
-function formatTokens(value: null | number | undefined): string {
-  const num = Number(value || 0)
-
-  if (num >= 1_000_000) {
-    return `${(num / 1_000_000).toFixed(1)}M`
-  }
-
-  if (num >= 1_000) {
-    return `${(num / 1_000).toFixed(1)}K`
-  }
-
-  return num.toLocaleString()
-}
-
-function formatCost(value: null | number | undefined): string {
-  const num = Number(value || 0)
-
-  if (num === 0) {
-    return '$0.00'
-  }
-
-  if (num < 0.01) {
-    return '<$0.01'
-  }
-
-  return `$${num.toFixed(2)}`
-}
-
-function formatInteger(value: null | number | undefined): string {
-  return Number(value ?? 0).toLocaleString()
 }
 
 interface UsagePanelProps {
@@ -504,6 +508,8 @@ interface UsagePanelProps {
 }
 
 function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProps) {
+  const { t } = useI18n()
+  const cc = t.commandCenter
   const daily = useMemo(() => usage?.daily ?? [], [usage])
   const totals = usage?.totals
   const byModel = usage?.by_model ?? []
@@ -521,16 +527,15 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
     return (
       <div className="min-h-0 flex-1">
         {loading ? (
-          <PageLoader className="min-h-48" label="Loading usage" />
+          <PageLoader className="min-h-48" label={cc.loadingUsage} />
         ) : (
           <EmptyPanel
             action={
-              <Button onClick={onRefresh} size="xs" variant="outline">
-                Retry
+              <Button onClick={onRefresh} size="xs" variant="text">
+                {cc.retry}
               </Button>
             }
-            description={`No token, cost, or skill activity recorded in the last ${period} days.`}
-            title="No usage yet"
+            description={cc.noUsage(period)}
           />
         )}
       </div>
@@ -546,37 +551,32 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         </span>
       )}
 
-      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-4">
-        <UsageStat label="Sessions" value={formatInteger(totals.total_sessions)} />
-        <UsageStat label="API calls" value={formatInteger(totals.total_api_calls)} />
+      <div className="grid grid-cols-2 gap-x-4 gap-y-4 py-2 sm:grid-cols-3">
+        <UsageStat label={cc.statSessions} value={compactNumber(totals.total_sessions)} />
+        <UsageStat label={cc.statApiCalls} value={compactNumber(totals.total_api_calls)} />
         <UsageStat
-          label="Tokens in/out"
-          value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
-        />
-        <UsageStat
-          hint={totals.total_actual_cost > 0 ? `actual ${formatCost(totals.total_actual_cost)}` : undefined}
-          label="Est. cost"
-          value={formatCost(totals.total_estimated_cost)}
+          label={cc.statTokens}
+          value={`${compactNumber(totals.total_input)} / ${compactNumber(totals.total_output)}`}
         />
       </div>
 
       <section>
         <div className="mb-2 flex items-baseline justify-between">
           <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-            Daily tokens
+            {cc.dailyTokens}
           </span>
           <span className="flex items-center gap-3 text-[0.65rem] text-(--ui-text-tertiary)">
             <span className="inline-flex items-center gap-1">
-              <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> input
+              <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> {cc.input}
             </span>
             <span className="inline-flex items-center gap-1">
-              <span className="size-2 rounded-[1px] bg-emerald-500/70" /> output
+              <span className="size-2 rounded-[1px] bg-emerald-500/70" /> {cc.output}
             </span>
           </span>
         </div>
         {daily.length === 0 ? (
           <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            No daily activity.
+            {cc.noDailyActivity}
           </div>
         ) : (
           <>
@@ -589,7 +589,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                   <div
                     className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
                     key={entry.day}
-                    title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
+                    title={`${entry.day} · in ${compactNumber(entry.input_tokens)} · out ${compactNumber(entry.output_tokens)}`}
                   >
                     <div
                       className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
@@ -611,24 +611,24 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         )}
       </section>
 
-      <div className="grid min-h-0 gap-x-8 gap-y-5 border-t border-(--ui-stroke-tertiary) pt-5 sm:grid-cols-2">
+      <div className="grid min-h-0 gap-x-8 gap-y-5 pt-1 sm:grid-cols-2">
         <UsageList
-          emptyLabel="No model usage yet."
+          emptyLabel={cc.noModelUsage}
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
             label: entry.model,
-            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} · ${formatCost(entry.estimated_cost)}`
+            value: `${compactNumber((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
           }))}
-          title="Top models"
+          title={cc.topModels}
         />
         <UsageList
-          emptyLabel="No skill activity yet."
+          emptyLabel={cc.noSkillActivity}
           rows={topSkills.slice(0, 6).map(entry => ({
             key: entry.skill,
             label: entry.skill,
-            value: `${entry.total_count.toLocaleString()} actions`
+            value: cc.actions(compactNumber(entry.total_count))
           }))}
-          title="Top skills"
+          title={cc.topSkills}
         />
       </div>
     </div>

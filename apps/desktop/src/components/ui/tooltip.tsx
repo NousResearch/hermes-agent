@@ -3,8 +3,23 @@ import * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
-function TooltipProvider({ delayDuration = 0, ...props }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
-  return <TooltipPrimitive.Provider data-slot="tooltip-provider" delayDuration={delayDuration} {...props} />
+function TooltipProvider({
+  delayDuration = 0,
+  // Tips are labels, not interactive surfaces. Hoverable content + Radix's
+  // pointer-grace bridge is what leaves tips stuck open — especially over
+  // Electron `-webkit-app-region: drag` chrome where pointermove never fires
+  // to clear the grace area. Default off so open state tracks the trigger only.
+  disableHoverableContent = true,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  return (
+    <TooltipPrimitive.Provider
+      data-slot="tooltip-provider"
+      delayDuration={delayDuration}
+      disableHoverableContent={disableHoverableContent}
+      {...props}
+    />
+  )
 }
 
 function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
@@ -17,26 +32,83 @@ function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimiti
 
 function TooltipContent({
   className,
-  sideOffset = 0,
+  sideOffset = 6,
   children,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
-        className={cn(
-          'z-50 w-fit origin-(--radix-tooltip-content-transform-origin) animate-in rounded-md bg-foreground px-3 py-1.5 text-xs text-balance text-background fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
-          className
-        )}
+        // Transparent, width-capped wrapper. The visible chip is the inner inline
+        // span so `box-decoration-break: clone` gives a marker-style background
+        // that hugs EACH wrapped line (bg only on the text, ragged right — no
+        // rectangular dead space). Instant, no transition (delayDuration=0).
+        // pointer-events-none: the tip must never steal hover/clicks from the
+        // chrome underneath (titlebar tools, adjacent tabs, etc.).
+        className={cn('pointer-events-none z-[200] w-fit max-w-64 select-none', className)}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         {...props}
       >
-        {children}
-        <TooltipPrimitive.Arrow className="z-50 size-2.5 translate-y-[calc(-50%_-_0.125rem)] rotate-45 rounded-[0.125rem] bg-foreground fill-foreground" />
+        {/* bg-foreground/text-background auto-inverts per theme. leading-normal
+            keeps lines readable; py-1 makes the cloned line-boxes overlap just
+            enough to read as one continuous fill (no gaps between lines). */}
+        {/* [&>*]:!inline-flex: a block-level label child (e.g. `flex`) collapses
+            this inline decoration's geometry, so Radix measures a zero-size chip
+            and parks an empty rectangle in the corner (#62022). Force any direct
+            child inline-flex so every call site stays safe. */}
+        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
+          {children}
+        </span>
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )
 }
 
-export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }
+interface TipProps extends Omit<React.ComponentProps<typeof TooltipPrimitive.Content>, 'content'> {
+  label: React.ReactNode
+  children: React.ReactNode
+  delayDuration?: number
+}
+
+// Drop-in replacement for native `title=`: wrap any single element. Instant,
+// position-aware, themed. Self-contained (carries its own Provider) so it works
+// anywhere without a provider ancestor. Renders the child untouched when label
+// is falsy. Open state is trigger-hover only — never sticky, never click-blocking.
+function Tip({ label, children, delayDuration = 0, ...props }: TipProps) {
+  if (!label) {
+    return <>{children}</>
+  }
+
+  return (
+    <TooltipProvider delayDuration={delayDuration} disableHoverableContent>
+      <Tooltip disableHoverableContent>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent {...props}>{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+interface TipHintLabelProps {
+  text: string
+  hint?: string
+}
+
+/** Tooltip label with an optional trailing hotkey hint. Uses `inline-flex` so it
+ *  stays safe inside Tip's decoration wrapper — prefer this over a bespoke
+ *  flex/gap span at the call site (see #62022). */
+function TipHintLabel({ text, hint }: TipHintLabelProps) {
+  if (!hint) {
+    return <>{text}</>
+  }
+
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span>{text}</span>
+      <span className="opacity-55">{hint}</span>
+    </span>
+  )
+}
+
+export { Tip, TipHintLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }

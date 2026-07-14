@@ -191,8 +191,34 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _is_on_release_tag(repo_dir: Path) -> bool:
+    """True only when HEAD is detached *and* pinned exactly to a git tag.
+
+    Deliberately narrower than "any detached HEAD": an arbitrary detached
+    commit (e.g. mid-bisect, or a checked-out SHA that isn't a tag) still
+    wants the normal behind-count comparison. Only an exact tag checkout —
+    the "I installed a tagged release" case from #39771 — should be
+    reported as up to date.
+    """
+    # A successful symbolic-ref means HEAD is on a branch, not detached.
+    on_branch = _git_stdout(["symbolic-ref", "-q", "HEAD"], cwd=repo_dir)
+    if on_branch:
+        return False
+    tag = _git_stdout(["describe", "--tags", "--exact-match", "HEAD"], cwd=repo_dir)
+    return bool(tag)
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
+    if _is_on_release_tag(repo_dir):
+        # Detached HEAD on a release tag — "commits behind origin/main" is
+        # meaningless here, the user intentionally checked out a tagged
+        # release rather than tracking a branch. Placed ahead of every
+        # comparison path below (official SSH remote, shallow clone, and
+        # full-clone rev-list) so none of them can override it with a
+        # misleading behind-count. See #39771.
+        return 0
+
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)

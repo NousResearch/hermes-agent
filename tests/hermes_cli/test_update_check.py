@@ -93,8 +93,8 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    # origin probe + is-shallow probe + git fetch + git rev-list
-    assert mock_run.call_count == 4
+    # symbolic-ref probe (tag guard) + origin probe + is-shallow probe + git fetch + git rev-list
+    assert mock_run.call_count == 5
 
 
 def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
@@ -109,6 +109,8 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if cmd == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout="refs/heads/main\n")
         if cmd == ["git", "remote", "get-url", "origin"]:
             return MagicMock(returncode=0, stdout="git@github.com:NousResearch/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "HEAD"]:
@@ -148,6 +150,8 @@ def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if cmd == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout="refs/heads/main\n")
         if cmd == ["git", "remote", "get-url", "origin"]:
             return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
@@ -179,6 +183,8 @@ def test_check_via_local_git_shallow_clone_up_to_date(tmp_path):
     (repo_dir / ".git").mkdir()
 
     def fake_run(cmd, **kwargs):
+        if cmd == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout="refs/heads/main\n")
         if cmd == ["git", "remote", "get-url", "origin"]:
             return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
@@ -206,6 +212,8 @@ def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
     (repo_dir / ".git").mkdir()
 
     def fake_run(cmd, **kwargs):
+        if cmd == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout="refs/heads/main\n")
         if cmd == ["git", "remote", "get-url", "origin"]:
             return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
@@ -220,6 +228,118 @@ def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
         result = banner._check_via_local_git(repo_dir)
 
     assert result == 7
+
+
+def test_check_via_local_git_release_tag_reports_up_to_date(tmp_path):
+    """Detached HEAD pinned exactly to a release tag reports up to date (0).
+
+    Regression for #39771: `hermes version` incorrectly showed "N commits
+    behind" after `git checkout <tag>`. The guard must short-circuit before
+    any origin comparison runs.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=1, stdout="")
+        if cmd == ["git", "describe", "--tags", "--exact-match", "HEAD"]:
+            return MagicMock(returncode=0, stdout="v2026.5.29.2\n")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 0
+
+
+def test_check_via_local_git_older_release_tag_reports_up_to_date(tmp_path):
+    """An older tag (not just the latest) still counts as a valid release checkout.
+
+    The guard checks "is HEAD exactly a tag", not "is HEAD the newest tag" —
+    hermes has no way to know intent beyond "this is a tagged release".
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=1, stdout="")
+        if cmd == ["git", "describe", "--tags", "--exact-match", "HEAD"]:
+            return MagicMock(returncode=0, stdout="v2025.1.1\n")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 0
+
+
+def test_check_via_local_git_detached_non_tag_still_counts(tmp_path):
+    """A detached HEAD that is NOT on a tag (e.g. a bisect/arbitrary SHA)
+    must NOT get the free pass — it should fall through to the normal
+    behind-count comparison, same as a full clone on a branch.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=1, stdout="")
+        if cmd == ["git", "describe", "--tags", "--exact-match", "HEAD"]:
+            return MagicMock(returncode=128, stdout="")
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="false\n")
+        if cmd[:2] == ["git", "fetch"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return MagicMock(returncode=0, stdout="12\n")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 12
+
+
+def test_check_via_local_git_branch_checkout_skips_tag_guard(tmp_path):
+    """A normal branch checkout (not detached) must never even ask about tags."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout="refs/heads/main\n")
+        if cmd == ["git", "describe", "--tags", "--exact-match", "HEAD"]:
+            raise AssertionError("must not check for a tag when HEAD is on a branch")
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="false\n")
+        if cmd[:2] == ["git", "fetch"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return MagicMock(returncode=0, stdout="0\n")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 0
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

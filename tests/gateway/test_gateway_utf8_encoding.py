@@ -1,6 +1,7 @@
-"""Static guard: every ``read_text`` / ``write_text`` call under ``gateway/``
-must pass an explicit ``encoding=`` keyword argument so non-UTF-8 Windows
-locales don't corrupt file IPC.  Mirrors the AST-based guard pattern in
+"""Static guard: every ``read_text`` / ``write_text`` call in the gateway and
+bundled update-response adapters must pass an explicit ``encoding=`` keyword
+argument so non-UTF-8 Windows locales don't corrupt file IPC.  Mirrors the
+AST-based guard pattern in
 ``tests/tools/test_windows_compat.py``.
 """
 
@@ -8,14 +9,21 @@ import ast
 import pathlib
 import pytest
 
-GATEWAY_DIR = pathlib.Path(__file__).resolve().parents[2] / "gateway"
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+GATEWAY_DIR = REPO_ROOT / "gateway"
+UPDATE_RESPONSE_FILES = (
+    REPO_ROOT / "plugins/platforms/discord/adapter.py",
+    REPO_ROOT / "plugins/platforms/telegram/adapter.py",
+    REPO_ROOT / "plugins/platforms/feishu/adapter.py",
+)
 METHODS = {"read_text", "write_text"}
 SUPPRESSION = "# gateway-utf8: ok"
 
 
 def _find_violations():
     violations = []
-    for py_file in sorted(GATEWAY_DIR.rglob("*.py")):
+    py_files = list(GATEWAY_DIR.rglob("*.py")) + list(UPDATE_RESPONSE_FILES)
+    for py_file in sorted(py_files):
         source = py_file.read_text(encoding="utf-8")
         source_lines = source.splitlines()
         try:
@@ -35,7 +43,7 @@ def _find_violations():
             lineno = node.lineno
             if lineno <= len(source_lines) and SUPPRESSION in source_lines[lineno - 1]:
                 continue
-            rel = py_file.relative_to(GATEWAY_DIR.parent)
+            rel = py_file.relative_to(REPO_ROOT)
             violations.append(f"{rel}:{lineno}")
     return violations
 

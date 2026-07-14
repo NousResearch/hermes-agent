@@ -75,13 +75,15 @@ class TestCommandRegistry:
 
     def test_reasoning_subcommands_are_in_logical_order(self):
         reasoning = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "reasoning")
-        assert reasoning.subcommands[:6] == (
+        assert reasoning.subcommands[:8] == (
             "none",
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh",
+            "max",
+            "ultra",
         )
 
     def test_cli_only_and_gateway_only_are_mutually_exclusive(self):

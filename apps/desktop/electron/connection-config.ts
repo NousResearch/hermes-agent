@@ -37,6 +37,15 @@
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
+// The Nous portal (NAS) does NOT use Hermes gateway session cookies — it is a
+// Privy-authed Next.js app. NAS `auth()` (src/server/auth/session.ts) reads the
+// `privy-token` access-token cookie (with `privy-id-token` alongside), which is
+// also exactly what the `/api/agents` cookie-auth path validates. So portal
+// sign-in / discovery liveness must look for the Privy cookie, NOT the gateway
+// cookies above. `privy-token` is the access token (the required signal);
+// variants cover the secured-prefix forms and the older `privy-session` name.
+const PRIVY_SESSION_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token', 'privy-session']
+
 function normalizeRemoteBaseUrl(rawUrl) {
   const value = String(rawUrl || '').trim()
 
@@ -168,20 +177,31 @@ function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
 }
 
+// True for connection modes that resolve to a REMOTE backend. 'cloud' is a
+// Hermes Cloud connection (cloud-auto-discovery Q3/Q6): it carries a
+// remote-shaped block and reuses the entire remote connect/probe/reconnect
+// path, so every resolution site treats it exactly like 'remote'. The only
+// places that distinguish cloud from remote are the settings UI (which card to
+// show) and config persistence (remembering the provenance). Centralized here
+// so no resolution site forgets the third arm.
+function modeIsRemoteLike(mode) {
+  return mode === 'remote' || mode === 'cloud'
+}
+
 /**
  * Select a profile's explicit remote override from a connection config, or null
  * when it has none (so the caller falls back to env → global remote → local).
  *
  * The config may carry a `profiles` map keyed by name; an entry counts as an
- * override only with `mode === 'remote'` and a non-empty `url`. Pure: `token`
- * is the raw stored secret; main.ts decrypts it. Returns
+ * override only with a remote-like `mode` (remote or cloud) and a non-empty
+ * `url`. Pure: `token` is the raw stored secret; main.ts decrypts it. Returns
  * `{ url, authMode, token } | null`.
  */
 function profileRemoteOverride(config, profile) {
   const key = connectionScopeKey(profile)
   const entry = key ? config?.profiles?.[key] : null
 
-  if (!entry || typeof entry !== 'object' || entry.mode !== 'remote') {
+  if (!entry || typeof entry !== 'object' || !modeIsRemoteLike(entry.mode)) {
     return null
   }
 
@@ -315,6 +335,22 @@ function cookiesHaveLiveSession(cookies) {
   return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
 }
 
+/**
+ * True if the cookie jar holds a live Nous PORTAL (Privy) session — a non-empty
+ * `privy-token` (access-token) cookie, or a variant. This is the portal
+ * analogue of `cookiesHaveLiveSession`: the portal authenticates via Privy, not
+ * the Hermes gateway session cookies, so cloud sign-in / discovery liveness
+ * must check THIS, not the gateway helpers. (NAS `auth()` and the `/api/agents`
+ * cookie path both key off `privy-token`.)
+ */
+function cookiesHavePrivySession(cookies) {
+  if (!Array.isArray(cookies)) {
+    return false
+  }
+
+  return cookies.some(c => c && c.value && PRIVY_SESSION_COOKIE_VARIANTS.includes(c.name))
+}
+
 export {
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
@@ -324,10 +360,13 @@ export {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
+  cookiesHavePrivySession,
   cookiesHaveSession,
+  modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  PRIVY_SESSION_COOKIE_VARIANTS,
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,

@@ -1,6 +1,4 @@
-type Method = string
-import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -30,6 +28,7 @@ import {
 } from 'electron'
 import nodePty from 'node-pty'
 
+import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
@@ -50,7 +49,9 @@ import {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
+  cookiesHavePrivySession,
   cookiesHaveSession,
+  modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,
   pathWithGlobalRemoteProfile,
@@ -89,7 +90,14 @@ import {
   reviewUnstage
 } from './git-review-ops'
 import { gitRootForIpc } from './git-root'
-import { addWorktree, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops'
+import {
+  addWorktree,
+  listBaseBranches,
+  listBranches,
+  listWorktrees,
+  removeWorktree,
+  switchBranch
+} from './git-worktree-ops'
 import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -101,6 +109,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -130,9 +139,17 @@ import {
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
+import { hiddenWindowsChildOptions } from './windows-child-options'
+import {
+  buildPathExtCandidates,
+  chooseUpdaterArgs,
+  getVenvSitePackagesEntries,
+  resolveVenvHermesCommand
+} from './windows-hermes-path'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -156,14 +173,6 @@ const APP_ROOT = app.getAppPath()
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
 // Dev (`npm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
-
-function hiddenWindowsChildOptions(options: any = {}): ExecFileSyncOptionsWithStringEncoding {
-  if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {
-    return options as any
-  }
-
-  return { ...options, windowsHide: true } as any
-}
 
 // Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
 // compositor flicker — accelerated layers can't be presented cleanly over the
@@ -430,7 +439,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = 'Hermes'
+const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
@@ -808,6 +817,9 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+// True while connection-config:apply soft-rehomes the primary — suppresses the
+// backend-exit toast so an intentional kill doesn't look like a crash.
+let softRehomeInProgress = false
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by hermesProcess +
 // connectionPromise + startHermes(); this pool only holds EXTRA profile
@@ -887,6 +899,7 @@ function planDesktopLogRotation(size) {
   if (size < DESKTOP_LOG_MAX_BYTES) {
     return []
   }
+
   const backups = n => Array.from({ length: n }, (_, i) => desktopLogBackupPath(i + 1))
 
   // Pathological boot-loop log: reclaim live + every backup outright.
@@ -954,6 +967,7 @@ function flushDesktopLogBufferSync() {
   if (!desktopLogBuffer) {
     return
   }
+
   const chunk = desktopLogBuffer
   desktopLogBuffer = ''
 
@@ -970,6 +984,7 @@ function flushDesktopLogBufferAsync() {
   if (!desktopLogBuffer) {
     return desktopLogFlushPromise
   }
+
   const chunk = desktopLogBuffer
   desktopLogBuffer = ''
 
@@ -990,6 +1005,7 @@ function scheduleDesktopLogFlush() {
   if (desktopLogFlushTimer) {
     return
   }
+
   desktopLogFlushTimer = setTimeout(() => {
     desktopLogFlushTimer = null
     void flushDesktopLogBufferAsync()
@@ -1002,6 +1018,7 @@ function rememberLog(chunk) {
   if (!text) {
     return
   }
+
   const lines = text.split(/\r?\n/).map(line => `[hermes] ${line}`)
   hermesLog.push(...lines)
 
@@ -1200,11 +1217,13 @@ function broadcastBootProgress() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:boot-progress', bootProgressState)
 }
 
@@ -1284,11 +1303,13 @@ function broadcastBootstrapEvent(ev) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:bootstrap:event', ev)
 }
 
@@ -1438,9 +1459,7 @@ function findOnPath(command) {
   // shell-script shim named `hermes` — must not shadow `hermes.cmd`/`hermes.exe`.
   // The empty entry is kept LAST so callers that already include the extension
   // (py.exe, pwsh.exe, powershell.exe) still resolve.
-  const extensions = IS_WINDOWS
-    ? [...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean), '']
-    : ['']
+  const extensions = buildPathExtCandidates(process.env.PATHEXT, IS_WINDOWS)
 
   for (const entry of pathEntries) {
     for (const extension of extensions) {
@@ -1460,71 +1479,21 @@ function isCommandScript(command) {
 }
 
 function unwrapWindowsVenvHermesCommand(command, backendArgs) {
-  if (!IS_WINDOWS || !command || isCommandScript(command)) {
-    return null
-  }
-
-  const resolved = path.resolve(String(command))
-
-  if (!/^hermes(?:\.exe)?$/i.test(path.basename(resolved))) {
-    return null
-  }
-
-  const scriptsDir = path.dirname(resolved)
-
-  if (path.basename(scriptsDir).toLowerCase() !== 'scripts') {
-    return null
-  }
-
-  const venvRoot = path.dirname(scriptsDir)
-  const python = getVenvPython(venvRoot)
-
-  if (!fileExists(python)) {
-    return null
-  }
-
-  const root = path.dirname(venvRoot)
-
-  // Smoke-test the venv interpreter before trusting it. A venv whose update
-  // died mid-`pip install` still has python.exe + hermes.exe on disk, but the
-  // backend dies on its first import (e.g. ModuleNotFoundError: dotenv) before
-  // the gateway ever binds. Returning it here also BYPASSED the caller's
-  // `--version` probe, so Retry/"Repair install" re-resolved the same broken
-  // venv forever instead of falling through to the bootstrap installer.
-  // Mirror isActiveRuntimeUsable(): probe with the checkout on PYTHONPATH so a
-  // healthy source-tree venv passes.
-  if (
-    !canImportHermesCli(python, {
-      env: {
-        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH]
-          .filter(Boolean)
-          .join(path.delimiter)
-      }
-    })
-  ) {
-    rememberLog(
-      `Ignoring venv Hermes at ${python}: runtime import probe failed (broken/partial venv); falling through to bootstrap.`
-    )
-
-    return null
-  }
-
-  return {
-    label: `existing Hermes Python at ${python}`,
-    command: python,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    bootstrap: false,
-    env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
-      pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
-    }),
-    kind: 'python',
-    // Surfaced so backendSupportsServe() can read this runtime's source for the
-    // `serve` capability check instead of falling back to a heavyweight probe.
-    root,
-    shell: false
-  }
+  return resolveVenvHermesCommand(command, backendArgs, {
+    isWindows: IS_WINDOWS,
+    isCommandScript,
+    fileExists,
+    directoryExists,
+    canImportHermesCli,
+    getVenvPython,
+    getVenvSitePackagesEntries,
+    buildDesktopBackendEnv,
+    hermesHome: HERMES_HOME,
+    resolvePath: (...segments) => path.resolve(...segments),
+    dirname: p => path.dirname(p),
+    basename: p => path.basename(p),
+    rememberLog
+  })
 }
 
 // Does the resolved runtime understand the `serve` subcommand? The desktop
@@ -1543,6 +1512,7 @@ function backendSupportsServe(backend) {
   if (!backend || !backend.command) {
     return true
   }
+
   const key = `${backend.command}::${backend.root || ''}`
 
   if (_serveSupportCache.has(key)) {
@@ -1871,45 +1841,6 @@ function getVenvPython(venvRoot) {
 // console python also restores stdout, so the backend announces its port on the
 // normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
 // needed.
-
-function getVenvSitePackagesEntries(venvRoot) {
-  const entries = []
-
-  if (!venvRoot) {
-    return entries
-  }
-
-  if (IS_WINDOWS) {
-    const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')
-
-    if (directoryExists(sitePackages)) {
-      entries.push(sitePackages)
-    }
-
-    return entries
-  }
-
-  const version = (() => {
-    try {
-      const cfg = fs.readFileSync(path.join(venvRoot, 'pyvenv.cfg'), 'utf8')
-      const match = cfg.match(/^version_info\s*=\s*(\d+\.\d+)/im)
-
-      return match ? match[1].trim() : null
-    } catch {
-      return null
-    }
-  })()
-
-  if (version) {
-    const sitePackages = path.join(venvRoot, 'lib', `python${version}`, 'site-packages')
-
-    if (directoryExists(sitePackages)) {
-      entries.push(sitePackages)
-    }
-  }
-
-  return entries
-}
 
 function makeDashboardReadyFile() {
   const dir = path.join(app.getPath('userData'), 'backend-ready')
@@ -2343,6 +2274,7 @@ function isShimLocked(shimPath) {
   if (!IS_WINDOWS) {
     return false
   }
+
   let fd
 
   try {
@@ -2480,6 +2412,7 @@ async function releaseBackendLock(updateRoot, tag) {
     for (const pid of stragglers) {
       forceKillProcessTree(pid)
     }
+
     await new Promise(r => setTimeout(r, 300))
   }
 
@@ -2679,7 +2612,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   const haveRealInstall =
     fileExists(venvPython) || fileExists(venvHermes) || fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
 
-  const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  const updaterArgs = chooseUpdaterArgs(haveRealInstall, branch)
 
   await releaseBackendLockForUpdate(updateRoot)
 
@@ -2774,6 +2707,7 @@ function runningAppBundle() {
   if (!IS_MAC) {
     return null
   }
+
   let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
 
   for (let i = 0; i < 2; i++) {
@@ -3200,6 +3134,7 @@ function resolveRendererIndex() {
   if (found) {
     return found
   }
+
   // Nothing on disk. A packaged build with no renderer bundle blank-pages with
   // a bare ERR_FILE_NOT_FOUND and no clue why (see #39484). Surface the cause
   // and the fix before Electron loads the missing file.
@@ -3248,6 +3183,7 @@ function resolveHermesCwd() {
     if (!candidate) {
       continue
     }
+
     const resolved = path.resolve(String(candidate))
 
     if (isPackagedInstallPath(resolved)) {
@@ -3772,6 +3708,7 @@ function fetchJson(url, token, options: any = {}) {
     if (body) {
       req.write(body)
     }
+
     req.end()
   })
 }
@@ -4302,6 +4239,7 @@ function fetchPublicJson(url, options: any = {}) {
     if (body) {
       req.write(body)
     }
+
     req.end()
   })
 }
@@ -4419,6 +4357,7 @@ function cacheTitle(key, title) {
   if (titleCache.size >= TITLE_CACHE_LIMIT) {
     titleCache.delete(titleCache.keys().next().value)
   }
+
   titleCache.set(key, title)
 }
 
@@ -4473,6 +4412,7 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
       if (bytes >= TITLE_BYTE_BUDGET) {
         return
       }
+
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       const remaining = TITLE_BYTE_BUDGET - bytes
       const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
@@ -4485,6 +4425,7 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
       if (!chunks.length) {
         return resolve('')
       }
+
       resolve(parseHtmlTitle(Buffer.concat(chunks).toString('utf8')))
     })
   })
@@ -4494,6 +4435,7 @@ function getLinkTitleSession() {
   if (linkTitleSession || !app.isReady()) {
     return linkTitleSession
   }
+
   linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
   linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
     callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
@@ -4536,6 +4478,7 @@ function runRenderTitleJob(rawUrl) {
       if (settled) {
         return
       }
+
       settled = true
 
       if (hardTimer) {
@@ -4545,6 +4488,7 @@ function runRenderTitleJob(rawUrl) {
       if (graceTimer) {
         clearTimeout(graceTimer)
       }
+
       const value = (title || '').replace(/\s+/g, ' ').trim()
 
       try {
@@ -4570,6 +4514,7 @@ function runRenderTitleJob(rawUrl) {
       if (graceTimer) {
         clearTimeout(graceTimer)
       }
+
       graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
     }
 
@@ -4651,6 +4596,7 @@ async function resourceBufferFromUrl(rawUrl) {
     if (!match) {
       throw new Error('Invalid data URL')
     }
+
     const mimeType = match[1] || 'application/octet-stream'
     const encoded = match[3] || ''
     const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
@@ -4699,6 +4645,7 @@ async function copyImageFromUrl(rawUrl) {
   if (image.isEmpty()) {
     throw new Error('Could not read image')
   }
+
   clipboard.writeImage(image)
 }
 
@@ -4714,6 +4661,7 @@ async function saveImageFromUrl(rawUrl) {
   if (result.canceled || !result.filePath) {
     return false
   }
+
   await fs.promises.writeFile(result.filePath, buffer)
 
   return true
@@ -4848,11 +4796,13 @@ function sendPreviewFileChanged(payload) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:preview-file-changed', payload)
 }
 
@@ -4873,12 +4823,14 @@ async function watchPreviewFile(rawUrl) {
     if (timer) {
       clearTimeout(timer)
     }
+
     timer = setTimeout(() => {
       timer = null
 
       if (!fileExists(filePath)) {
         return
       }
+
       sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
     }, PREVIEW_WATCH_DEBOUNCE_MS)
   })
@@ -4888,6 +4840,7 @@ async function watchPreviewFile(rawUrl) {
       if (timer) {
         clearTimeout(timer)
       }
+
       watcher.close()
     }
   })
@@ -4953,14 +4906,22 @@ function getWindowState() {
 }
 
 function sendBackendExit(payload) {
+  // Intentional soft re-home (gateway mode apply) kills the child on purpose —
+  // don't surface the "backend stopped" error toast / boot-failure path.
+  if (softRehomeInProgress) {
+    return
+  }
+
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:backend-exit', payload)
 }
 
@@ -4968,11 +4929,13 @@ function sendClosePreviewRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:close-preview-requested')
 }
 
@@ -4983,11 +4946,13 @@ function sendPowerResume() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:power-resume')
 }
 
@@ -4997,6 +4962,7 @@ function registerPowerResumeListeners() {
   if (powerResumeRegistered) {
     return
   }
+
   powerResumeRegistered = true
 
   try {
@@ -5018,16 +4984,19 @@ function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:open-updates')
 
   if (!mainWindow.isVisible()) {
     mainWindow.show()
   }
+
   mainWindow.focus()
 }
 
@@ -5035,11 +5004,13 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   const state = getWindowState()
 
   if (typeof nextIsFullscreen === 'boolean') {
@@ -5184,6 +5155,7 @@ function installDevToolsShortcut(window) {
     if (!isInspectShortcut) {
       return
     }
+
     event.preventDefault()
     toggleDevTools(window)
   })
@@ -5207,17 +5179,23 @@ function installPreviewShortcut(window) {
 // survives reloads/restarts) rather than a main-process JSON file. The main
 // process owns setZoomLevel, so we mirror each change into localStorage and
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
-import { clampZoomLevel, percentToZoomLevel, ZOOM_STORAGE_KEY, zoomLevelToPercent } from './zoom'
+import {
+  applyZoomLevel,
+  installZoomReassertOnWindowEvents,
+  percentToZoomLevel,
+  ZOOM_STORAGE_KEY,
+  zoomLevelToPercent,
+  zoomWiringForWindowKind
+} from './zoom'
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {
     return
   }
-  const next = clampZoomLevel(zoomLevel)
-  window.webContents.setZoomLevel(next)
-  // Keep any open settings UI in sync, including changes made via the
-  // keyboard shortcuts or the View menu.
-  window.webContents.send('hermes:zoom:changed', { level: next, percent: zoomLevelToPercent(next) })
+
+  // Apply + notify in one funnel so the settings UI stays in sync, including
+  // changes made via the keyboard shortcuts or the View menu.
+  const next = applyZoomLevel(window.webContents, zoomLevel)
   window.webContents
     .executeJavaScript(
       `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
@@ -5229,6 +5207,7 @@ function restorePersistedZoomLevel(window) {
   if (!window || window.isDestroyed()) {
     return
   }
+
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
@@ -5237,8 +5216,10 @@ function restorePersistedZoomLevel(window) {
       if (stored == null || !window || window.isDestroyed()) {
         return
       }
-      const level = clampZoomLevel(Number(stored))
-      window.webContents.setZoomLevel(level)
+
+      // Notify the renderer too — otherwise the Appearance UI Scale control
+      // can stay stuck at 100% even though the window zoom was restored.
+      applyZoomLevel(window.webContents, Number(stored))
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
@@ -5313,6 +5294,7 @@ function installContextMenu(window) {
       if (template.length) {
         template.push({ type: 'separator' })
       }
+
       template.push(
         {
           label: 'Open Link',
@@ -5466,6 +5448,7 @@ function getOauthSession() {
   if (oauthSession || !app.isReady()) {
     return oauthSession
   }
+
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
 
   return oauthSession
@@ -5481,6 +5464,7 @@ async function hasOauthSessionCookie(baseUrl) {
   if (!sess) {
     return false
   }
+
   const parsed = new URL(baseUrl)
 
   try {
@@ -5513,6 +5497,7 @@ async function hasLiveOauthSession(baseUrl) {
   if (!sess) {
     return false
   }
+
   const parsed = new URL(baseUrl)
 
   try {
@@ -5552,12 +5537,25 @@ async function clearOauthSession(baseUrl) {
   }
 }
 
-// Open the gateway's /login page in a visible window using the OAuth session
-// partition, and resolve once the access-token cookie appears (login done) or
-// reject if the user closes the window first. The window navigates through the
-// IDP and back to /auth/callback, which sets the session cookies on the
-// partition; we poll the cookie jar rather than try to read the HttpOnly value.
-function openOauthLoginWindow(baseUrl) {
+// Open a gateway login window in the OAuth session partition, resolving once
+// the access-token cookie appears (login done) or rejecting if the user closes
+// the window first. The window navigates through the IDP and back to
+// /auth/callback, which sets the session cookies on the partition; we poll the
+// cookie jar rather than try to read the HttpOnly value.
+//
+// `silent` selects the URL the window loads, which decides interactive-vs-silent:
+//   - silent=false (default): load ``/login`` — the public interstitial that
+//     renders the "Log in with X" provider chooser. This is the interactive
+//     remote-gateway login the settings UI drives.
+//   - silent=true: load the PROTECTED root ``/`` instead. ``/login`` is a public
+//     route, so loading it NEVER triggers the gate's auto-SSO and always shows
+//     the chooser. Loading a protected page with no session cookie makes the
+//     gate run ``_auto_sso_response``: single registered provider + a live
+//     portal session in this partition → a silent 302 through
+//     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
+//     → ``/auth/callback``, which sets the gateway cookie with NO interactive
+//     prompt. This is the per-agent cloud cascade (decisions.md Q5).
+function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
@@ -5576,15 +5574,21 @@ function openOauthLoginWindow(baseUrl) {
     let settled = false
     let win = null
     let pollTimer = null
+    let revealTimer = null
 
     const finish = err => {
       if (settled) {
         return
       }
+
       settled = true
 
       if (pollTimer) {
         clearInterval(pollTimer)
+      }
+
+      if (revealTimer) {
+        clearTimeout(revealTimer)
       }
 
       try {
@@ -5616,8 +5620,14 @@ function openOauthLoginWindow(baseUrl) {
       win = new BrowserWindow({
         width: 520,
         height: 720,
-        title: 'Sign in to Hermes gateway',
+        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes gateway',
         autoHideMenuBar: true,
+        // Silent cascade: start HIDDEN. The auto-SSO 302 chain completes in
+        // well under a second, so the window normally never needs to show. We
+        // only reveal it as a fallback if the cascade DOESN'T complete quickly
+        // (e.g. the portal session lapsed and the gate fell through to the
+        // interactive chooser) — see the reveal timer below.
+        show: !silent,
         webPreferences: {
           contextIsolation: true,
           nodeIntegration: false,
@@ -5640,6 +5650,23 @@ function openOauthLoginWindow(baseUrl) {
     win.webContents.on('did-frame-navigate', () => void checkCookie())
     pollTimer = setInterval(() => void checkCookie(), 750)
 
+    // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
+    // auto-SSO didn't go through silently (no portal session, multi-provider,
+    // loop-guard tripped, etc.) and the window is now showing an interactive
+    // page. Reveal it so the user can complete sign-in manually rather than
+    // staring at nothing. Cleared on finish().
+    if (silent && win) {
+      revealTimer = setTimeout(() => {
+        try {
+          if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
+            win.show()
+          }
+        } catch {
+          // window torn down
+        }
+      }, 2500)
+    }
+
     win.on('closed', () => {
       if (!settled) {
         finish(new Error('Login window closed before authentication completed.'))
@@ -5649,7 +5676,11 @@ function openOauthLoginWindow(baseUrl) {
     // ``next`` is intentionally omitted: the gateway lands on ``/`` after
     // login, which is a valid authenticated page that sets the cookies. We
     // only care that the cookie jar is populated.
-    const loginUrl = `${normalizeRemoteBaseUrl(baseUrl)}/login`
+    //
+    // silent=true loads the protected root so the gate auto-SSOs (no chooser);
+    // silent=false loads the public ``/login`` chooser for interactive sign-in.
+    const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
+    const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
     win.loadURL(loginUrl).catch(error => {
       finish(error instanceof Error ? error : new Error(String(error)))
     })
@@ -5719,6 +5750,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
         if (timedOut) {
           return
         }
+
         clearTimeout(timer)
         const text = Buffer.concat(chunks).toString('utf8')
         const statusCode = res.statusCode || 500
@@ -5757,6 +5789,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
       if (timedOut) {
         return
       }
+
       clearTimeout(timer)
       reject(error)
     })
@@ -5764,6 +5797,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     if (body) {
       request.write(body)
     }
+
     request.end()
   })
 }
@@ -5811,6 +5845,310 @@ async function freshGatewayWsUrl(profile) {
   return connection.wsUrl
 }
 
+// --- Hermes Cloud discovery + silent per-agent sign-in (cloud-auto-discovery
+// Phase 3) ---------------------------------------------------------------
+//
+// The "cloud" connection mode lets a user sign in to the Nous portal ONCE in
+// the OAuth session partition, then (a) discover their hosted agents and (b)
+// connect to any of them with no second interactive sign-in. Both ride the one
+// portal session cookie living in `persist:hermes-remote-oauth`:
+//   - discovery  → GET {portal}/api/agents over the partition-bound net; the
+//     portal session cookie authenticates it (NAS Phase 2.5 accepts the cookie).
+//   - cascade    → opening an agent's own /login in the same partition hits the
+//     portal's silent auto-approve (org member, existing session) and 302s back
+//     with that agent's session cookie — no prompt. Each agent still completes
+//     its own PKCE exchange; SSO removes the human click, not a security check.
+
+// Canonical Nous portal base URL, overridable for staging/dev. Mirrors the CLI
+// convention (hermes_cli/auth.py DEFAULT_NOUS_PORTAL_URL + the same env names)
+// so a single override flips every Hermes surface to the same portal.
+const DEFAULT_NOUS_PORTAL_URL = 'https://portal.nousresearch.com'
+
+function resolvePortalBaseUrl() {
+  const raw = process.env.HERMES_PORTAL_BASE_URL || process.env.NOUS_PORTAL_BASE_URL || DEFAULT_NOUS_PORTAL_URL
+
+  return String(raw).trim().replace(/\/+$/, '')
+}
+
+// Whether the OAuth partition currently holds a live Nous portal session — the
+// credential that powers both discovery and the silent cascade. The portal
+// authenticates via PRIVY, not the Hermes gateway session cookies, so this
+// checks for the `privy-token` cookie on the portal host (NOT
+// hasLiveOauthSession, which looks for hermes_session_at/rt that the portal
+// never sets). See connection-config.ts cookiesHavePrivySession.
+async function hasLivePortalSession() {
+  const sess = getOauthSession()
+
+  if (!sess) {
+    return false
+  }
+
+  const portalBaseUrl = resolvePortalBaseUrl()
+  const parsed = new URL(portalBaseUrl)
+
+  try {
+    const cookies = await sess.cookies.get({ url: portalBaseUrl })
+
+    return cookiesHavePrivySession(cookies)
+  } catch {
+    try {
+      const cookies = await sess.cookies.get({ domain: parsed.hostname })
+
+      return cookiesHavePrivySession(cookies)
+    } catch {
+      return false
+    }
+  }
+}
+
+// Drive a one-time interactive portal sign-in in the OAuth partition. Unlike
+// openOauthLoginWindow (which targets a gateway's /login), this lands on the
+// portal itself so the resulting session cookie is portal-scoped — the cookie
+// that authenticates discovery AND is reused for every silent per-agent
+// cascade. Resolves once the portal session cookie appears.
+function openPortalLoginWindow() {
+  const portalBaseUrl = resolvePortalBaseUrl()
+
+  return new Promise((resolve, reject) => {
+    if (!app.isReady()) {
+      reject(new Error('Desktop is not ready to start a Hermes Cloud sign-in.'))
+
+      return
+    }
+
+    const sess = getOauthSession()
+
+    if (!sess) {
+      reject(new Error('OAuth session partition is unavailable.'))
+
+      return
+    }
+
+    let settled = false
+    let win = null
+    let pollTimer = null
+
+    const finish = err => {
+      if (settled) {
+        return
+      }
+      settled = true
+
+      if (pollTimer) {
+        clearInterval(pollTimer)
+      }
+
+      try {
+        if (win && !win.isDestroyed()) {
+          win.destroy()
+        }
+      } catch {
+        // window already torn down
+      }
+
+      if (err) {
+        reject(err)
+      } else {
+        resolve({ portalBaseUrl, ok: true })
+      }
+    }
+
+    const checkCookie = async () => {
+      if (settled) {
+        return
+      }
+
+      // A live portal (Privy) session cookie means sign-in completed.
+      if (await hasLivePortalSession()) {
+        finish(null)
+      }
+    }
+
+    try {
+      win = new BrowserWindow({
+        width: 520,
+        height: 720,
+        title: 'Sign in to Hermes Cloud',
+        autoHideMenuBar: true,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          session: sess,
+          webSecurity: true
+        }
+      })
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)))
+
+      return
+    }
+
+    win.webContents.on('did-navigate', () => void checkCookie())
+    win.webContents.on('did-redirect-navigation', () => void checkCookie())
+    win.webContents.on('did-frame-navigate', () => void checkCookie())
+    pollTimer = setInterval(() => void checkCookie(), 750)
+
+    win.on('closed', () => {
+      if (!settled) {
+        finish(new Error('Sign-in window closed before authentication completed.'))
+      }
+    })
+
+    // Land on the portal root; any authenticated portal page sets the session
+    // cookie. We only care that the partition cookie jar is populated.
+    win.loadURL(portalBaseUrl).catch(error => {
+      finish(error instanceof Error ? error : new Error(String(error)))
+    })
+  })
+}
+
+// Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
+// the NAS trimmed-summary endpoint over the partition-bound net, so the portal
+// session cookie is attached automatically (no bearer needed — NAS accepts the
+// cookie). Returns { agents } on success, or { needsOrgSelection: true, orgs }
+// when the user belongs to multiple orgs and hasn't picked one yet (NAS 409
+// org_selection_required). Pass `org` (a slug/id from a prior org list) to
+// scope discovery to that org. Throws a needsCloudLogin-tagged error when no
+// portal session is present.
+async function discoverCloudAgents(org?: string) {
+  const portalBaseUrl = resolvePortalBaseUrl()
+
+  if (!(await hasLivePortalSession())) {
+    const err = new Error(
+      'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
+    ) as any
+    err.needsCloudLogin = true
+    throw err
+  }
+
+  const orgQuery = org ? `?org=${encodeURIComponent(org)}` : ''
+  let body
+
+  try {
+    body = (await fetchJsonViaOauthSession(`${portalBaseUrl}/api/agents${orgQuery}`, {
+      method: 'GET',
+      timeoutMs: 15_000
+    })) as any
+  } catch (error) {
+    // A 401 means the portal session lapsed between the liveness check and the
+    // call — surface it as a re-login, not a generic failure.
+    if (error && error.statusCode === 401) {
+      const err = new Error('Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.') as any
+      err.needsCloudLogin = true
+      err.cause = error
+      throw err
+    }
+
+    // A 409 means we're a multi-org user who hasn't picked an org. The body
+    // carries the user's org list; surface it so the renderer shows a picker
+    // and re-calls discovery with the chosen org. (fetchJsonViaOauthSession
+    // throws on >=400 with err.statusCode + err.message "409: <json body>".)
+    if (error && error.statusCode === 409) {
+      const orgs = parseOrgSelectionError(error)
+
+      if (orgs) {
+        return { needsOrgSelection: true, orgs }
+      }
+    }
+
+    throw error
+  }
+
+  return { agents: trimCloudAgents(body), org: trimCloudOrg(body?.org) }
+}
+
+// Project a NAS response org ({ id, slug, name, isPersonal }) to the trimmed
+// shape the renderer persists, or null when absent/malformed.
+function trimCloudOrg(org) {
+  if (!org || typeof org !== 'object' || typeof org.id !== 'string') {
+    return null
+  }
+
+  return {
+    id: org.id,
+    slug: typeof org.slug === 'string' ? org.slug : null,
+    name: typeof org.name === 'string' ? org.name : org.id,
+    isPersonal: Boolean(org.isPersonal),
+    role: typeof org.role === 'string' ? org.role : 'MEMBER'
+  }
+}
+
+// Extract the org list from a 409 org_selection_required error body. The error
+// message is "409: <raw json>" (see fetchJsonViaOauthSession); parse defensively
+// and return null if it isn't the shape we expect (caller then rethrows).
+function parseOrgSelectionError(error) {
+  const msg = String(error?.message || '')
+  const jsonStart = msg.indexOf('{')
+
+  if (jsonStart < 0) {
+    return null
+  }
+
+  let parsed
+
+  try {
+    parsed = JSON.parse(msg.slice(jsonStart))
+  } catch {
+    return null
+  }
+
+  if (parsed?.error !== 'org_selection_required' || !Array.isArray(parsed.orgs)) {
+    return null
+  }
+
+  return parsed.orgs
+    .filter(o => o && typeof o === 'object' && typeof o.id === 'string')
+    .map(o => ({
+      id: o.id,
+      slug: typeof o.slug === 'string' ? o.slug : null,
+      name: typeof o.name === 'string' ? o.name : o.id,
+      isPersonal: Boolean(o.isPersonal),
+      role: typeof o.role === 'string' ? o.role : 'MEMBER'
+    }))
+}
+
+// Project NAS's agent rows to the trimmed DTO the renderer consumes.
+function trimCloudAgents(body) {
+  const agents = Array.isArray(body?.agents) ? body.agents : []
+
+  return agents
+    .filter(a => a && typeof a === 'object' && typeof a.id === 'string')
+    .map(a => ({
+      id: a.id,
+      name: typeof a.name === 'string' ? a.name : a.id,
+      status: typeof a.status === 'string' ? a.status : 'unknown',
+      dashboardUrl: typeof a.dashboardUrl === 'string' ? a.dashboardUrl : null,
+      dashboardGatewayState: typeof a.dashboardGatewayState === 'string' ? a.dashboardGatewayState : 'unknown'
+    }))
+}
+
+// Silent per-agent sign-in: open the selected agent dashboard's /login in the
+// SAME OAuth partition. Because the user already holds a live portal session
+// there, the agent's /oauth/authorize auto-approves (org member) and 302s back,
+// setting that agent's gateway session cookie WITHOUT a second interactive
+// prompt. Reuses openOauthLoginWindow — the window self-closes the instant the
+// agent's session cookie lands (a silent flow finishes in well under a second;
+// if the portal session were absent it would fall through to an interactive
+// login, which the discovery gate already prevents). Returns once the agent's
+// gateway session cookie is present.
+async function cloudAgentSilentSignIn(dashboardUrl) {
+  const baseUrl = normalizeRemoteBaseUrl(dashboardUrl)
+
+  // Pre-req: a live portal session must exist, or this would surface an
+  // interactive prompt rather than a silent cascade. Discovery already gates on
+  // this, but a selection can arrive after the session lapsed.
+  if (!(await hasLivePortalSession())) {
+    const err = new Error('Your Hermes Cloud session has expired. Sign in to Hermes Cloud again.') as any
+    err.needsCloudLogin = true
+    throw err
+  }
+
+  await openOauthLoginWindow(baseUrl, { silent: true })
+
+  return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
+}
+
 function encryptDesktopSecret(value) {
   return encryptDesktopSecretStrict(value, safeStorage)
 }
@@ -5856,9 +6194,17 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       continue
     }
 
-    const cleaned: { mode: 'remote' | 'local'; url?: string; authMode?: string; token?: object; computerUseBridge?: boolean } = {
-      mode: entry.mode === 'remote' ? 'remote' : 'local'
+    const cleaned: {
+      mode: 'remote' | 'local' | 'cloud'
+      url?: string
+      authMode?: string
+      token?: object
+      org?: string
+      computerUseBridge?: boolean
+    } = {
+      mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
     }
+
     const url = String(entry.url || '').trim()
 
     if (url) {
@@ -5873,6 +6219,16 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
     if (typeof entry.computerUseBridge === 'boolean') {
       cleaned.computerUseBridge = entry.computerUseBridge
+    }
+
+    // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
+    // reopen into the same org for a per-profile cloud connection.
+    if (cleaned.mode === 'cloud') {
+      const org = String(entry.org || '').trim()
+
+      if (org) {
+        cleaned.org = org
+      }
     }
 
     out[name] = cleaned
@@ -5910,7 +6266,7 @@ function readDesktopConnectionConfig() {
       // backward compatibility with configs written before OAuth support.
       remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
       config = {
-        mode: parsed.mode === 'remote' ? 'remote' : 'local',
+        mode: modeIsRemoteLike(parsed.mode) ? parsed.mode : 'local',
         remote,
         // Per-profile remote overrides: each profile may point at its own
         // backend (local spawn or its own remote URL). Preserved verbatim so
@@ -5981,7 +6337,11 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
-  const mode = envOverride || (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
+  // The env override forces a plain remote connection. Otherwise reflect the
+  // saved mode, preserving 'cloud' (a Hermes Cloud connection — Q6) so the UI
+  // reopens into the cloud picker; any non-remote-like value collapses to local.
+  const savedMode = key ? scoped?.mode : config.mode
+  const mode = envOverride ? 'remote' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
 
   let remoteOauthConnected = false
 
@@ -6005,6 +6365,9 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     remoteComputerUseBridge: mode === 'remote' && block.computerUseBridge !== false,
     remoteOauthConnected,
     remoteUrl,
+    // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
+    // remote/local. Lets Settings → Gateway reopen into the same org.
+    cloudOrg: mode === 'cloud' ? String(block.org || '') : '',
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
     // The env override only forces the global/primary connection; a per-profile
@@ -6016,24 +6379,56 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // Build + validate a `{ url, authMode, token }` remote block. OAuth gateways
 // authenticate via the login-window session cookie (verified at connect time in
 // resolveRemoteBackend), so only token-auth remotes require a saved token.
-function buildRemoteBlock(remoteUrl, authMode, token, computerUseBridge = true) {
+// `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
+// under — persisted so Settings can reopen into the same org; omitted from the
+// block when empty so plain remote connections stay unchanged.
+function buildRemoteBlock(remoteUrl, authMode, token, options: any = {}) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
 
-  return { url: normalizeRemoteBaseUrl(remoteUrl), authMode, token, computerUseBridge: computerUseBridge !== false }
+  const block: { url: string; authMode: string; token: object; org?: string; computerUseBridge: boolean } = {
+    url: normalizeRemoteBaseUrl(remoteUrl),
+    authMode,
+    token,
+    computerUseBridge: options.computerUseBridge !== false
+  }
+  const orgValue = typeof options.org === 'string' ? options.org.trim() : ''
+
+  if (orgValue) {
+    block.org = orgValue
+  }
+
+  return block
 }
 
 function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopConnectionConfig(), options: any = {}) {
   const persistToken = options.persistToken !== false
   const key = connectionScopeKey(input.profile)
-  const mode = input.mode === 'remote' ? 'remote' : 'local'
+  // 'cloud' and 'remote' both persist a remote-shaped block; 'cloud' is
+  // remembered as its own provenance (Q6) and resolves to remote downstream.
+  // Anything else collapses to local.
+  const mode = modeIsRemoteLike(input.mode) ? input.mode : 'local'
+  const remoteLike = modeIsRemoteLike(mode)
 
   // The block being edited: a per-profile entry or the global remote block.
-  const existingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
+  const rawExistingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
+  // Leaving a CLOUD connection unselects it: a cloud block's url/org/token
+  // describe a discovered Hermes Cloud instance, NOT a user-owned remote gateway,
+  // so switching to local or remote must NOT inherit them (otherwise the stale
+  // cloud URL lingers and re-selecting Cloud looks "already connected"). When the
+  // saved block was cloud and the new mode is not cloud, start from an empty
+  // block. (remote↔local toggles still preserve a real remote URL as before.)
+  const existingMode = key ? existing.profiles?.[key]?.mode : existing.mode
+  const leavingCloud = existingMode === 'cloud' && mode !== 'cloud'
+  const existingBlock = leavingCloud ? {} : rawExistingBlock
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
+  // Cloud org: only meaningful for 'cloud' mode. Explicit input wins; otherwise
+  // inherit the saved org. A plain 'remote' connection never carries an org
+  // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
+  const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
   const computerUseBridge =
     typeof input.remoteComputerUseBridge === 'boolean'
@@ -6049,23 +6444,35 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     : existingBlock.token
 
   if (key) {
-    // Per-profile scope: a remote entry pins this profile to its own backend; a
-    // local entry clears the override so the profile inherits the default.
+    // Per-profile scope: a remote/cloud entry pins this profile to its own
+    // backend; a local entry clears the override so the profile inherits the
+    // default. The mode tag (remote vs cloud) is preserved on the entry.
     const profiles = { ...(existing.profiles || {}) }
 
-    if (mode === 'remote') {
-      profiles[key] = { mode: 'remote', ...buildRemoteBlock(remoteUrl, authMode, nextToken, computerUseBridge) }
+    if (remoteLike) {
+      profiles[key] = {
+        mode,
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, { org: cloudOrg, computerUseBridge })
+      }
     } else {
       delete profiles[key]
     }
 
-    return { mode: existing.mode === 'remote' ? 'remote' : 'local', remote: existing.remote || {}, profiles }
+    return {
+      mode: modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
+      remote: existing.remote || {},
+      profiles
+    }
   }
 
-  const nextRemote =
-    mode === 'remote'
-      ? buildRemoteBlock(remoteUrl, authMode, nextToken, computerUseBridge)
-      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken, computerUseBridge }
+  const nextRemote = remoteLike
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken, { org: cloudOrg, computerUseBridge })
+    : {
+        url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl,
+        authMode,
+        token: nextToken,
+        computerUseBridge
+      }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
@@ -6186,8 +6593,8 @@ async function resolveRemoteBackend(profile) {
     })
   }
 
-  // 3. Global remote.
-  if (config.mode !== 'remote') {
+  // 3. Global remote (or cloud — cloud resolves to a remote backend, Q6).
+  if (!modeIsRemoteLike(config.mode)) {
     return null
   }
 
@@ -6214,14 +6621,15 @@ function configuredRemoteProfileNames() {
 }
 
 // True when the app is in app-global remote mode (Settings → "All profiles" →
-// Remote, or the env override): a SINGLE remote backend serves every profile via
-// ?profile=. Distinct from per-profile overrides — here there's one host for all.
+// Remote/Cloud, or the env override): a SINGLE remote backend serves every
+// profile via ?profile=. Cloud counts — it resolves to a remote backend (Q6).
+// Distinct from per-profile overrides — here there's one host for all.
 function globalRemoteActive() {
   if (process.env.HERMES_DESKTOP_REMOTE_URL) {
     return true
   }
 
-  return readDesktopConnectionConfig().mode === 'remote'
+  return modeIsRemoteLike(readDesktopConnectionConfig().mode)
 }
 
 // GET a profile's resolved backend (remote pool or local primary), parsed JSON.
@@ -6230,7 +6638,7 @@ async function fetchJsonForProfile(profile, path) {
 }
 
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
-async function requestJsonForProfile(profile: string, path: string, method: Method, body?: string) {
+async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
   const url = `${conn.baseUrl}${path}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
@@ -6313,7 +6721,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
   const block = key ? config.profiles?.[key] || null : config.remote
 
   const wantRemote =
-    block?.mode === 'remote' || (!key && config.mode === 'remote') || (input.mode === 'remote' && block)
+    modeIsRemoteLike(block?.mode) || (!key && modeIsRemoteLike(config.mode)) || (modeIsRemoteLike(input.mode) && block)
 
   // ``/api/status`` is public on every gateway (no creds needed), so a
   // reachability test works for local, token, and oauth modes alike — we only
@@ -6383,22 +6791,14 @@ function resetBootProgressForReconnect() {
 }
 
 function stopBackendChild(child) {
-  if (!child || child.killed) {
-    return
-  }
-
-  try {
-    if (IS_WINDOWS && Number.isInteger(child.pid)) {
-      forceKillProcessTree(child.pid)
-    } else {
-      child.kill('SIGTERM')
-    }
-  } catch {
-    // Already gone.
-  }
+  stopBackendChildImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS })
 }
 
-function resetHermesConnection() {
+// Soft gateway-mode apply: tear down the primary without resetting boot UI or
+// reloading the renderer. The shell stays up; the renderer wipes session lists
+// (so skeletons retrigger) and re-dials. Distinct from hard re-home (profile
+// switch / crash recovery), which still resets boot progress + reloads.
+function resetHermesConnection({ soft = false } = {}) {
   connectionPromise = null
   backendStartFailure = null
   // Reset only primary bridge ownership; pooled profiles own their sockets.
@@ -6407,19 +6807,46 @@ function resetHermesConnection() {
   stopBackendChild(hermesProcess)
 
   hermesProcess = null
-  resetBootProgressForReconnect()
+
+  if (!soft) {
+    resetBootProgressForReconnect()
+  }
 }
 
 // Re-home the primary backend: reset connection state, then wait for the live
 // dashboard process to actually exit (SIGKILL after 5s) so the next
 // startHermes() spawns fresh instead of racing the dying one. Shared by the
 // connection-config and profile switch flows.
-async function teardownPrimaryBackendAndWait() {
+async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
   // Capture the reference before resetHermesConnection() nulls hermesProcess.
   const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
-  resetHermesConnection()
 
-  await waitForBackendExit(dying)
+  if (soft) {
+    softRehomeInProgress = true
+  }
+
+  try {
+    resetHermesConnection({ soft })
+    await waitForBackendExit(dying)
+  } finally {
+    if (soft) {
+      softRehomeInProgress = false
+    }
+  }
+}
+
+function sendConnectionApplied() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const { webContents } = mainWindow
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:connection:applied')
 }
 
 async function waitForBackendExit(child, timeoutMs = 5000) {
@@ -6513,6 +6940,7 @@ function touchPoolBackend(profile) {
   if (!key) {
     return
   }
+
   const entry = backendPool.get(key)
 
   if (entry) {
@@ -6528,6 +6956,7 @@ function evictLruPoolBackends(keep) {
   if (backendPool.size <= keep) {
     return
   }
+
   const now = Date.now()
 
   const evictable = [...backendPool.entries()]
@@ -6540,6 +6969,7 @@ function evictLruPoolBackends(keep) {
     if (removable <= 0) {
       break
     }
+
     rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
     stopPoolBackend(profile)
     removable -= 1
@@ -6550,6 +6980,7 @@ function startPoolIdleReaper() {
   if (poolIdleReaper) {
     return
   }
+
   poolIdleReaper = setInterval(() => {
     const now = Date.now()
 
@@ -6742,50 +7173,31 @@ function stopAllPoolBackends() {
   }
 }
 
-function profileNameFromDeleteRequest(request) {
-  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
-    return null
-  }
-
-  const match = String(request.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
-
-  if (!match) {
-    return null
-  }
-
-  let raw = ''
-
-  try {
-    raw = decodeURIComponent(match[1])
-  } catch {
-    return null
-  }
-
-  const name = raw.trim()
-
-  if (!name) {
-    return null
-  }
-
-  if (name.toLowerCase() === 'default') {
-    return 'default'
-  }
-
-  return name.toLowerCase()
-}
-
 // Returns the profile name whose backend was torn down, or null when the
 // request is not a profile-delete.  The caller uses this to skip ensureBackend
 // for the just-torn-down profile — otherwise ensureBackend respawns a pool
 // backend whose ensure_hermes_home() recreates the deleted profile directory.
+//
+// The routing *decision* (which branch fires, what profile name gets
+// returned) lives in the pure decideProfileDeleteAction() in
+// profile-delete-routing.ts; this function only performs the side effects
+// that decision calls for.
 async function prepareProfileDeleteRequest(request) {
-  const profile = profileNameFromDeleteRequest(request)
+  const requestedProfile = profileNameFromDeleteRequest(request)
 
-  if (!profile || profile === 'default' || !PROFILE_NAME_RE.test(profile)) {
+  const decision = decideProfileDeleteAction(requestedProfile, {
+    isDefaultProfile: p => p === 'default',
+    isValidProfileName: p => PROFILE_NAME_RE.test(p),
+    primaryProfileKey
+  })
+
+  if (decision.action === 'noop') {
     return null
   }
 
-  if (profile === primaryProfileKey()) {
+  const profile = decision.profile
+
+  if (decision.action === 'teardown-primary') {
     writeActiveDesktopProfile('default')
     await teardownPrimaryBackendAndWait()
 
@@ -7043,10 +7455,21 @@ async function startHermes() {
 // security posture: external links open in the OS browser, in-app navigation
 // stays confined to the dev server / packaged file URL, and the preview /
 // devtools / zoom / context-menu affordances behave identically everywhere.
-function wireCommonWindowHandlers(win) {
+//
+// `zoom` is opt-out for the pet overlay: it sizes its own OS window to fit the
+// sprite in unzoomed CSS px (overlayWindowSize -> setBounds) and has its own
+// Alt+wheel scale, so inheriting the global UI zoom would render the mascot
+// larger than its window and crop it. Chat windows keep zoom on.
+function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
-  installZoomShortcuts(win)
+  if (zoom) {
+    installZoomShortcuts(win)
+    // Re-apply persisted zoom on show/restore (Windows drops webContents zoom on
+    // minimize/restore) and on first load (reloads / crash recovery).
+    installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
+    win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
+  }
   installContextMenu(win)
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
@@ -7082,6 +7505,7 @@ function focusWindow(win) {
   if (!win.isVisible()) {
     win.show()
   }
+
   win.focus()
 }
 
@@ -7128,7 +7552,7 @@ function spawnSecondaryWindow({
   win.on('enter-full-screen', () => sendWindowStateChanged(true))
   win.on('leave-full-screen', () => sendWindowStateChanged(false))
 
-  wireCommonWindowHandlers(win)
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   win.loadURL(
     buildSessionWindowUrl(sessionId, {
@@ -7238,7 +7662,9 @@ function spawnPetOverlayWindow(bounds) {
     // Not supported everywhere — best effort.
   }
 
-  wireCommonWindowHandlers(win)
+  // Pet overlay opts out of global UI zoom (see zoomWiringForWindowKind): it
+  // owns its window-fit + scale, and inheriting zoom would crop the sprite.
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('petOverlay'))
 
   win.once('ready-to-show', () => {
     if (!win.isDestroyed()) {
@@ -7370,7 +7796,7 @@ function createWindow() {
   // window-all-closed from quitting on Windows/Linux).
   mainWindow.on('closed', () => closePetOverlay())
 
-  wireCommonWindowHandlers(mainWindow)
+  wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
@@ -7429,7 +7855,8 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
-    restorePersistedZoomLevel(mainWindow)
+    // Zoom restore is handled by wireCommonWindowHandlers (shared with session
+    // windows); no need to reapply it here.
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
@@ -7516,6 +7943,7 @@ ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
   if (!window || window.isDestroyed()) {
     return
   }
+
   setAndPersistZoomLevel(window, percentToZoomLevel(Number(percent)))
 })
 
@@ -7726,6 +8154,35 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
   // as still-connected rather than silently signed-out.
   return { ok: true, connected: baseUrl ? await hasLiveOauthSession(baseUrl) : false }
 })
+
+// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
+// One portal login in the OAuth partition powers both discovery and the silent
+// per-agent cascade. See the discovery/cascade helpers above.
+ipcMain.handle('hermes:cloud:status', async () => ({
+  portalBaseUrl: resolvePortalBaseUrl(),
+  signedIn: await hasLivePortalSession()
+}))
+ipcMain.handle('hermes:cloud:login', async () => {
+  await openPortalLoginWindow()
+
+  return { ok: true, signedIn: await hasLivePortalSession() }
+})
+ipcMain.handle('hermes:cloud:logout', async () => {
+  await clearOauthSession(resolvePortalBaseUrl())
+
+  return { ok: true, signedIn: await hasLivePortalSession() }
+})
+ipcMain.handle('hermes:cloud:discover', async (_event, org) => {
+  // Returns { agents } or { needsOrgSelection: true, orgs }. `org` (optional)
+  // scopes discovery to a chosen org for multi-org users.
+  return discoverCloudAgents(typeof org === 'string' && org ? org : undefined)
+})
+ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
+  // Silent per-agent sign-in via the shared portal session. Returns the agent's
+  // gateway baseUrl + whether its session cookie landed; the renderer then
+  // saves a cloud-mode connection pointed at this dashboardUrl.
+  return cloudAgentSilentSignIn(dashboardUrl)
+})
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
@@ -7744,10 +8201,11 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
     // re-resolves against the new remote/local target.
     stopPoolBackend(key)
   } else {
-    // Global connection, or the primary profile's connection: re-home the
-    // window backend by tearing it down and reloading the renderer.
-    await teardownPrimaryBackendAndWait()
-    mainWindow?.reload()
+    // Global / primary connection: soft re-home. Tear down the window backend
+    // without resetting boot UI or reloading — the shell stays, the renderer
+    // wipes session lists (skeletons) and re-dials on hermes:connection:applied.
+    await teardownPrimaryBackendAndWait({ soft: true })
+    sendConnectionApplied()
   }
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
@@ -7953,7 +8411,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // backend instead of spawning a fresh pool backend.  A freshly spawned
   // backend calls ensure_hermes_home() which recreates the profile directory,
   // defeating the deletion and leaving a zombie process.
-  const routeProfile = tornDownProfile ? null : profile
+  const routeProfile = resolveRouteProfile(tornDownProfile, profile)
   const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
@@ -7987,6 +8445,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) {
     return false
   }
+
   // Action buttons render only on signed macOS builds; elsewhere they're dropped
   // and the body click still works.
   const actions = Array.isArray(payload?.actions) ? payload.actions : []
@@ -8002,6 +8461,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return
     }
+
     focusWindow(mainWindow)
 
     if (payload?.sessionId) {
@@ -8012,6 +8472,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return
     }
+
     const action = actions[index]
 
     if (action?.id) {
@@ -8073,7 +8534,10 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
 
   if (options?.defaultPath) {
     try {
-      resolvedDefaultPath = path.resolve(String(options.defaultPath))
+      // On a Windows host with a WSL backend the cwd may be a POSIX/WSL path;
+      // bridge it to a UNC/drive form the native dialog can actually open.
+      const bridged = IS_WINDOWS ? resolvePickerDefaultPath(String(options.defaultPath)) : String(options.defaultPath)
+      resolvedDefaultPath = bridged ? path.resolve(bridged) : undefined
     } catch {
       resolvedDefaultPath = undefined
     }
@@ -8389,6 +8853,51 @@ function terminalChannel(id, suffix) {
   return `hermes:terminal:${id}:${suffix}`
 }
 
+// Best-effort read of a live PTY child's current working directory so a
+// reopened tab can restart the shell where the user last `cd`'d, instead of the
+// tab's original launch dir. Shell-agnostic (no prompt/OSC config needed) on
+// POSIX; Windows has no cheap per-process cwd query without a native module, so
+// it returns null and the caller falls back to the launch cwd.
+function readProcessCwd(pid) {
+  return new Promise(resolve => {
+    if (!Number.isInteger(pid) || pid <= 0) {
+      resolve(null)
+
+      return
+    }
+
+    if (process.platform === 'linux') {
+      fs.promises
+        .readlink(`/proc/${pid}/cwd`)
+        .then(target => resolve(target || null))
+        .catch(() => resolve(null))
+
+      return
+    }
+
+    if (process.platform === 'darwin') {
+      // lsof ships with macOS; -Fn emits the cwd fd's path on an `n<path>` line.
+      execFile('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 2000 }, (err, stdout) => {
+        if (err) {
+          resolve(null)
+
+          return
+        }
+
+        const line = String(stdout || '')
+          .split('\n')
+          .find(entry => entry.startsWith('n'))
+
+        resolve(line ? line.slice(1) : null)
+      })
+
+      return
+    }
+
+    resolve(null)
+  })
+}
+
 function disposeTerminalSession(id) {
   const sessionInfo = terminalSessions.get(id)
 
@@ -8514,6 +9023,8 @@ ipcMain.handle('hermes:git:branchSwitch', async (_event, repoPath, branch) =>
 
 ipcMain.handle('hermes:git:branchList', async (_event, repoPath) => listBranches(repoPath, resolveGitBinary()))
 
+ipcMain.handle('hermes:git:baseBranchList', async (_event, repoPath) => listBaseBranches(repoPath, resolveGitBinary()))
+
 // Compact repo status (branch, ahead/behind, change counts + files) for the
 // composer coding rail. Returns null on a non-repo / remote backend so the rail
 // hides cleanly rather than erroring.
@@ -8627,6 +9138,16 @@ ipcMain.handle('hermes:terminal:resize', (_event, id, size = {}) => {
 
   return true
 })
+ipcMain.handle('hermes:terminal:cwd', async (_event, id) => {
+  const sessionInfo = terminalSessions.get(String(id || ''))
+
+  if (!sessionInfo) {
+    return null
+  }
+
+  return readProcessCwd(sessionInfo.pty.pid)
+})
+
 ipcMain.handle('hermes:terminal:dispose', (_event, id) => disposeTerminalSession(String(id || '')))
 
 ipcMain.handle('hermes:updates:check', async () =>
@@ -8751,6 +9272,7 @@ async function getUninstallSummary() {
       if (settled) {
         return
       }
+
       settled = true
       resolve(value)
     }
@@ -8945,6 +9467,7 @@ function handleDeepLink(url) {
   if (!url || typeof url !== 'string') {
     return
   }
+
   let parsed
 
   try {
@@ -8974,6 +9497,7 @@ function handleDeepLink(url) {
     if (mainWindow.isMinimized()) {
       mainWindow.restore()
     }
+
     mainWindow.focus()
     mainWindow.webContents.send('hermes:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
@@ -9030,6 +9554,7 @@ if (!_gotSingleInstanceLock) {
       if (mainWindow.isMinimized()) {
         mainWindow.restore()
       }
+
       mainWindow.focus()
     }
   })

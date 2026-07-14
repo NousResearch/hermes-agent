@@ -84,6 +84,11 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
+from hermes_cli.memory_providers import (
+    MemoryProvider as DeclaredMemoryProvider,
+    ProviderField as DeclaredProviderField,
+    get_memory_provider as get_declared_memory_provider,
+)
 from utils import env_var_enabled
 
 try:
@@ -610,7 +615,30 @@ async def _token_auth_seam(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 # Manual overrides for fields that need select options or custom types
+def _memory_provider_options() -> List[str]:
+    """Discovered memory providers for the ``memory.provider`` select.
+
+    Directory-scan only (no provider imports), so it's safe at module import
+    time. ``""`` (built-in) is always first; discovery failures degrade to the
+    bundled defaults rather than dropping the field.
+    """
+    options = ["", "builtin"]
+    try:
+        from plugins.memory import list_memory_provider_names
+
+        options.extend(list_memory_provider_names())
+    except Exception:
+        options.extend(["honcho"])
+    # Dedupe, preserve order
+    return list(dict.fromkeys(options))
+
+
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "memory.provider": {
+        "type": "select",
+        "description": "Memory provider plugin",
+        "options": _memory_provider_options(),
+    },
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",
@@ -676,7 +704,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "approvals.mode": {
         "type": "select",
         "description": "Dangerous command approval mode",
-        "options": ["ask", "yolo", "deny"],
+        "options": ["manual", "smart", "off"],
     },
     "context.engine": {
         "type": "select",
@@ -701,7 +729,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",
-        "options": ["", "low", "medium", "high"],
+        "options": ["", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     },
     "updates.non_interactive_local_changes": {
         "type": "select",
@@ -785,7 +813,7 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in {"_config_version", "memory.provider"}:
+        if full_key in {"_config_version"}:
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -903,6 +931,11 @@ class ManagedFileUpload(BaseModel):
     path: str
     data_url: str
     overwrite: bool = True
+
+
+class ChatImageUpload(BaseModel):
+    data_url: str
+    filename: Optional[str] = None
 
 
 class ManagedDirectoryCreate(BaseModel):
@@ -1023,19 +1056,42 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
        ``normalize_model_for_provider`` (e.g. ``anthropic/claude-opus-4.6``
        on native anthropic → ``claude-opus-4-6``).
     """
+    from hermes_cli.config import get_compatible_custom_providers
     from hermes_cli.models import _KNOWN_PROVIDER_NAMES, normalize_provider
     from hermes_cli.model_normalize import normalize_model_for_provider
+    from hermes_cli.providers import resolve_custom_provider, resolve_user_provider
 
     prov_in = (provider or "").strip()
     model_in = (model or "").strip()
     canonical = normalize_provider(prov_in)
+
+    # User-declared providers are real routing targets, not analytics vendor
+    # labels. Resolve them before the unknown-vendor fallback. ``providers:``
+    # keeps its declared bare slug; ``custom_providers:`` canonicalizes both a
+    # bare display name and ``custom:<name>`` to the durable custom slug.
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    user_providers = cfg.get("providers") if isinstance(cfg, dict) else None
+    user_provider = resolve_user_provider(
+        prov_in, user_providers if isinstance(user_providers, dict) else {}
+    )
+    custom_provider = resolve_custom_provider(
+        prov_in,
+        get_compatible_custom_providers(cfg) if isinstance(cfg, dict) else [],
+    )
+    if user_provider is not None:
+        return user_provider.id, model_in
+    if custom_provider is not None:
+        return custom_provider.id, model_in
 
     if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.
         try:
-            cur_cfg = load_config().get("model", {})
+            cur_cfg = cfg.get("model", {})
             cur_provider = (
                 str(cur_cfg.get("provider", "") or "").strip().lower()
                 if isinstance(cur_cfg, dict) else ""
@@ -1771,6 +1827,91 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     return data, mime_type
 
 
+_CHAT_IMAGE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+_CHAT_IMAGE_ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_CHAT_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"BM", ".bmp"),
+)
+
+
+def _sanitize_chat_image_filename(filename: str | None) -> str:
+    candidate = Path(str(filename or "").strip()).name
+    candidate = re.sub(r"[\x00-\x1f]+", "_", candidate)
+    candidate = candidate.strip().strip(".")
+    return candidate or "pasted-image"
+
+
+def _chat_image_extension(data: bytes) -> str | None:
+    head = data[:16]
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return ".webp"
+    for sig, ext in _CHAT_IMAGE_MAGIC:
+        if head.startswith(sig):
+            return ext
+    return None
+
+
+def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str]:
+    data, mime_type = _decode_data_url(payload.data_url)
+    if not mime_type.lower().startswith("image/"):
+        raise HTTPException(status_code=400, detail="Upload payload must be an image")
+    if len(data) > _CHAT_IMAGE_UPLOAD_MAX_BYTES:
+        mb = _CHAT_IMAGE_UPLOAD_MAX_BYTES // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Image is too large; cap is {mb} MB")
+
+    ext = _chat_image_extension(data)
+    if ext not in _CHAT_IMAGE_ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported image type")
+    return data, mime_type, ext
+
+
+@app.post("/api/chat/image-upload")
+async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = None):
+    """Persist a browser-provided chat image where the embedded TUI can read it.
+
+    The dashboard /chat page runs Hermes inside an xterm.js PTY. Browser
+    clipboard image bytes are not visible to the server-side clipboard, so the
+    page uploads them here, then drives the TUI's ``/image <path>`` command
+    with the returned gateway-visible path. Files land under
+    ``HERMES_HOME/images/`` — the same directory ``clipboard.paste`` /
+    ``image.attach`` already use.
+    """
+    data, mime_type, ext = _decode_chat_image_upload(payload)
+    with _profile_scope(profile) as scoped_home:
+        home = scoped_home or get_hermes_home()
+        img_dir = Path(home) / "images"
+        try:
+            img_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Image directory is not writable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not create image directory: {exc}")
+
+        stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
+        stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
+
+        try:
+            target.write_bytes(data)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Image directory is not writable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not write image: {exc}")
+
+    return {
+        "ok": True,
+        "path": str(target),
+        "name": target.name,
+        "bytes": len(data),
+        "mime_type": mime_type,
+    }
+
+
 @app.get("/api/files")
 async def list_managed_files(request: Request, path: Optional[str] = None):
     policy, target, display_path = _resolve_managed_path(path, request)
@@ -2223,6 +2364,11 @@ async def git_worktrees_route(path: str):
 @app.get("/api/git/branches")
 async def git_branches_route(path: str):
     return {"branches": await _git_op(_web_git.branch_list, _git_path(path))}
+
+
+@app.get("/api/git/base-branches")
+async def git_base_branches_route(path: str):
+    return {"branches": await _git_op(_web_git.base_branch_list, _git_path(path))}
 
 
 @app.get("/api/git/review/list")
@@ -5033,9 +5179,129 @@ def _require_valid_memory_provider_name(name: str) -> None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
 
 
+# ---------------------------------------------------------------------------
+# Declared surface — curated desktop schema from hermes_cli.memory_providers.
+# The desktop panel requests ?surface=declared; the dashboard keeps the raw
+# plugin schema. Providers without a declaration render no desktop panel.
+# ---------------------------------------------------------------------------
+
+def _declared_provider_file_path(provider: DeclaredMemoryProvider) -> Path:
+    return get_hermes_home() / provider.name / "config.json"
+
+
+def _read_declared_provider_file(provider: DeclaredMemoryProvider) -> Dict[str, Any]:
+    return _read_json_file(_declared_provider_file_path(provider))
+
+
+def _declared_read_field_value(field: DeclaredProviderField, data: Dict[str, Any]) -> str:
+    for source_key in (field.key, *field.aliases):
+        value = data.get(source_key)
+        if value:
+            return str(value)
+
+    env_on_disk = load_env()
+    for env_key in field.env_fallbacks:
+        value = env_on_disk.get(env_key)
+        if value:
+            return str(value)
+
+    return field.default
+
+
+def _declared_field_is_set(field: DeclaredProviderField, data: Dict[str, Any]) -> bool:
+    env_on_disk = load_env()
+    for env_key in (field.env_key, *field.env_fallbacks):
+        if env_key and env_on_disk.get(env_key):
+            return True
+    return any(data.get(source_key) for source_key in (field.key, *field.aliases))
+
+
+def _declared_provider_payload(provider: DeclaredMemoryProvider) -> Dict[str, Any]:
+    data = _read_declared_provider_file(provider)
+    fields: List[Dict[str, Any]] = []
+
+    for field in provider.fields:
+        entry: Dict[str, Any] = {
+            "key": field.key,
+            "label": field.label,
+            "kind": field.kind,
+            "description": field.description,
+            "placeholder": field.placeholder,
+            "options": [
+                {"value": opt.value, "label": opt.label, "description": opt.description}
+                for opt in field.options
+            ],
+        }
+
+        if field.is_secret:
+            # Secrets are write-only over the API; only expose whether one is set.
+            entry["value"] = ""
+            entry["is_set"] = _declared_field_is_set(field, data)
+        else:
+            value = _declared_read_field_value(field, data)
+            if field.kind == "select" and value not in field.allowed_values():
+                value = field.default
+            entry["value"] = value
+            entry["is_set"] = bool(value)
+
+        fields.append(entry)
+
+    return {"name": provider.name, "label": provider.label, "fields": fields}
+
+
+def _coerce_declared_field_value(field: DeclaredProviderField, raw: str) -> str:
+    value = (raw or "").strip()
+    if field.kind == "select":
+        if not value:
+            value = field.default
+        if value not in field.allowed_values():
+            raise ValueError(f"Invalid value for '{field.key}'")
+        return value
+    return value or field.default
+
+
+def _update_declared_provider_config(provider: DeclaredMemoryProvider, values: Dict[str, Any]) -> None:
+    existing = _read_declared_provider_file(provider)
+    json_values: Dict[str, Any] = {}
+    secrets: Dict[str, str] = {}
+
+    for field in provider.fields:
+        if field.is_secret:
+            submitted = str(values.get(field.key) or "").strip()
+            if submitted and field.env_key:
+                secrets[field.env_key] = submitted
+            continue
+
+        raw = (
+            values[field.key]
+            if field.key in values
+            else str(existing.get(field.key, field.default))
+        )
+        json_values[field.key] = _coerce_declared_field_value(field, str(raw))
+
+    path = _declared_provider_file_path(provider)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing.update(json_values)
+    from utils import atomic_json_write
+
+    atomic_json_write(path, existing, mode=0o600)
+
+    for env_key, secret in secrets.items():
+        save_env_value(env_key, secret)
+
+
 @app.get("/api/memory/providers/{name}/config")
-async def get_memory_provider_config(name: str):
+async def get_memory_provider_config(name: str, surface: Optional[str] = None):
     _require_valid_memory_provider_name(name)
+
+    if surface == "declared":
+        declared = get_declared_memory_provider(name)
+        if declared is None:
+            # Undeclared providers (e.g. builtin, honcho) have no desktop
+            # config surface; the generic panel renders nothing.
+            return {"name": name, "label": name, "fields": []}
+        return _declared_provider_payload(declared)
+
     provider = _load_memory_provider(name)
     if provider is None:
         # Undeclared providers (e.g. builtin) have no config surface. Return an
@@ -5066,8 +5332,22 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
 
 
 @app.put("/api/memory/providers/{name}/config")
-async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
+async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None):
     _require_valid_memory_provider_name(name)
+
+    if surface == "declared":
+        declared = get_declared_memory_provider(name)
+        if declared is None:
+            raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+        try:
+            _update_declared_provider_config(declared, body.values or {})
+            return {"ok": True}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:
+            _log.exception("PUT /api/memory/providers/%s/config (declared) failed", name)
+            raise HTTPException(status_code=500, detail="Internal server error")
+
     provider = _load_memory_provider(name)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
@@ -9461,6 +9741,34 @@ class BulkDeleteSessions(BaseModel):
     profile: Optional[str] = None
 
 
+class SessionImport(BaseModel):
+    sessions: List[Dict[str, Any]]
+    profile: Optional[str] = None
+
+
+# Keep the dashboard import endpoint stream-safe: FastAPI otherwise parses and
+# buffers an arbitrarily large JSON body before SessionDB can enforce its own
+# per-session and transaction-work limits.
+_SESSION_IMPORT_MAX_BYTES = 25 * 1024 * 1024
+
+
+async def _read_session_import_body(request: Request) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > _SESSION_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Session import payload is too large")
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    db = _open_session_db_for_profile(profile)
+    try:
+        return db.import_sessions(sessions)
+    finally:
+        db.close()
+
+
 @app.post("/api/sessions/bulk-delete")
 async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     """Delete every session in ``body.ids`` in a single DB transaction.
@@ -9509,6 +9817,32 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
+
+
+@app.post("/api/sessions/import")
+async def import_sessions_endpoint(request: Request):
+    """Import one or more sessions exported from the dashboard or CLI.
+
+    This is intentionally separate from ``/api/ops/import``: that endpoint
+    restores a whole Hermes backup archive, while this endpoint is scoped to
+    session rows/messages and is safe to use from the Sessions page.
+    """
+    try:
+        raw_body = await _read_session_import_body(request)
+        body = SessionImport.model_validate_json(raw_body)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid session import payload") from exc
+
+    try:
+        result = await asyncio.to_thread(_import_sessions_for_profile, body.profile, body.sessions)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not result.get("ok", False):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.get("/api/sessions/empty/count")
@@ -10057,9 +10391,6 @@ def _validate_dashboard_cron_context_from(
             )
 
 
-_CRON_PROFILE_LOCK = threading.RLock()
-
-
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
     """Return dashboard profile records, falling back to a directory scan."""
     from hermes_cli import profiles as profiles_mod
@@ -10097,33 +10428,23 @@ def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[st
 def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args, **kwargs):
     """Run cron.jobs helpers against the selected profile's cron directory.
 
-    cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
-    from the process HERMES_HOME at import time. The dashboard is a single
-    process that can inspect many profiles, so temporarily retarget those
-    globals while holding a lock and restore them immediately after the call.
+    The dashboard is a single process that can inspect many profiles. Route
+    storage through cron.jobs' execution-context override so dashboard calls
+    cannot retarget a concurrent desktop ticker's load/save transaction.
     """
     profile_name, home = _cron_profile_home(target_profile)
-    with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
-        )
+    from cron import jobs as cron_jobs
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
 
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        token = set_hermes_home_override(str(home))
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
+    token = set_hermes_home_override(str(home))
+    try:
+        with cron_jobs.use_cron_store(home):
             result = getattr(cron_jobs, func_name)(*args, **kwargs)
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
-            reset_hermes_home_override(token)
+    finally:
+        reset_hermes_home_override(token)
 
     if isinstance(result, list):
         return [_annotate_cron_job(j, profile_name, home) for j in result]
@@ -10417,31 +10738,26 @@ def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
     """Run ONE due cron job end-to-end for ``profile`` via the resolved
     scheduler provider's ``fire_due`` (store CAS claim + ``run_one_job``).
 
-    Retargets the ``cron.jobs`` module globals to the profile's cron dir under
-    the shared lock — same mechanism as ``_call_cron_for_profile`` — so the
-    claim and the run operate on the right profile's ``jobs.json``. Runs with
-    no live adapters; delivery falls back to the per-platform send path (the
-    dashboard process has no gateway adapter handles, exactly like the desktop
-    cron path above).
+    Scope both cron storage and the runtime Hermes home so the job's store,
+    config, credentials, scripts, skills, and output all belong to the selected
+    profile. Runs with no live adapters; delivery falls back to the per-platform
+    send path.
     """
     _profile_name, home = _cron_profile_home(profile)
-    with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
-        from cron.scheduler_provider import resolve_cron_scheduler
+    from cron import jobs as cron_jobs
+    from cron.scheduler_provider import resolve_cron_scheduler
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
 
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
+    token = set_hermes_home_override(str(home))
+    try:
+        with cron_jobs.use_cron_store(home):
             provider = resolve_cron_scheduler()
             return bool(provider.fire_due(job_id, adapters=None, loop=None))
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
+    finally:
+        reset_hermes_home_override(token)
 
 
 @app.post("/api/cron/fire")
@@ -10486,7 +10802,10 @@ async def cron_fire_webhook(request: Request):
     if not job_id:
         return JSONResponse({"error": "missing job_id"}, status_code=400)
 
-    profile = _find_cron_job_profile(job_id)
+    # _find_cron_job_profile walks every profile and lists its jobs (file
+    # I/O per profile) — run it off the event loop like the other cron
+    # dashboard endpoints.
+    profile = await _run_cron_dashboard_io(_find_cron_job_profile, job_id)
     if not profile:
         # Job is gone (cancelled / completed) — nothing to fire. 200 so NAS
         # does not retry a fire that is intentionally absent.
@@ -10561,7 +10880,11 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         # Blueprint-created jobs deliver to the dashboard's configured target by
         # default; the form's deliver slot overrides via spec["deliver"].
         spec.pop("origin", None)
-        return _call_cron_for_profile(profile, "create_job", **spec)
+        # create_job does per-profile file I/O — keep it off the event loop
+        # like the sibling cron endpoints (partial avoids **spec keys ever
+        # colliding with the wrapper's own parameters).
+        _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)
+        return await _run_cron_dashboard_io(_create)
     except HTTPException:
         raise
     except Exception as e:

@@ -10,7 +10,6 @@ import { ExternalLink } from '@/lib/external-link'
 import { AlertCircle, Check, Cloud, FileText, Globe, HelpCircle, Loader2, LogIn, Monitor, RefreshCw } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { previewGatewaySwitch } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 
@@ -111,13 +110,16 @@ function ScopeChip({ active, label, onSelect }: { active: boolean; label: string
   )
 }
 
-export function GatewaySettings() {
+// `embedded` trims the page chrome for reuse inside the boot-failure recovery
+// card: the outer title/intro, the "Save for next restart" action, and the
+// Diagnostics row are redundant there (the card owns its header + a single
+// reconnect action), so only the connection controls render.
+export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useI18n()
   const g = t.settings.gateway
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [previewingSwitch, setPreviewingSwitch] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
@@ -709,17 +711,19 @@ export function GatewaySettings() {
   }
 
   return (
-    <SettingsContent>
-      <div className="mb-5">
-        <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
-          <Globe className="size-4 text-muted-foreground" />
-          {g.title}
-          {state.envOverride ? <Pill tone="primary">{g.envOverride}</Pill> : null}
+    <SettingsContent bare={embedded}>
+      {embedded ? null : (
+        <div className="mb-5">
+          <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
+            <Globe className="size-4 text-muted-foreground" />
+            {g.title}
+            {state.envOverride ? <Pill tone="primary">{g.envOverride}</Pill> : null}
+          </div>
+          <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {g.intro}
+          </p>
         </div>
-        <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {g.intro}
-        </p>
-      </div>
+      )}
 
       {namedProfiles.length > 0 ? (
         <div className="mb-5 grid gap-2">
@@ -1039,14 +1043,16 @@ export function GatewaySettings() {
               {g.testRemote}
             </Button>
           ) : null}
-          <Button
-            disabled={state.envOverride || saving}
-            onClick={() => void save(false)}
-            size="sm"
-            variant="textStrong"
-          >
-            {g.saveForRestart}
-          </Button>
+          {embedded ? null : (
+            <Button
+              disabled={state.envOverride || saving}
+              onClick={() => void save(false)}
+              size="sm"
+              variant="textStrong"
+            >
+              {g.saveForRestart}
+            </Button>
+          )}
           <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
             {saving ? <Loader2 className="animate-spin" /> : null}
             {g.saveAndReconnect}
@@ -1054,38 +1060,20 @@ export function GatewaySettings() {
         </div>
       ) : null}
 
-      <div className="mt-6 grid gap-1">
-        <ListRow
-          action={
-            <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
-              <FileText />
-              {g.openLogs}
-            </Button>
-          }
-          description={g.diagnosticsDesc}
-          title={g.diagnostics}
-        />
-        {import.meta.env.DEV ? (
+      {embedded ? null : (
+        <div className="mt-6 grid gap-1">
           <ListRow
             action={
-              <Button
-                disabled={previewingSwitch}
-                onClick={() => {
-                  setPreviewingSwitch(true)
-                  void previewGatewaySwitch().finally(() => setPreviewingSwitch(false))
-                }}
-                size="sm"
-                variant="textStrong"
-              >
-                {previewingSwitch ? <Loader2 className="animate-spin" /> : null}
-                Preview soft switch
+              <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
+                <FileText />
+                {g.openLogs}
               </Button>
             }
-            description="Wipe session lists so sidebar skeletons retrigger — no real backend teardown."
-            title="Dev · soft switch"
+            description={g.diagnosticsDesc}
+            title={g.diagnostics}
           />
-        ) : null}
-      </div>
+        </div>
+      )}
     </SettingsContent>
   )
 }

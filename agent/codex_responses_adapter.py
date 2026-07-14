@@ -314,6 +314,7 @@ def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
     is_xai_responses: bool = False,
+    is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True,
     current_issuer_kind: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -337,6 +338,16 @@ def _chat_messages_to_responses_input(
     ``AIAgent._disable_codex_reasoning_replay`` which both strips cached
     items from the conversation history and threads ``replay_enabled=False``
     through this converter so subsequent turns send no reasoning items.
+
+    ``is_github_responses`` drops the ``id`` field from replayed
+    ``codex_message_items`` regardless of length. The Copilot backend
+    (api.githubcopilot.com/responses) binds these ids to a specific
+    backend "connection" — credential-pool rotation, a gateway restart,
+    or routine load-balancer churn between turns all invalidate it — and
+    rejects a stale id with HTTP 401 "input item ID does not belong to
+    this connection" even for short ids (see #32716). ``phase``/
+    ``status``/``content`` are still replayed; only ``id`` is unsafe to
+    reuse across a Copilot connection.
 
     ``current_issuer_kind`` enables a per-item cross-issuer guard. The
     Responses API's ``encrypted_content`` blob is decryptable only by the
@@ -470,7 +481,11 @@ def _chat_messages_to_responses_input(
                             "content": normalized_content_parts,
                         }
                         item_id = raw_item.get("id")
-                        if isinstance(item_id, str) and item_id.strip():
+                        if (
+                            not is_github_responses
+                            and isinstance(item_id, str)
+                            and item_id.strip()
+                        ):
                             stripped_id = item_id.strip()
                             if len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
                                 replay_item["id"] = stripped_id
@@ -585,7 +600,11 @@ def _chat_messages_to_responses_input(
 # Input preflight / validation
 # ---------------------------------------------------------------------------
 
-def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
+def _preflight_codex_input_items(
+    raw_items: Any,
+    *,
+    is_github_responses: bool = False,
+) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
 
@@ -726,7 +745,11 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 "content": normalized_content,
             }
             item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.strip():
+            if (
+                not is_github_responses
+                and isinstance(item_id, str)
+                and item_id.strip()
+            ):
                 stripped_id = item_id.strip()
                 if len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
                     normalized_item["id"] = stripped_id
@@ -801,6 +824,7 @@ def _preflight_codex_api_kwargs(
     api_kwargs: Any,
     *,
     allow_stream: bool = False,
+    is_github_responses: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
@@ -822,7 +846,10 @@ def _preflight_codex_api_kwargs(
         instructions = str(instructions)
     instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
 
-    normalized_input = _preflight_codex_input_items(api_kwargs.get("input"))
+    normalized_input = _preflight_codex_input_items(
+        api_kwargs.get("input"),
+        is_github_responses=is_github_responses,
+    )
 
     tools = api_kwargs.get("tools")
     normalized_tools = None

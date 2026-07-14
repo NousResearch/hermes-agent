@@ -1298,6 +1298,27 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
+def is_runtime_provider_routable(provider_id: str) -> bool:
+    """Return whether runtime resolution recognizes a provider identity.
+
+    This is a capability check, not a credential check. It follows the same
+    alias/plugin-aware normalization as ``resolve_provider`` while preserving
+    special runtime identities that intentionally live outside the registry.
+    """
+    normalized = (provider_id or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"auto", "openrouter", "custom", "moa"}:
+        return True
+    if normalized.startswith("custom:"):
+        return True
+    try:
+        resolve_provider(normalized)
+    except AuthError:
+        return False
+    return True
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 

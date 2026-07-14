@@ -10,7 +10,7 @@ outputs:
     description: Run Python tests / ruff / ty / windows-footguns.
     value: ${{ steps.classify.outputs.python }}
   frontend:
-    description: Run the TypeScript typecheck matrix + desktop build.
+    description: Run the TypeScript testing matrix + desktop build.
     value: ${{ steps.classify.outputs.frontend }}
   docker_meta:
     description: Docker setup and meta files have changed.

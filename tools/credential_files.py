@@ -108,27 +108,43 @@ def register_credential_files(
     entries: list,
     container_base: str = "/root/.hermes",
 ) -> List[str]:
-    """Register multiple credential files from skill frontmatter entries.
+    """Register credential files and return unsatisfied requirements.
 
-    Each entry is either a string (relative path) or a dict with a ``path``
-    key. Existing files are always registered. A missing dict entry with
-    ``optional: true`` is not reported as a setup requirement. Returns the
-    list of required relative paths that were not found on the host.
+    Existing files are always registered. Missing entries with ``optional:
+    true`` do not affect readiness. Entries sharing an ``alternative_group``
+    form an AND-layout, while the named groups are alternatives: satisfying
+    every non-optional file in any one group satisfies all grouped entries.
+    Ungrouped non-optional entries remain independently required.
     """
-    missing = []
+    missing: List[str] = []
+    group_missing: Dict[str, List[str]] = {}
     for entry in entries:
         optional = False
+        alternative_group = ""
         if isinstance(entry, str):
             rel_path = entry.strip()
         elif isinstance(entry, dict):
             rel_path = (entry.get("path") or entry.get("name") or "").strip()
             optional = entry.get("optional") is True
+            alternative_group = str(entry.get("alternative_group") or "").strip()
         else:
             continue
         if not rel_path:
             continue
-        if not register_credential_file(rel_path, container_base) and not optional:
+        if alternative_group:
+            group_missing.setdefault(alternative_group, [])
+        registered = register_credential_file(rel_path, container_base)
+        if registered or optional:
+            continue
+        if alternative_group:
+            group_missing[alternative_group].append(rel_path)
+        else:
             missing.append(rel_path)
+
+    if group_missing and not any(not paths for paths in group_missing.values()):
+        # Report the closest satisfiable layout, preserving frontmatter order
+        # on ties so setup_needed stays deterministic.
+        missing.extend(min(group_missing.values(), key=len))
     return missing
 
 

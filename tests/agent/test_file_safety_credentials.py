@@ -76,6 +76,35 @@ def test_google_oauth_json_blocked(fake_home):
     assert "credential store" in err
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "google_token.json",
+        "google_client_secret.json",
+        "google_workspace_auth_contexts.json",
+        "google_oauth_pending.json",
+    ],
+)
+def test_google_workspace_root_credentials_blocked(fake_home, name):
+    from agent.file_safety import get_read_block_error
+
+    credential = _create(fake_home, name)
+    err = get_read_block_error(str(credential))
+    assert err is not None
+    assert "credential store" in err
+
+
+def test_materialized_google_workspace_credentials_blocked(fake_home):
+    from agent.file_safety import get_read_block_error
+
+    context_dir = Path(".cache/google-workspace/contexts/named")
+    for name in ("google_token.json", "google_client_secret.json"):
+        credential = _create(fake_home, context_dir / name)
+        err = get_read_block_error(str(credential))
+        assert err is not None
+        assert "credential" in err.lower()
+
+
 def test_arbitrary_hermes_home_file_not_blocked(fake_home):
     """Non-credential files inside HERMES_HOME stay readable."""
     from agent.file_safety import get_read_block_error
@@ -188,6 +217,35 @@ def test_read_file_tool_blocks_nested_google_oauth_path(
     assert "credential store" in out["error"]
     assert "REFRESH_TOKEN_MARKER" not in json.dumps(out)
     assert "ACCESS_TOKEN_MARKER" not in json.dumps(out)
+
+
+def test_read_file_tool_blocks_google_workspace_credentials(
+    fake_home, tmp_path, monkeypatch
+):
+    """Root and materialized Workspace OAuth files must never reach the model."""
+    import json
+
+    import tools.file_tools as ft
+
+    context_store = _create(fake_home, "google_workspace_auth_contexts.json")
+    materialized = _create(
+        fake_home,
+        Path(".cache/google-workspace/contexts/named/google_token.json"),
+    )
+    context_store.write_text("WORKSPACE-CONTEXT-SECRET", encoding="utf-8")
+    materialized.write_text("WORKSPACE-TOKEN-SECRET", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+    )
+
+    for path, marker in (
+        (context_store, "WORKSPACE-CONTEXT-SECRET"),
+        (materialized, "WORKSPACE-TOKEN-SECRET"),
+    ):
+        out = json.loads(ft.read_file_tool(str(path), task_id="workspace-credential-test"))
+        assert "error" in out
+        assert marker not in json.dumps(out)
 
 
 def test_search_tool_blocks_direct_auth_json_path(fake_home, monkeypatch):

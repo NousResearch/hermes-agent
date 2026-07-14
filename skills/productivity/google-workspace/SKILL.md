@@ -8,13 +8,13 @@ platforms: [linux, macos, windows]
 required_credential_files:
   - path: google_workspace_auth_contexts.json
     description: Named Google Workspace OAuth auth contexts (created by setup script)
-    optional: true
+    alternative_group: named-context
   - path: google_token.json
     description: Legacy Google OAuth2 token (created by setup script)
-    optional: true
+    alternative_group: legacy
   - path: google_client_secret.json
     description: Legacy Google OAuth2 client credentials (downloaded from Google Cloud Console)
-    optional: true
+    alternative_group: legacy
 metadata:
   hermes:
     tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]

@@ -110,6 +110,41 @@ class TestRegisterCredentialFiles:
         assert missing == []
         assert get_credential_file_mounts()[0]["container_path"] == "/root/.hermes/optional.json"
 
+    def test_alternative_group_is_ready_when_one_complete_layout_exists(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "legacy-token.json").write_text("{}")
+        (hermes_home / "legacy-secret.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(
+                [
+                    {"path": "named-store.json", "alternative_group": "named"},
+                    {"path": "legacy-token.json", "alternative_group": "legacy"},
+                    {"path": "legacy-secret.json", "alternative_group": "legacy"},
+                ]
+            )
+
+        assert missing == []
+        assert len(get_credential_file_mounts()) == 2
+
+    def test_alternative_groups_report_setup_when_none_complete(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "legacy-secret.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(
+                [
+                    {"path": "named-store.json", "alternative_group": "named"},
+                    {"path": "legacy-token.json", "alternative_group": "legacy"},
+                    {"path": "legacy-secret.json", "alternative_group": "legacy"},
+                ]
+            )
+
+        assert missing
+        assert get_credential_file_mounts()[0]["container_path"] == "/root/.hermes/legacy-secret.json"
+
     def test_path_takes_precedence_over_name(self, tmp_path):
         """When both path and name are present, path wins."""
         hermes_home = tmp_path / ".hermes"

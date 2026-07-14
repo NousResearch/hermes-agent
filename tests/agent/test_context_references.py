@@ -375,7 +375,9 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
     (hermes_home).mkdir(parents=True)
 
     auth_json = hermes_home / "auth.json"
-    auth_json.write_text('{"openai": "sk-AUTHJSON-SECRET"}\n', encoding="utf-8")
+    auth_json.write_text(
+        '{"openai": "AUTHJSON_SECRET_MARKER"}\n', encoding="utf-8"
+    )
 
     oauth = hermes_home / ".anthropic_oauth.json"
     oauth.write_text('{"access_token": "OAUTH-SECRET"}\n', encoding="utf-8")
@@ -384,13 +386,44 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
     mcp_token.parent.mkdir(parents=True)
     mcp_token.write_text('{"token": "MCP-TOKEN-SECRET"}\n', encoding="utf-8")
 
+    google_token = hermes_home / "google_token.json"
+    google_token.write_text('{"token": "GOOGLE-TOKEN-SECRET"}\n', encoding="utf-8")
+    google_client = hermes_home / "google_client_secret.json"
+    google_client.write_text(
+        '{"installed": {"client_secret": "GOOGLE-CLIENT-SECRET"}}\n',
+        encoding="utf-8",
+    )
+    google_contexts = hermes_home / "google_workspace_auth_contexts.json"
+    google_contexts.write_text(
+        '{"contexts": {"named": {"token": "GOOGLE-CONTEXT-SECRET"}}}\n',
+        encoding="utf-8",
+    )
+    materialized = (
+        hermes_home
+        / ".cache"
+        / "google-workspace"
+        / "contexts"
+        / "named"
+        / "google_token.json"
+    )
+    materialized.parent.mkdir(parents=True)
+    materialized.write_text(
+        '{"refresh_token": "GOOGLE-MATERIALIZED-SECRET"}\n',
+        encoding="utf-8",
+    )
+
     project_env = tmp_path / "project" / ".env"
     project_env.parent.mkdir(parents=True)
     project_env.write_text("DB_PASSWORD=ENV-SECRET\n", encoding="utf-8")
 
     result = await preprocess_context_references_async(
         "inspect @file:.hermes/auth.json and @file:.hermes/.anthropic_oauth.json "
-        "and @file:.hermes/mcp-tokens/github.json and @file:project/.env",
+        "and @file:.hermes/mcp-tokens/github.json "
+        "and @file:.hermes/google_token.json "
+        "and @file:.hermes/google_client_secret.json "
+        "and @file:.hermes/google_workspace_auth_contexts.json "
+        "and @file:.hermes/.cache/google-workspace/contexts/named/google_token.json "
+        "and @file:project/.env",
         cwd=tmp_path,
         allowed_root=tmp_path,
         context_length=100_000,
@@ -398,13 +431,17 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
 
     assert result.expanded
     for secret in (
-        "sk-AUTHJSON-SECRET",
+        "AUTHJSON_SECRET_MARKER",
         "OAUTH-SECRET",
         "MCP-TOKEN-SECRET",
+        "GOOGLE-TOKEN-SECRET",
+        "GOOGLE-CLIENT-SECRET",
+        "GOOGLE-CONTEXT-SECRET",
+        "GOOGLE-MATERIALIZED-SECRET",
         "ENV-SECRET",
     ):
         assert secret not in result.message
-    assert sum("sensitive credential" in warning for warning in result.warnings) == 4
+    assert sum("sensitive credential" in warning for warning in result.warnings) == 8
 
 
 @pytest.mark.asyncio

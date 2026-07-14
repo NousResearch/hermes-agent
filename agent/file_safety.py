@@ -262,6 +262,10 @@ def get_read_block_error(path: str) -> Optional[str]:
         "auth.lock",
         ".anthropic_oauth.json",
         ".env",
+        "google_token.json",
+        "google_client_secret.json",
+        "google_workspace_auth_contexts.json",
+        "google_oauth_pending.json",
         "webhook_subscriptions.json",
         os.path.join("auth", "google_oauth.json"),
         # Bitwarden Secrets Manager disk cache: stores plaintext secret values
@@ -305,6 +309,26 @@ def get_read_block_error(path: str) -> Optional[str]:
             f"Access denied: {path} is a Hermes MCP token file "
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
+        )
+
+    # Materialized named Google Workspace contexts contain copied OAuth tokens
+    # and OAuth client secrets. Block the whole subtree, not just known
+    # basenames, so new credential artifacts cannot become model-readable.
+    for hd in hermes_dirs:
+        try:
+            google_contexts = (
+                hd / ".cache" / "google-workspace" / "contexts"
+            ).resolve()
+        except Exception:
+            continue
+        try:
+            resolved.relative_to(google_contexts)
+        except ValueError:
+            continue
+        return (
+            f"Access denied: {path} is a materialized Google Workspace "
+            "credential and cannot be read directly. (Defense-in-depth — "
+            "not a security boundary; the terminal tool can still bypass.)"
         )
 
     # Block common secret-bearing project-local .env files anywhere on disk.

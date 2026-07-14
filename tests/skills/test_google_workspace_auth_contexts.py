@@ -162,7 +162,9 @@ class TestCommandScopeGate:
         assert auth_contexts.context_exists("default")
         assert "default" in auth_contexts.list_contexts()
 
-        stored_default = auth_contexts.load_store()["contexts"]["default"]
+        store = auth_contexts.load_store()
+        assert store["legacy_default_migrated"] is True
+        stored_default = store["contexts"]["default"]
         assert stored_default["token"]["token"] == "legacy"
         assert stored_default["client_secret"]["installed"]["client_id"] == "legacy"
         assert stored_default["pending_auth"]["state"] == "legacy"
@@ -180,6 +182,41 @@ class TestCommandScopeGate:
         auth_contexts.legacy_token_path().write_text('{"token": "stale"}')
 
         assert auth_contexts.get_token_payload("default")["token"] == "store"
+
+    def test_delete_migrated_default_token_does_not_restore_legacy(self, auth_contexts):
+        auth_contexts.legacy_token_path().write_text('{"token": "legacy"}')
+        auth_contexts.legacy_pending_path().write_text('{"state": "pending"}')
+        auth_contexts.set_client_secret(
+            "named",
+            {"installed": {"client_id": "named"}},
+        )
+        assert auth_contexts.get_token_payload("default")["token"] == "legacy"
+
+        auth_contexts.delete_token("default")
+
+        assert auth_contexts.get_token_payload("default") == {}
+        assert auth_contexts.get_pending_auth("default") == {}
+        assert not auth_contexts.legacy_token_path().exists()
+        assert not auth_contexts.legacy_pending_path().exists()
+        stored_default = auth_contexts.load_store()["contexts"]["default"]
+        assert "token" not in stored_default
+        assert "pending_auth" not in stored_default
+
+    def test_clear_migrated_default_pending_does_not_restore_legacy(self, auth_contexts):
+        auth_contexts.legacy_token_path().write_text('{"token": "legacy"}')
+        auth_contexts.legacy_pending_path().write_text('{"state": "pending"}')
+        auth_contexts.set_client_secret(
+            "named",
+            {"installed": {"client_id": "named"}},
+        )
+        assert auth_contexts.get_pending_auth("default")["state"] == "pending"
+
+        auth_contexts.clear_pending_auth("default")
+
+        assert auth_contexts.get_pending_auth("default") == {}
+        assert auth_contexts.get_token_payload("default")["token"] == "legacy"
+        assert not auth_contexts.legacy_pending_path().exists()
+        assert "pending_auth" not in auth_contexts.load_store()["contexts"]["default"]
 
     def test_full_drive_implies_read(self, auth_contexts):
         auth_contexts.set_token_payload("drive", {"token": "tok", "scopes": [auth_contexts.DRIVE]})

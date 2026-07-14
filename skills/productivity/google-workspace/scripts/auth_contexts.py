@@ -20,6 +20,7 @@ LEGACY_TOKEN_NAME = "google_token.json"
 LEGACY_CLIENT_SECRET_NAME = "google_client_secret.json"
 LEGACY_PENDING_NAME = "google_oauth_pending.json"
 AUTH_CONTEXTS_NAME = "google_workspace_auth_contexts.json"
+_LEGACY_MIGRATION_KEY = "legacy_default_migrated"
 
 _CONTEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
@@ -129,25 +130,27 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 
 
 def _merge_legacy_default(data: dict[str, Any]) -> None:
-    """Snapshot legacy credentials into ``contexts.default`` when needed.
+    """Snapshot legacy credentials into ``contexts.default`` exactly once.
 
     Creating a named context must not make a working legacy default disappear.
-    Once copied, the store-backed default remains authoritative and later
-    changes to stale legacy files are ignored.
+    Once the store is initialized, it remains authoritative and later changes
+    to stale legacy files are ignored, including after revoke/delete actions.
     """
+    if data.get(_LEGACY_MIGRATION_KEY) is True:
+        return
     legacy_payloads = {
         "token": _read_json_file(legacy_token_path()),
         "client_secret": _read_json_file(legacy_client_secret_path()),
         "pending_auth": _read_json_file(legacy_pending_path()),
     }
-    if not any(legacy_payloads.values()):
-        return
-    contexts = data.setdefault("contexts", {})
-    default = contexts.setdefault("default", {"name": "default"})
-    default.setdefault("name", "default")
-    for key, payload in legacy_payloads.items():
-        if payload and key not in default:
-            default[key] = payload
+    if any(legacy_payloads.values()):
+        contexts = data.setdefault("contexts", {})
+        default = contexts.setdefault("default", {"name": "default"})
+        default.setdefault("name", "default")
+        for key, payload in legacy_payloads.items():
+            if payload and key not in default:
+                default[key] = payload
+    data[_LEGACY_MIGRATION_KEY] = True
 
 
 def validate_context_name(name: str | None) -> str:
@@ -345,25 +348,29 @@ def set_pending_auth(context: str, payload: dict[str, Any]) -> None:
 
 def clear_pending_auth(context: str = "default") -> None:
     context = validate_context_name(context)
+    if context == "default":
+        # Remove the legacy source before loading/saving the store so a
+        # pre-marker store cannot migrate the pending state back in.
+        legacy_pending_path().unlink(missing_ok=True)
     store = load_store()
     if context in store.get("contexts", {}):
         store["contexts"][context].pop("pending_auth", None)
         save_store(store)
-    if context == "default":
-        legacy_pending_path().unlink(missing_ok=True)
 
 
 def delete_token(context: str = "default") -> None:
     context = validate_context_name(context)
+    if context == "default":
+        # Destructive intent wins over legacy migration. Unlink sources first
+        # so old stores without the one-time marker cannot resurrect them.
+        legacy_token_path().unlink(missing_ok=True)
+        legacy_pending_path().unlink(missing_ok=True)
     store = load_store()
     if context in store.get("contexts", {}):
         store["contexts"][context].pop("token", None)
         store["contexts"][context].pop("pending_auth", None)
         save_store(store)
     _materialized_token_path(context).unlink(missing_ok=True)
-    if context == "default":
-        legacy_token_path().unlink(missing_ok=True)
-        legacy_pending_path().unlink(missing_ok=True)
 
 
 def set_default_for_services(context: str, services_csv: str) -> None:

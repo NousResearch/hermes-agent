@@ -42,10 +42,16 @@ class TestGoogleWorkspaceCredentialFiles:
         assert _EXPECTED_PATHS <= paths, (
             f"Missing entries in required_credential_files: {_EXPECTED_PATHS - paths}"
         )
-        assert all(
-            isinstance(entry, dict) and entry.get("optional") is True
+        groups = {
+            entry["path"]: entry.get("alternative_group")
             for entry in entries
-        ), "Alternative Google credential layouts must not require every file at once"
+            if isinstance(entry, dict)
+        }
+        assert groups == {
+            "google_workspace_auth_contexts.json": "named-context",
+            "google_token.json": "legacy",
+            "google_client_secret.json": "legacy",
+        }
 
     def test_entries_are_registered_when_files_exist(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
@@ -136,5 +142,48 @@ class TestGoogleWorkspaceCredentialFiles:
                 "/root/.hermes/google_token.json",
                 "/root/.hermes/google_client_secret.json",
             }
+        finally:
+            clear_credential_files()
+
+    def test_no_credentials_requires_setup(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        from tools.credential_files import clear_credential_files
+        from tools.skills_tool import skill_view
+
+        clear_credential_files()
+        try:
+            with (
+                patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+                patch("tools.skills_tool.SKILLS_DIR", SKILL_MD.parents[2]),
+            ):
+                result = json.loads(skill_view("google-workspace"))
+
+            assert result["setup_needed"] is True
+            assert result["readiness_status"] == "setup_needed"
+            assert result["missing_credential_files"]
+        finally:
+            clear_credential_files()
+
+    def test_incomplete_legacy_layout_requires_setup(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "google_client_secret.json").write_text("{}")
+
+        from tools.credential_files import clear_credential_files
+        from tools.skills_tool import skill_view
+
+        clear_credential_files()
+        try:
+            with (
+                patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+                patch("tools.skills_tool.SKILLS_DIR", SKILL_MD.parents[2]),
+            ):
+                result = json.loads(skill_view("google-workspace"))
+
+            assert result["setup_needed"] is True
+            assert result["readiness_status"] == "setup_needed"
+            assert result["missing_credential_files"]
         finally:
             clear_credential_files()

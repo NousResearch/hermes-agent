@@ -114,6 +114,26 @@ _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNS
 # propagates that into this contextvar at session-bind time.
 _SESSION_ASYNC_DELIVERY: ContextVar = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
+# A headless one-shot (``hermes -z``) runs exactly ONE turn and then the process
+# exits.  There is no interactive loop and no gateway channel, so a detached
+# child's completion has nowhere to re-enter — unlike the interactive CLI, whose
+# process persists and can surface the result as a new turn.  ``run_oneshot()``
+# declares this before the agent starts so tools that promise async delivery can
+# refuse a promise the (already-exiting) process can never keep.
+_HEADLESS_ONESHOT = False
+
+
+def declare_headless_oneshot() -> None:
+    """Mark this process as a headless one-shot (``hermes -z``).
+
+    Makes :func:`async_delivery_supported` return ``False`` so ``delegate_task``
+    and ``terminal`` fall back to synchronous execution instead of handing out a
+    handle that is silently dropped when the turn ends.
+    """
+    global _HEADLESS_ONESHOT
+    _HEADLESS_ONESHOT = True
+
+
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
 _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -330,10 +350,12 @@ def get_session_env(name: str, default: str = "") -> str:
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 
-    Returns ``False`` only when the active session was explicitly bound by a
+    Returns ``False`` when the active session was explicitly bound by a
     stateless adapter (the API server) that cannot route a notification back to
-    the agent after the turn ends. CLI, cron, and the real gateway platforms —
-    and any path that never bound the contextvar — return ``True``.
+    the agent after the turn ends, and for a headless one-shot (``hermes -z``),
+    whose process exits when the turn does.  The interactive CLI, cron, and the
+    real gateway platforms — and any path that never bound the contextvar —
+    return ``True``.
 
     Tools that promise async delivery (``terminal`` notify_on_complete /
     watch_patterns, ``delegate_task`` background=True) consult this before
@@ -342,5 +364,8 @@ def async_delivery_supported() -> bool:
     """
     value = _SESSION_ASYNC_DELIVERY.get()
     if value is _UNSET:
-        return True
+        # Unbound: the interactive CLI and the real gateway platforms can all
+        # deliver a completion later, so the default stays True — except a
+        # headless one-shot, which exits with the turn (declare_headless_oneshot).
+        return not _HEADLESS_ONESHOT
     return bool(value)

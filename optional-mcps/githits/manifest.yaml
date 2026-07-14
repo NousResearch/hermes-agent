@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: githits
+description: Search open-source examples, packages, docs, and code.
+source: https://github.com/githits-com/githits-cli
+
+# GitHits ships a local stdio MCP server through its npm CLI. The package is
+# pinned here so catalog installs are reproducible and reviewed through normal
+# Hermes release flow.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - -y
+    - githits@0.4.12
+    - mcp
+    - start
+
+# GitHits owns authentication in its CLI: browser OAuth tokens live in the
+# system keychain/file storage, and GITHITS_API_TOKEN is read from the process
+# environment for non-browser environments. Hermes should not duplicate that
+# auth flow or persist GitHits credentials during catalog install.
+auth:
+  type: none
+
+post_install: |
+  GitHits requires authentication before tools can return results.
+  It also requires Node.js ^20.12.0 or >=22.13.0, with npx on PATH.
+
+  Browser login:
+    npx githits@0.4.12 login
+
+  Check auth:
+    npx githits@0.4.12 auth status
+
+  For CI or headless environments, set GITHITS_API_TOKEN instead.
+
+  Start a new Hermes session, or run /reload-mcp, to load the GitHits tools.

@@ -812,3 +812,39 @@ class TestShippedCatalog:
             assert entry.name
             assert entry.description
             assert entry.transport.type in ("stdio", "http")
+
+    def test_githits_manifest_uses_pinned_cli(self, monkeypatch):
+        """GitHits catalog installs use a reviewed, pinned CLI version."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest
+
+        manifest = _catalog_root() / "githits" / "manifest.yaml"
+        if not manifest.exists():
+            pytest.skip("optional-mcps/githits manifest not present in this checkout")
+
+        entry = _parse_manifest(manifest)
+
+        assert entry.name == "githits"
+        assert entry.transport.type == "stdio"
+        assert entry.transport.command == "npx"
+        assert entry.transport.args == ["-y", "githits@0.4.12", "mcp", "start"]
+        assert entry.auth.type == "none"
+        assert entry.tools.default_enabled is None
+
+    def test_githits_install_writes_expected_config(self, monkeypatch):
+        """Installing GitHits writes Hermes-native mcp_servers config."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest, install_entry
+        from hermes_cli.config import load_config
+
+        manifest = _catalog_root() / "githits" / "manifest.yaml"
+        if not manifest.exists():
+            pytest.skip("optional-mcps/githits manifest not present in this checkout")
+
+        install_entry(_parse_manifest(manifest), enable=True)
+
+        server = load_config()["mcp_servers"]["githits"]
+        assert server["command"] == "npx"
+        assert server["args"] == ["-y", "githits@0.4.12", "mcp", "start"]
+        assert server["enabled"] is True
+        assert "tools" not in server

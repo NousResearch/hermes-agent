@@ -117,6 +117,27 @@ def test_manifest_includes_bundled_skills():
     assert "graft optional-skills" in manifest
 
 
+def test_optional_mcp_catalog_ships_in_both_wheel_and_sdist():
+    """The MCP catalog must be present outside source checkouts.
+
+    ``hermes_cli.mcp_catalog`` resolves packaged catalog entries via
+    ``get_optional_mcps_dir()``, which looks for an installed ``optional-mcps``
+    data directory. Cover both packaging channels so curated MCP entries do not
+    vanish from pip/Homebrew installs.
+    """
+    assert (REPO_ROOT / "optional-mcps" / "githits" / "manifest.yaml").is_file()
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest, (
+        "MANIFEST.in must graft optional-mcps so sdist builds ship MCP catalog entries"
+    )
+
+    setup_py = (REPO_ROOT / "setup.py").read_text(encoding="utf-8")
+    assert '_data_file_tree("optional-mcps")' in setup_py, (
+        "setup.py data_files must include optional-mcps so wheels ship MCP catalog entries"
+    )
+
+
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     """Regression test for #34034 / #28149.
 

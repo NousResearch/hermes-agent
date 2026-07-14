@@ -82,6 +82,42 @@ Catalog entries can require:
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
   `hermes auth <provider>` if you haven't authenticated already.
 
+### GitHits
+
+GitHits is available as a curated stdio MCP catalog entry. It gives Hermes
+access to canonical open-source examples plus indexed package, docs, and code
+inspection tools.
+
+```bash
+hermes mcp install githits
+```
+
+GitHits launches the reviewed, pinned CLI package `githits@0.4.12` through
+`npx`. GitHits requires Node.js `^20.12.0 || >=22.13.0`, with `npx` available
+on `PATH`. GitHits owns its own authentication flow; Hermes does not prompt for
+or store GitHits credentials at catalog install time.
+
+Authenticate with browser OAuth:
+
+```bash
+npx githits@0.4.12 login
+```
+
+Check auth status:
+
+```bash
+npx githits@0.4.12 auth status
+```
+
+For CI or headless environments, set `GITHITS_API_TOKEN` before starting Hermes.
+After installing or authenticating, start a new Hermes session or run
+`/reload-mcp`. GitHits tools appear with Hermes' MCP prefix, such as
+`mcp_githits_get_example`, `mcp_githits_search`, and `mcp_githits_pkg_info`.
+
+If you previously ran `githits init`, you may already have a custom `GitHits`
+entry in `mcp_servers`. Remove either the old custom entry or the catalog
+`githits` entry if you do not want duplicate GitHits tool families.
+
 ### Tool selection at install time
 
 After credentials are configured, Hermes probes the MCP server to list every

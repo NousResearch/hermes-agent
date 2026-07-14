@@ -1328,7 +1328,7 @@ class SessionDB:
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
-        except Exception:
+        except sqlite3.Error:
             pass  # Best effort — never fatal.
 
     def _try_optimize_fts(self) -> None:
@@ -1344,7 +1344,7 @@ class SessionDB:
         """
         try:
             self.optimize_fts()
-        except Exception:
+        except sqlite3.Error:
             pass  # Best effort — never fatal.
 
     def close(self):
@@ -1357,7 +1357,7 @@ class SessionDB:
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
+                except sqlite3.Error:
                     pass
                 self._conn.close()
                 self._conn = None

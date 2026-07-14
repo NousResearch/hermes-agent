@@ -1,11 +1,13 @@
 """Tests for toolset_distributions.py — distribution CRUD, sampling, validation."""
 
 import pytest
+from unittest.mock import patch
 
 from toolset_distributions import (
     DISTRIBUTIONS,
     get_distribution,
     list_distributions,
+    print_distribution_info,
     sample_toolsets_from_distribution,
     validate_distribution,
 )
@@ -54,6 +56,25 @@ class TestValidateDistribution:
         assert validate_distribution("") is False
 
 
+class TestPrintDistributionInfo:
+    def test_known_distribution_prints_info(self, capsys):
+        print_distribution_info("default")
+
+        captured = capsys.readouterr()
+        assert "default" in captured.out
+        assert DISTRIBUTIONS["default"]["description"] in captured.out
+        assert "Description:" in captured.out
+        assert "Toolsets:" in captured.out
+        assert "% chance" in captured.out
+
+    def test_unknown_distribution_prints_error(self, capsys):
+        print_distribution_info("nonexistent_distribution_xyz")
+
+        captured = capsys.readouterr()
+        assert "Unknown distribution" in captured.out
+        assert "nonexistent_distribution_xyz" in captured.out
+
+
 class TestSampleToolsetsFromDistribution:
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown distribution"):
@@ -83,6 +104,51 @@ class TestSampleToolsetsFromDistribution:
         for _ in range(20):
             result = sample_toolsets_from_distribution("reasoning")
             assert len(result) >= 1
+
+
+class TestSampleInvalidToolset:
+    @patch("toolset_distributions.validate_toolset")
+    @patch("toolset_distributions.random.random", return_value=0.0)
+    def test_invalid_toolset_skipped_with_warning(self, mock_random, mock_validate, capsys):
+        mock_validate.side_effect = lambda toolset_name: toolset_name != "terminal"
+
+        result = sample_toolsets_from_distribution("terminal_only")
+
+        captured = capsys.readouterr()
+        assert "terminal" not in result
+        assert "file" in result
+        assert "Warning" in captured.out
+        assert "terminal" in captured.out
+        assert "terminal_only" in captured.out
+
+    @patch("toolset_distributions.validate_toolset", return_value=False)
+    def test_all_toolsets_invalid_fallback_also_invalid(self, mock_validate):
+        dist = get_distribution("terminal_only")
+        toolset_count = len(dist["toolsets"])
+
+        result = sample_toolsets_from_distribution("terminal_only")
+
+        assert result == []
+        # validate_toolset called once per toolset in the loop + once for the fallback
+        assert mock_validate.call_count == toolset_count + 1
+
+
+class TestSampleFallback:
+    @patch("toolset_distributions.validate_toolset", return_value=True)
+    @patch("toolset_distributions.random.random", return_value=1.0)
+    def test_fallback_picks_highest_probability(self, mock_random, mock_validate):
+        result = sample_toolsets_from_distribution("safe")
+        dist = get_distribution("safe")
+        expected = max(dist["toolsets"], key=dist["toolsets"].get)
+
+        assert result == [expected]
+
+    @patch("toolset_distributions.validate_toolset", return_value=True)
+    @patch("toolset_distributions.random.random", return_value=0.0)
+    def test_deterministic_all_included(self, mock_random, mock_validate):
+        result = sample_toolsets_from_distribution("terminal_only")
+
+        assert set(result) == set(get_distribution("terminal_only")["toolsets"])
 
 
 class TestDistributionStructure:

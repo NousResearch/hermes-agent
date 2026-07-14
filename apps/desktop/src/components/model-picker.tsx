@@ -184,7 +184,9 @@ function ModelResults({
     <>
       {configured.map(provider => {
         // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        // Keep only string model IDs – guard against accidental objects
+        const rawModels = (provider.models ?? []).filter(m => matches(provider, m))
+        const models = rawModels.filter((m): m is string => typeof m === "string")
 
         if (models.length === 0) {
           return null

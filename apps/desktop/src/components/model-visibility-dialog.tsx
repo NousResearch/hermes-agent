@@ -97,7 +97,9 @@ export function ModelVisibilityDialog({
             </div>
           ) : (
             providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+              // Keep only string model IDs – guard against accidental objects
+              const rawFamilies = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+              const models = rawFamilies.filter((f): f is { id: string } => typeof f.id === "string")
 
               if (models.length === 0) {
                 return null

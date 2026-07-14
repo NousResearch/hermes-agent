@@ -18,13 +18,18 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    LIST_MENTAL_MODELS_SCHEMA,
+    GET_MENTAL_MODEL_SCHEMA,
+    CREATE_MENTAL_MODEL_SCHEMA,
+    UPDATE_MENTAL_MODEL_SCHEMA,
+    REFRESH_MENTAL_MODEL_SCHEMA,
+    DELETE_MENTAL_MODEL_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -75,6 +80,65 @@ def _make_mock_client():
     )
     client.aretain_batch = AsyncMock()
     client.aclose = AsyncMock()
+
+    # Mental models sub-client
+    mm = MagicMock()
+
+    mm.list_mental_models = AsyncMock(
+        return_value=SimpleNamespace(items=[
+            SimpleNamespace(
+                id="mm-001",
+                name="Project Summary",
+                is_stale=False,
+                last_refreshed_at="2026-01-01T00:00:00Z",
+                content="Short preview of content.",
+            ),
+            SimpleNamespace(
+                id="mm-002",
+                name="User Preferences",
+                is_stale=True,
+                last_refreshed_at=None,
+                content=None,
+            ),
+        ])
+    )
+
+    mm.get_mental_model = AsyncMock(
+        return_value=SimpleNamespace(
+            id="mm-001",
+            name="Project Summary",
+            source_query="What projects are active?",
+            content="Synthesized answer about projects.",
+            tags=["projects", "summary"],
+            max_tokens=2048,
+            is_stale=False,
+            last_refreshed_at="2026-01-01T00:00:00Z",
+            created_at="2025-12-01T00:00:00Z",
+            trigger=None,
+        )
+    )
+
+    mm.create_mental_model = AsyncMock(
+        return_value=SimpleNamespace(
+            mental_model_id="mm-new-001",
+            operation_id="op-create-123",
+        )
+    )
+
+    mm.update_mental_model = AsyncMock(
+        return_value=SimpleNamespace(
+            id="mm-001",
+            name="Updated Name",
+        )
+    )
+
+    mm.refresh_mental_model = AsyncMock(
+        return_value=SimpleNamespace(operation_id="op-refresh-456")
+    )
+
+    mm.delete_mental_model = AsyncMock(return_value=None)
+
+    client.mental_models = mm
     return client
 
 
@@ -172,15 +236,51 @@ class TestSchemas:
         assert REFLECT_SCHEMA["name"] == "hindsight_reflect"
         assert "query" in REFLECT_SCHEMA["parameters"]["properties"]
 
-    def test_get_tool_schemas_returns_three(self, provider):
+    def test_get_tool_schemas_returns_all(self, provider):
         schemas = provider.get_tool_schemas()
-        assert len(schemas) == 3
+        assert len(schemas) == 9
         names = {s["name"] for s in schemas}
-        assert names == {"hindsight_retain", "hindsight_recall", "hindsight_reflect"}
+        assert names == {
+            "hindsight_retain",
+            "hindsight_recall",
+            "hindsight_reflect",
+            "hindsight_list_mental_models",
+            "hindsight_get_mental_model",
+            "hindsight_create_mental_model",
+            "hindsight_update_mental_model",
+            "hindsight_refresh_mental_model",
+            "hindsight_delete_mental_model",
+        }
 
     def test_context_mode_returns_no_tools(self, provider_with_config):
         p = provider_with_config(memory_mode="context")
         assert p.get_tool_schemas() == []
+
+    def test_list_mental_models_schema(self):
+        assert LIST_MENTAL_MODELS_SCHEMA["name"] == "hindsight_list_mental_models"
+        assert "tags" in LIST_MENTAL_MODELS_SCHEMA["parameters"]["properties"]
+        assert LIST_MENTAL_MODELS_SCHEMA["parameters"]["required"] == []
+
+    def test_get_mental_model_schema(self):
+        assert GET_MENTAL_MODEL_SCHEMA["name"] == "hindsight_get_mental_model"
+        assert "mental_model_id" in GET_MENTAL_MODEL_SCHEMA["parameters"]["required"]
+
+    def test_create_mental_model_schema(self):
+        assert CREATE_MENTAL_MODEL_SCHEMA["name"] == "hindsight_create_mental_model"
+        assert "name" in CREATE_MENTAL_MODEL_SCHEMA["parameters"]["required"]
+        assert "source_query" in CREATE_MENTAL_MODEL_SCHEMA["parameters"]["required"]
+
+    def test_update_mental_model_schema(self):
+        assert UPDATE_MENTAL_MODEL_SCHEMA["name"] == "hindsight_update_mental_model"
+        assert "mental_model_id" in UPDATE_MENTAL_MODEL_SCHEMA["parameters"]["required"]
+
+    def test_refresh_mental_model_schema(self):
+        assert REFRESH_MENTAL_MODEL_SCHEMA["name"] == "hindsight_refresh_mental_model"
+        assert "mental_model_id" in REFRESH_MENTAL_MODEL_SCHEMA["parameters"]["required"]
+
+    def test_delete_mental_model_schema(self):
+        assert DELETE_MENTAL_MODEL_SCHEMA["name"] == "hindsight_delete_mental_model"
+        assert "mental_model_id" in DELETE_MENTAL_MODEL_SCHEMA["parameters"]["required"]
 
 
 # ---------------------------------------------------------------------------
@@ -1548,4 +1648,195 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
+
+
+# ---------------------------------------------------------------------------
+# Mental model tool handler tests
+# ---------------------------------------------------------------------------
+
+
+class TestMentalModelToolHandlers:
+    """Mocked tests for the 6 mental model tool handlers.
+
+    These follow the same pattern as TestToolHandlers: use the shared
+    provider fixture (which wires _make_mock_client into provider._client)
+    and assert on call args / return JSON.
+    """
+
+    # -- list ----------------------------------------------------------------
+
+    def test_list_mental_models_success(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_list_mental_models", {}
+        ))
+        assert "Project Summary" in result["result"]
+        assert "User Preferences" in result["result"]
+        assert "mm-001" in result["result"]
+        assert "mm-002" in result["result"]
+        provider._client.mental_models.list_mental_models.assert_awaited_once()
+
+    def test_list_mental_models_passes_tags(self, provider):
+        provider.handle_tool_call(
+            "hindsight_list_mental_models", {"tags": ["projects"]}
+        )
+        call_kwargs = provider._client.mental_models.list_mental_models.call_args.kwargs
+        assert call_kwargs["tags"] == ["projects"]
+
+    def test_list_mental_models_empty(self, provider):
+        provider._client.mental_models.list_mental_models.return_value = (
+            SimpleNamespace(items=[])
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_list_mental_models", {}
+        ))
+        assert "No mental models found" in result["result"]
+
+    def test_list_mental_models_error(self, provider):
+        provider._client.mental_models.list_mental_models.side_effect = (
+            RuntimeError("connection failed")
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_list_mental_models", {}
+        ))
+        assert "error" in result
+        assert "connection failed" in result["error"]
+
+    # -- get -----------------------------------------------------------------
+
+    def test_get_mental_model_success(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_get_mental_model", {"mental_model_id": "mm-001"}
+        ))
+        # The handler double-json-encodes the result dict
+        inner = json.loads(result["result"])
+        assert inner["id"] == "mm-001"
+        assert inner["name"] == "Project Summary"
+        assert inner["source_query"] == "What projects are active?"
+        assert inner["max_tokens"] == 2048
+
+    def test_get_mental_model_missing_id(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_get_mental_model", {}
+        ))
+        assert "error" in result
+
+    def test_get_mental_model_error(self, provider):
+        provider._client.mental_models.get_mental_model.side_effect = (
+            RuntimeError("not found")
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_get_mental_model", {"mental_model_id": "mm-bad"}
+        ))
+        assert "error" in result
+
+    # -- create --------------------------------------------------------------
+
+    def test_create_mental_model_success(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_create_mental_model",
+            {"name": "Test Model", "source_query": "What is happening?"},
+        ))
+        assert "Test Model" in result["result"]
+        assert "mm-new-001" in result["result"]
+        assert "op-create-123" in result["result"]
+        provider._client.mental_models.create_mental_model.assert_awaited_once()
+
+    def test_create_mental_model_missing_name(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_create_mental_model", {"source_query": "test"}
+        ))
+        assert "error" in result
+
+    def test_create_mental_model_missing_query(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_create_mental_model", {"name": "test"}
+        ))
+        assert "error" in result
+
+    def test_create_mental_model_error(self, provider):
+        provider._client.mental_models.create_mental_model.side_effect = (
+            RuntimeError("create failed")
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_create_mental_model",
+            {"name": "test", "source_query": "test"},
+        ))
+        assert "error" in result
+
+    # -- update --------------------------------------------------------------
+
+    def test_update_mental_model_success(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_update_mental_model",
+            {"mental_model_id": "mm-001", "name": "New Name"},
+        ))
+        assert "Updated Name" in result["result"]
+        assert "mm-001" in result["result"]
+        provider._client.mental_models.update_mental_model.assert_awaited_once()
+
+    def test_update_mental_model_missing_id(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_update_mental_model", {"name": "New Name"}
+        ))
+        assert "error" in result
+
+    def test_update_mental_model_error(self, provider):
+        provider._client.mental_models.update_mental_model.side_effect = (
+            RuntimeError("update failed")
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_update_mental_model",
+            {"mental_model_id": "mm-bad", "name": "test"},
+        ))
+        assert "error" in result
+
+    # -- refresh -------------------------------------------------------------
+
+    def test_refresh_mental_model_success(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_refresh_mental_model", {"mental_model_id": "mm-001"}
+        ))
+        assert "mm-001" in result["result"]
+        assert "op-refresh-456" in result["result"]
+        assert "refresh submitted" in result["result"]
+
+    def test_refresh_mental_model_missing_id(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_refresh_mental_model", {}
+        ))
+        assert "error" in result
+
+    def test_refresh_mental_model_error(self, provider):
+        provider._client.mental_models.refresh_mental_model.side_effect = (
+            RuntimeError("refresh failed")
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_refresh_mental_model", {"mental_model_id": "mm-bad"}
+        ))
+        assert "error" in result
+
+    # -- delete --------------------------------------------------------------
+
+    def test_delete_mental_model_success(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_delete_mental_model", {"mental_model_id": "mm-001"}
+        ))
+        assert "mm-001" in result["result"]
+        assert "deleted successfully" in result["result"]
+        provider._client.mental_models.delete_mental_model.assert_awaited_once()
+
+    def test_delete_mental_model_missing_id(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_delete_mental_model", {}
+        ))
+        assert "error" in result
+
+    def test_delete_mental_model_error(self, provider):
+        provider._client.mental_models.delete_mental_model.side_effect = (
+            RuntimeError("delete failed")
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_delete_mental_model", {"mental_model_id": "mm-bad"}
+        ))
+        assert "error" in result
 

@@ -1943,7 +1943,7 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
 def _inject_aliases_into_rows(results: List[dict]) -> None:
     """Surface user-defined model aliases in the picker rows in place.
 
-    Aliases (``config.yaml`` ``model_aliases:``) are otherwise CLI-only —
+    Aliases (``config.yaml`` ``model_aliases:``) are otherwise CLI-only -
     invisible in the gateway/desktop picker, which renders these rows
     verbatim. Crucially, aggregator rows (e.g. ``openrouter``) show a curated
     subset, so an alias targeting an off-curation model is unreachable in the
@@ -1956,14 +1956,14 @@ def _inject_aliases_into_rows(results: List[dict]) -> None:
     - Prepend the alias's *resolved model id* onto ``models`` when the row's
       curated/live list omits it, so it becomes selectable. Prepending (vs.
       appending) keeps it visible above a large catalog that ``max_models``
-      may otherwise truncate. Selecting the real id routes directly — no
-      alias resolution required — and lets pricing/capabilities lookups hit.
+      may otherwise truncate. Selecting the real id routes directly - no
+      alias resolution required - and lets pricing/capabilities lookups hit.
     - Record the alias name in a per-row ``aliases`` map keyed by model id, so
       the UI can label the entry (e.g. ``qwen27b (qwen/qwen3.6-27b)``). The
       label is recorded even when the model was already in the curated list.
 
     Aliases whose target provider has no row (provider not configured /
-    authenticated) are skipped — there is no section to attach them to.
+    authenticated) are skipped - there is no section to attach them to.
     """
     try:
         _ensure_direct_aliases()

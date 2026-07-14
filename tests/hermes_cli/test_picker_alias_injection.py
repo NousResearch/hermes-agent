@@ -1,4 +1,4 @@
-"""Tests for ``_inject_aliases_into_rows`` — surfacing ``model_aliases:`` in
+"""Tests for ``_inject_aliases_into_rows`` - surfacing ``model_aliases:`` in
 the picker.
 
 Model aliases (``config.yaml`` ``model_aliases:``) are CLI-only by default and
@@ -10,12 +10,12 @@ prepends the alias's resolved model id onto the matching provider row (so it
 becomes selectable) and records the alias name in a per-row ``aliases`` map so
 the UI can label the entry (e.g. ``qwen27b (qwen/qwen3.6-27b)``).
 
-These tests exercise the helper in isolation by monkeypatching
-``DIRECT_ALIASES``, so no config, network or auth state is required.
+The unit tests exercise the helper in isolation by monkeypatching
+``DIRECT_ALIASES``. The final regression test uses a temporary config and the
+shared payload builder to cover the full picker path without network or auth.
 """
 
 from hermes_cli import model_switch
-from hermes_cli.config import load_config, save_config
 from hermes_cli.inventory import build_models_payload, load_picker_context
 from hermes_cli.model_switch import DirectAlias
 
@@ -120,27 +120,31 @@ def test_alias_matches_user_defined_provider_row(monkeypatch):
     assert rows[1]["total_models"] == 2
 
 
-def test_config_alias_reaches_picker_payload(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    cfg = load_config()
-    cfg["model"] = {"provider": "openrouter", "default": "a/model"}
-    cfg["model_aliases"] = {
-        "qwen27b": {
-            "model": "qwen/qwen3.6-27b",
-            "provider": "openrouter",
-        }
-    }
-    save_config(cfg)
-    model_switch.DIRECT_ALIASES.clear()
+def test_config_alias_is_injected_into_picker_payload(tmp_path, monkeypatch):
+    """A config.yaml alias reaches the picker payload with its UI label."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: static-gateway\n"
+        "  default: configured-model\n"
+        "providers:\n"
+        "  static-gateway:\n"
+        "    base_url: https://router.example.test/v1\n"
+        "    models: [configured-model]\n"
+        "model_aliases:\n"
+        "  picker-alias:\n"
+        "    model: aliased-model\n"
+        "    provider: static-gateway\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
 
-    def picker_rows(**_kwargs):
-        rows = [_make_provider("openrouter", ["a/model"])]
-        model_switch._inject_aliases_into_rows(rows)
-        return rows
+    payload = build_models_payload(
+        load_picker_context(), probe_custom_providers=False,
+    )
 
-    monkeypatch.setattr(model_switch, "list_authenticated_providers", picker_rows)
-
-    payload = build_models_payload(load_picker_context())
-    row = payload["providers"][0]
-    assert row["models"] == ["qwen/qwen3.6-27b", "a/model"]
-    assert row["aliases"] == {"qwen/qwen3.6-27b": "qwen27b"}
+    row = next(row for row in payload["providers"] if row["slug"] == "static-gateway")
+    assert row["models"] == ["aliased-model", "configured-model"]
+    assert row["aliases"] == {"aliased-model": "picker-alias"}

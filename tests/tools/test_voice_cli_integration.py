@@ -1145,9 +1145,33 @@ class TestVoiceSpeakResponseReal:
     def test_play_audio_uses_returned_tts_file_path(
         self, _tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
     ):
+        _isf.side_effect = lambda path: path == "/tmp/hermes_voice/actual.flac"
         cli = _make_voice_cli(_voice_tts=True)
         cli._voice_speak_response("Hello world")
         mock_play.assert_called_once_with("/tmp/hermes_voice/actual.flac")
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("tools.tts_tool.text_to_speech_tool")
+    def test_play_audio_prefers_requested_mp3_over_returned_ogg(
+        self, mock_tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
+    ):
+        def fake_tts(**kwargs):
+            mp3_path = kwargs["output_path"]
+            ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+
+        mock_tts.side_effect = fake_tts
+
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+
+        requested_path = mock_tts.call_args.kwargs["output_path"]
+        mock_play.assert_called_once_with(requested_path)
 
 
 class TestVoiceStopAndTranscribeReal:

@@ -813,7 +813,13 @@ def speak_text(text: str) -> None:
             tts_result = json.loads(raw_result) if isinstance(raw_result, str) else {}
         except Exception:
             tts_result = {}
-        audio_path = tts_result.get("file_path") or mp3_path
+
+        # Prefer the requested MP3 when the provider produced it. This
+        # preserves reliable local playback while still supporting providers
+        # that write to and return a different path.
+        audio_path = mp3_path
+        if not os.path.isfile(mp3_path) or os.path.getsize(mp3_path) == 0:
+            audio_path = tts_result.get("file_path") or mp3_path
 
         if os.path.isfile(audio_path) and os.path.getsize(audio_path) > 0:
             _debug(f"speak_text: playing {audio_path} ({os.path.getsize(audio_path)} bytes)")

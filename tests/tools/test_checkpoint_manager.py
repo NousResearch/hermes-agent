@@ -353,6 +353,46 @@ class TestRestore:
         assert result["success"] is True
         assert (work_dir / "main.py").read_text() == "original\n"
 
+    def test_restore_removes_file_created_after_checkpoint(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "before create")
+        mgr.new_turn()
+
+        created = work_dir / "created-after-checkpoint.txt"
+        created.write_text("new\n")
+
+        checkpoint = mgr.list_checkpoints(str(work_dir))[0]
+        result = mgr.restore(str(work_dir), checkpoint["hash"])
+
+        assert result["success"] is True
+        assert not created.exists()
+
+    def test_restore_removes_nested_added_file_and_empty_directory(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "before nested create")
+        mgr.new_turn()
+
+        nested_dir = work_dir / "generated" / "nested"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "result.txt").write_text("new\n")
+
+        checkpoint = mgr.list_checkpoints(str(work_dir))[0]
+        result = mgr.restore(str(work_dir), checkpoint["hash"])
+
+        assert result["success"] is True
+        assert not (work_dir / "generated").exists()
+
+    def test_restore_preserves_excluded_file_created_after_checkpoint(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "before excluded create")
+        mgr.new_turn()
+
+        excluded = work_dir / ".env"
+        excluded.write_text("LOCAL_ONLY=value\n")
+
+        checkpoint = mgr.list_checkpoints(str(work_dir))[0]
+        result = mgr.restore(str(work_dir), checkpoint["hash"])
+
+        assert result["success"] is True
+        assert excluded.read_text() == "LOCAL_ONLY=value\n"
+
     def test_restore_invalid_hash(self, mgr, work_dir):
         mgr.ensure_checkpoint(str(work_dir), "initial")
         result = mgr.restore(str(work_dir), "deadbeef1234")

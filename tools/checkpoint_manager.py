@@ -821,8 +821,32 @@ class CheckpointManager:
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
+        ref = _ref_name(dir_hash)
 
         restore_target = file_path if file_path else "."
+        # ``git checkout <commit> -- .`` restores paths present in the target
+        # tree, but it does not remove paths created after that commit. Compare
+        # the target checkpoint with the pre-rollback snapshot and remove only
+        # files that Hermes actually captured as additions. This deliberately
+        # avoids ``git clean`` so ignored, excluded, and oversized files that
+        # were never checkpointed remain untouched.
+        added_paths: List[str] = []
+        ok_current, current_commit, _ = _run_git(
+            ["rev-parse", "--verify", ref + "^{commit}"],
+            store, abs_dir,
+            allowed_returncodes={128},
+        )
+        if ok_current and current_commit and current_commit != commit_hash:
+            ok_added, added_out, _ = _run_git(
+                [
+                    "diff", "--name-only", "--diff-filter=A", "-z",
+                    commit_hash, current_commit, "--", restore_target,
+                ],
+                store, abs_dir,
+            )
+            if ok_added and added_out:
+                added_paths = [path for path in added_out.split("\x00") if path]
+
         ok, stdout, err = _run_git(
             ["checkout", commit_hash, "--", restore_target],
             store, abs_dir, timeout=_GIT_TIMEOUT * 2,
@@ -832,6 +856,37 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Restore failed: {err}",
                     "debug": err or None}
+
+        abs_workdir = _normalize_path(abs_dir)
+        parent_dirs: Set[Path] = set()
+        for rel_path in added_paths:
+            target = abs_workdir / rel_path
+            try:
+                target.parent.resolve().relative_to(abs_workdir)
+                if target.is_symlink() or target.is_file():
+                    target.unlink()
+                    parent_dirs.add(target.parent)
+                elif target.exists():
+                    return {
+                        "success": False,
+                        "error": f"Restore could not safely remove added path: {rel_path}",
+                    }
+            except (OSError, ValueError) as exc:
+                return {
+                    "success": False,
+                    "error": f"Restore could not remove added path: {rel_path}",
+                    "debug": str(exc),
+                }
+
+        # Remove empty directories left behind by deleted added files, but
+        # never recurse or cross the checkpoint working-directory boundary.
+        for parent in sorted(parent_dirs, key=lambda path: len(path.parts), reverse=True):
+            while parent != abs_workdir:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
 
         ok2, reason_out, _ = _run_git(
             ["log", "--format=%s", "-1", commit_hash], store, abs_dir,

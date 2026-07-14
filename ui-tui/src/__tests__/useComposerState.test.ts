@@ -60,11 +60,10 @@ describe('looksLikeDroppedPath', () => {
 
 describe('shouldSuppressClipboardFallbackForDashboard', () => {
   it('suppresses server clipboard fallback inside the embedded dashboard TUI', () => {
-    expect(shouldSuppressClipboardFallbackForDashboard({ HERMES_DASHBOARD_TUI: '1' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(shouldSuppressClipboardFallbackForDashboard(true)).toBe(true)
   })
 
   it('keeps native TUI clipboard fallback enabled outside the dashboard', () => {
-    expect(shouldSuppressClipboardFallbackForDashboard({} as NodeJS.ProcessEnv)).toBe(false)
-    expect(shouldSuppressClipboardFallbackForDashboard({ HERMES_DASHBOARD_TUI: '0' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(shouldSuppressClipboardFallbackForDashboard(false)).toBe(false)
   })
 })

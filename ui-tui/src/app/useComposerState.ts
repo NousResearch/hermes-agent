@@ -12,6 +12,7 @@ import type { ImageAttachResponse, InputDetectDropResponse } from '../gatewayTyp
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
@@ -97,8 +98,8 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
-export function shouldSuppressClipboardFallbackForDashboard(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.HERMES_DASHBOARD_TUI === '1'
+export function shouldSuppressClipboardFallbackForDashboard(dashboardTuiMode = DASHBOARD_TUI_MODE): boolean {
+  return dashboardTuiMode
 }
 
 export function useComposerState({

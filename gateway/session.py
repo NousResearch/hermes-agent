@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -308,7 +308,13 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
-    
+
+    # Configured Discord collaborators (owner/collaborator roster) for this
+    # source's platform. Empty unless the source is Discord and the current
+    # sender resolves to a configured identity; unknown senders do not receive
+    # the roster/policy block.
+    discord_identities: List[Any] = field(default_factory=list)
+
     # Session metadata
     session_key: str = ""
     session_id: str = ""
@@ -323,6 +329,10 @@ class SessionContext:
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
             "shared_multi_user_session": self.shared_multi_user_session,
+            "discord_identities": [
+                {"user_id": i.user_id, "display_name": i.display_name, "role": i.role}
+                for i in self.discord_identities
+            ],
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -541,6 +551,17 @@ def build_session_context_prompt(
                 "Do not promise to perform these actions. If the user asks, explain "
                 "that you can only read messages sent directly to you and respond."
             )
+
+        # Collaborative-workspace roster + visibility + permission policy.
+        # Empty string (and thus skipped) unless Discord identities are
+        # configured, so unconfigured deployments are unchanged.
+        if context.discord_identities:
+            from .discord_identity import build_collab_policy_block, visibility_label
+            _policy = build_collab_policy_block(
+                context.discord_identities, visibility_label(context.source)
+            )
+            if _policy:
+                lines.append(_policy)
     elif context.source.platform == Platform.BLUEBUBBLES:
         lines.append("")
         lines.append(
@@ -2554,6 +2575,20 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
+    # Discord collaborator roster (owner/collaborator), config-driven and empty
+    # unless this is a Discord source whose *sender* resolves to a configured
+    # identity.  Gating on the sender (not just the platform) keeps the roster
+    # and permission policy out of the system prompt for unknown/unconfigured
+    # senders, who must not learn the collaborator list.  In mixed shared
+    # channels this can intentionally omit the policy block on unknown-sender
+    # turns; the per-message speaker prefix is resolved independently per turn,
+    # so its fallback behavior is unaffected by this gate.
+    discord_identities: List[Any] = []
+    if source.platform == Platform.DISCORD:
+        from .discord_identity import identities_roster, resolve_discord_identity
+        if resolve_discord_identity(config, source.user_id) is not None:
+            discord_identities = identities_roster(config)
+
     context = SessionContext(
         source=source,
         connected_platforms=connected,
@@ -2563,6 +2598,7 @@ def build_session_context(
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
+        discord_identities=discord_identities,
     )
     
     if session_entry:

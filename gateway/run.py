@@ -10467,7 +10467,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        # Discord collaborative workspace: when the sender resolves to a
+        # configured identity, attribute the message with name/role/id and
+        # channel visibility so shared sessions (and DMs from collaborators)
+        # carry speaker + permission context.  Falls back to the plain
+        # multi-user prefix when no Discord identity is configured, preserving
+        # prior behavior.
+        _speaker_prefix = None
+        if source.platform == Platform.DISCORD:
+            from gateway.discord_identity import discord_speaker_prefix
+            _speaker_prefix = discord_speaker_prefix(source, self.config)
+        if _speaker_prefix:
+            message_text = f"{_speaker_prefix} {message_text}"
+        elif _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This

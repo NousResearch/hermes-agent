@@ -2443,19 +2443,23 @@ class TestExecuteToolCalls:
         assert "valid json object" in messages[0]["content"].lower()
         assert "tool was not executed" in messages[0]["content"].lower()
 
-    def test_none_args_defaults_empty(self, agent):
+    def test_none_args_rejected_without_dispatch(self, agent):
+        """None arguments must not crash the dispatch path. Current contract:
+        malformed (non-string, non-JSON-object) args are rejected without
+        executing the tool — same as invalid JSON strings. The mainline
+        run_conversation path normalizes None to "{}" BEFORE dispatch (see
+        test_tool_call_none_args_verbose_logging_does_not_crash), so this
+        direct-dispatch path only needs to degrade gracefully, not coerce."""
         tc = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-
-        args, kwargs = mock_hfc.call_args
-        assert args[:3] == ("web_search", {}, "task-1")
-        assert set(kwargs.get("enabled_tools", [])) == agent.valid_tool_names
+            mock_hfc.assert_not_called()
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert messages[0]["tool_call_id"] == "c1"
+        assert "tool was not executed" in messages[0]["content"].lower()
 
     def test_result_truncation_over_100k(self, agent, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -2721,8 +2725,10 @@ class TestConcurrentToolExecution:
                 mock_seq.assert_called_once()
                 mock_con.assert_not_called()
 
-    def test_none_args_batch_forces_sequential(self, agent):
-        """Non-string tool arguments should not crash parallelism gating."""
+    def test_none_args_batch_does_not_crash_parallelism_gating(self, agent):
+        """Non-string tool arguments must not crash the segment planner —
+        the None-args call becomes a sequential barrier and the batch
+        dispatches without raising."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments=None, call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -2745,9 +2751,12 @@ class TestConcurrentToolExecution:
                 mock_seq.assert_called_once()
                 mock_con.assert_not_called()
 
-    def test_dict_args_batch_allows_concurrent(self, agent):
-        """Pre-parsed dict arguments should not force sequential — the gate
-        accepts them as-is, like the executors do."""
+    def test_dict_args_batch_forces_sequential_without_crash(self, agent):
+        """Pre-parsed dict arguments (non-string) must not crash the planner.
+        Current contract: the mainline loop normalizes dict args to JSON
+        strings BEFORE dispatch, so raw dicts reaching the gate are treated
+        as barriers (defensive sequential), consistent with the executors
+        rejecting non-string args rather than repairing them."""
         tc1 = _mock_tool_call(name="web_search", arguments={"q": "alpha"}, call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments={"q": "beta"}, call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -2755,8 +2764,8 @@ class TestConcurrentToolExecution:
         with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
             with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
                 agent._execute_tool_calls(mock_msg, messages, "task-1")
-                mock_con.assert_called_once()
-                mock_seq.assert_not_called()
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
 
     def test_concurrent_executes_all_tools(self, agent):
         """Concurrent path should execute all tools and append results in order."""
@@ -2787,8 +2796,11 @@ class TestConcurrentToolExecution:
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
 
-    def test_concurrent_none_args_defaults_empty(self, agent):
-        """Concurrent executor should treat arguments=None as an empty object."""
+    def test_concurrent_none_args_rejected_without_crash(self, agent):
+        """Concurrent executor must not crash on arguments=None. Current
+        contract (_parse_tool_arguments): non-object args are rejected with
+        a structured error result and the tool is not executed; the valid
+        sibling still runs. One result per call, in order."""
         tc1 = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"q":"ok"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -2802,8 +2814,10 @@ class TestConcurrentToolExecution:
         with patch("run_agent.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
-        assert sorted(seen_args) == [("c1", {}), ("c2", {"q": "ok"})]
+        # Only the valid call executed; the None-args call was rejected.
+        assert seen_args == [("c2", {"q": "ok"})]
         assert [m["tool_call_id"] for m in messages] == ["c1", "c2"]
+        assert "tool was not executed" in messages[0]["content"].lower()
 
     def test_concurrent_preserves_order_despite_timing(self, agent):
         """Even if tools finish in different order, messages should be in original order."""

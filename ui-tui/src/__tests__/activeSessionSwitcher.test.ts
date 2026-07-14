@@ -86,10 +86,10 @@ describe('session orchestrator helpers', () => {
 
   it('turns model picker values into session-scoped draft model args', () => {
     expect(draftModelArgFromPickerValue('kimi-k2.6 --provider ollama-cloud --tui-session')).toBe(
-      'kimi-k2.6 --provider ollama-cloud'
+      'kimi-k2.6 --provider ollama-cloud --session'
     )
     expect(draftModelArgFromPickerValue('openai/gpt-5.5 --provider openai-codex --global')).toBe(
-      'openai/gpt-5.5 --provider openai-codex'
+      'openai/gpt-5.5 --provider openai-codex --session'
     )
   })
 
@@ -102,7 +102,13 @@ describe('session orchestrator helpers', () => {
 
     expect(currentSessionSelectionIndex(sessions, 'second')).toBe(1)
     expect(
-      currentSessionSelectionIndex([{ id: 'first', status: 'idle' }, { id: 'third', status: 'idle' }], 'third')
+      currentSessionSelectionIndex(
+        [
+          { id: 'first', status: 'idle' },
+          { id: 'third', status: 'idle' }
+        ],
+        'third'
+      )
     ).toBe(1)
     expect(currentSessionSelectionIndex(sessions, 'missing')).toBe(1)
     expect(currentSessionSelectionIndex([], 'missing')).toBe(0)

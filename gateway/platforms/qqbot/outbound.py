@@ -1,18 +1,17 @@
 """Shared QQ Bot REST API client.
 
-Used by both the live ``QQAdapter`` (through its own internal methods) and
-the standalone sender (``_standalone_send``).  Provides:
+Used by both the live ``QQAdapter`` and the standalone sender.  Provides:
 
-* Token acquisition and refresh
-* Authenticated API requests
-* Target resolution from chat_id prefixes (standalone, not dependent on
-  the live adapter's inbound ``_chat_type_map``)
+* Token acquisition with singleflight + invalidation
+* Authenticated API requests (raises :class:`QQApiError` with ``status_code``)
+* Target resolution from chat_id prefixes
 * File upload via ``ChunkedUploader``
 * Text and media message sending
+* Text chunking
 
-The adapter still owns its own lifecycle (WebSocket, reconnect, HTTP client
-session); the standalone sender creates a temporary ``QQApiClient`` with an
-``httpx.AsyncClient`` that lives only for the duration of the send.
+The adapter and standalone both use the same ``QQApiClient`` class; the
+adapter passes its persistent ``httpx.AsyncClient`` while the standalone
+creates a temporary one.
 """
 
 from __future__ import annotations
@@ -52,8 +51,22 @@ _VIDEO_EXTS: set[str] = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _VOICE_EXTS: set[str] = {".silk", ".wav", ".mp3", ".flac", ".ogg", ".opus"}
 
 
-def classify_media_type(ext: str, *, force_document: bool = False) -> int:
+def classify_media_type(
+    ext: str,
+    *,
+    is_voice: bool = False,
+    force_document: bool = False,
+) -> int:
     """Classify a file extension into a QQ Bot ``file_type`` constant.
+
+    Args:
+        ext: File extension (e.g. ``.jpg``, ``.mp4``).  Case-insensitive.
+        is_voice: If ``True``, audio extensions are classified as
+            ``MEDIA_TYPE_VOICE`` even in the absence of explicit voice
+            markers.  Primarily set by the tool-layer ``_is_voice`` flag
+            from ``MEDIA:`` tag parsing.
+        force_document: If ``True``, ALL files are classified as
+            ``MEDIA_TYPE_FILE``.  Highest priority.
 
     Returns one of ``MEDIA_TYPE_IMAGE``, ``MEDIA_TYPE_VIDEO``,
     ``MEDIA_TYPE_VOICE``, or ``MEDIA_TYPE_FILE``.
@@ -65,49 +78,73 @@ def classify_media_type(ext: str, *, force_document: bool = False) -> int:
         return MEDIA_TYPE_IMAGE
     if ext in _VIDEO_EXTS:
         return MEDIA_TYPE_VIDEO
+    if is_voice and ext in _VOICE_EXTS:
+        return MEDIA_TYPE_VOICE
     if ext in _VOICE_EXTS:
         return MEDIA_TYPE_VOICE
     return MEDIA_TYPE_FILE
 
 
+# ── Structured API exception ───────────────────────────────────────────
+
+class QQApiError(RuntimeError):
+    """Raised by :meth:`QQApiClient.api_request` on HTTP errors.
+
+    Carries ``status_code`` so callers can implement targeted fallback
+    logic (e.g. C2C → group retry on 404).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 0,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 # ── Target resolution (standalone — does NOT depend on _chat_type_map) ──
 
-def resolve_target(chat_id: str) -> Tuple[str, str]:
-    """Resolve a QQBot chat_id into ``(target_type, target_id)``.
+def resolve_target(chat_id: str) -> Tuple[str, str, bool]:
+    """Resolve a QQBot chat_id into ``(target_type, target_id, has_prefix)``.
 
-    Handles explicit prefixes:
-      ``c2c:<openid>`` → ``('c2c', '<openid>')``
-      ``user:<openid>`` → ``('c2c', '<openid>')``
-      ``group:<openid>`` → ``('group', '<openid>')``
-      ``guild:<id>``     → ``('guild', '<id>')``
+    Handles explicit prefixes::
 
-    Raw OpenIDs (no prefix) are returned as ``('c2c', '<openid>')``
-    — the caller may probe and fall back to group on 404.
+        c2c:<openid>  → ('c2c', '<openid>', True)
+        user:<openid> → ('c2c', '<openid>', True)
+        group:<openid> → ('group', '<openid>', True)
+        guild:<id>     → ('guild', '<id>', True)
+
+    Raw OpenIDs (no prefix) are returned as ``('c2c', '<openid>', False)``
+    — the caller may probe C2C first and fall back to group ONLY on 404.
+    Explicit-prefix targets MUST NOT fallback.
     """
-    raw = str(chat_id)
+    raw = str(chat_id).strip()
     if ":" in raw:
         prefix, rest = raw.split(":", 1)
         prefix = prefix.lower()
         if prefix in {"c2c", "user"}:
-            return "c2c", rest
+            return "c2c", rest, True
         if prefix == "group":
-            return "group", rest
+            return "group", rest, True
         if prefix == "guild":
-            return "guild", rest
-    # Raw OpenID — default to C2C, caller may probe group on 404
-    if raw.strip():
-        return "c2c", raw.strip()
-    return "unknown", raw
+            return "guild", rest, True
+    # Raw OpenID — default to C2C; caller may probe group on 404 only
+    if raw:
+        return "c2c", raw, False
+    return "unknown", raw, False
 
 
 # ── Shared API client ──────────────────────────────────────────────────
 
 class QQApiClient:
-    """Authenticated QQ Bot REST client.
+    """Authenticated QQ Bot REST client — single source of truth.
 
-    Manages access token lifecycle and provides authenticated API request
-    and file upload methods.  Can be backed by either an adapter-owned
-    persistent session or a temporary standalone client.
+    Manages access token lifecycle with singleflight-concurrent caching
+    and public invalidation.  Provides authenticated API requests and
+    file uploads.  Backed by an ``httpx.AsyncClient`` passed at init
+    (adapter-owned persistent or standalone temporary).
     """
 
     def __init__(
@@ -120,42 +157,74 @@ class QQApiClient:
     ):
         self._app_id = app_id
         self._client_secret = client_secret
-        self._http_client = http_client  # httpx.AsyncClient or aiohttp.ClientSession
+        self._http_client = http_client  # httpx.AsyncClient
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
+        self._token_lock: asyncio.Lock = asyncio.Lock()
         self._log_tag = log_tag
 
-    # ── Token ──────────────────────────────────────────────────────────
+    # ── Public token API ───────────────────────────────────────────────
 
     async def ensure_token(self) -> str:
-        """Return a valid access token, refreshing if necessary."""
+        """Return a valid access token, refreshing if needed.
+
+        Uses ``asyncio.Lock`` for singleflight: concurrent callers
+        block on the lock and the second caller re-checks the cache
+        after the first finishes the refresh.
+        """
         now = time.time()
         if self._access_token and now < self._token_expires_at - 60:
             return self._access_token
 
-        resp = await self._http_client.post(
-            TOKEN_URL,
-            json={"appId": self._app_id, "clientSecret": self._client_secret},
-            timeout=DEFAULT_API_TIMEOUT,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"QQ Bot token request failed: {resp.status_code}"
+        async with self._token_lock:
+            # Double-check after acquiring the lock
+            now = time.time()
+            if self._access_token and now < self._token_expires_at - 60:
+                return self._access_token
+
+            resp = await self._http_client.post(
+                TOKEN_URL,
+                json={"appId": self._app_id, "clientSecret": self._client_secret},
+                timeout=DEFAULT_API_TIMEOUT,
             )
-        data = resp.json()
-        token = data.get("access_token")
-        if not token:
-            raise RuntimeError(
-                f"QQ Bot token response missing access_token: {data}"
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"QQ Bot token request failed: {resp.status_code}"
+                )
+            data = resp.json()
+            token = data.get("access_token")
+            if not token:
+                raise RuntimeError(
+                    f"QQ Bot token response missing access_token: {data}"
+                )
+            expires_in = int(data.get("expires_in", 7200))
+            self._access_token = token
+            self._token_expires_at = now + expires_in
+            logger.info(
+                "[%s] Access token refreshed, expires in %ds",
+                self._log_tag, expires_in,
             )
-        expires_in = int(data.get("expires_in", 7200))
-        self._access_token = token
-        self._token_expires_at = now + expires_in
-        logger.info(
-            "[%s] Access token refreshed, expires in %ds",
-            self._log_tag, expires_in,
-        )
-        return token
+            return token
+
+    def invalidate_token(self) -> None:
+        """Clear the cached access token.
+
+        Called by the adapter on 4004 (invalid token) so the next
+        ``ensure_token()`` or ``api_request()`` call forces a refresh.
+        """
+        logger.info("[%s] Token invalidated", self._log_tag)
+        self._access_token = None
+        self._token_expires_at = 0.0
+
+    # Read-only mirrors for backward compat (adapter uses these via
+    # ``self._api._access_token`` / ``self._api._token_expires_at``).
+    @property
+    def access_token(self) -> Optional[str]:
+        return self._access_token
+
+    @property
+    def token_expires_at(self) -> float:
+        return self._token_expires_at
 
     # ── API request ────────────────────────────────────────────────────
 
@@ -173,7 +242,10 @@ class QQApiClient:
         body: Optional[Dict[str, Any]] = None,
         timeout: float = DEFAULT_API_TIMEOUT,
     ) -> Dict[str, Any]:
-        """Make an authenticated REST API request."""
+        """Make an authenticated REST API request.
+
+        Raises :class:`QQApiError` with ``status_code`` on HTTP ≥ 400.
+        """
         token = await self.ensure_token()
         headers = self._auth_headers(token)
         resp = await self._http_client.request(
@@ -185,9 +257,10 @@ class QQApiClient:
         )
         data = resp.json()
         if resp.status_code >= 400:
-            raise RuntimeError(
+            raise QQApiError(
                 f"QQ Bot API error [{resp.status_code}] {path}: "
-                f"{data.get('message', data)}"
+                f"{data.get('message', data)}",
+                status_code=resp.status_code,
             )
         return data
 

@@ -30,7 +30,7 @@ pytest.importorskip("lark_oapi", reason="lark_oapi not installed — skipping Fe
 def _make_adapter():
     """Create a minimal FeishuAdapter for testing (no connection)."""
     from gateway.config import PlatformConfig
-    from gateway.platforms.feishu import FeishuAdapter
+    from plugins.platforms.feishu.adapter import FeishuAdapter
 
     config = PlatformConfig(extra={"streaming_card": True})
     adapter = FeishuAdapter(config)
@@ -108,14 +108,14 @@ class TestBuildStreamingCardJson(unittest.TestCase):
     """Test the static card JSON builder."""
 
     def test_card_json_has_streaming_mode_enabled(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         card_str = FeishuAdapter._build_streaming_card_json("")
         card = json.loads(card_str)
         assert card["streaming_mode"] is True
 
     def test_card_json_has_streaming_config(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         card_str = FeishuAdapter._build_streaming_card_json("")
         card = json.loads(card_str)
@@ -125,7 +125,7 @@ class TestBuildStreamingCardJson(unittest.TestCase):
         assert sc["print_strategy"] in ("fast", "delay")
 
     def test_card_json_has_markdown_element_with_id(self):
-        from gateway.platforms.feishu import FeishuAdapter, _STREAMING_CARD_ELEMENT_ID
+        from plugins.platforms.feishu.adapter import FeishuAdapter, _STREAMING_CARD_ELEMENT_ID
 
         card_str = FeishuAdapter._build_streaming_card_json("hello")
         card = json.loads(card_str)
@@ -136,14 +136,14 @@ class TestBuildStreamingCardJson(unittest.TestCase):
         assert elements[0]["element_id"] == _STREAMING_CARD_ELEMENT_ID
 
     def test_card_json_default_empty_content(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         card_str = FeishuAdapter._build_streaming_card_json("")
         card = json.loads(card_str)
         assert card["body"]["elements"][0]["content"] == ""
 
     def test_card_json_schema_2(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         card_str = FeishuAdapter._build_streaming_card_json("")
         card = json.loads(card_str)
@@ -322,7 +322,7 @@ class TestRequiresEditFinalize(unittest.TestCase):
 
     def test_requires_edit_finalize_false_when_not_configured(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig()  # no streaming_card in extra
         adapter = FeishuAdapter(config)
@@ -490,7 +490,7 @@ class TestStreamingCardFallback(unittest.TestCase):
 
     def test_streaming_cards_enabled_false_by_default(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig()  # no streaming_card in extra
         adapter = FeishuAdapter(config)
@@ -517,19 +517,19 @@ class TestStreamingCardElementLimit(unittest.TestCase):
         assert state.element_count == 1
 
     def test_element_limit_constant(self):
-        from gateway.platforms.feishu import _STREAMING_CARD_ELEMENT_LIMIT
+        from plugins.platforms.feishu.adapter import _STREAMING_CARD_ELEMENT_LIMIT
 
         assert _STREAMING_CARD_ELEMENT_LIMIT == 180
 
     def test_split_card_method_exists(self):
         """_cardkit_split_card method should exist and be callable."""
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         assert hasattr(FeishuAdapter, "_cardkit_split_card")
 
     def test_streaming_params_match_plugin_v11(self):
         """Streaming params should match hermes-lark-streaming plugin v0.11."""
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _STREAMING_CARD_PRINT_FREQUENCY_MS,
             _STREAMING_CARD_PRINT_STEP,
             _STREAMING_CARD_PRINT_STRATEGY,
@@ -541,7 +541,7 @@ class TestStreamingCardElementLimit(unittest.TestCase):
 
     def test_transient_error_codes_defined(self):
         """Transient error code constants should be defined for retry logic."""
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _CARDKIT_TRANSIENT_ERROR_CODES,
             _CARDKIT_GATEWAY_TIMEOUT,
             _CARDKIT_INTERNAL_ERROR,
@@ -566,7 +566,7 @@ class TestCardkitApiCallRetry(unittest.TestCase):
 
     def test_retry_on_transient_error_then_succeed(self):
         """Should retry on transient error code and succeed on next attempt."""
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _CARDKIT_GATEWAY_TIMEOUT,
         )
 
@@ -617,7 +617,7 @@ class TestCardkitApiCallRetry(unittest.TestCase):
 
     def test_exhausted_retries_raises(self):
         """After exhausting all retries, should raise the last transient error."""
-        from gateway.platforms.feishu import _CARDKIT_INTERNAL_ERROR
+        from plugins.platforms.feishu.adapter import _CARDKIT_INTERNAL_ERROR
 
         adapter = _make_adapter()
 

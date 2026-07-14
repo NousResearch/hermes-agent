@@ -188,6 +188,40 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (user observes self, AI observes others). Use `observation` object for granular control |
 | `observation` | object | — | Per-peer observation config (see Observation section) |
 
+### Base Context Injection
+
+Controls which sections of the first-turn Honcho context are injected into the system prompt. Both camelCase (`baseContext`, `includeObservations`) and snake_case (`base_context`, `include_observations`) keys are accepted at every level.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `base_context` / `baseContext` | object | — | Root-level injection config (all fields default to `true`) |
+| `base_context.include_session_summary` | bool | `true` | Include the session summary block ("Previously on Honcho…") |
+| `base_context.user_representation` | object | — | User-side peer representation config |
+| `base_context.user_representation.include_observations` | bool | `true` | Include user observations in the context |
+| `base_context.user_representation.include_peer_card` | bool | `true` | Include the user's peer card (name, description) |
+| `base_context.ai_representation` | object | — | AI-side peer representation config |
+| `base_context.ai_representation.include_observations` | bool | `true` | Include AI observations in the context |
+| `base_context.ai_representation.include_peer_card` | bool | `true` | Include the AI's peer card |
+
+**Host vs root precedence.** Host-level (`hosts.<host>.base_context`) values override root-level values **per leaf key** (merge, not replace). A host block can override a single field without re-declaring the whole object:
+
+```json
+{
+  "base_context": {
+    "user_representation": {"include_observations": false, "include_peer_card": false}
+  },
+  "hosts": {
+    "hermes": {
+      "base_context": {
+        "user_representation": {"include_peer_card": true}
+      }
+    }
+  }
+}
+```
+
+In this example the `hermes` host gets `include_observations=false` (inherited from root) and `include_peer_card=true` (overridden at host level).
+
 ### Write Behavior
 
 | Key | Type | Default | Description |

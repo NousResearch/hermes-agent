@@ -98,6 +98,21 @@ class HonchoSessionManager:
         self._honcho = honcho
         self._context_tokens = context_tokens
         self._config = config
+        self._base_context_include_session_summary = (
+            getattr(config, "base_context_include_session_summary", True) if config else True
+        )
+        self._base_context_user_include_observations = (
+            getattr(config, "base_context_user_include_observations", True) if config else True
+        )
+        self._base_context_user_include_peer_card = (
+            getattr(config, "base_context_user_include_peer_card", True) if config else True
+        )
+        self._base_context_ai_include_observations = (
+            getattr(config, "base_context_ai_include_observations", True) if config else True
+        )
+        self._base_context_ai_include_peer_card = (
+            getattr(config, "base_context_ai_include_peer_card", True) if config else True
+        )
         self._runtime_user_peer_name = runtime_user_peer_name
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
         self._cache: dict[str, HonchoSession] = {}
@@ -723,29 +738,45 @@ class HonchoSessionManager:
         # Fresh sessions (per-session cold start, or first-ever per-directory)
         # return null summary — the guard below handles that gracefully.
         # Per-directory returning sessions get their accumulated summary.
-        try:
-            honcho_session = self._sessions_cache.get(session.honcho_session_id)
-            if honcho_session:
-                ctx = honcho_session.context(summary=True)
-                if ctx.summary and getattr(ctx.summary, "content", None):
-                    result["summary"] = ctx.summary.content
-        except Exception as e:
-            logger.debug("Failed to fetch session summary from Honcho: %s", e)
+        if self._base_context_include_session_summary:
+            try:
+                honcho_session = self._sessions_cache.get(session.honcho_session_id)
+                if honcho_session:
+                    ctx = honcho_session.context(summary=True)
+                    if ctx.summary and getattr(ctx.summary, "content", None):
+                        result["summary"] = ctx.summary.content
+            except Exception as e:
+                logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
         try:
-            user_ctx = self._fetch_peer_context(session.user_peer_id, search_query=user_message or None, target=session.user_peer_id)
-            result["representation"] = user_ctx["representation"]
-            result["card"] = "\n".join(user_ctx["card"])
+            user_ctx = self._fetch_peer_context(
+                session.user_peer_id,
+                search_query=user_message or None,
+                target=session.user_peer_id,
+                include_observations=self._base_context_user_include_observations,
+                include_peer_card=self._base_context_user_include_peer_card,
+            )
+            if self._base_context_user_include_observations:
+                result["representation"] = user_ctx["representation"]
+            if self._base_context_user_include_peer_card:
+                result["card"] = "\n".join(user_ctx["card"])
         except Exception as e:
             logger.warning("Failed to fetch user context from Honcho: %s", e)
-
         # Also fetch AI peer's own representation so Hermes knows itself.
         try:
-            ai_ctx = self._fetch_peer_context(session.assistant_peer_id, target=session.assistant_peer_id)
-            result["ai_representation"] = ai_ctx["representation"]
-            result["ai_card"] = "\n".join(ai_ctx["card"])
+            ai_ctx = self._fetch_peer_context(
+                session.assistant_peer_id,
+                target=session.assistant_peer_id,
+                include_observations=self._base_context_ai_include_observations,
+                include_peer_card=self._base_context_ai_include_peer_card,
+            )
+            if self._base_context_ai_include_observations:
+                result["ai_representation"] = ai_ctx["representation"]
+            if self._base_context_ai_include_peer_card:
+                result["ai_card"] = "\n".join(ai_ctx["card"])
         except Exception as e:
             logger.debug("Failed to fetch AI peer context from Honcho: %s", e)
+
 
         return result
 
@@ -929,14 +960,20 @@ class HonchoSessionManager:
             return [str(item) for item in card if item]
         return [str(card)]
 
-    def _fetch_peer_card(self, peer_id: str, *, target: str | None = None) -> list[str]:
+    def _fetch_peer_card(
+        self,
+        peer_id: str,
+        *,
+        target: str | None = None,
+        peer: Any | None = None,
+    ) -> list[str]:
         """Fetch a peer card directly from the peer object.
 
         This avoids relying on session.context(), which can return an empty
         peer_card for per-session messaging sessions even when the peer itself
         has a populated card.
         """
-        peer = self._get_or_create_peer(peer_id)
+        peer = peer or self._get_or_create_peer(peer_id)
         getter = getattr(peer, "get_card", None)
         if callable(getter):
             return self._normalize_card(getter(target=target) if target is not None else getter())
@@ -953,39 +990,46 @@ class HonchoSessionManager:
         search_query: str | None = None,
         *,
         target: str | None = None,
+        include_observations: bool = True,
+        include_peer_card: bool = True,
     ) -> dict[str, Any]:
-        """Fetch representation + peer card directly from a peer object."""
+        """Fetch configured peer base-context fields from a peer object."""
+        if not include_observations and not include_peer_card:
+            return {"representation": "", "card": []}
+
         peer = self._get_or_create_peer(peer_id)
         representation = ""
         card: list[str] = []
 
-        try:
-            context_kwargs: dict[str, Any] = {}
-            if target is not None:
-                context_kwargs["target"] = target
-            if search_query is not None:
-                context_kwargs["search_query"] = search_query
-            ctx = peer.context(**context_kwargs) if context_kwargs else peer.context()
-            representation = (
-                getattr(ctx, "representation", None)
-                or getattr(ctx, "peer_representation", None)
-                or ""
-            )
-            card = self._normalize_card(getattr(ctx, "peer_card", None))
-        except Exception as e:
-            logger.debug("Direct peer.context() failed for '%s': %s", peer_id, e)
-
-        if not representation:
+        if include_observations:
             try:
+                context_kwargs: dict[str, Any] = {}
+                if target is not None:
+                    context_kwargs["target"] = target
+                if search_query is not None:
+                    context_kwargs["search_query"] = search_query
+                ctx = peer.context(**context_kwargs) if context_kwargs else peer.context()
                 representation = (
-                    peer.representation(target=target) if target is not None else peer.representation()
-                ) or ""
+                    getattr(ctx, "representation", None)
+                    or getattr(ctx, "peer_representation", None)
+                    or ""
+                )
+                if include_peer_card:
+                    card = self._normalize_card(getattr(ctx, "peer_card", None))
             except Exception as e:
-                logger.debug("Direct peer.representation() failed for '%s': %s", peer_id, e)
+                logger.debug("Direct peer.context() failed for '%s': %s", peer_id, e)
 
-        if not card:
+            if not representation:
+                try:
+                    representation = (
+                        peer.representation(target=target) if target is not None else peer.representation()
+                    ) or ""
+                except Exception as e:
+                    logger.debug("Direct peer.representation() failed for '%s': %s", peer_id, e)
+
+        if include_peer_card and not card:
             try:
-                card = self._fetch_peer_card(peer_id, target=target)
+                card = self._fetch_peer_card(peer_id, target=target, peer=peer)
             except Exception as e:
                 logger.debug("Direct peer card fetch failed for '%s': %s", peer_id, e)
 

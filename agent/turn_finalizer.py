@@ -27,6 +27,30 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _sync_final_response_to_last_assistant(messages, final_response):
+    """Write the hook-transformed ``final_response`` back into the turn's
+    last assistant text message so persisted history matches what was
+    delivered to the user (#44239).
+
+    Walks backwards only within the current turn (stops at the user
+    message that started it, mirroring the reasoning extraction below).
+    Only a plain-text assistant message is updated — a tool-call message
+    or multimodal content is never touched. Returns True if a message
+    was updated.
+    """
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "user":
+            break  # turn boundary — never rewrite a prior turn
+        if msg.get("role") == "assistant":
+            if msg.get("tool_calls") or not isinstance(msg.get("content"), str):
+                break
+            msg["content"] = final_response
+            return True
+    return False
+
+
 def finalize_turn(
     agent,
     *,
@@ -184,10 +208,14 @@ def finalize_turn(
         _cleanup_errors.append(f"cleanup_task_resources: {_cleanup_err}")
         logger.error("finalize_turn: _cleanup_task_resources failed: %s", _cleanup_err, exc_info=True)
 
-    # Persist session to both JSON log and SQLite only after private retry
-    # scaffolding has been removed. Otherwise a later user "continue" turn
-    # can replay assistant("(empty)") / recovery nudges and fall into the
-    # same empty-response loop again.
+    # Prepare the durable transcript before it is read or persisted. Drop
+    # private retry scaffolding first: otherwise a later user "continue"
+    # turn can replay assistant("(empty)") / recovery nudges and fall into
+    # the same empty-response loop again. Then close any interrupted tool
+    # tail and enforce the "delivered final_response ⇒ assistant row"
+    # invariant. The actual _persist_session call is deferred until AFTER
+    # the transform_llm_output hook below, so a plugin-transformed response
+    # is what lands in the session history (#44239).
     try:
         agent._drop_trailing_empty_response_scaffolding(messages)
 
@@ -227,11 +255,9 @@ def finalize_turn(
                 _tail_role = None
             if _tail_role != "assistant":
                 messages.append({"role": "assistant", "content": final_response})
-
-        agent._persist_session(messages, conversation_history)
-    except Exception as _persist_err:
-        _cleanup_errors.append(f"persist_session: {_persist_err}")
-        logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
+    except Exception as _prep_err:
+        _cleanup_errors.append(f"finalize_prep: {_prep_err}")
+        logger.error("finalize_turn: transcript prep failed: %s", _prep_err, exc_info=True)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -382,6 +408,26 @@ def finalize_turn(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    # Persist session to both JSON log and SQLite. This runs AFTER the
+    # transform_llm_output hook so a plugin-transformed response is what
+    # lands in the session history (#44239). Without this, the user sees
+    # the transformed text this turn but the raw model output is replayed
+    # on resume / next turn. The transformed text is synced into the
+    # turn's last assistant message first, so result["messages"], the JSON
+    # log, and SQLite all agree with final_response. Persistence stays
+    # BEFORE post_llm_call: that hook is observability-only and its
+    # plugins may read the session store expecting the turn to be there.
+    # Guarded like the other post-loop cleanup surfaces so an SQLite write
+    # failure surfaces on ``cleanup_errors`` instead of killing the turn
+    # (#8049); the transcript-prep steps above already ran regardless.
+    try:
+        if _response_transformed:
+            _sync_final_response_to_last_assistant(messages, final_response)
+        agent._persist_session(messages, conversation_history)
+    except Exception as _persist_err:
+        _cleanup_errors.append(f"persist_session: {_persist_err}")
+        logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

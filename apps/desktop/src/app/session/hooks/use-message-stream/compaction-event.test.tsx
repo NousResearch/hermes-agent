@@ -65,6 +65,7 @@ describe('useMessageStream compaction lifecycle', () => {
 
   it.each([
     ['message.delta', { text: 'resumed' }],
+    ['thinking.delta', { text: 'still working' }],
     ['reasoning.delta', { text: 'thinking again' }],
     ['tool.start', { name: 'terminal', tool_id: 'tool-1' }]
   ] as const)('clears the stale compaction phase when %s resumes the turn', async (type, payload) => {

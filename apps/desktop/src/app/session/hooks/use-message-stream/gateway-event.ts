@@ -52,6 +52,7 @@ import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, 
 
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
+  'thinking.delta',
   'reasoning.delta',
   'reasoning.available',
   'moa.reference',

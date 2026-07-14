@@ -36,8 +36,11 @@ jobs:
                 continue ;;
             esac
 
-            # Check if email is in AUTHOR_MAP (either as a key or matches noreply pattern)
-            if echo "$email" | grep -qP '\+.*@users\.noreply\.github\.com'; then
+            # Check if email is in AUTHOR_MAP (either as a key or a GitHub noreply alias).
+            # scripts/release.py can resolve both numeric noreply addresses
+            # (123+user@users.noreply.github.com) and username-only aliases
+            # (user@users.noreply.github.com), so the CI guard should accept both.
+            if echo "$email" | grep -Eq '@users\.noreply\.github\.com$'; then
               continue  # GitHub noreply emails auto-resolve
             fi
 

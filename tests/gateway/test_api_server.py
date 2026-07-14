@@ -128,6 +128,23 @@ class TestResponseStore:
         assert store.get("resp_2") is None
         assert store.get("resp_1") is not None
 
+    def test_lru_clock_tie_order_survives_restart(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(time, "time_ns", lambda: 1_000_000_000)
+        db_path = tmp_path / "responses.db"
+
+        store = ResponseStore(max_size=2, db_path=str(db_path))
+        store.put("resp_1", {"output": "one"})
+        store.put("resp_2", {"output": "two"})
+        store.close()
+
+        reopened = ResponseStore(max_size=2, db_path=str(db_path))
+        reopened.put("resp_3", {"output": "three"})
+
+        assert reopened.get("resp_1") is None
+        assert reopened.get("resp_2") is not None
+        assert reopened.get("resp_3") is not None
+        reopened.close()
+
     def test_update_existing_key(self):
         store = ResponseStore(max_size=10)
         store.put("resp_1", {"output": "v1"})

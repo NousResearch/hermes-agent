@@ -21,6 +21,7 @@ LEGACY_CLIENT_SECRET_NAME = "google_client_secret.json"
 LEGACY_PENDING_NAME = "google_oauth_pending.json"
 AUTH_CONTEXTS_NAME = "google_workspace_auth_contexts.json"
 _LEGACY_MIGRATION_KEY = "legacy_default_migrated"
+_LEGACY_SUPPRESSED_KEY = "legacy_default_suppressed_fields"
 
 _CONTEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
@@ -146,6 +147,12 @@ def _merge_legacy_default(data: dict[str, Any]) -> None:
     """
     if data.get(_LEGACY_MIGRATION_KEY) is True:
         return
+    suppressed_raw = data.get(_LEGACY_SUPPRESSED_KEY, [])
+    suppressed = (
+        {str(field) for field in suppressed_raw}
+        if isinstance(suppressed_raw, list)
+        else set()
+    )
     legacy_payloads: dict[str, dict[str, Any] | None] = {}
     all_readable = True
     for key, path in (
@@ -153,6 +160,9 @@ def _merge_legacy_default(data: dict[str, Any]) -> None:
         ("client_secret", legacy_client_secret_path()),
         ("pending_auth", legacy_pending_path()),
     ):
+        if key in suppressed:
+            legacy_payloads[key] = None
+            continue
         readable, payload = _read_json_file(path)
         if not readable:
             all_readable = False
@@ -183,21 +193,44 @@ def _empty_store() -> dict[str, Any]:
     return {"version": 1, "default_contexts": {}, "contexts": {}}
 
 
-def load_store() -> dict[str, Any]:
+def _load_store(*, strict: bool = False) -> dict[str, Any]:
     path = store_path()
     if not path.exists():
         return _empty_store()
     try:
-        data = json.loads(path.read_text())
-    except Exception:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        if strict:
+            raise RuntimeError(
+                f"Auth context store is unreadable; refusing to overwrite {path}"
+            ) from exc
         return _empty_store()
     if not isinstance(data, dict):
+        if strict:
+            raise RuntimeError(
+                f"Auth context store is unreadable; refusing to overwrite {path}"
+            )
         return _empty_store()
     data.setdefault("version", 1)
-    data.setdefault("default_contexts", {})
-    data.setdefault("contexts", {})
+    for key in ("default_contexts", "contexts"):
+        if key not in data:
+            data[key] = {}
+        elif not isinstance(data[key], dict):
+            if strict:
+                raise RuntimeError(
+                    f"Auth context store is unreadable; refusing to overwrite {path}"
+                )
+            return _empty_store()
     _merge_legacy_default(data)
     return data
+
+
+def load_store() -> dict[str, Any]:
+    return _load_store()
+
+
+def _load_store_for_update() -> dict[str, Any]:
+    return _load_store(strict=True)
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
@@ -361,20 +394,27 @@ def set_pending_auth(context: str, payload: dict[str, Any]) -> None:
     save_store(store)
 
 
+def _suppress_legacy_fields(store: dict[str, Any], fields: set[str]) -> None:
+    existing = store.get(_LEGACY_SUPPRESSED_KEY, [])
+    suppressed = {str(field) for field in existing} if isinstance(existing, list) else set()
+    store[_LEGACY_SUPPRESSED_KEY] = sorted(suppressed | fields)
+
+
 def clear_pending_auth(context: str = "default") -> None:
     context = validate_context_name(context)
     store_existed = store_path().exists()
+    store = _load_store_for_update() if store_existed else _empty_store()
     if context == "default":
-        # Remove the legacy source before loading/saving the store so a
-        # pre-marker store cannot migrate the pending state back in.
+        # Validate the named store before unlinking anything, then tombstone only
+        # pending auth so unrelated transient legacy files can still migrate.
         legacy_pending_path().unlink(missing_ok=True)
-    store = load_store()
+        if store_existed:
+            _suppress_legacy_fields(store, {"pending_auth"})
     changed = False
     if context in store.get("contexts", {}):
         store["contexts"][context].pop("pending_auth", None)
         changed = True
     if context == "default" and store_existed:
-        store[_LEGACY_MIGRATION_KEY] = True
         changed = True
     if changed:
         save_store(store)
@@ -383,19 +423,20 @@ def clear_pending_auth(context: str = "default") -> None:
 def delete_token(context: str = "default") -> None:
     context = validate_context_name(context)
     store_existed = store_path().exists()
+    store = _load_store_for_update() if store_existed else _empty_store()
     if context == "default":
-        # Destructive intent wins over legacy migration. Unlink sources first
-        # so old stores without the one-time marker cannot resurrect them.
+        # Validate the named store before unlinking anything, then tombstone only
+        # token-bearing fields so unrelated transient legacy files can migrate.
         legacy_token_path().unlink(missing_ok=True)
         legacy_pending_path().unlink(missing_ok=True)
-    store = load_store()
+        if store_existed:
+            _suppress_legacy_fields(store, {"token", "pending_auth"})
     changed = False
     if context in store.get("contexts", {}):
         store["contexts"][context].pop("token", None)
         store["contexts"][context].pop("pending_auth", None)
         changed = True
     if context == "default" and store_existed:
-        store[_LEGACY_MIGRATION_KEY] = True
         changed = True
     if changed:
         save_store(store)

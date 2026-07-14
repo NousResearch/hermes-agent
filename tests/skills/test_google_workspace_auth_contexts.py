@@ -285,6 +285,89 @@ class TestCommandScopeGate:
         )
         assert auth_contexts.get_pending_auth("default") == {}
 
+    def test_delete_suppresses_only_token_fields_during_partial_migration(
+        self, auth_contexts
+    ):
+        auth_contexts.store_path().write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "default_contexts": {},
+                    "contexts": {"named": {"name": "named"}},
+                }
+            )
+        )
+        auth_contexts.legacy_token_path().write_text('{"token": "stale"}')
+        auth_contexts.legacy_client_secret_path().write_text("{")
+
+        auth_contexts.delete_token("default")
+
+        stored = json.loads(auth_contexts.store_path().read_text())
+        assert "legacy_default_migrated" not in stored
+        assert set(stored["legacy_default_suppressed_fields"]) == {
+            "pending_auth",
+            "token",
+        }
+
+        auth_contexts.legacy_client_secret_path().write_text(
+            '{"installed": {"client_id": "repaired"}}'
+        )
+        auth_contexts.legacy_token_path().write_text(
+            '{"token": "stale-writer-returned"}'
+        )
+        assert (
+            auth_contexts.get_client_secret("default")["installed"]["client_id"]
+            == "repaired"
+        )
+        assert auth_contexts.get_token_payload("default") == {}
+
+    def test_clear_pending_suppresses_only_pending_during_partial_migration(
+        self, auth_contexts
+    ):
+        auth_contexts.store_path().write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "default_contexts": {},
+                    "contexts": {"named": {"name": "named"}},
+                }
+            )
+        )
+        auth_contexts.legacy_token_path().write_text("{")
+        auth_contexts.legacy_pending_path().write_text('{"state": "stale"}')
+
+        auth_contexts.clear_pending_auth("default")
+
+        stored = json.loads(auth_contexts.store_path().read_text())
+        assert "legacy_default_migrated" not in stored
+        assert stored["legacy_default_suppressed_fields"] == ["pending_auth"]
+
+        auth_contexts.legacy_token_path().write_text('{"token": "repaired"}')
+        auth_contexts.legacy_pending_path().write_text(
+            '{"state": "stale-writer-returned"}'
+        )
+        assert auth_contexts.get_token_payload("default")["token"] == "repaired"
+        assert auth_contexts.get_pending_auth("default") == {}
+
+    def test_destructive_operations_refuse_to_overwrite_malformed_store(
+        self, auth_contexts
+    ):
+        malformed = '{"contexts":{"named":{"client_secret":"named-secret"}'
+        for operation in (
+            auth_contexts.delete_token,
+            auth_contexts.clear_pending_auth,
+        ):
+            auth_contexts.store_path().write_text(malformed)
+            auth_contexts.legacy_token_path().write_text('{"token": "legacy"}')
+            auth_contexts.legacy_pending_path().write_text('{"state": "pending"}')
+
+            with pytest.raises(RuntimeError, match="unreadable"):
+                operation("default")
+
+            assert auth_contexts.store_path().read_text() == malformed
+            assert auth_contexts.legacy_token_path().exists()
+            assert auth_contexts.legacy_pending_path().exists()
+
     def test_full_drive_implies_read(self, auth_contexts):
         auth_contexts.set_token_payload("drive", {"token": "tok", "scopes": [auth_contexts.DRIVE]})
         auth_contexts.assert_command_allowed("drive", "drive", "search")

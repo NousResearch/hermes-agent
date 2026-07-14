@@ -187,6 +187,58 @@ class TestRegisterCredentialFiles:
         assert missing == ["contexts.json"]
         assert len(get_credential_file_mounts()) == 1
 
+    def test_readiness_json_required_keys_must_share_one_object(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        store = hermes_home / "contexts.json"
+        entry = {
+            "path": "contexts.json",
+            "readiness_json_path": "contexts.*.token",
+            "readiness_json_required_keys": [
+                "refresh_token",
+                "client_id",
+                "client_secret",
+            ],
+        }
+        store.write_text(
+            json.dumps(
+                {
+                    "contexts": {
+                        "a": {
+                            "token": {
+                                "refresh_token": "r",
+                                "client_id": "id",
+                            }
+                        },
+                        "b": {"token": {"client_secret": "secret"}},
+                    }
+                }
+            )
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([entry])
+        assert missing == ["contexts.json"]
+
+        store.write_text(
+            json.dumps(
+                {
+                    "contexts": {
+                        "a": {
+                            "token": {
+                                "refresh_token": "r",
+                                "client_id": "id",
+                                "client_secret": "secret",
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([entry])
+        assert missing == []
+
     def test_path_takes_precedence_over_name(self, tmp_path):
         """When both path and name are present, path wins."""
         hermes_home = tmp_path / ".hermes"

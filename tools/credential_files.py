@@ -105,11 +105,15 @@ def register_credential_file(
     return True
 
 
-def _json_path_has_truthy_value(path: Path, expression: str) -> bool:
-    """Return whether a dotted JSON path resolves to any truthy value.
+def _json_path_has_truthy_value(
+    path: Path,
+    expression: str,
+    required_keys: list[str] | None = None,
+) -> bool:
+    """Return whether a JSON path resolves to a semantically ready value.
 
-    ``*`` expands mapping values or list items, allowing declarations such as
-    ``contexts.*.token`` without embedding service-specific readiness logic.
+    ``*`` expands mapping values or list items. When ``required_keys`` is set,
+    every key must be truthy on the same resolved object.
     """
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -117,22 +121,35 @@ def _json_path_has_truthy_value(path: Path, expression: str) -> bool:
         return False
 
     candidates = [payload]
-    for segment in expression.split("."):
-        if not segment:
-            return False
-        next_candidates = []
-        for candidate in candidates:
-            if segment == "*":
-                if isinstance(candidate, dict):
-                    next_candidates.extend(candidate.values())
-                elif isinstance(candidate, list):
-                    next_candidates.extend(candidate)
-            elif isinstance(candidate, dict) and segment in candidate:
-                next_candidates.append(candidate[segment])
-        candidates = next_candidates
-        if not candidates:
-            return False
-    return any(bool(candidate) for candidate in candidates)
+    if expression:
+        for segment in expression.split("."):
+            if not segment:
+                return False
+            next_candidates = []
+            for candidate in candidates:
+                if segment == "*":
+                    if isinstance(candidate, dict):
+                        next_candidates.extend(candidate.values())
+                    elif isinstance(candidate, list):
+                        next_candidates.extend(candidate)
+                elif isinstance(candidate, dict) and segment in candidate:
+                    next_candidates.append(candidate[segment])
+            candidates = next_candidates
+            if not candidates:
+                return False
+
+    required = required_keys or []
+    return any(
+        bool(candidate)
+        and (
+            not required
+            or (
+                isinstance(candidate, dict)
+                and all(bool(candidate.get(key)) for key in required)
+            )
+        )
+        for candidate in candidates
+    )
 
 
 def register_credential_files(
@@ -142,12 +159,14 @@ def register_credential_files(
     """Register credential files and return unsatisfied requirements.
 
     Existing files are always registered. Missing entries with ``optional:
-    true`` do not affect readiness. ``readiness_json_path`` can require a
-    truthy value at a dotted JSON path (with ``*`` wildcards) while still
-    mounting an incomplete file. Entries sharing an ``alternative_group``
-    form an AND-layout, while the named groups are alternatives: satisfying
-    every non-optional file in any one group satisfies all grouped entries.
-    Ungrouped non-optional entries remain independently required.
+    true`` do not affect readiness. ``readiness_json_path`` can select a
+    truthy JSON value (with ``*`` wildcards), and
+    ``readiness_json_required_keys`` can require fields on that same object,
+    while still mounting an incomplete file. Entries sharing an
+    ``alternative_group`` form an AND-layout, while the named groups are
+    alternatives: satisfying every non-optional file in any one group
+    satisfies all grouped entries. Ungrouped non-optional entries remain
+    independently required.
     """
     missing: List[str] = []
     group_missing: Dict[str, List[str]] = {}
@@ -155,6 +174,7 @@ def register_credential_files(
         optional = False
         alternative_group = ""
         readiness_json_path = ""
+        readiness_json_required_keys: list[str] = []
         if isinstance(entry, str):
             rel_path = entry.strip()
         elif isinstance(entry, dict):
@@ -162,6 +182,11 @@ def register_credential_files(
             optional = entry.get("optional") is True
             alternative_group = str(entry.get("alternative_group") or "").strip()
             readiness_json_path = str(entry.get("readiness_json_path") or "").strip()
+            raw_required_keys = entry.get("readiness_json_required_keys", [])
+            if isinstance(raw_required_keys, list):
+                readiness_json_required_keys = [
+                    str(key).strip() for key in raw_required_keys if str(key).strip()
+                ]
         else:
             continue
         if not rel_path:
@@ -170,10 +195,11 @@ def register_credential_files(
             group_missing.setdefault(alternative_group, [])
         registered = register_credential_file(rel_path, container_base)
         ready = registered
-        if registered and readiness_json_path:
+        if registered and (readiness_json_path or readiness_json_required_keys):
             ready = _json_path_has_truthy_value(
                 (_resolve_hermes_home() / rel_path).resolve(),
                 readiness_json_path,
+                readiness_json_required_keys,
             )
         if ready or optional:
             continue

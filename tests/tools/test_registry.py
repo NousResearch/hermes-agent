@@ -176,6 +176,63 @@ class TestGetDefinitions:
         assert calls["count"] == 1
 
 
+class TestOverrideProtection:
+    def test_explicit_override_blocks_later_non_override_same_toolset_registration(self):
+        reg = ToolRegistry()
+
+        def override_handler(args, **kw):
+            return json.dumps({"source": "override"})
+
+        def builtin_handler(args, **kw):
+            return json.dumps({"source": "builtin"})
+
+        reg.register(
+            name="web_extract",
+            toolset="web",
+            schema={**_make_schema("web_extract"), "description": "override schema"},
+            handler=override_handler,
+            override=True,
+        )
+        reg.register(
+            name="web_extract",
+            toolset="web",
+            schema={**_make_schema("web_extract"), "description": "late builtin schema"},
+            handler=builtin_handler,
+        )
+
+        assert json.loads(reg.dispatch("web_extract", {})) == {"source": "override"}
+        defs = reg.get_definitions({"web_extract"})
+        assert defs[0]["function"]["description"] == "override schema"
+
+    def test_explicit_override_can_replace_protected_override(self):
+        reg = ToolRegistry()
+
+        def first_handler(args, **kw):
+            return json.dumps({"source": "first"})
+
+        def second_handler(args, **kw):
+            return json.dumps({"source": "second"})
+
+        reg.register(
+            name="web_extract",
+            toolset="web",
+            schema={**_make_schema("web_extract"), "description": "first override"},
+            handler=first_handler,
+            override=True,
+        )
+        reg.register(
+            name="web_extract",
+            toolset="web",
+            schema={**_make_schema("web_extract"), "description": "second override"},
+            handler=second_handler,
+            override=True,
+        )
+
+        assert json.loads(reg.dispatch("web_extract", {})) == {"source": "second"}
+        defs = reg.get_definitions({"web_extract"})
+        assert defs[0]["function"]["description"] == "second override"
+
+
 class TestUnknownToolDispatch:
     def test_returns_error_json(self):
         reg = ToolRegistry()

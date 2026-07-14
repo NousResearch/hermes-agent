@@ -105,6 +105,60 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+def _resolve_exposed_tool_names() -> tuple[str, ...]:
+    """Return the registry-authoritative Hermes tool names to expose.
+
+    ``EXPOSED_TOOLS`` is the curated baseline. User plugins may intentionally
+    extend an already-exposed toolset (for example ``web_extract_raw`` in the
+    ``web`` toolset) or override a built-in tool name. The Codex MCP bridge
+    must export the post-plugin registry surface; otherwise Codex sessions can
+    keep seeing stale built-in schemas while normal Hermes dispatch uses the
+    plugin override.
+
+    Expansion is conservative: additional registered tools are included only
+    when their toolset is already represented by the curated baseline.
+    """
+    try:
+        from tools.registry import registry
+
+        tool_to_toolset = registry.get_tool_to_toolset_map()
+        exposed_toolsets = {
+            tool_to_toolset[name]
+            for name in EXPOSED_TOOLS
+            if name in tool_to_toolset
+        }
+        names = list(EXPOSED_TOOLS)
+        seen = set(names)
+        for name, toolset in sorted(tool_to_toolset.items()):
+            if name in seen:
+                continue
+            if toolset in exposed_toolsets:
+                names.append(name)
+                seen.add(name)
+        return tuple(names)
+    except Exception:
+        logger.debug("failed to resolve plugin-extended MCP tools", exc_info=True)
+        return EXPOSED_TOOLS
+
+
+def _apply_fastmcp_parameters_schema(mcp: Any, name: str, params_schema: dict) -> None:
+    """Patch FastMCP's inferred schema with Hermes' registry schema.
+
+    The mcp SDK version currently bundled here infers input schemas from Python
+    function signatures. Our generic dispatcher necessarily has a ``**kwargs``
+    signature, which would otherwise export ``{kwargs: ...}`` and hide the real
+    post-plugin Hermes schema from Codex. Mutating the created Tool object's
+    ``parameters`` field keeps the MCP bridge aligned with normal Hermes model
+    runtimes.
+    """
+    try:
+        tool_obj = mcp._tool_manager._tools.get(name)  # type: ignore[attr-defined]
+        if tool_obj is not None:
+            tool_obj.parameters = params_schema
+    except Exception:
+        logger.debug("failed to apply MCP input schema for %s", name, exc_info=True)
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -141,9 +195,10 @@ def _build_server() -> Any:
         if isinstance(td, dict) and td.get("type") == "function"
     }
 
+    exposed_names = _resolve_exposed_tool_names()
     exposed_count = 0
 
-    for name in EXPOSED_TOOLS:
+    for name in exposed_names:
         spec = all_defs.get(name)
         if spec is None:
             logger.debug(
@@ -156,9 +211,9 @@ def _build_server() -> Any:
 
         # FastMCP wants a Python callable. Build a closure that takes the
         # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
+        # the result string. FastMCP introspects this generic callable as
+        # **kwargs, so after registration we patch the generated Tool object's
+        # parameters with the authoritative registry schema.
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
@@ -175,21 +230,20 @@ def _build_server() -> Any:
                 _make_handler(name),
                 name=name,
                 description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
             )
+            _apply_fastmcp_parameters_schema(mcp, name, params_schema)
         except TypeError:
             # Older mcp SDK signature — fall back to decorator-style.
             handler = _make_handler(name)
             handler = mcp.tool(name=name, description=description)(handler)
+            _apply_fastmcp_parameters_schema(mcp, name, params_schema)
 
         exposed_count += 1
 
     logger.info(
         "hermes-tools MCP server registered %d/%d tools",
         exposed_count,
-        len(EXPOSED_TOOLS),
+        len(exposed_names),
     )
     return mcp
 

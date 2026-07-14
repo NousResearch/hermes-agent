@@ -506,11 +506,19 @@ prompt_caching:
 #     timeout: 30            # LLM API call timeout (seconds)
 #     download_timeout: 30   # Image HTTP download timeout (seconds)
 #                            # Increase for slow connections or self-hosted image servers
+#     reasoning_effort: ""   # Per-task thinking level: none, minimal, low, medium,
+#                            # high, xhigh, max, ultra. Empty = provider default.
+#                            # Works on every auxiliary task block (vision,
+#                            # web_extract, compression, title_generation, curator,
+#                            # background_review, moa_reference, ...). Example: run
+#                            # compression at "low" and vision at "none" to cut
+#                            # side-task latency/cost on reasoning models.
 #
 #   # Web page scraping / summarization + browser page text extraction
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#     reasoning_effort: "low"
 #
 #   # Gemini 3.1 TTS hidden audio-tag insertion
 #   tts_audio_tags:

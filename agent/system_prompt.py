@@ -185,10 +185,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md(_ctx_len)
-        if _soul_content:
-            stable_parts.append(_soul_content)
+        # Per-session soul override takes precedence over the global SOUL.md
+        # file.  Set via ``agent.soul_override`` (e.g. the native session API
+        # passes ``POST /api/sessions {"soul": "..."}``).  When present, it
+        # fully replaces the identity slot for this session only.
+        _override = getattr(agent, "soul_override", None)
+        if _override:
+            _override = _override.strip() if isinstance(_override, str) else None
+        if _override:
+            stable_parts.append(_override)
             _soul_loaded = True
+        else:
+            _soul_content = _r.load_soul_md(_ctx_len)
+            if _soul_content:
+                stable_parts.append(_soul_content)
+                _soul_loaded = True
 
     if not _soul_loaded:
         # Fallback to hardcoded identity

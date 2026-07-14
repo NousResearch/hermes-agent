@@ -1419,9 +1419,94 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
         skip_context_files=True,
         skip_memory=True,
     )
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
     prompt = a._build_system_prompt()
-    assert "You are a Kanban worker" not in prompt
+    assert KANBAN_GUIDANCE not in prompt
     assert "kanban_show()" not in prompt
+
+
+def test_kanban_guidance_not_in_orchestrator_prompt(monkeypatch, tmp_path):
+    """An orchestrator profile can expose kanban tools without receiving
+    worker-only lifecycle guidance.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    valid_tool_names = getattr(a, "valid_tool_names")
+    assert "kanban_show" in valid_tool_names
+    assert "kanban_list" in valid_tool_names
+
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    prompt = a._build_system_prompt()
+    assert KANBAN_GUIDANCE not in prompt
+    assert "kanban_show()" not in prompt
+
+
+def test_kanban_guidance_bypass_path_respects_env_and_tool_gate(monkeypatch, tmp_path):
+    """The system_prompt.py fallback for code paths that bypass agent_init
+    (no ``_kanban_worker_guidance`` attribute set) must:
+    1. Not crash (regression: the fallback references ``os.environ``).
+    2. Only inject guidance when both the env var AND the tool are present
+       (regression: guidance must not reference an unloaded tool — #60119
+       shows HERMES_KANBAN_TASK can be set while kanban_show is still
+       absent from valid_tool_names).
+
+    A real AIAgent always goes through agent_init, which always sets
+    ``_kanban_worker_guidance`` — so the bypass path is simulated by
+    deleting that attribute after construction, same effect as a code path
+    that never calls agent_init's resolution step.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert "kanban_show" in a.valid_tool_names
+    del a._kanban_worker_guidance
+
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    prompt = a._build_system_prompt()
+    assert KANBAN_GUIDANCE in prompt
+
+    a.valid_tool_names = [n for n in a.valid_tool_names if n != "kanban_show"]
+    prompt_no_tool = a._build_system_prompt()
+    assert KANBAN_GUIDANCE not in prompt_no_tool
 
 
 def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
@@ -1447,9 +1532,11 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
         skip_context_files=True,
         skip_memory=True,
     )
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
     prompt = a._build_system_prompt()
-    # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
-    assert "Kanban task execution protocol" in prompt
+    # Full block present verbatim (identity-free — SOUL.md owns identity)
+    assert KANBAN_GUIDANCE in prompt
     # Lifecycle signals
     assert "kanban_show()" in prompt
     assert "kanban_complete" in prompt

@@ -11,9 +11,7 @@ metadata:
     related_skills: [arxiv, blogwatcher]
 ---
 
-# Hacker News
-
-## Overview
+# Hacker News Skill
 
 Read Hacker News front-page lists, individual items, user profiles, and the full searchable archive from the terminal. The helper script uses the public Firebase API for live HN data and the public Algolia HN Search API for archive search. It is read-only: it does not log in, vote, post, or comment.
 
@@ -78,7 +76,7 @@ Output is JSON on stdout. Network/API failures are reported as JSON on stderr wi
 4. Parse the JSON. Story-like rows include `id`, `title`, `by`, `score`, `time`, `url`, `hn_url`, and `comments` where available.
 5. Summarize the result for the user and include `hn_url` links when discussion context matters.
 
-## Output Notes
+## Pitfalls
 
 - `hn_url` always points to the Hacker News discussion/item page.
 - External story links are in `url`; self posts may not have an external URL.
@@ -86,15 +84,13 @@ Output is JSON on stdout. Network/API failures are reported as JSON on stderr wi
 - `item --comments` includes top-level comments only, ordered as HN returns them.
 - Search results come from Algolia and may include both stories and comments depending on `--tags`.
 
-## Common Pitfalls
-
 1. **Using huge limits.** Live listing commands fetch IDs first, then fetch each item. Keep `-n` low for interactive use.
 2. **Mixing relevance and recency.** `search` sorts by relevance; add `--by-date` when the user asks for the latest mentions.
 3. **Assuming every item has `url` or `title`.** Comments and some self posts lack one or both. Use `hn_url` as the stable link.
 4. **Expecting deleted comments.** Deleted/dead comments are skipped in comment output.
 5. **Using it for account actions.** The helper has no auth flow and cannot vote, post, reply, or edit.
 
-## Verification Checklist
+## Verification
 
 - [ ] `python skills/research/hackernews/scripts/hn.py top -n 1` returns a JSON array with one item.
 - [ ] `python skills/research/hackernews/scripts/hn.py item 8863 --comments` returns an object with `hn_url` and `comments`.

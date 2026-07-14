@@ -92,7 +92,9 @@ def _format_time(timestamp: Any) -> str | None:
 def list_items(kind: str, limit: int) -> list[dict[str, Any]]:
     ids = _firebase(LIST_ENDPOINTS[kind]) or []
     rows: list[dict[str, Any]] = []
-    for item_id in ids[:limit]:
+    for item_id in ids:
+        if len(rows) >= limit:
+            break
         row = _normalize_item(_firebase(f"item/{item_id}"))
         if row:
             rows.append(row)

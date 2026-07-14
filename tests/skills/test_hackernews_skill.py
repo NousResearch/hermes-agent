@@ -70,9 +70,11 @@ def test_list_items_fetches_ids_and_items():
         raise AssertionError(path)
 
     with patch.object(mod, "_firebase", side_effect=fake_firebase):
-        rows = mod.list_items("top", 3)
+        rows = mod.list_items("top", 2)
 
+    assert len(rows) == 2
     assert [row["title"] for row in rows] == ["One", "Three"]
+    assert all(row["id"] != 2 for row in rows)
 
 
 def test_get_item_with_comments_fetches_top_level_comments():

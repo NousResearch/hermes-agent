@@ -9028,6 +9028,31 @@ def test_session_create_rejects_unresolved_explicit_profile(monkeypatch):
     assert set(server._sessions) == before
 
 
+def test_session_create_rejects_invalid_profile_before_path_resolution(monkeypatch):
+    """Path-like profile input cannot escape the profile namespace."""
+    from hermes_cli import profiles as profiles_mod
+
+    resolved = []
+    monkeypatch.setattr(
+        profiles_mod,
+        "get_profile_dir",
+        lambda name: resolved.append(name) or Path("/tmp/outside-profile-root"),
+    )
+    before = set(server._sessions)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {"cols": 80, "profile": "../../outside-profile-root"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4041
+    assert set(server._sessions) == before
+    assert resolved == []
+
+
 def test_session_create_echoes_effective_profile(monkeypatch, tmp_path):
     """session.create returns the authoritative effective profile scope.
 

@@ -1029,14 +1029,19 @@ def _resolve_profile_scope(profile: str | None) -> tuple[Path | None, bool]:
     name = (profile or "").strip()
     if not name:
         return None, True
+    try:
+        from hermes_cli import profiles as profiles_mod
+
+        name = profiles_mod.normalize_profile_name(name)
+        profiles_mod.validate_profile_name(name)
+    except (ImportError, TypeError, ValueError):
+        return None, False
     home = _profile_home(name)
     if home is not None:
         return home, True
     # ``home`` is None both when the name IS the launch profile and when it
     # does not resolve; only the former is a valid explicit request.
     try:
-        from hermes_cli import profiles as profiles_mod
-
         is_launch = Path(profiles_mod.get_profile_dir(name)).resolve() == Path(_hermes_home).resolve()
     except Exception:
         return None, False
@@ -5229,6 +5234,15 @@ def _inflight_snapshot(session: dict) -> dict | None:
 
 @method("session.create")
 def _(rid, params: dict) -> dict:
+    # ``profile`` (app-global remote mode): a new chat started under a non-launch
+    # profile must build its agent + persist against THAT profile's home/state.db,
+    # not the dashboard's launch profile. Validate it before any profile-derived
+    # cwd lookup, session allocation, or database access.
+    profile = (params.get("profile") or "").strip() or None
+    profile_home, profile_resolved = _resolve_profile_scope(profile)
+    if profile and not profile_resolved:
+        return _err(rid, 4041, f"profile not found: {profile}")
+
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
@@ -5250,18 +5264,6 @@ def _(rid, params: dict) -> dict:
     resolved_cwd = _completion_cwd(params)
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
     _enable_gateway_prompts()
-
-    # ``profile`` (app-global remote mode): a new chat started under a non-launch
-    # profile must build its agent + persist against THAT profile's home/state.db,
-    # not the dashboard's launch profile. Stored on the session so _start_agent_build
-    # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
-    # An explicit profile that does not resolve is REJECTED rather than being
-    # silently scoped to the launch profile: the name may have been deleted or
-    # renamed between the client's discovery and this request.
-    profile = (params.get("profile") or "").strip() or None
-    profile_home, profile_resolved = _resolve_profile_scope(profile)
-    if profile and not profile_resolved:
-        return _err(rid, 4041, f"profile not found: {profile}")
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into

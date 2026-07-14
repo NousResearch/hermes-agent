@@ -39,6 +39,17 @@ function syncRepositoryIncrementally(
 ): readonly ThreadMessage[] {
   const repository = (runtime as unknown as { repository: ExternalStoreThreadRuntimeCore['repository'] }).repository
   const incomingIds = new Set(messageRepository.messages.map(({ message }) => message.id))
+  const existing = repository.export().messages
+
+  // A thread switch swaps in a fully-DISJOINT transcript (no id carries over).
+  // Reconciling two unrelated trees in place — grafting the new chain onto the
+  // old one, then pruning — can strand a stale head/branch, so there's nothing
+  // to preserve: clear the tree first (leaves→root), then rebuild clean.
+  if (existing.length > 0 && !existing.some(({ message }) => incomingIds.has(message.id))) {
+    for (const { message } of [...existing].reverse()) {
+      repository.deleteMessage(message.id)
+    }
+  }
 
   for (const { message, parentId } of messageRepository.messages) {
     repository.addOrUpdateMessage(parentId, message)

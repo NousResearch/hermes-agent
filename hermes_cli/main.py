@@ -7400,8 +7400,9 @@ def _format_concurrent_instances_message(
         lines.append("  stale, terminate them directly, then retry the update:")
         lines.append(f"      taskkill {pid_args} /F")
         lines.append("")
-    lines.append("  Override with `hermes update --force` if you've already")
-    lines.append("  confirmed those processes will not write to the venv.")
+    lines.append("  Override with `hermes update --force` to skip .exe lock checks,")
+    lines.append("  or `hermes update --force-kill` to auto-stop these processes")
+    lines.append("  and proceed with the update.")
     return "\n".join(lines)
 
 
@@ -9121,6 +9122,48 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     return "\n".join(lines)
 
 
+def _kill_hermes_python_processes() -> None:
+    """Kill Python processes from the same venv before an update.
+
+    Headroom proxy, tui_gateway workers, and other Hermes-related
+    ``python.exe`` / ``pythonw.exe`` processes hold native ``.pyd``
+    extension files locked on Windows.  These are invisible to the
+    :func:`_detect_concurrent_hermes_instances` shim guard and must
+    be torn down before the dependency-install step can proceed.
+
+    Uses ``taskkill`` (Windows).  Best-effort: processes that refuse
+    to die are logged but do not block the update (``--force-kill``
+    was explicitly requested, so we proceed regardless).  Never raises.
+    """
+    if not _is_windows():
+        return
+    procs = _detect_venv_python_processes()
+    if not procs:
+        return
+
+    pids = [pid for pid, _, _ in procs]
+    print(f"→ Force-stopping {len(pids)} Hermes-related Python process(es)")
+    for pid, name, cmdline in procs:
+        print(f"    PID {pid}  {name}  {cmdline}")
+
+    import subprocess
+
+    # Force-kill each process with /T (process tree) /F, matching the
+    # established ``gateway/status.py:terminate_pid`` pattern.
+    for pid in pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True, timeout=10,
+            )
+        except Exception:
+            logger.debug("taskkill failed for PID %s (continuing)", pid)
+
+    # Brief pause so the kernel releases .pyd handles
+    import time
+    time.sleep(0.5)
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -9590,6 +9633,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _resume_windows_gateways_after_update,
             _windows_gateway_resume,
         )
+
+    # After gateways are paused/snapped, optionally force-kill remaining
+    # venv python processes (headroom proxy, tui_gateway workers).  The
+    # gateway snapshot was already taken above, so relaunch works.
+    if _is_windows() and getattr(args, "force_kill", False):
+        _kill_hermes_python_processes()
 
     # With gateways paused, anything still running from the venv interpreter
     # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd

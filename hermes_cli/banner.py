@@ -257,9 +257,12 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # Developer/fork branches legitimately sit ahead of upstream main.
         # A differing tip is not evidence of being behind when the upstream
         # revision is already an ancestor of the local branch.
-        if _git_is_ancestor(upstream_rev, "HEAD", cwd=repo_dir):
+        is_ancestor = _git_is_ancestor(upstream_rev, "HEAD", cwd=repo_dir)
+        if is_ancestor is True:
             return 0
-        return 1
+        if is_ancestor is False:
+            return UPDATE_AVAILABLE_NO_COUNT
+        return None
 
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would

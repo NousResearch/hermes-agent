@@ -125,7 +125,7 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         result = banner._check_via_local_git(repo_dir)
 
-    assert result == 1
+    assert result is None
     assert ["git", "fetch", "origin", "--quiet"] not in calls
 
 

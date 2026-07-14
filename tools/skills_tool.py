@@ -1561,6 +1561,15 @@ def skill_view(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
 
+        # Wrap skill content with a marker so run_agent.py can proactively
+        # decay old skill loads from conversation context.
+        if rendered_content and isinstance(rendered_content, str):
+            rendered_content = (
+                f'<hermes-skill name="{skill_name}">\n'
+                f"{rendered_content}\n"
+                f"</hermes-skill>"
+            )
+
         result = {
             "success": True,
             "name": skill_name,

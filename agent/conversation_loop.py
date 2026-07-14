@@ -790,8 +790,24 @@ def run_conversation(
             )
 
         api_messages = []
+        _total_msgs = len(messages)
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
+
+            # Proactive skill decay — shrink old <hermes-skill> loads that are
+            # far from the tail so stale skill payloads don't bloat the request.
+            # Applied to the ephemeral api_msg copy ONLY: the persistent
+            # `messages` list (and therefore the session transcript) is never
+            # mutated, and — because a message past the decay threshold renders
+            # identically every turn — the cached request prefix stays stable
+            # across turns (a block decays once, then holds).
+            if api_msg.get("role") == "tool":
+                _decayed = agent._decay_skill_content(
+                    api_msg.get("content"),
+                    distance=_total_msgs - idx - 1,
+                )
+                if _decayed is not None:
+                    api_msg["content"] = _decayed
 
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks

@@ -1,10 +1,12 @@
 """Tests for classic CLI quick-command execution."""
 
-import builtins
 import io
 import os
+import shlex
 import subprocess
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import cli as cli_mod
 from cli import HermesCLI
@@ -71,106 +73,38 @@ def _assert_quick_command_popen_kwargs(call_kwargs, *, cwd):
         assert call_kwargs[key] == value
 
 
-def test_guarded_quick_command_rejects_empty_input():
+def test_quick_command_rejects_empty_input():
     with patch.object(cli_mod.subprocess, "Popen") as popen_mock:
-        result = cli_mod._run_guarded_quick_command("   ")
+        result = cli_mod._run_quick_command("   ")
 
     assert result == {"ok": False, "message": "empty command"}
     popen_mock.assert_not_called()
 
 
-def test_guarded_quick_command_rejects_non_string_input():
+def test_quick_command_rejects_non_string_input():
     with patch.object(cli_mod.subprocess, "Popen") as popen_mock:
-        result = cli_mod._run_guarded_quick_command(["echo safe"])
+        result = cli_mod._run_quick_command(["echo safe"])
 
     assert result == {"ok": False, "message": "quick command must be a string"}
     popen_mock.assert_not_called()
 
 
-def test_guarded_quick_command_blocks_hardline_command_without_shelling_out():
-    with patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(True, "critical system operation"),
-    ), patch("tools.approval.detect_dangerous_command") as dangerous_mock, patch.object(
-        cli_mod.subprocess, "Popen"
-    ) as popen_mock:
-        result = cli_mod._run_guarded_quick_command("sudo rm -rf /")
-
-    assert result == {
-        "ok": False,
-        "message": "hardline blocked: critical system operation",
-    }
-    dangerous_mock.assert_not_called()
-    popen_mock.assert_not_called()
-
-
-def test_guarded_quick_command_blocks_dangerous_command_without_shelling_out():
-    with patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(True, None, "recursive delete"),
-    ), patch.object(cli_mod.subprocess, "Popen") as popen_mock:
-        result = cli_mod._run_guarded_quick_command("rm -rf /tmp/demo")
-
-    assert result == {
-        "ok": False,
-        "message": "blocked: recursive delete. Use the agent for dangerous commands.",
-    }
-    popen_mock.assert_not_called()
-
-
-def test_guarded_quick_command_normalizes_before_guard_and_execution(monkeypatch):
+def test_quick_command_normalizes_before_execution(monkeypatch):
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
-    with patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ) as hardline_mock, patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(False, None, ""),
-    ) as dangerous_mock, patch.object(
+    with patch.object(
         cli_mod.subprocess,
         "Popen",
         return_value=_FakeProcess(stdout=b"ok\n"),
     ) as popen_mock:
-        result = cli_mod._run_guarded_quick_command("\n  echo safe  \n")
+        result = cli_mod._run_quick_command("\n  echo safe  \n")
 
     assert result == {"ok": True, "output": "ok", "returncode": 0}
-    hardline_mock.assert_called_once_with("echo safe")
-    dangerous_mock.assert_called_once_with("echo safe")
     assert popen_mock.call_args.args == ("echo safe",)
 
 
-def test_guarded_quick_command_fails_closed_when_guard_import_fails():
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "tools.approval":
-            raise ImportError("no guard")
-        return real_import(name, *args, **kwargs)
-
-    with patch.object(builtins, "__import__", side_effect=fake_import), patch.object(
-        cli_mod.subprocess, "Popen"
-    ) as popen_mock:
-        result = cli_mod._run_guarded_quick_command("echo safe")
-
-    assert result == {
-        "ok": False,
-        "message": "dangerous-command guard unavailable; refusing to execute",
-    }
-    popen_mock.assert_not_called()
-
-
-def test_guarded_quick_command_handles_timeout():
-    with patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(False, None, ""),
-    ), patch.object(
+def test_quick_command_handles_timeout():
+    with patch.object(
         cli_mod.subprocess,
         "Popen",
         return_value=_FakeProcess(
@@ -178,50 +112,38 @@ def test_guarded_quick_command_handles_timeout():
         ),
     ), patch("cli._terminate_quick_command_tree") as terminate_mock:
         fake_proc = cli_mod.subprocess.Popen.return_value
-        result = cli_mod._run_guarded_quick_command("sleep 100")
+        result = cli_mod._run_quick_command("sleep 100")
 
     assert result == {"ok": False, "message": "command timed out (30s)"}
     assert fake_proc.wait_timeout == 30
     terminate_mock.assert_called_once_with(fake_proc)
 
 
-def test_guarded_quick_command_runs_in_terminal_cwd(monkeypatch):
+def test_quick_command_runs_in_terminal_cwd(monkeypatch):
     terminal_cwd = "/tmp/hermes-quick-command-cwd"
     monkeypatch.setenv("TERMINAL_CWD", terminal_cwd)
 
-    with patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(False, None, ""),
-    ), patch.object(
+    with patch.object(
         cli_mod.subprocess,
         "Popen",
         return_value=_FakeProcess(stdout=b"ok\n"),
     ) as popen_mock:
-        result = cli_mod._run_guarded_quick_command("pwd")
+        result = cli_mod._run_quick_command("pwd")
 
     assert result == {"ok": True, "output": "ok", "returncode": 0}
     _assert_quick_command_popen_kwargs(popen_mock.call_args.kwargs, cwd=terminal_cwd)
 
 
-def test_guarded_quick_command_sanitizes_subprocess_env(monkeypatch):
+def test_quick_command_sanitizes_subprocess_env(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-abc123def456ghi789jkl012mno345")
     monkeypatch.setenv("HERMES_QUICK_COMMAND_TEST_MARKER", "kept")
 
-    with patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(False, None, ""),
-    ), patch.object(
+    with patch.object(
         cli_mod.subprocess,
         "Popen",
         return_value=_FakeProcess(stdout=b"ok\n"),
     ) as popen_mock:
-        result = cli_mod._run_guarded_quick_command("env")
+        result = cli_mod._run_quick_command("env")
 
     assert result == {"ok": True, "output": "ok", "returncode": 0}
     child_env = popen_mock.call_args.kwargs["env"]
@@ -229,42 +151,30 @@ def test_guarded_quick_command_sanitizes_subprocess_env(monkeypatch):
     assert "OPENAI_API_KEY" not in child_env
 
 
-def test_guarded_quick_command_redacts_output_before_returning():
+def test_quick_command_redacts_output_before_returning():
     secret = "sk-proj-abc123def456ghi789jkl012mno345"
 
-    with patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(False, None, ""),
-    ), patch.object(
+    with patch.object(
         cli_mod.subprocess,
         "Popen",
         return_value=_FakeProcess(stdout=f"OPENAI_API_KEY={secret}\n".encode()),
     ):
-        result = cli_mod._run_guarded_quick_command("show-secret")
+        result = cli_mod._run_quick_command("show-secret")
 
     assert result["ok"] is True
     assert secret not in result["output"]
     assert "OPENAI_API_KEY=" in result["output"]
 
 
-def test_guarded_quick_command_truncates_large_output(monkeypatch):
+def test_quick_command_truncates_large_output(monkeypatch):
     monkeypatch.setattr(cli_mod, "_QUICK_COMMAND_OUTPUT_LIMIT_PER_STREAM", 8)
 
-    with patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(False, None, ""),
-    ), patch.object(
+    with patch.object(
         cli_mod.subprocess,
         "Popen",
         return_value=_FakeProcess(stdout=b"abcdefghijklmnop"),
     ):
-        result = cli_mod._run_guarded_quick_command("printf lots")
+        result = cli_mod._run_quick_command("printf lots")
 
     assert result["ok"] is True
     assert (
@@ -273,17 +183,11 @@ def test_guarded_quick_command_truncates_large_output(monkeypatch):
     )
 
 
-def test_process_command_exec_quick_command_uses_guard_and_prints_stdout_and_stderr():
+def test_process_command_exec_quick_command_prints_stdout_and_stderr():
     cli_obj = _make_cli()
 
     with patch("cli._ensure_skill_commands", return_value={}), patch(
         "cli.get_skill_bundles", return_value=[]
-    ), patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(False, None, ""),
     ), patch.object(
         cli_mod.subprocess,
         "Popen",
@@ -299,24 +203,31 @@ def test_process_command_exec_quick_command_uses_guard_and_prints_stdout_and_std
     assert "stderr" in printed
 
 
-def test_process_command_does_not_execute_blocked_quick_command():
+@pytest.mark.skipif(os.name == "nt", reason="regression uses a POSIX shell command")
+def test_process_command_executes_operator_configured_command_without_agent_guard(
+    tmp_path,
+):
+    from tools.approval import detect_dangerous_command
+
     cli_obj = _make_cli()
+    target = tmp_path / "operator-target"
+    target.mkdir()
+    command = f"rm -rf {shlex.quote(str(target))}"
+    is_dangerous, _, _ = detect_dangerous_command(command)
+    assert is_dangerous is True
+    cli_obj.config["quick_commands"]["operator"] = {
+        "type": "exec",
+        "command": command,
+    }
 
     with patch("cli._ensure_skill_commands", return_value={}), patch(
         "cli.get_skill_bundles", return_value=[]
-    ), patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(True, None, "recursive delete"),
-    ), patch.object(cli_mod.subprocess, "Popen") as popen_mock:
-        assert cli_obj.process_command("/danger") is True
+    ):
+        assert cli_obj.process_command("/operator") is True
 
-    popen_mock.assert_not_called()
+    assert not target.exists()
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
-    assert "Quick command error" in printed
-    assert "recursive delete" in printed
+    assert "Command returned no output" in printed
 
 
 def test_process_command_reports_nonzero_quick_command_as_error():
@@ -324,12 +235,6 @@ def test_process_command_reports_nonzero_quick_command_as_error():
 
     with patch("cli._ensure_skill_commands", return_value={}), patch(
         "cli.get_skill_bundles", return_value=[]
-    ), patch(
-        "tools.approval.detect_hardline_command",
-        return_value=(False, ""),
-    ), patch(
-        "tools.approval.detect_dangerous_command",
-        return_value=(False, None, ""),
     ), patch.object(
         cli_mod.subprocess,
         "Popen",

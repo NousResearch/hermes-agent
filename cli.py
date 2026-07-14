@@ -2884,37 +2884,13 @@ def _quick_command_popen_kwargs() -> Dict[str, Any]:
     return {"start_new_session": True}
 
 
-def _run_guarded_quick_command(exec_cmd: Any, timeout: int = 30) -> Dict[str, Any]:
-    """Run a user-configured quick command after dangerous-command checks."""
+def _run_quick_command(exec_cmd: Any, timeout: int = 30) -> Dict[str, Any]:
+    """Run an operator-configured quick command in a bounded subprocess."""
     if not isinstance(exec_cmd, str):
         return {"ok": False, "message": "quick command must be a string"}
     normalized_cmd = exec_cmd.strip()
     if not normalized_cmd:
         return {"ok": False, "message": "empty command"}
-
-    try:
-        from tools.approval import detect_dangerous_command, detect_hardline_command
-
-        is_hardline, hardline_desc = detect_hardline_command(normalized_cmd)
-        if is_hardline:
-            return {
-                "ok": False,
-                "message": f"hardline blocked: {hardline_desc}",
-            }
-
-        is_dangerous, _, desc = detect_dangerous_command(normalized_cmd)
-        if is_dangerous:
-            return {
-                "ok": False,
-                "message": f"blocked: {desc}. Use the agent for dangerous commands.",
-            }
-    except ImportError:
-        return {
-            "ok": False,
-            "message": "dangerous-command guard unavailable; refusing to execute",
-        }
-    except Exception as exc:
-        return {"ok": False, "message": f"dangerous-command guard failed: {exc}"}
 
     proc = None
     try:
@@ -9528,7 +9504,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
-                        result = _run_guarded_quick_command(exec_cmd)
+                        result = _run_quick_command(exec_cmd)
                         if not result["ok"]:
                             self._console_print(f"[bold red]Quick command error: {_escape(str(result['message']))}[/]")
                         elif result["output"]:

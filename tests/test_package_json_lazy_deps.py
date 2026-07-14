@@ -1,4 +1,4 @@
-"""Invariants for what is eager vs lazy in the root ``package.json``.
+"""Invariants for what is eager vs lazy in Node dependency installs.
 
 The root ``package.json`` is installed by ``hermes update`` on every user,
 including users who never opted into a given browser backend. Anything
@@ -23,9 +23,9 @@ The contract:
   "camofox"`` when the user actually selects Camofox.
 
 If a future PR re-adds Camofox (or any other binary-postinstall package)
-to root ``dependencies``, this test fails — read the lazy-install
-guidance in the ``hermes-agent-dev`` skill before changing the
-expectations.
+to root ``dependencies`` or the bootstrap installers, this test fails -- read
+the lazy-install guidance in the ``hermes-agent-dev`` skill before changing
+the expectations.
 """
 
 from __future__ import annotations
@@ -83,3 +83,14 @@ def test_root_lockfile_has_no_camofox_entries() -> None:
         "package-lock.json still references camoufox-js (transitive of "
         "@askjo/camofox-browser). Regenerate the lockfile."
     )
+
+
+def test_installers_do_not_eager_install_camofox() -> None:
+    """Bootstrap installers must preserve the same lazy Camofox contract."""
+    for rel_path in ("scripts/install.sh", "scripts/install.ps1"):
+        text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+        assert "@askjo/camofox-browser" not in text, (
+            f"{rel_path} eagerly installs @askjo/camofox-browser. Camofox "
+            "must stay opt-in via the post_setup handler in "
+            "hermes_cli/tools_config.py."
+        )

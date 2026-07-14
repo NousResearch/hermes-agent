@@ -1427,14 +1427,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # falling through to OpenRouter defaults.
         fb_base_url_hint = (fb.get("base_url") or "").strip() or None
         fb_api_key_hint = (fb.get("api_key") or "").strip() or None
-        fb_api_mode_hint = (fb.get("api_mode") or "").strip() or None
-        if fb_api_mode_hint not in {
-            "chat_completions",
-            "codex_responses",
-            "anthropic_messages",
-            "bedrock_converse",
-        }:
-            fb_api_mode_hint = None
+        from hermes_cli.runtime_provider import _parse_api_mode
+
+        fb_api_mode_hint = _parse_api_mode(fb.get("api_mode"))
         if not fb_api_key_hint:
             # key_env and api_key_env are both documented aliases (see
             # _normalize_custom_provider_entry in hermes_cli/config.py).

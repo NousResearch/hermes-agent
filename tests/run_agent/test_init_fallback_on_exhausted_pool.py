@@ -24,7 +24,7 @@ def test_init_tries_fallback_when_primary_returns_none():
     fb = _mock_client()
 
     def fake_resolve(provider, model=None, raw_codex=False,
-                     explicit_base_url=None, explicit_api_key=None):
+                     explicit_base_url=None, explicit_api_key=None, api_mode=None):
         if provider == "tencent-token-plan":
             return fb, "kimi2.5"
         return None, None  # primary exhausted
@@ -47,6 +47,48 @@ def test_init_tries_fallback_when_primary_returns_none():
         assert agent.provider == "tencent-token-plan"
         assert agent.model == "kimi2.5"
         assert agent._fallback_activated is True
+
+
+def test_init_fallback_honors_explicit_anthropic_api_mode():
+    fallback_client = _mock_client(base_url="https://relay.example.com/claude-proxy")
+    resolved_modes = []
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None, api_mode=None):
+        if provider == "custom":
+            resolved_modes.append(api_mode)
+            return fallback_client, "claude-sonnet-4-6"
+        return None, None
+
+    with (
+        patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve),
+        patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=MagicMock(),
+        ) as mock_build,
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI", return_value=MagicMock()),
+    ):
+        agent = AIAgent(
+            provider="alibaba-coding-plan",
+            model="glm-5",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{
+                "provider": "custom",
+                "model": "claude-sonnet-4-6",
+                "api_mode": "anthropic_messages",
+            }],
+        )
+
+    assert resolved_modes == ["anthropic_messages"]
+    assert agent.api_mode == "anthropic_messages"
+    assert agent.client is None
+    mock_build.assert_called_once()
 
 
 def test_init_raises_when_no_fallback_configured():

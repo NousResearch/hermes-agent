@@ -1512,7 +1512,7 @@ def _resolve_explicit_runtime(
     return None
 
 
-def resolve_runtime_provider(
+def _resolve_runtime_provider_base(
     *,
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
@@ -2082,6 +2082,26 @@ def resolve_runtime_provider(
     )
     runtime["requested_provider"] = requested_provider
     return runtime
+
+
+def resolve_runtime_provider(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+    explicit_api_mode: Optional[str] = None,
+) -> Dict[str, Any]:
+    runtime = _resolve_runtime_provider_base(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    api_mode = _parse_api_mode(explicit_api_mode)
+    if api_mode is None:
+        return runtime
+    return {**runtime, "api_mode": api_mode}
 
 
 def format_runtime_provider_error(error: Exception) -> str:

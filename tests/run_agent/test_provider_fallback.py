@@ -246,6 +246,27 @@ class TestFallbackChainAdvancement:
         assert agent.client is None
         assert mock_resolve.call_args.kwargs["api_mode"] == "anthropic_messages"
 
+    def test_explicit_codex_app_server_mode_uses_canonical_validator(self):
+        fallback = {
+            "provider": "custom",
+            "model": "gpt-5.6-codex",
+            "base_url": "https://relay.example.com/v1",
+            "api_key": "custom-secret",
+            "api_mode": "codex_app_server",
+        }
+        agent = _make_agent(fallback_model=[fallback])
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(fallback["base_url"]), fallback["model"]),
+        ) as mock_resolve:
+            activated = agent._try_activate_fallback()
+
+        assert activated is True
+        assert agent.api_mode == "codex_app_server"
+        assert mock_resolve.call_args.kwargs["api_mode"] == "codex_app_server"
+
+
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 
 

@@ -763,6 +763,7 @@ def init_agent(
     # router-based implicit auth) can apply it consistently.  Bedrock
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
+    _init_fallback_api_mode = None
 
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -1032,14 +1033,22 @@ def init_agent(
                             _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
                             if _fb_key_env:
                                 _fb_explicit_key = os.getenv(_fb_key_env, "").strip() or None
+                        from hermes_cli.runtime_provider import _parse_api_mode
+
+                        _init_fallback_api_mode = _parse_api_mode(_fb.get("api_mode"))
                         _fb_client, _fb_model = resolve_provider_client(
                             _fb["provider"], model=_fb["model"], raw_codex=True,
                             explicit_base_url=_fb.get("base_url"),
                             explicit_api_key=_fb_explicit_key,
+                            api_mode=_init_fallback_api_mode,
                         )
                         if _fb_client is not None:
                             agent.provider = _fb["provider"]
                             agent.model = _fb_model or _fb["model"]
+                            if _init_fallback_api_mode is not None:
+                                agent.api_mode = _init_fallback_api_mode
+                                if hasattr(agent, "_transport_cache"):
+                                    agent._transport_cache.clear()
                             agent._fallback_activated = True
                             client_kwargs = {
                                 "api_key": _fb_client.api_key,
@@ -1132,7 +1141,33 @@ def init_agent(
             from agent.ssl_guard import verify_ca_bundle_with_fallback
 
             verify_ca_bundle_with_fallback()
-            agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+            if _init_fallback_api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+
+                agent._anthropic_api_key = agent.api_key
+                agent._anthropic_base_url = agent.base_url
+                agent._anthropic_client = build_anthropic_client(
+                    agent.api_key,
+                    agent.base_url,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+                agent._is_anthropic_oauth = (
+                    _is_oauth_token(agent.api_key)
+                    if agent.provider == "anthropic"
+                    else False
+                )
+                agent.client = None
+                agent._client_kwargs = {}
+            else:
+                agent.client = agent._create_openai_client(
+                    client_kwargs,
+                    reason="agent_init",
+                    shared=True,
+                )
+            if getattr(agent, "_fallback_activated", False):
+                agent._use_prompt_caching, agent._use_native_cache_layout = (
+                    agent._anthropic_prompt_cache_policy()
+                )
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model}")
                 if base_url:

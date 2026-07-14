@@ -280,6 +280,12 @@ Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_U
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
 :::
 
+:::note Z.AI Concurrency Bound
+Hermes limits direct-agent and MoA calls to Z.AI to two simultaneous in-flight requests per process by default. This prevents a subagent or MoA fan-out from sustaining code 1305 overload retries and repeatedly re-sending a large context. Set `HERMES_ZAI_MAX_CONCURRENT` to tune the cap, or `0` to disable it.
+
+The bound is process-local. If several CLI or gateway processes share one Coding Plan key, their effective combined ceiling is the number of processes multiplied by the per-process value; fleet operators should usually keep the value at `1` or `2`. `HERMES_ZAI_ACQUIRE_TIMEOUT_S` optionally bounds how long a caller waits for a slot (default `0`, meaning wait until a slot is available). This gate does not change the separate rolling usage quota or its "Usage limit reached for 5 hour" response.
+:::
+
 ### xAI (Grok) — Responses API + Prompt Caching
 
 xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-fast-reasoning`.

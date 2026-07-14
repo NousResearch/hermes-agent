@@ -1324,11 +1324,20 @@ def run_conversation(
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
                         )
-                    if _use_streaming:
-                        return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
-                        )
-                    return agent._interruptible_api_call(next_api_kwargs)
+
+                    from agent.zai_concurrency import acquire_zai_slot
+
+                    with acquire_zai_slot(
+                        provider=agent.provider,
+                        model=agent.model,
+                        base_url=agent.base_url,
+                        interrupt_check=lambda: bool(agent._interrupt_requested),
+                    ):
+                        if _use_streaming:
+                            return agent._interruptible_streaming_api_call(
+                                next_api_kwargs, on_first_delta=_stop_spinner
+                            )
+                        return agent._interruptible_api_call(next_api_kwargs)
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 

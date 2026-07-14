@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -173,6 +174,51 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     return out
 
 
+def _call_moa_model(
+    *,
+    runtime: dict[str, Any],
+    interrupt_check: Callable[[], bool] | None = None,
+    **call_kwargs: Any,
+) -> Any:
+    """Call one resolved MoA model under the shared Z.AI gate when needed.
+
+    Non-Z.AI routes call ``call_llm`` directly. A Z.AI streaming call keeps
+    the slot for the full iterator lifetime, not merely until the SDK returns
+    the stream object.
+    """
+    from agent.zai_concurrency import acquire_zai_slot, is_zai_request
+
+    target = {
+        "provider": runtime.get("provider"),
+        "model": runtime.get("model"),
+        "base_url": runtime.get("base_url"),
+    }
+    if not is_zai_request(**target):
+        return call_llm(**call_kwargs, **runtime)
+
+    def _slot():
+        return acquire_zai_slot(
+            **target,
+            interrupt_check=interrupt_check,
+        )
+
+    if not call_kwargs.get("stream"):
+        with _slot():
+            return call_llm(**call_kwargs, **runtime)
+
+    def _gated_stream():
+        with _slot():
+            stream = call_llm(**call_kwargs, **runtime)
+            try:
+                yield from stream
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+
+    return _gated_stream()
+
+
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]],
     runtime: dict[str, Any],
@@ -223,6 +269,7 @@ def _run_reference(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    interrupt_check: Callable[[], bool] | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, usage)``.
 
@@ -270,12 +317,13 @@ def _run_reference(
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
         messages = _maybe_apply_moa_cache_control(messages, runtime)
-        response = call_llm(
+        response = _call_moa_model(
+            runtime=runtime,
+            interrupt_check=interrupt_check,
             task="moa_reference",
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            **runtime,
         )
         usage = CanonicalUsage()
         raw_usage = getattr(response, "usage", None)
@@ -339,6 +387,7 @@ def _run_references_parallel(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    interrupt_check: Callable[[], bool] | None = None,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -375,6 +424,7 @@ def _run_references_parallel(
                     ref_messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    interrupt_check=interrupt_check,
                 )
             ] = idx
         # Collect every reference before returning — the aggregator needs the
@@ -633,12 +683,12 @@ def aggregate_moa_context(
         agg_messages = _maybe_apply_moa_cache_control(
             [{"role": "user", "content": synth_prompt}], agg_runtime
         )
-        response = call_llm(
+        response = _call_moa_model(
+            runtime=agg_runtime,
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
-            **agg_runtime,
         )
         synthesis = _extract_text(response)
     except Exception as exc:
@@ -683,7 +733,12 @@ def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str
 class MoAChatCompletions:
     """OpenAI-chat-compatible facade where the aggregator is the acting model."""
 
-    def __init__(self, preset_name: str, reference_callback: Any = None):
+    def __init__(
+        self,
+        preset_name: str,
+        reference_callback: Any = None,
+        interrupt_check: Callable[[], bool] | None = None,
+    ):
         self.preset_name = preset_name or "default"
         # Optional display hook. Called as reference outputs become available so
         # frontends can show each reference model's answer as a labelled block
@@ -694,6 +749,7 @@ class MoAChatCompletions:
         #   "moa.aggregating" kwargs: aggregator (label), ref_count
         # Never raises into the model call — display is best-effort.
         self.reference_callback = reference_callback
+        self.interrupt_check = interrupt_check
         # State-scoped reference cache. The agent loop calls create() once per
         # tool-loop iteration; references should re-run whenever the task STATE
         # advances — i.e. on every new user message AND every new tool result —
@@ -902,6 +958,7 @@ class MoAChatCompletions:
                 ref_messages,
                 temperature=temperature,
                 max_tokens=reference_max_tokens,
+                interrupt_check=self.interrupt_check,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -1010,7 +1067,9 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
-        _agg_response = call_llm(
+        _agg_response = _call_moa_model(
+            runtime=_slot_runtime(aggregator),
+            interrupt_check=self.interrupt_check,
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
@@ -1018,7 +1077,6 @@ class MoAChatCompletions:
             tools=agg_kwargs.get("tools"),
             extra_body=agg_kwargs.get("extra_body"),
             **stream_kwargs,
-            **_slot_runtime(aggregator),
         )
         # Non-streaming path (quiet mode / eval / subagents): the aggregator
         # output is available inline, so capture it into the pending trace now.
@@ -1039,9 +1097,18 @@ class MoAChatCompletions:
 
 
 class MoAClient:
-    def __init__(self, preset_name: str, reference_callback: Any = None):
+    def __init__(
+        self,
+        preset_name: str,
+        reference_callback: Any = None,
+        interrupt_check: Callable[[], bool] | None = None,
+    ):
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)
+        self.chat.completions = MoAChatCompletions(
+            preset_name,
+            reference_callback=reference_callback,
+            interrupt_check=interrupt_check,
+        )
 
     def consume_reference_usage(self) -> Any:
         """Pop the pending reference-fan-out usage from the completions facade.

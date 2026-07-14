@@ -759,6 +759,8 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_AGENT_HELP_GUIDANCE` | Append additional guidance text to the system prompt for custom deployments. |
 | `HERMES_AGENT_LOGO` | Override the ASCII banner logo at CLI startup. |
 | `DELEGATION_MAX_CONCURRENT_CHILDREN` | Max parallel subagents per `delegate_task` batch (default: `3`, floor of 1, no ceiling). Also configurable via `delegation.max_concurrent_children` in `config.yaml` — the config value takes priority. |
+| `HERMES_ZAI_MAX_CONCURRENT` | Strict process-local cap for simultaneous Z.AI / Zhipu model calls from the agent and MoA paths (default: `2`; `0` disables the gate). Separate processes have separate caps. |
+| `HERMES_ZAI_ACQUIRE_TIMEOUT_S` | Seconds to wait for a Z.AI concurrency slot before raising locally without contacting the provider. Accepts fractional seconds. Default: `0` (wait until a slot is available; interactive waits remain interruptible). |
 
 ## Interface
 

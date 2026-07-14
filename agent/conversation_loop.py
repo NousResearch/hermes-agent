@@ -566,6 +566,108 @@ def run_conversation(
             pass
 
     # ── Per-turn setup (the prologue) ──
+    # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
+    # Installed once, transparent when streams are healthy, prevents crash on write.
+    _install_safe_stdio()
+
+    agent._ensure_db_session()
+
+    # Tell auxiliary_client what the live main provider/model are for
+    # this turn. Used by tools whose behaviour depends on the active
+    # main model (e.g. vision_analyze's native fast path) so they see
+    # the CLI/gateway override instead of the stale config.yaml
+    # default. Idempotent — fine to call every turn.
+    try:
+        from agent.auxiliary_client import set_runtime_main
+        set_runtime_main(
+            getattr(agent, "provider", "") or "",
+            getattr(agent, "model", "") or "",
+            base_url=getattr(agent, "base_url", "") or "",
+            api_key=getattr(agent, "api_key", "") or "",
+            api_mode=getattr(agent, "api_mode", "") or "",
+            session_id=getattr(agent, "session_id", "") or "",
+        )
+    except Exception:
+        pass
+
+    # Tag all log records on this thread with the session ID so
+    # ``hermes logs --session <id>`` can filter a single conversation.
+    set_session_context(agent.session_id)
+
+    # Bind the skill write-origin ContextVar for this thread so tool
+    # handlers (e.g. skill_manage create) can tell whether they are
+    # running inside the background agent-improvement review fork vs.
+    # a foreground user-directed turn. Set at the top of each call;
+    # the review fork runs on its own thread with a fresh context,
+    # so the foreground value here does not leak into it.
+    set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
+
+    # If the previous turn activated fallback, restore the primary
+    # runtime so this turn gets a fresh attempt with the preferred model.
+    # No-op when _fallback_activated is False (gateway, first turn, etc.).
+    agent._restore_primary_runtime()
+
+    # Sanitize surrogate characters from user input.  Clipboard paste from
+    # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
+    # that are invalid UTF-8 and crash JSON serialization in the OpenAI SDK.
+    if isinstance(user_message, str):
+        user_message = _sanitize_surrogates(user_message)
+    if isinstance(persist_user_message, str):
+        persist_user_message = _sanitize_surrogates(persist_user_message)
+
+    # Store stream callback for _interruptible_api_call to pick up
+    agent._stream_callback = stream_callback
+    agent._persist_user_message_idx = None
+    agent._persist_user_message_override = persist_user_message
+    # Generate unique task_id if not provided to isolate VMs between concurrent tasks
+    effective_task_id = task_id or str(uuid.uuid4())
+    # Expose the active task_id so tools running mid-turn (e.g. delegate_task
+    # in delegate_tool.py) can identify this agent for the cross-agent file
+    # state registry.  Set BEFORE any tool dispatch so snapshots taken at
+    # child-launch time see the parent's real id, not None.
+    agent._current_task_id = effective_task_id
+    turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+    agent._current_turn_id = turn_id
+    agent._current_api_request_id = ""
+
+    # Reset retry counters and iteration budget at the start of each turn
+    # so subagent usage from a previous turn doesn't eat into the next one.
+    agent._invalid_tool_retries = 0
+    agent._invalid_json_retries = 0
+    agent._empty_content_retries = 0
+    agent._incomplete_scratchpad_retries = 0
+    agent._codex_incomplete_retries = 0
+    agent._thinking_prefill_retries = 0
+    agent._post_tool_empty_retried = False
+    agent._last_content_with_tools = None
+    agent._last_content_tools_all_housekeeping = False
+    agent._mute_post_response = False
+    agent._unicode_sanitization_passes = 0
+    agent._tool_guardrails.reset_for_turn()
+    agent._tool_guardrail_halt_decision = None
+    # True until the server rejects an image_url content part with an error
+    # like "Only 'text' content type is supported."  Set to False on first
+    # rejection and kept False for the rest of the session so we never re-send
+    # images to a text-only endpoint.  Scoped per `_run()` call, not per instance.
+    agent._vision_supported = True
+
+    # Pre-turn connection health check: detect and clean up dead TCP
+    # connections left over from provider outages or dropped streams.
+    # This prevents the next API call from hanging on a zombie socket.
+    if agent.api_mode != "anthropic_messages":
+        try:
+            from hermes_cli.moa_config import decode_moa_turn
+
+            _decoded_message, _decoded_moa_config = decode_moa_turn(user_message)
+            if _decoded_moa_config is not None:
+                user_message = _decoded_message
+                moa_config = _decoded_moa_config
+                if persist_user_message is None:
+                    persist_user_message = _decoded_message
+        except Exception:
+            pass
+
+    # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
     # build, crash-resilience persistence, preflight compression, the

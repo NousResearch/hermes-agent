@@ -2266,6 +2266,33 @@ _RUNTIME_MAIN_API_MODE: str = ""
 _last_logged_route: tuple = ()
 
 
+def _sanitize_url_for_logging(url: str) -> str:
+    """Strip userinfo, query, and fragment from a URL for safe logging.
+
+    ``set_runtime_main`` logs the active base URL to aid debugging, but
+    base URLs can carry credentials in userinfo (``user:pass@host``),
+    query-string API tokens, or fragments.  This helper removes those
+    components so the log message never leaks secrets.
+    """
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+        # Strip userinfo from netloc (``user:pass@host:port`` → ``host:port``).
+        # Python's ParseResult has no ``userinfo`` field, so ``_replace``
+        # can't strip it directly — we must split on ``@`` manually.
+        netloc = parsed.netloc
+        if "@" in netloc:
+            netloc = netloc.split("@")[-1]
+        sanitized = parsed._replace(netloc=netloc, query="", fragment="")
+        return urlunparse(sanitized)
+    except Exception:
+        # urlparse can only fail on truly malformed non-string input
+        # (the type hint requires str, but be defensive).  Return a
+        # redacted placeholder so we never log a raw URL on failure.
+        return "<url-redacted>"
+
+
 def set_runtime_main(
     provider: str,
     model: str,
@@ -2273,6 +2300,7 @@ def set_runtime_main(
     base_url: str = "",
     api_key: str = "",
     api_mode: str = "",
+    session_id: str = "",
 ) -> None:
     """Record the live runtime provider/model/credentials for the current AIAgent.
 
@@ -2284,6 +2312,10 @@ def set_runtime_main(
     For ``custom:`` providers, ``base_url`` and ``api_key`` must also be
     recorded so that ``_resolve_auto`` can construct a valid client in
     Step 1 instead of falling through to the aggregator chain.
+
+    *session_id* is used to scope route-change deduplication so that a
+    new session always emits its initial route log even when the route
+    matches that of a prior session.
     """
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
@@ -2294,10 +2326,11 @@ def set_runtime_main(
     _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
 
     global _last_logged_route
-    _current = (_RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL)
+    _current = (session_id, _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL)
     if _current != _last_logged_route:
         _last_logged_route = _current
-        _info = f" at {_RUNTIME_MAIN_BASE_URL}" if _RUNTIME_MAIN_BASE_URL else ""
+        _safe_url = _sanitize_url_for_logging(_RUNTIME_MAIN_BASE_URL)
+        _info = f" at {_safe_url}" if _safe_url else ""
         logger.info(
             "Runtime: main route set to %s/%s%s",
             _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _info,

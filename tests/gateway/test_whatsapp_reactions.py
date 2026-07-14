@@ -60,30 +60,21 @@ def _event(*, chat_id="chat@s.whatsapp.net", message_id="msg-123", sender_id="se
 
 
 class TestWhatsAppReactionConfig:
-    def test_reactions_enabled_by_default(self, monkeypatch):
-        monkeypatch.delenv("WHATSAPP_REACTIONS", raising=False)
+    def test_reactions_enabled_by_default(self):
         adapter = _make_adapter()
 
         assert adapter._reactions_enabled() is True
 
-    @pytest.mark.parametrize("value", ["false", "0", "no", "off"])
-    def test_reactions_can_be_disabled_by_env(self, monkeypatch, value):
-        monkeypatch.setenv("WHATSAPP_REACTIONS", value)
-        adapter = _make_adapter()
+    @pytest.mark.parametrize("value", [False, "false", "0", "no", "off"])
+    def test_reactions_can_be_disabled_by_config(self, value):
+        adapter = _make_adapter(config_extra={"reactions": value})
 
         assert adapter._reactions_enabled() is False
-
-    def test_config_overrides_env(self, monkeypatch):
-        monkeypatch.setenv("WHATSAPP_REACTIONS", "false")
-        adapter = _make_adapter(config_extra={"reactions": True})
-
-        assert adapter._reactions_enabled() is True
 
 
 class TestWhatsAppLifecycleReactions:
     @pytest.mark.asyncio
-    async def test_processing_start_reacts_with_eyes(self, monkeypatch):
-        monkeypatch.delenv("WHATSAPP_REACTIONS", raising=False)
+    async def test_processing_start_reacts_with_eyes(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)
         resp.json = AsyncMock(return_value={"success": True})
@@ -104,8 +95,7 @@ class TestWhatsAppLifecycleReactions:
         }
 
     @pytest.mark.asyncio
-    async def test_processing_complete_reacts_with_success(self, monkeypatch):
-        monkeypatch.delenv("WHATSAPP_REACTIONS", raising=False)
+    async def test_processing_complete_reacts_with_success(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)
         resp.json = AsyncMock(return_value={"success": True})
@@ -117,8 +107,7 @@ class TestWhatsAppLifecycleReactions:
         assert payload["emoji"] == "✅"
 
     @pytest.mark.asyncio
-    async def test_processing_complete_reacts_with_failure(self, monkeypatch):
-        monkeypatch.delenv("WHATSAPP_REACTIONS", raising=False)
+    async def test_processing_complete_reacts_with_failure(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)
         resp.json = AsyncMock(return_value={"success": True})
@@ -130,8 +119,7 @@ class TestWhatsAppLifecycleReactions:
         assert payload["emoji"] == "❌"
 
     @pytest.mark.asyncio
-    async def test_cancelled_completion_is_noop(self, monkeypatch):
-        monkeypatch.delenv("WHATSAPP_REACTIONS", raising=False)
+    async def test_cancelled_completion_is_noop(self):
         adapter = _make_adapter()
         adapter._http_session.post = MagicMock()
 
@@ -140,9 +128,8 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_disabled_reactions_are_noop(self, monkeypatch):
-        monkeypatch.setenv("WHATSAPP_REACTIONS", "false")
-        adapter = _make_adapter()
+    async def test_disabled_reactions_are_noop(self):
+        adapter = _make_adapter(config_extra={"reactions": False})
         adapter._http_session.post = MagicMock()
 
         await adapter.on_processing_start(_event())
@@ -151,8 +138,7 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_missing_message_id_is_noop(self, monkeypatch):
-        monkeypatch.delenv("WHATSAPP_REACTIONS", raising=False)
+    async def test_missing_message_id_is_noop(self):
         adapter = _make_adapter()
         adapter._http_session.post = MagicMock()
 
@@ -161,8 +147,7 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_bare_phone_chat_id_is_normalized_for_bridge(self, monkeypatch):
-        monkeypatch.delenv("WHATSAPP_REACTIONS", raising=False)
+    async def test_bare_phone_chat_id_is_normalized_for_bridge(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))

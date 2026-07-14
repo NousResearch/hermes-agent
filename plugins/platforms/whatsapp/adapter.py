@@ -444,7 +444,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _coerce_bool(value: Any) -> bool:
-        """Interpret common config/env truthy and falsy values."""
+        """Interpret common config truthy and falsy values."""
         if isinstance(value, bool):
             return value
         if value is None:
@@ -478,9 +478,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             configured = extra.get("reactions")
         if configured is not None:
             return self._coerce_bool(configured)
-        return os.getenv("WHATSAPP_REACTIONS", "true").strip().lower() not in {
-            "false", "0", "no", "off"
-        }
+        return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """

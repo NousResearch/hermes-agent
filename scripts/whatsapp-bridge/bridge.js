@@ -34,7 +34,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
-import { buildReactionPayload } from './reaction.js';
+import { registerReactionRoute } from './reaction.js';
 import {
   buildPollPayload,
   buildLocationPayload,
@@ -946,24 +946,12 @@ app.post('/send-location', async (req, res) => {
   }
 });
 
-// React to an existing message
-app.post('/react', async (req, res) => {
-  if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected' });
-  }
-
-  const { chatId, messageId, emoji, senderId, fromMe } = req.body;
-  if (!chatId || !messageId || !emoji) {
-    return res.status(400).json({ error: 'chatId, messageId, and emoji are required' });
-  }
-
-  try {
-    const payload = buildReactionPayload({ chatId, messageId, emoji, senderId, fromMe });
-    await sendWithTimeout(chatId, payload);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// React to an existing message. The injected send function is the same
+// serialized, timeout-bounded path used by every other outbound send.
+registerReactionRoute(app, {
+  getSocket: () => sock,
+  getConnectionState: () => connectionState,
+  sendWithTimeout,
 });
 
 // Typing indicator

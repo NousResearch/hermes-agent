@@ -30,12 +30,15 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
-        # Disable thinking when reasoning is turned off
+        # Disable thinking when reasoning is turned off.
+        # Ollama honours extra_body.think=False; llama.cpp and vLLM
+        # require chat_template_kwargs={"enable_thinking": false} instead.
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
                 extra_body["think"] = False
+                extra_body["chat_template_kwargs"] = {"enable_thinking": False}
 
         return extra_body, {}
 

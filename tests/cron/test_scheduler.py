@@ -2606,6 +2606,43 @@ class TestSilentDelivery:
         assert not sil("")
         assert not sil("   \n\t ")
 
+    def test_is_cron_pause_response_contract(self):
+        """Direct behavior contract for the cron pause matcher.
+
+        Mirrors the silence matcher: whole-response token, first line, last
+        line, or ``[PAUSE]`` same-line prefix.  Mid-sentence mentions are
+        treated as real content and NOT paused.
+        """
+        from cron.scheduler import _is_cron_pause_response as pau
+        # Pause: bare/bracketed/bracketless tokens, prefix, trailing-line.
+        assert pau("[PAUSE]")
+        assert pau("[pause] monitor complete, auto-closing.")
+        assert pau("[PAUSE] Printer offline, stopping monitor.")
+        assert pau("3 pages printed.\n\n[PAUSE]")
+        assert pau("PAUSE")
+        assert pau("Summary.\nPAUSE")
+        # Deliver (do NOT pause): real content, mid-sentence quotes, bare words, junk.
+        assert not pau("The system hit [PAUSE] but recovered: 2 tasks done.")
+        assert not pau("Paused retry succeeded after 2 attempts.")
+        assert not pau("[PAUSE")  # malformed open-bracket is not the sentinel
+        assert not pau("")
+        assert not pau("   \n\t ")
+
+    def test_silent_and_pause_combined(self):
+        """[SILENT] [PAUSE] on separate lines: pauses (last line wins)."""
+        from cron.scheduler import _is_cron_silence_response as sil
+        from cron.scheduler import _is_cron_pause_response as pau
+        combined = "2 items found.\n\n[SILENT]\n[PAUSE]"
+        # [SILENT] is not the last line (it's followed by [PAUSE]), so silence
+        # is NOT triggered — this is by design: mid-content tokens are content.
+        assert not sil(combined)
+        # But [PAUSE] IS the last line, so pause fires.
+        assert pau(combined)
+        # Reverse order: [PAUSE] then [SILENT] — silence fires (last line).
+        reversed_order = "2 items found.\n\n[PAUSE]\n[SILENT]"
+        assert sil(reversed_order)
+        assert not pau(reversed_order)
+
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \

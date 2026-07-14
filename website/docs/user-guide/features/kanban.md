@@ -629,6 +629,19 @@ The GUI is deliberately thin. Everything the plugin does is reachable from the C
 
 This is the surface **you** (or scripts, cron, the dashboard) use to drive the board. Workers running inside the dispatcher use the `kanban_*` [tool surface](#how-workers-interact-with-the-board) for the same operations — the CLI here and the tools there both route through `kanban_db`, so the two surfaces agree by construction.
 
+To let an orchestrator profile call the native `kanban_*` tools, explicitly
+enable the profile-gated toolset for the platform it serves:
+
+```bash
+hermes tools enable kanban --platform slack
+```
+
+The command updates both the profile-level runtime gate and the platform's
+toolset selection. Kanban intentionally stays out of the interactive tool
+picker and the `all` toolset, so normal sessions retain zero Kanban schema
+footprint. Start a fresh agent session after changing the setting. Disable the
+same opt-in with `hermes tools disable kanban --platform slack`.
+
 ```
 hermes kanban init                                     # create kanban.db + print daemon hint
 hermes kanban create "<title>" [--body ...] [--assignee <profile>]

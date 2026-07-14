@@ -974,9 +974,12 @@ Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,
 `messaging`, `moa`, `rl`, `safe`, `search`, `session_search`, `skills`,
 `spotify`, `terminal`, `todo`, `tts`, `video`, `vision`, `web`, `yuanbao`.
 
-Enable/disable per platform via `hermes tools` (the curses UI) or the
-`tools.<platform>.enabled` / `tools.<platform>.disabled` lists in
-`config.yaml`.
+Enable/disable configurable toolsets per platform via `hermes tools`; the
+selection is stored under `platform_toolsets.<platform>` in `config.yaml`.
+Profile-gated toolsets intentionally omitted from the curses checklist use the
+explicit non-interactive command instead. For example,
+`hermes tools enable kanban --platform slack` keeps Kanban's top-level runtime
+gate and Slack platform selection in sync.
 
 ---
 

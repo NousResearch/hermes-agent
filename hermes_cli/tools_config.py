@@ -85,6 +85,14 @@ CONFIGURABLE_TOOLSETS = [
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
 ]
 
+# Toolsets that intentionally stay out of the interactive checklist but can be
+# enabled explicitly through ``hermes tools enable``. Their runtime check_fn
+# reads the profile-level ``toolsets`` list, while normal session filtering is
+# platform-scoped, so the non-interactive command keeps both layers in sync.
+_PROFILE_GATED_TOOLSETS = {
+    "kanban": ("📋 Kanban Orchestration", "durable multi-agent task routing"),
+}
+
 
 def gui_toolset_label(label: str) -> str:
     """Strip leading emoji/icons from toolset titles for GUI surfaces.
@@ -4378,6 +4386,42 @@ def _configure_mcp_tools_interactive(config: dict):
 
 def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
     """Add or remove built-in toolsets for a platform."""
+    profile_gated = set(toolset_names) & set(_PROFILE_GATED_TOOLSETS)
+    if profile_gated:
+        # The Kanban registry gate is profile-scoped (``toolsets``), while the
+        # model's requested tool definitions are platform-scoped
+        # (``platform_toolsets``). Keep the two explicit opt-ins atomic so a
+        # supported CLI command cannot produce the platform-only false positive
+        # that leaves native Kanban tools absent at runtime.
+        profile_toolsets = config.get("toolsets")
+        if isinstance(profile_toolsets, list):
+            profile_toolsets = [str(ts) for ts in profile_toolsets]
+        elif action == "enable":
+            profile_toolsets = []
+        else:
+            profile_toolsets = None
+
+        if profile_toolsets is not None:
+            if action == "disable":
+                profile_toolsets = [ts for ts in profile_toolsets if ts not in profile_gated]
+            else:
+                for ts in toolset_names:
+                    if ts in profile_gated and ts not in profile_toolsets:
+                        profile_toolsets.append(ts)
+            config["toolsets"] = profile_toolsets
+
+        if action == "disable":
+            # _save_platform_tools preserves non-configurable entries by
+            # design. Remove an explicitly disabled profile-gated entry before
+            # saving so it is not immediately restored from the old list.
+            platform_toolsets = config.get("platform_toolsets")
+            if isinstance(platform_toolsets, dict):
+                existing = platform_toolsets.get(platform)
+                if isinstance(existing, list):
+                    platform_toolsets[platform] = [
+                        ts for ts in existing if str(ts) not in profile_gated
+                    ]
+
     enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
     if action == "disable":
         updated = enabled - set(toolset_names)
@@ -4411,7 +4455,12 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
     return failed_servers
 
 
-def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
+def _print_tools_list(
+    enabled_toolsets: set,
+    mcp_servers: dict,
+    platform: str = "cli",
+    profile_toolsets: Optional[Set[str]] = None,
+):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     effective_all = _get_effective_configurable_toolsets()
     effective = [
@@ -4437,6 +4486,20 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
             status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
                       else color("✗ disabled", Colors.RED))
             print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+
+    print()
+    print("Profile-gated toolsets:")
+    configured_profile_toolsets = profile_toolsets or set()
+    for ts_key, (label, _) in _PROFILE_GATED_TOOLSETS.items():
+        platform_enabled = ts_key in enabled_toolsets
+        profile_enabled = ts_key in configured_profile_toolsets
+        if platform_enabled and profile_enabled:
+            status = color("✓ enabled", Colors.GREEN)
+        elif platform_enabled:
+            status = color("✗ disabled (profile opt-in missing)", Colors.RED)
+        else:
+            status = color("✗ disabled", Colors.RED)
+        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
 
     if mcp_servers:
         print()
@@ -4468,15 +4531,25 @@ def tools_disable_enable_command(args):
         return
 
     if action == "list":
+        raw_profile_toolsets = config.get("toolsets")
+        profile_toolsets = (
+            {str(ts) for ts in raw_profile_toolsets}
+            if isinstance(raw_profile_toolsets, list)
+            else set()
+        )
         _print_tools_list(_get_platform_tools(config, platform, include_default_mcp_servers=False),
-                          config.get("mcp_servers") or {}, platform)
+                          config.get("mcp_servers") or {}, platform, profile_toolsets)
         return
 
     targets: List[str] = args.names
     toolset_targets = [t for t in targets if ":" not in t]
     mcp_targets = [t for t in targets if ":" in t]
 
-    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
+    valid_toolsets = (
+        {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+        | _get_plugin_toolset_keys()
+        | set(_PROFILE_GATED_TOOLSETS)
+    )
     unknown_toolsets = [t for t in toolset_targets if t not in valid_toolsets]
     if unknown_toolsets:
         for name in unknown_toolsets:

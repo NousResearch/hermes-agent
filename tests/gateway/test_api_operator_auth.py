@@ -1,5 +1,7 @@
 """Tests for the Hermes operator authorization vocabulary."""
 
+import hashlib
+import json
 import stat
 import sys
 
@@ -102,3 +104,91 @@ def test_store_file_has_owner_only_permissions(tmp_path):
 
     mode = stat.S_IMODE((tmp_path / "operator_credentials.json").stat().st_mode)
     assert mode == 0o600
+
+
+def test_authenticate_returns_none_for_non_string_token(tmp_path):
+    store = OperatorCredentialStore(tmp_path / "operator_credentials.json")
+    store.issue("phone", ["chat:read"])
+
+    assert store.authenticate(None) is None
+    assert store.authenticate(1234) is None
+    assert store.authenticate(b"hop_bytes") is None
+
+
+def _write_store(path, credentials):
+    path.write_text(
+        json.dumps({"version": 1, "credentials": credentials}),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "not-a-dict-record",
+        {"token_hash": "abc", "scopes": 123, "created_at": 1.0},
+        {"token_hash": "abc", "scopes": "chat:read", "created_at": 1.0},
+        {"token_hash": "abc", "scopes": ["filesystem:write"], "created_at": 1.0},
+        {"token_hash": "abc", "scopes": ["chat:read"], "created_at": "soon"},
+        {"token_hash": "abcé", "scopes": ["chat:read"], "created_at": 1.0},
+        {"token_hash": 12345, "scopes": ["chat:read"], "created_at": 1.0},
+        {"scopes": ["chat:read"], "created_at": 1.0},
+    ],
+)
+def test_corrupt_record_is_skipped_not_raised(tmp_path, record):
+    path = tmp_path / "operator_credentials.json"
+    _write_store(path, {"hoc_bad": record})
+    store = OperatorCredentialStore(path)
+
+    assert store.list_credentials() == []
+    assert store.authenticate("hop_anything") is None
+    assert store.revoke("hoc_bad") is False
+
+
+def test_top_level_json_list_fails_closed(tmp_path):
+    path = tmp_path / "operator_credentials.json"
+    path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    store = OperatorCredentialStore(path)
+
+    assert store.list_credentials() == []
+    assert store.authenticate("hop_anything") is None
+
+
+def test_nested_garbage_credentials_object_fails_closed(tmp_path):
+    path = tmp_path / "operator_credentials.json"
+    path.write_text(
+        json.dumps({"version": 1, "credentials": "totally-not-a-mapping"}),
+        encoding="utf-8",
+    )
+    store = OperatorCredentialStore(path)
+
+    assert store.list_credentials() == []
+    assert store.authenticate("hop_anything") is None
+
+
+def test_valid_record_survives_alongside_corrupt_record(tmp_path):
+    path = tmp_path / "operator_credentials.json"
+    token = "hop_valid-token-value"
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    _write_store(
+        path,
+        {
+            "hoc_bad": {"token_hash": "abc", "scopes": 123, "created_at": "soon"},
+            "hoc_good": {
+                "token_hash": token_hash,
+                "label": "Good Device",
+                "scopes": ["chat:read"],
+                "created_at": 100.0,
+                "revoked_at": None,
+            },
+        },
+    )
+    store = OperatorCredentialStore(path)
+
+    summaries = store.list_credentials()
+    assert [summary.credential_id for summary in summaries] == ["hoc_good"]
+    assert summaries[0].label == "Good Device"
+
+    principal = store.authenticate(token)
+    assert principal is not None
+    assert principal.credential_id == "hoc_good"

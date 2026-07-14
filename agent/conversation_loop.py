@@ -4664,6 +4664,23 @@ def run_conversation(
                 # answer and calls memory/skill tools as a side-effect in the same
                 # turn. If the follow-up turn after tools is empty, we use this.
                 turn_content = assistant_message.content or ""
+                # Determine whether every tool call in THIS turn is housekeeping
+                # (memory, todo, skill_manage, session_search). Substantive tools
+                # (search_files, read_file, write_file, terminal, ...) signal that
+                # the model has moved into real task execution; any earlier
+                # housekeeping-only narration captured as a fallback candidate is
+                # now stale and must not be reused as a final answer if a later
+                # turn goes empty. See issue #63860: without this invalidation a
+                # cached `_last_content_with_tools` from a prior housekeeping-only
+                # turn survived a substantive tool-only turn and was incorrectly
+                # surfaced as the final response, suppressing the post-tool nudge.
+                _HOUSEKEEPING_TOOLS = frozenset({
+                    "memory", "todo", "skill_manage", "session_search",
+                })
+                _all_housekeeping = bool(assistant_message.tool_calls) and all(
+                    tc.function.name in _HOUSEKEEPING_TOOLS
+                    for tc in assistant_message.tool_calls
+                )
                 if turn_content and agent._has_content_after_think_block(turn_content):
                     agent._last_content_with_tools = turn_content
                     # Only mute subsequent output when EVERY tool call in
@@ -4671,13 +4688,6 @@ def run_conversation(
                     # skill_manage, etc.).  If any substantive tool is present
                     # (search_files, read_file, write_file, terminal, ...),
                     # keep output visible so the user sees progress.
-                    _HOUSEKEEPING_TOOLS = frozenset({
-                        "memory", "todo", "skill_manage", "session_search",
-                    })
-                    _all_housekeeping = all(
-                        tc.function.name in _HOUSEKEEPING_TOOLS
-                        for tc in assistant_message.tool_calls
-                    )
                     agent._last_content_tools_all_housekeeping = _all_housekeeping
                     if _all_housekeeping and agent._has_stream_consumers():
                         agent._mute_post_response = True
@@ -4685,6 +4695,18 @@ def run_conversation(
                         clean = agent._strip_think_blocks(turn_content).strip()
                         if clean:
                             agent._vprint(f"  ┊ 💬 {clean}")
+                elif not _all_housekeeping and assistant_message.tool_calls:
+                    # Substantive tool-only turn (no usable content, but at
+                    # least one non-housekeeping tool call). The earlier
+                    # `_last_content_with_tools` was captured from a prior
+                    # housekeeping-only turn and is now stale narration —
+                    # e.g. "I'll begin the work." uttered alongside a `todo`
+                    # call should not be reused as the final answer if a
+                    # later substantive tool turn goes empty. Drop it so the
+                    # post-tool empty-response nudge path runs instead.
+                    # Fixes #63860.
+                    agent._last_content_with_tools = None
+                    agent._last_content_tools_all_housekeeping = False
                 
                 # Pop thinking-only prefill message(s) before appending
                 # (tool-call path — same rationale as the final-response path).

@@ -2860,8 +2860,7 @@ def _pin_kanban_board_env() -> None:
     single session needs to operate across multiple boards (e.g. delegating
     subagents to different boards).
     """
-    if os.environ.get("HERMES_KANBAN_BOARD"):
-        return
+    # Config opt-out: skip pinning entirely, allow dynamic board switching.
     try:
         from hermes_cli.config import load_config
 
@@ -2870,6 +2869,9 @@ def _pin_kanban_board_env() -> None:
             return
     except Exception:
         pass
+    # Already pinned (e.g. dispatcher-spawned worker) — don't overwrite.
+    if os.environ.get("HERMES_KANBAN_BOARD"):
+        return
     try:
         from hermes_cli.kanban_db import get_current_board
 

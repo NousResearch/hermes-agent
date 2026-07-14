@@ -391,6 +391,13 @@ class _StreamErrorEvent(Exception):
             }
         }
 
+# ── In-memory message cap ────────────────────────────────────────
+# Limit the number of messages kept in _session_messages to bound
+# RAM consumption. When exceeded, old tool result content is trimmed.
+# The full conversation is always preserved in SQLite.
+MAX_SESSION_MESSAGES = 500
+MAX_TOOL_OUTPUT_TRIM_CHARS = 200
+
 
 class AIAgent:
     """
@@ -1676,6 +1683,47 @@ class AIAgent:
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
+
+    def _trim_session_messages(self) -> None:
+        """Trim old tool output content from _session_messages to save RAM.
+
+        When the message list exceeds MAX_SESSION_MESSAGES, tool result
+        content in messages older than the keep-window is truncated to
+        MAX_TOOL_OUTPUT_TRIM_CHARS.  Message structure and role alternation
+        are preserved; the full content lives in SQLite.
+        """
+        messages = getattr(self, "_session_messages", None)
+        if not messages or len(messages) <= MAX_SESSION_MESSAGES:
+            return
+        # Keep the first 100 messages (system prompt + early context) and
+        # the last N-100 messages (recent conversation).  Trim the rest.
+        keep_head = 100
+        trim_end = len(messages) - (MAX_SESSION_MESSAGES - keep_head)
+        if trim_end <= keep_head:
+            return
+        for i in range(keep_head, trim_end):
+            msg = messages[i]
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and len(content) > MAX_TOOL_OUTPUT_TRIM_CHARS:
+                msg["content"] = content[:MAX_TOOL_OUTPUT_TRIM_CHARS] + (
+                    f"\n[... trimmed to {MAX_TOOL_OUTPUT_TRIM_CHARS} chars, "
+                    f"original length {len(content)} — full content in SQLite]"
+                )
+            elif isinstance(content, list):
+                # Handle structured content arrays (multipart messages)
+                trimmed = False
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        t = part["text"]
+                        if len(t) > MAX_TOOL_OUTPUT_TRIM_CHARS:
+                            part["text"] = t[:MAX_TOOL_OUTPUT_TRIM_CHARS] + (
+                                f"\n[... trimmed, original length {len(t)}]"
+                            )
+                            trimmed = True
+                if trimmed:
+                    msg["_content_trimmed"] = True
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -3569,12 +3617,13 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
-        # soft-eviction clear — close() is the hard teardown for true session
-        # boundaries (/new, /reset, session expiry), so the message list won't
-        # be reused.  Drops the reference proactively rather than waiting for
-        # the agent object itself to be collected, which matters when a caller
-        # still holds the closed agent (e.g. a draining background task).
+        # 6. Free conversation history — but trim large tool outputs first
+        # to reduce peak memory before clearing. Messages are already persisted
+        # to SQLite at this point, so trimming the live copy is safe.
+        try:
+            self._trim_session_messages()
+        except Exception:
+            pass
         try:
             self._session_messages = []
         except Exception:

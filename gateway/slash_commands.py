@@ -1627,6 +1627,11 @@ class GatewaySlashCommandsMixin:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        # Keep override dict LRU-ordered and capped
+                        _self._session_model_overrides.move_to_end(_session_key)
+                        _cap_max = getattr(_self, "_session_overrides_max", 512)
+                        while len(_self._session_model_overrides) > _cap_max:
+                            _self._session_model_overrides.popitem(last=False)
 
                         # Write-through the non-secret parts to the session
                         # store so the picked model survives a gateway restart
@@ -1875,6 +1880,11 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+            # Keep override dict LRU-ordered and capped
+            self._session_model_overrides.move_to_end(session_key)
+            _cap_max = getattr(self, "_session_overrides_max", 512)
+            while len(self._session_model_overrides) > _cap_max:
+                self._session_model_overrides.popitem(last=False)
 
             # Write-through the non-secret parts (model/provider/base_url) to
             # the session store so the override survives a gateway restart.

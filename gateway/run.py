@@ -64,9 +64,18 @@ from hermes_cli.fallback_config import get_fallback_chain
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
 # memory providers, etc.).  LRU order + idle TTL eviction are enforced
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
-_AGENT_CACHE_MAX_SIZE = 128
-_AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+_AGENT_CACHE_MAX_SIZE = 32
+_AGENT_CACHE_IDLE_TTL_SECS = 300.0  # evict agents idle for >5min
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+
+def _cap_ordered_dict(od: "OrderedDict", maxsize: int) -> None:
+    """Evict oldest entries from an LRU-ordered OrderedDict when over capacity.
+    
+    Must be called after inserting/moving a key so that the most recently used
+    entry stays.  Caller should have called move_to_end() before this.
+    """
+    while len(od) > maxsize:
+        od.popitem(last=False)
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
@@ -3005,10 +3014,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # LRU-ordered and capped to prevent unbounded growth across sessions.
+        self._session_model_overrides: "OrderedDict[str, Dict[str, str]]" = OrderedDict()
+        self._session_overrides_max = 512
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
-        self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        self._session_reasoning_overrides: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -4935,6 +4946,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._session_reasoning_overrides.pop(session_key, None)
         else:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
+            self._session_reasoning_overrides.move_to_end(session_key)
+            _cap_ordered_dict(self._session_reasoning_overrides, self._session_overrides_max)
 
     @staticmethod
     def _load_service_tier() -> str | None:
@@ -10085,6 +10098,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "api_key": "moa-virtual-provider",
                     "api_mode": "chat_completions",
                 }
+                self._session_model_overrides.move_to_end(_quick_key)
+                _cap_ordered_dict(self._session_model_overrides, self._session_overrides_max)
                 self._evict_cached_agent(_quick_key)
                 event._moa_disable_after_turn = True
             except Exception:
@@ -10450,6 +10465,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._session_model_overrides.pop(quick_key, None)
             else:
                 self._session_model_overrides[quick_key] = _restore
+                self._session_model_overrides.move_to_end(quick_key)
+                _cap_ordered_dict(self._session_model_overrides, self._session_overrides_max)
             self._evict_cached_agent(quick_key)
         except Exception:
             pass
@@ -16165,6 +16182,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     provider, exc_info=True,
                 )
         self._session_model_overrides[session_key] = override
+        self._session_model_overrides.move_to_end(session_key)
+        _cap_ordered_dict(self._session_model_overrides, self._session_overrides_max)
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
             session_key, override.get("model"), provider or "",

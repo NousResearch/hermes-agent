@@ -162,6 +162,11 @@ hermes chat --provider copilot --model gpt-5.4
 3. `GITHUB_TOKEN` environment variable
 4. `gh auth token` CLI fallback
 
+When the `gh` CLI has multiple authenticated accounts, set `COPILOT_GH_USER`
+to the desired account login. Set `COPILOT_GH_HOST` as well when selecting an
+account on a GitHub Enterprise host. Hermes passes these values to
+`gh auth token` as `--user` and `--hostname`, respectively.
+
 If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
 
 :::warning Token types
@@ -207,6 +212,8 @@ model:
 | Environment variable | Description |
 |---------------------|-------------|
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
+| `COPILOT_GH_HOST` | GitHub hostname used by the `gh auth token` fallback |
+| `COPILOT_GH_USER` | GitHub account used by the `gh auth token` fallback |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
 

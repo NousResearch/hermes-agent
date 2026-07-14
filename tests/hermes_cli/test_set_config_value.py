@@ -322,6 +322,117 @@ class TestStructuredConfigValues:
         assert "expected a list value" in capsys.readouterr().err
         assert not (_isolated_hermes_home / "config.yaml").exists()
 
+    def test_known_scalar_rejects_structured_value(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit):
+            set_config_value("terminal.timeout", '{"oops": 1}')
+
+        assert "expected an integer value" in capsys.readouterr().err
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+
+    def test_known_nullable_scalar_rejects_structured_value(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit):
+            set_config_value("cron.max_parallel_jobs", '{"oops": 1}')
+
+        assert "expected a scalar value" in capsys.readouterr().err
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+
+    def test_malformed_unknown_mapping_is_rejected_cleanly(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit):
+            set_config_value("custom.settings", '{"unterminated"')
+
+        assert "expected a list or mapping" in capsys.readouterr().err
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+
+    def test_non_json_list_value_is_rejected_before_writing(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit):
+            set_config_value("terminal.docker_volumes", "[2026-01-01]")
+
+        assert "JSON-compatible list" in capsys.readouterr().err
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+
+    def test_non_finite_list_value_is_rejected_before_writing(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit):
+            set_config_value("terminal.docker_volumes", "[.nan]")
+
+        assert "JSON-compatible list" in capsys.readouterr().err
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+
+    def test_mapping_with_non_string_key_is_rejected_before_writing(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit):
+            set_config_value("terminal.docker_env", "{1: value}")
+
+        assert "JSON-compatible mapping" in capsys.readouterr().err
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+
+    def test_recursive_list_value_is_rejected_before_writing(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit):
+            set_config_value("terminal.docker_volumes", "&items [*items]")
+
+        assert "JSON-compatible list" in capsys.readouterr().err
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+
+    def test_list_value_is_mirrored_to_env_as_json(self, _isolated_hermes_home):
+        set_config_value("terminal.docker_volumes", '["/tmp/src:/workspace:rw"]')
+
+        import json
+        from dotenv import dotenv_values
+
+        parsed = dotenv_values(_isolated_hermes_home / ".env")
+        raw_value = parsed["TERMINAL_DOCKER_VOLUMES"]
+        assert raw_value is not None
+        assert json.loads(raw_value) == [
+            "/tmp/src:/workspace:rw"
+        ]
+
+    def test_structured_looking_string_setting_remains_a_string(
+        self, _isolated_hermes_home
+    ):
+        set_config_value("approvals.mode", "[manual]")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["approvals"]["mode"] == "[manual]"
+
+    def test_known_mapping_is_saved_and_mirrored(self, _isolated_hermes_home):
+        set_config_value("terminal.docker_env", '{"MODE": "strict"}')
+
+        import json
+        import yaml
+        from dotenv import dotenv_values
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["docker_env"] == {"MODE": "strict"}
+        raw_value = dotenv_values(_isolated_hermes_home / ".env")["TERMINAL_DOCKER_ENV"]
+        assert raw_value is not None
+        assert json.loads(raw_value) == {"MODE": "strict"}
+
+    def test_known_mapping_rejects_list_value(self, _isolated_hermes_home, capsys):
+        with pytest.raises(SystemExit):
+            set_config_value("terminal.docker_env", '["MODE=strict"]')
+
+        assert "expected a mapping value" in capsys.readouterr().err
+
+    def test_unknown_flow_list_is_saved_as_a_list(self, _isolated_hermes_home):
+        set_config_value("custom.items", '["one", "two"]')
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["custom"]["items"] == ["one", "two"]
+
 
 # ---------------------------------------------------------------------------
 # Secret redaction in display output (issue #50245)

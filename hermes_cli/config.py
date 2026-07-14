@@ -8113,18 +8113,40 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-def _default_value_for_key(dotted_key: str):
-    """Return the leaf value declared for *dotted_key* in ``DEFAULT_CONFIG``.
+_CONFIG_KEY_MISSING = object()
 
-    Unknown keys and non-leaf paths return ``None`` so they retain the legacy
-    best-effort coercion used by ``config set``.
-    """
+
+def _default_value_for_key(dotted_key: str):
+    """Return the value declared for *dotted_key* or a missing-key sentinel."""
     node = DEFAULT_CONFIG
     for part in dotted_key.split("."):
         if not isinstance(node, dict) or part not in node:
-            return None
+            return _CONFIG_KEY_MISSING
         node = node[part]
-    return node if not isinstance(node, dict) else None
+    return node
+
+
+def _is_json_compatible(value: Any) -> bool:
+    """Return whether a structured config value can be mirrored to env safely."""
+    stack = [value]
+    seen: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, (list, dict)) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, dict):
+            if any(not isinstance(key, str) for key in node):
+                return False
+            stack.extend(node.values())
+        else:
+            stack.extend(node)
+
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        return False
+    return True
 
 
 def set_config_value(key: str, value: str):
@@ -8189,23 +8211,61 @@ def set_config_value(key: str, value: str):
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
     default_value = _default_value_for_key(key)
-    if isinstance(default_value, list):
+    if isinstance(default_value, (list, dict)):
         try:
             parsed_value = fast_safe_load(value)
         except Exception:
             parsed_value = None
-        if not isinstance(parsed_value, list):
+        expected_type = type(default_value)
+        expected_name = "list" if expected_type is list else "mapping"
+        if not isinstance(parsed_value, expected_type):
             print(
-                f"Cannot set '{key}': expected a list value (for example, '[\"item\"]')",
+                f"Cannot set '{key}': expected a {expected_name} value",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not _is_json_compatible(parsed_value):
+            print(
+                f"Cannot set '{key}': expected a JSON-compatible {expected_name} value",
                 file=sys.stderr,
             )
             sys.exit(1)
         coerced_value = parsed_value
     elif not isinstance(default_value, str):
         if value.lstrip().startswith(("[", "{")):
-            parsed_value = fast_safe_load(value)
-            if isinstance(parsed_value, (list, dict)):
-                coerced_value = parsed_value
+            if default_value is not _CONFIG_KEY_MISSING:
+                if default_value is None:
+                    expected = "a scalar"
+                elif isinstance(default_value, bool):
+                    expected = "a boolean"
+                elif isinstance(default_value, int):
+                    expected = "an integer"
+                elif isinstance(default_value, float):
+                    expected = "a number"
+                else:
+                    expected = f"a {type(default_value).__name__}"
+                print(
+                    f"Cannot set '{key}': expected {expected} value",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                parsed_value = fast_safe_load(value)
+            except Exception:
+                parsed_value = None
+            if not isinstance(parsed_value, (list, dict)):
+                print(
+                    f"Cannot set '{key}': expected a list or mapping value",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not _is_json_compatible(parsed_value):
+                print(
+                    f"Cannot set '{key}': expected a JSON-compatible list or mapping value",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            coerced_value = parsed_value
         elif value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:

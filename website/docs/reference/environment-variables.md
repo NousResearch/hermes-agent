@@ -468,6 +468,14 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_MAX_MEDIA_BYTES` | Maximum Matrix media upload/download size in bytes (default: `104857600`) |
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `MATRIX_RECOVERY_KEY_OUTPUT_FILE` | Optional one-time path for a generated Matrix recovery key. Created with mode `0600` and never overwritten. |
+| `TRUECONF_SERVER` | TrueConf server address (e.g., `trueconf.example.com`) |
+| `TRUECONF_USERNAME` | TrueConf bot username |
+| `TRUECONF_PASSWORD` | TrueConf bot password |
+| `TRUECONF_ALLOWED_USERS` | Comma-separated list of allowed user emails or chat IDs |
+| `TRUECONF_ALLOW_ALL_USERS` | Allow all users without an allowlist (`true`/`false`) |
+| `TRUECONF_HOME_CHANNEL` | Default chat ID for cron delivery and notifications |
+| `TRUECONF_VERIFY_SSL` | Disable SSL verification (`false`/`0`, default: `true`) |
+| `TRUECONF_PARSE_MODE` | Parsing mode for messages sent by bot (`html`/`markdown`/`text`, default: `html`) |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |

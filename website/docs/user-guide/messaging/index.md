@@ -37,6 +37,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| TrueConf | ✅ | ✅ | ✅ | — | — | — | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
@@ -63,6 +64,7 @@ flowchart TB
             mm[Mattermost]
             mx[Matrix]
             dt[DingTalk]
+            tc[TrueConf]
     fs[Feishu/Lark]
     wc[WeCom]
     wcb[WeCom Callback]
@@ -100,6 +102,7 @@ flowchart TB
     qq --> store
     yb --> store
     ms --> store
+    tc --> store
     api --> store
     wh --> store
     store --> agent
@@ -246,6 +249,7 @@ DINGTALK_ALLOWED_USERS=user-id-1
 FEISHU_ALLOWED_USERS=ou_xxxxxxxx,ou_yyyyyyyy
 WECOM_ALLOWED_USERS=user-id-1,user-id-2
 WECOM_CALLBACK_ALLOWED_USERS=user-id-1,user-id-2
+TRUECONF_ALLOWED_USERS=user1@company.com,user2@company.com
 TEAMS_ALLOWED_USERS=aad-object-id-1,aad-object-id-2
 
 # Or allow
@@ -534,6 +538,7 @@ Each platform has its own toolset:
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
+| TrueConf | `hermes-trueconf` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 | Raft | `hermes-raft` | Wake-only channel; agent uses Raft CLI for message I/O |
@@ -677,6 +682,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [QQBot Setup](qqbot.md)
 - [Yuanbao Setup](yuanbao.md)
+- [TrueConf Setup](trueconf.md)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)
 - [Open WebUI + API Server](open-webui.md)

@@ -169,6 +169,7 @@ gateway/platforms/                  # core base + legacy direct adapters
 ├── signal.py            # Signal via signal-cli REST API
 ├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
 ├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
+├── trueconf.py          # TrueConf via WebSocket (python-trueconf-bot SDK)
 ├── qqbot/               # QQ Bot (Tencent QQ) via Official API v2 (sub-package)
 ├── yuanbao.py           # Yuanbao (Tencent) DM/group adapter
 ├── msgraph_webhook.py   # Microsoft Graph change-notification webhook (Teams, Outlook, etc.)

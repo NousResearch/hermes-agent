@@ -5071,6 +5071,33 @@ _PLATFORMS = [
             },
         ],
     },
+    {
+        "key": "trueconf",
+        "label": "TrueConf",
+        "emoji": "📱",
+        "token_var": "TRUECONF_USERNAME",
+        "setup_instructions": [
+            "1. Open your TrueConf Server / TrueConf Enterprise admin panel",
+            "2. Create new user via Registry mode or import it from LDAP catalogue",
+            "3. Copy it's TrueConf ID (login).",
+            "4. To find your user ID: message @userinfobot — it replies with your numeric ID",
+        ],
+        "vars": [
+            {"name": "TRUECONF_USERNAME", "prompt": "Full TrueConf ID (user login), e.g. user@example.com. See https://trueconf.com/docs/server/en/admin/users/ for more info.", "password": False,
+             "help": "Paste the TrueConf ID for bot (see step 2 above)."},
+            {"name": "TRUECONF_PASSWORD", "prompt": "Password for bot account", "password": True,
+             "help": "Paste the password for the bot."},
+            {"name": "TRUECONF_ALLOWED_USERS", "prompt": "Allowed full user TrueConf IDs (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Paste your user ID from step 3 above."},
+            {"name": "TRUECONF_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
+            {"name": "TRUECONF_VERIFY_SSL", "prompt": "Use SSL verifying for messaging platfotm (default true). Type 0 to disable.", "password": False,
+             "help": "May be usufel for some reasons (self-signed SSL cert, problems while authorizing etc.)."},
+            {"name": "TRUECONF_PARSE_MODE", "prompt": "Define parsing mode for messages must be sent by bot (default HTML because it has better support in TrueConf).", "password": False,
+             "help": "Select from: HTML, MARKDOWN, TEXT."},
+        ],
+    },
 ]
 
 
@@ -5984,6 +6011,7 @@ def _builtin_setup_fn(key: str):
         # wecom moved into the plugin: setup_fn registered by
         # plugins/platforms/wecom/adapter.py::register(). #41112.
         "qqbot": _setup_qqbot,
+        "trueconf": _s._setup_trueconf,
     }.get(key)
 
 

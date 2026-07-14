@@ -579,6 +579,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    # TrueConf user IDs looks like email addresses (user@domain.example.com)
+    if platform_name == "trueconf" and "@" in target_ref and "." in target_ref:
+        return target_ref.strip(), None, True
     if platform_name == "ntfy":
         topic = target_ref.strip()
         if topic:
@@ -795,6 +798,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
+    from gateway.platforms.trueconf import TrueConfAdapter
 
     # Telegram adapter import is optional (requires python-telegram-bot)
     try:
@@ -818,6 +822,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # migrated to plugins in #41112).
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
+        Platform.TRUECONF: TrueConfAdapter.MAX_MESSAGE_LENGTH,
     }
 
     # Check plugin registry for max_message_length
@@ -980,6 +985,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return result
             last_result = result
         return last_result
+    # --- TrueConf: use the adapter for native file sending ---
+    if platform == Platform.TRUECONF and media_files:
+        return await _send_trueconf_via_adapter(
+            pconfig,
+            chat_id,
+            message,
+            media_files=media_files,
+            thread_id=thread_id,
+        )
 
     # --- WhatsApp: native media attachment support via the registry's
     # standalone_sender_fn (plugins/platforms/whatsapp/adapter.py::_standalone_send).
@@ -1035,7 +1049,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, trueconf and whatsapp; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -1043,7 +1057,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, trueconf and whatsapp"
         )
 
     last_result = None
@@ -1080,6 +1094,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
+        elif platform == Platform.TRUECONF:
+            result = await _send_trueconf(pconfig, chat_id, chunk)
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
@@ -1947,7 +1963,103 @@ async def _send_yuanbao(chat_id, message, media_files=None):
         return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
     except Exception as e:
         return _error(f"Yuanbao send failed: {e}")
+    
+async def _send_trueconf(pconfig, chat_id, message):
+    """Send a text message via TrueConf Bot SDK.
 
+    Creates a short-lived Bot instance: connect → sleep 3s for WS handshake →
+    send_message → shutdown.  Each call is independent (no persistent state).
+    """
+    import asyncio
+    try:
+        from trueconf import Bot
+        from trueconf.enums import ParseMode
+    except ImportError:
+        return _error("python-trueconf-bot not installed")
+
+    server = pconfig.extra.get("server") or os.getenv("TRUECONF_SERVER", "")
+    username = pconfig.extra.get("username") or os.getenv("TRUECONF_USERNAME", "")
+    password = pconfig.token or os.getenv("TRUECONF_PASSWORD", "")
+    verify_ssl = pconfig.extra.get("verify_ssl", True)
+    if os.getenv("TRUECONF_VERIFY_SSL", "").lower() in ("false", "0", "no"):
+        verify_ssl = False
+    parse_mode = os.getenv("TRUECONF_PARSE_MODE").lower()
+    if parse_mode == "html":
+        parse_mode = ParseMode.HTML
+    elif parse_mode == "markdown":
+        parse_mode = ParseMode.MARKDOWN
+    else:
+        parse_mode = ParseMode.TEXT
+
+    try:
+        bot = Bot.from_credentials(server, username, password, verify_ssl=verify_ssl)
+        await bot.start()
+        await asyncio.sleep(3)
+        result = await bot.send_message(chat_id, message, parse_mode)
+        await bot.shutdown()
+
+        if result:
+            return {"success": True, "platform": "trueconf", "chat_id": chat_id}
+        return _error("TrueConf send_message returned False")
+    except Exception as e:
+        return _error(f"TrueConf send failed: {e}")
+
+
+async def _send_trueconf_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
+    """Send via the TrueConf adapter so native file sending is preserved."""
+    try:
+        from gateway.platforms.trueconf import TrueConfAdapter
+    except ImportError:
+        return {"error": "TrueConf adapter not available"}
+
+    media_files = media_files or []
+
+    try:
+        adapter = TrueConfAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error("TrueConf connect failed")
+
+        last_result = None
+
+        if message.strip():
+            last_result = await adapter.send(chat_id, message, thread_id=thread_id)
+            if not last_result.success:
+                await adapter.disconnect()
+                return _error(f"TrueConf send failed: {last_result.error}")
+
+        for media_path, is_voice in media_files:
+            if media_path.startswith("<") and media_path.endswith(">"):
+                await adapter.disconnect()
+                return _error(f"Invalid media path (placeholder): {media_path}")
+            if not os.path.exists(media_path):
+                await adapter.disconnect()
+                return _error(f"Media file not found: {media_path}")
+
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                last_result = await adapter.send_image_file(chat_id, media_path, reply_to=None, thread_id=thread_id)
+            elif ext in _VIDEO_EXTS:
+                last_result = await adapter.send_video(chat_id, media_path, reply_to=None, thread_id=thread_id)
+            elif ext in _VOICE_EXTS and is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path, reply_to=None, thread_id=thread_id)
+            elif ext in _AUDIO_EXTS:
+                last_result = await adapter.send_voice(chat_id, media_path, reply_to=None, thread_id=thread_id)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path, reply_to=None, thread_id=thread_id)
+
+            if not last_result.success:
+                await adapter.disconnect()
+                return _error(f"TrueConf file send failed for {media_path}: {last_result.error}")
+
+        await adapter.disconnect()
+        return {
+            "success": True,
+            "platform": "trueconf",
+            "chat_id": chat_id,
+        }
+    except Exception as e:
+        return _error(f"TrueConf send failed: {e}")
 
 # --- Registry ---
 from tools.registry import tool_error

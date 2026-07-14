@@ -657,6 +657,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/irc',
             'user-guide/messaging/open-webui',
             'user-guide/messaging/webhooks',
+            'user-guide/messaging/trueconf',
           ],
         },
       ],

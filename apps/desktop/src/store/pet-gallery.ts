@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { normalize } from '@/lib/text'
 import { $petInfo, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
 
 /**
@@ -27,6 +28,8 @@ export interface GalleryPet {
   spritesheetUrl?: string
   /** petdex's hand-picked set — used only to rank "popular" pets first. */
   curated?: boolean
+  /** Hatched locally by the user (createdBy=generator) — badged + ranked first. */
+  generated?: boolean
 }
 
 export interface PetGallery {
@@ -39,7 +42,12 @@ export type PetGalleryStatus = 'idle' | 'loading' | 'ready' | 'stale' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest` — passed in so the
  *  store reuses the hook's reconnect/reauth handling instead of duplicating it. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type GatewayRequest = <T>(
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs?: number,
+  signal?: AbortSignal
+) => Promise<T>
 
 /** Profile-scoped pet RPC. Pets are per-profile, so every call carries the active
  *  profile (the gateway no-ops it for the launch profile). One chokepoint so no
@@ -115,16 +123,21 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
       $petGalleryStatus.set('loading')
     }
 
+    let localOk = false
+
     try {
-      const [next, info] = await Promise.all([
-        petRpc<PetGallery>(request, 'pet.gallery'),
+      // Phase 1: local pets only — instant, never blocks on the remote petdex
+      // manifest. The user's own/generated pets render right away.
+      const [local, info] = await Promise.all([
+        petRpc<PetGallery>(request, 'pet.gallery', { localOnly: true }),
         petRpc<PetInfo>(request, 'pet.info')
       ])
 
-      if (next) {
-        $petGallery.set(next)
+      if (local) {
+        $petGallery.set(local)
         $petGalleryStatus.set('ready')
         $petGalleryError.set(null)
+        localOk = true
       }
 
       if (info) {
@@ -141,6 +154,21 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
       }
     } finally {
       galleryLoad = null
+    }
+
+    // Phase 2: merge in the full petdex catalog in the background. A slow/failed
+    // manifest fetch never hides the local pets shown in phase 1.
+    if (localOk) {
+      try {
+        const full = await petRpc<PetGallery>(request, 'pet.gallery')
+
+        if (full) {
+          $petGallery.set(full)
+          $petGalleryStatus.set('ready')
+        }
+      } catch {
+        // Keep the local-only gallery; the petdex catalog just stays unmerged.
+      }
     }
   })()
 
@@ -162,6 +190,24 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
 }
 
 /**
+ * Reflect a just-adopted *local* pet without any network: optimistically mark it
+ * active/installed in the cached gallery and repaint the live mascot via the
+ * local `pet.info`. Adopting a generated pet is a disk+config op — it must never
+ * wait on `pet.gallery`'s remote petdex manifest fetch.
+ */
+export async function applyAdoptedPet(request: GatewayRequest, slug: string, displayName: string): Promise<void> {
+  patchGallery(gallery => ({
+    ...gallery,
+    enabled: true,
+    active: slug,
+    pets: gallery.pets.some(p => p.slug === slug)
+      ? gallery.pets.map(p => (p.slug === slug ? { ...p, installed: true, displayName } : p))
+      : [...gallery.pets, { slug, displayName, installed: true, spritesheetUrl: '' }]
+  }))
+  await syncInfo(request)
+}
+
+/**
  * Filter (drop the internal `clawd*` pets + apply a search query) and rank the
  * gallery for a picker. Ranking has no popularity data, so it leans on the
  * signals we do have: active pet first, then installed, then curated. Shared by
@@ -173,10 +219,17 @@ export function rankedGalleryPets(gallery: PetGallery | null, query = ''): Galle
     return []
   }
 
-  const needle = query.trim().toLowerCase()
+  const needle = normalize(query)
 
+  // User-generated pets first, then the active pet, then installed, then curated.
+  // Guard every term with a boolean — local-only pets omit curated/generated, and
+  // `Number(undefined)` is NaN, which poisons the sort (it would sink those pets
+  // below the render cap and hide them entirely).
   const rank = (p: GalleryPet) =>
-    Number(gallery.enabled && p.slug === gallery.active) * 4 + Number(p.installed) * 2 + Number(p.curated)
+    (p.generated ? 8 : 0) +
+    (gallery.enabled && p.slug === gallery.active ? 4 : 0) +
+    (p.installed ? 2 : 0) +
+    (p.curated ? 1 : 0)
 
   return gallery.pets
     .filter(
@@ -281,6 +334,21 @@ export const PET_SCALE_MAX = 3.0
 export const PET_SCALE_DEFAULT = 0.33
 export const clampPetScale = (n: number) => Math.max(PET_SCALE_MIN, Math.min(PET_SCALE_MAX, n))
 
+// Wheel → scale. Multiplicative so one notch feels the same at any size. Tuned
+// for a discrete mouse-wheel notch (deltaY ≈ ±100); trackpad two-finger scroll
+// (smaller deltas) just resizes more gently, which is fine.
+const WHEEL_SCALE_K = 0.0015
+
+/**
+ * Next pet scale for one mouse-wheel step over the pet. Scrolling up (deltaY < 0)
+ * grows it, scrolling down shrinks it; the result is clamped to the slider's range.
+ */
+export function nextScaleFromWheel(current: number | undefined, deltaY: number): number {
+  const base = current ?? PET_SCALE_DEFAULT
+
+  return clampPetScale(base * Math.exp(-deltaY * WHEEL_SCALE_K))
+}
+
 let scalePersist: ReturnType<typeof setTimeout> | undefined
 
 /**
@@ -309,14 +377,117 @@ export function setPetScale(request: GatewayRequest, scale: number): void {
   }, 200)
 }
 
+/** Export a pet as a `.zip` (pet.json + spritesheet) and save it via the browser. */
+export async function exportPet(request: GatewayRequest, slug: string, fallback: string): Promise<boolean> {
+  $petBusy.set(slug)
+  $petGalleryError.set(null)
+
+  try {
+    const res = await petRpc<{ ok: boolean; filename: string; zipBase64: string }>(request, 'pet.export', { slug })
+
+    if (!res?.ok || !res.zipBase64) {
+      throw new Error(fallback)
+    }
+
+    const bytes = Uint8Array.from(atob(res.zipBase64), c => c.charCodeAt(0))
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = res.filename || `${slug}.zip`
+    anchor.click()
+    URL.revokeObjectURL(url)
+
+    return true
+  } catch (e) {
+    $petGalleryError.set(e instanceof Error ? e.message : fallback)
+
+    return false
+  } finally {
+    $petBusy.set(null)
+  }
+}
+
+/**
+ * Rename a pet — optimistic. The new name shows instantly (so the dialog can
+ * close immediately); the RPC runs in the background and the backend also
+ * realigns the slug/dir, so we reconcile the slug + thumb cache when it returns,
+ * and roll the name back if it fails.
+ */
+export function renamePet(request: GatewayRequest, slug: string, name: string, fallback: string): Promise<boolean> {
+  const trimmed = name.trim()
+
+  if (!trimmed) {
+    return Promise.resolve(false)
+  }
+
+  const prev = $petGallery.get()?.pets.find(p => p.slug === slug)?.displayName ?? ''
+
+  // Optimistic: paint the new name now (slug reconciles when the RPC returns).
+  patchGallery(g => ({
+    ...g,
+    pets: g.pets.map(p => (p.slug === slug ? { ...p, displayName: trimmed } : p))
+  }))
+  $petGalleryError.set(null)
+
+  return (async () => {
+    try {
+      const res = await petRpc<{ ok: boolean; slug: string; displayName: string }>(request, 'pet.rename', {
+        slug,
+        name: trimmed
+      })
+
+      if (!res?.ok) {
+        throw new Error(fallback)
+      }
+
+      const newSlug = res.slug || slug
+
+      if (newSlug !== slug) {
+        thumbCache.delete(slug)
+        patchGallery(g => ({
+          ...g,
+          active: g.active === slug ? newSlug : g.active,
+          pets: g.pets
+            .filter(p => p.slug !== newSlug || p.slug === slug)
+            .map(p => (p.slug === slug ? { ...p, slug: newSlug, displayName: res.displayName || trimmed } : p))
+        }))
+      }
+
+      return true
+    } catch (e) {
+      // Roll the optimistic name back so the list reflects on-disk truth.
+      patchGallery(g => ({
+        ...g,
+        pets: g.pets.map(p => (p.slug === slug ? { ...p, displayName: prev } : p))
+      }))
+      $petGalleryError.set(e instanceof Error ? e.message : fallback)
+
+      return false
+    }
+  })()
+}
+
 /** Uninstall a pet; turns the mascot off if it was the active one. */
 export function removePet(request: GatewayRequest, slug: string, fallback: string): Promise<boolean> {
   return mutate(slug, fallback, request, async () => {
     await petRpc(request, 'pet.remove', { slug })
+    // Evict the by-slug thumb cache so a reused slug doesn't render this pet's
+    // stale thumbnail (the backend drops its disk thumb in parallel).
+    thumbCache.delete(slug)
     patchGallery(g => ({
       ...g,
       enabled: g.active === slug ? false : g.enabled,
-      pets: g.pets.map(p => (p.slug === slug ? { ...p, installed: false } : p))
+      active: g.active === slug ? '' : g.active,
+      // Petdex pets can be reinstalled from the manifest, so we just mark them
+      // uninstalled. Generated / local-only pets have no remote source — once
+      // deleted they're gone, so drop them from the list entirely.
+      pets: g.pets.flatMap(p => {
+        if (p.slug !== slug) {
+          return [p]
+        }
+
+        return p.generated || !p.spritesheetUrl ? [] : [{ ...p, installed: false }]
+      })
     }))
   })
 }

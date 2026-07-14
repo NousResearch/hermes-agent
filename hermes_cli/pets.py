@@ -416,6 +416,26 @@ def _clear_active_if(slug: str) -> bool:
     return True
 
 
+def _rename_active_if(old_slug: str, new_slug: str) -> bool:
+    """Repoint the active pet from ``old_slug`` to ``new_slug`` iff it's active.
+
+    Used when a rename realigns a pet's slug/dir: if the renamed pet was the
+    active one, the config must follow or surfaces point at a now-missing dir.
+    Preserves the ``enabled`` flag. Returns whether anything changed.
+    """
+    if not new_slug or old_slug == new_slug:
+        return False
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    pet = cfg.setdefault("display", {}).setdefault("pet", {})
+    if not isinstance(pet, dict) or str(pet.get("slug", "") or "") != old_slug:
+        return False
+    pet["slug"] = new_slug
+    save_config(cfg)
+    return True
+
+
 def _interactive_pick(pets) -> str:
     """Minimal numbered picker (avoids curses dep for a tiny list)."""
     _print("Installed pets:")

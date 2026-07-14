@@ -190,9 +190,7 @@ describe('createGatewayEventHandler', () => {
       type: 'review.summary'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith(
-      "💾 Self-improvement review: Skill 'hermes-release' patched"
-    )
+    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'hermes-release' patched")
   })
 
   it('ignores review.summary events with empty or missing text', () => {
@@ -410,6 +408,55 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.thinking).toBe(streamed)
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(streamed))
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
+  })
+
+  it('renders moa.reference as a labelled thinking-style segment', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { count: 2, index: 1, label: 'openrouter:openai/gpt-5.5', text: 'Paris.' },
+      type: 'moa.reference'
+    } as any)
+    onEvent({
+      payload: { count: 2, index: 2, label: 'openrouter:anthropic/claude-opus-4.8', text: 'Paris.' },
+      type: 'moa.reference'
+    } as any)
+
+    const segments = getTurnState().streamSegments
+    const refBlocks = segments.filter(m => typeof m.thinking === 'string' && m.thinking.includes('Reference'))
+    expect(refBlocks).toHaveLength(2)
+    expect(refBlocks[0]?.thinking).toContain('Reference 1/2 — openrouter:openai/gpt-5.5')
+    expect(refBlocks[0]?.thinking).toContain('Paris.')
+    expect(refBlocks[1]?.thinking).toContain('Reference 2/2 — openrouter:anthropic/claude-opus-4.8')
+  })
+
+  it('renders moa.reference even when showReasoning is off (it is the MoA process, not reasoning)', () => {
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { label: 'openrouter:openai/gpt-5.5', text: 'Four.' },
+      type: 'moa.reference'
+    } as any)
+
+    const segments = getTurnState().streamSegments
+    const refBlocks = segments.filter(m => typeof m.thinking === 'string' && m.thinking.includes('Reference'))
+    expect(refBlocks).toHaveLength(1)
+    expect(refBlocks[0]?.thinking).toContain('openrouter:openai/gpt-5.5')
+  })
+
+  it('moa.aggregating does not append a transcript segment', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    const before = getTurnState().streamSegments.length
+    onEvent({ payload: { aggregator: 'openrouter:anthropic/claude-opus-4.8' }, type: 'moa.aggregating' } as any)
+    expect(getTurnState().streamSegments.length).toBe(before)
   })
 
   it('uses message.complete reasoning when no streamed reasoning ref', () => {
@@ -879,7 +926,10 @@ describe('createGatewayEventHandler', () => {
   it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
-    onEvent({ payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' }, type: 'approval.request' } as any)
+    onEvent({
+      payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' },
+      type: 'approval.request'
+    } as any)
 
     expect(getOverlayState().approval).toMatchObject({ allowPermanent: true })
   })
@@ -897,6 +947,23 @@ describe('createGatewayEventHandler', () => {
       command: 'curl suspicious | bash',
       description: 'content-security warning'
     })
+  })
+
+  it('preserves Smart DENY and explicit approval choices on the overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        allow_permanent: true,
+        choices: ['once', 'deny'],
+        command: 'rm -rf /tmp/x',
+        description: 'smart deny override',
+        smart_denied: true
+      },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'], smartDenied: true })
   })
 
   it('still surfaces terminal turn failures as errors', () => {
@@ -1188,9 +1255,9 @@ describe('createGatewayEventHandler', () => {
     // Settle flips busy false (the single drain edge) and the backend
     // "Operation interrupted…" line is suppressed (not appended).
     expect(getUiState().busy).toBe(false)
-    expect(appended.slice(before).some(m => typeof m.text === 'string' && m.text.includes('Operation interrupted'))).toBe(
-      false
-    )
+    expect(
+      appended.slice(before).some(m => typeof m.text === 'string' && m.text.includes('Operation interrupted'))
+    ).toBe(false)
   })
 
   it('persists an abandoned (timed-out) clarify into the transcript when the clarify tool completes', () => {
@@ -1255,6 +1322,24 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { duration_s: 4.2, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
 
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+  })
+
+  it('clears only the matching sensitive prompt when the gateway expires it', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    patchOverlayState({
+      secret: { envVar: 'NEW_KEY', prompt: 'Enter new key', requestId: 'secret-new' },
+      sudo: { requestId: 'sudo-1' }
+    })
+
+    onEvent({ payload: { request_id: 'secret-old' }, type: 'secret.expire' } as any)
+    expect(getOverlayState().secret?.requestId).toBe('secret-new')
+
+    onEvent({ payload: { request_id: 'secret-new' }, type: 'secret.expire' } as any)
+    expect(getOverlayState().secret).toBeNull()
+
+    onEvent({ payload: { request_id: 'sudo-1' }, type: 'sudo.expire' } as any)
+    expect(getOverlayState().sudo).toBeNull()
   })
 
   // ── Credits notice (Strategy B) ──────────────────────────────────────

@@ -46,6 +46,39 @@ logger = logging.getLogger(__name__)
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 
 
+def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
+    """Return a function-tool dict with a resolvable top-level ``name``.
+
+    Context engines and memory providers expose tool schemas via
+    ``get_tool_schemas()``. The expected shape is a bare function schema
+    (``{"name": ..., "description": ..., "parameters": ...}``) which callers
+    wrap as ``{"type": "function", "function": schema}``.
+
+    Some providers instead return an entry that is *already* in OpenAI tool
+    form (``{"type": "function", "function": {"name": ...}}``). Wrapping that
+    a second time produces ``{"type": "function", "function": {"type":
+    "function", "function": {...}}}`` whose ``function`` has no top-level
+    ``name``. Strict providers (e.g. DeepSeek) reject the *entire* request
+    with ``tools[N].function: missing field name`` (HTTP 400), so one bad
+    schema disables the whole toolset and breaks every turn (#47707).
+
+    This helper normalizes both shapes to the bare function schema and
+    returns ``None`` for anything without a resolvable name, so callers can
+    skip-with-warning rather than appending a nameless tool.
+    """
+    if not isinstance(schema, dict):
+        return None
+    # Unwrap an already-wrapped OpenAI tool entry.
+    if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
+        schema = schema["function"]
+        if not isinstance(schema, dict):
+            return None
+    name = schema.get("name", "")
+    if not name or not isinstance(name, str):
+        return None
+    return schema
+
+
 def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
     """Return whether external memory-provider tools should be exposed."""
     if enabled_toolsets is None:
@@ -92,11 +125,17 @@ def inject_memory_provider_tools(agent: Any) -> int:
         agent.valid_tool_names = valid_tool_names
 
     added = 0
-    for schema in get_schemas():
-        if not isinstance(schema, dict):
+    for raw_schema in get_schemas():
+        schema = normalize_tool_schema(raw_schema)
+        if schema is None:
+            logger.warning(
+                "Memory provider returned a tool schema with no resolvable "
+                "name; skipping to avoid poisoning the request (%r)",
+                raw_schema,
+            )
             continue
-        tool_name = schema.get("name", "")
-        if not tool_name or tool_name in existing_tool_names:
+        tool_name = schema["name"]
+        if tool_name in existing_tool_names:
             continue
         tools.append({"type": "function", "function": schema})
         valid_tool_names.add(tool_name)
@@ -370,8 +409,11 @@ class MemoryManager:
         _core_tool_names = set(_HERMES_CORE_TOOLS)
 
         # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
-            tool_name = schema.get("name", "")
+        for raw_schema in provider.get_tool_schemas():
+            schema = normalize_tool_schema(raw_schema)
+            if schema is None:
+                continue
+            tool_name = schema["name"]
             if tool_name in _core_tool_names:
                 logger.warning(
                     "Memory provider '%s' tool '%s' shadows a reserved core "
@@ -609,7 +651,12 @@ class MemoryManager:
         with self._sync_executor_lock:
             if self._sync_executor is None:
                 try:
-                    self._sync_executor = ThreadPoolExecutor(
+                    # Daemon workers (see tools.daemon_pool): a provider wedged
+                    # on a network call must never block interpreter exit —
+                    # stdlib ThreadPoolExecutor's atexit hook would join it
+                    # unconditionally even after shutdown(wait=False).
+                    from tools.daemon_pool import DaemonThreadPoolExecutor
+                    self._sync_executor = DaemonThreadPoolExecutor(
                         max_workers=1,
                         thread_name_prefix="mem-sync",
                     )
@@ -658,11 +705,19 @@ class MemoryManager:
         seen = set()
         for provider in self._providers:
             try:
-                for schema in provider.get_tool_schemas():
-                    name = schema.get("name", "")
+                for raw_schema in provider.get_tool_schemas():
+                    schema = normalize_tool_schema(raw_schema)
+                    if schema is None:
+                        logger.warning(
+                            "Memory provider '%s' returned a tool schema with "
+                            "no resolvable name; skipping (%r)",
+                            provider.name, raw_schema,
+                        )
+                        continue
+                    name = schema["name"]
                     if name in _core_tool_names:
                         continue
-                    if name and name not in seen:
+                    if name not in seen:
                         schemas.append(schema)
                         seen.add(name)
             except Exception as e:
@@ -727,6 +782,55 @@ class MemoryManager:
                     provider.name, e,
                     exc_info=True,
                 )
+
+    def commit_session_boundary_async(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        new_session_id: str,
+        parent_session_id: str = "",
+        reason: str = "new_session",
+    ) -> None:
+        """Queue old-session extraction + provider rebinding as ONE serialized task.
+
+        Session rotation (/new) must deliver ``on_session_end`` (end-of-session
+        extraction — an LLM-bound call that can take seconds) strictly BEFORE
+        ``on_session_switch`` (which rebinds provider-internal ``_session_id`` /
+        turn buffers to the new session). Running extraction inline blocked the
+        /new command for the whole LLM round-trip (#16454); running it on an
+        ad-hoc thread raced the inline switch — providers key off internal
+        state, so a late ``on_session_end`` ran against post-switch bindings
+        (transcript misattributed to the new session id, double-ingest of the
+        old turn buffer, new-session buffers cleared).
+
+        Submitting BOTH hooks as one task on the manager's single background
+        worker gives both properties at a single chokepoint: the caller returns
+        immediately, and the worker's FIFO order serializes end→switch against
+        every other provider write (per-turn ``sync_all``, prefetches), which
+        already share the same worker. If the executor is unavailable,
+        ``_submit_background`` degrades to inline execution — the pre-#16454
+        synchronous behavior, slow but correct.
+        """
+        if not self._providers:
+            return
+        snapshot = list(messages or [])
+
+        def _run() -> None:
+            try:
+                self.on_session_end(snapshot)
+            except Exception as e:  # pragma: no cover - on_session_end guards per-provider
+                logger.warning("Session-boundary extraction failed: %s", e)
+            try:
+                self.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=True,
+                    reason=reason,
+                )
+            except Exception as e:  # pragma: no cover - on_session_switch guards per-provider
+                logger.warning("Session-boundary switch failed: %s", e)
+
+        self._submit_background(_run)
 
     def on_session_switch(
         self,

@@ -1,6 +1,6 @@
 ---
 name: project-cleanup
-description: Use when cleaning up, tidying, or reducing bloat in a project directory. 项目冷热分离一键清理：识别pycache/空文件/测试垃圾/重复文件/旧备份，先备份后清理。
+description: "Project bloat cleanup: pycache/empty/duplicate files detection. 项目冷热分离清理。"
 version: 1.0.0
 author: andorexu
 license: MIT

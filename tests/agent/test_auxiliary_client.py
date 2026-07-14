@@ -1943,6 +1943,42 @@ class TestIsZaiModelNotEntitled:
         exc = self._exc(code="1311")
         assert _is_zai_model_not_entitled(exc, "openai") is False
 
+    def test_zai_aliases_normalized(self):
+        """Config aliases for Z.AI ("glm", "z.ai", "zhipu") reach the same
+        backend and must match — the raw route label is not the identity."""
+        exc = self._exc(code="1311")
+        # Pin the shadow lookup so the assertions don't depend on the local
+        # config having (or not having) alias-named custom_providers entries.
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value=None,
+        ):
+            for alias in ("glm", "z-ai", "z.ai", "zhipu", " ZAI "):
+                assert _is_zai_model_not_entitled(exc, alias) is True, alias
+        # base_url-configured Z.AI resolves to the "custom" label — an explicit
+        # endpoint pin the reroute deliberately does not match.
+        assert _is_zai_model_not_entitled(exc, "custom") is False
+        assert _is_zai_model_not_entitled(exc, None) is False
+
+    def test_named_custom_routes_never_match(self):
+        """User-defined endpoints must never be classified as Z.AI, even when
+        their name normalizes to it: "custom:glm" routes and custom_providers
+        entries shadowing an alias name are the user's own gateway."""
+        exc = self._exc(code="1311")
+        assert _is_zai_model_not_entitled(exc, "custom:glm") is False
+        # A custom_providers entry literally named "glm" shadows the alias.
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value={"base_url": "https://proxy.internal/v1"},
+        ):
+            assert _is_zai_model_not_entitled(exc, "glm") is False
+        # No shadowing entry → the alias is the first-class Z.AI backend.
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value=None,
+        ):
+            assert _is_zai_model_not_entitled(exc, "glm") is True
+
     def test_other_zai_code_not_matched(self):
         """A different Z.AI code (e.g. 1305 overload) is not plan-entitlement."""
         exc = self._exc(code="1305")
@@ -1968,12 +2004,29 @@ class TestIsZaiModelNotEntitled:
 
 
 class TestZaiVisionEntitlementFallback:
+    """The 1311 reroute re-enters call_llm/async_call_llm with zai excluded.
+
+    Resolve sequence per reroute: [0] original vision resolve (lands on zai),
+    [1] the aggregator-availability probe, [2] the re-entered call's resolve.
+    Re-entry (rather than a bare aggregator create()) is what gives the
+    rerouted attempt the normal recovery machinery — covered explicitly by
+    test_sync_reroute_gets_parameter_strip_recovery.
+    """
+
     @staticmethod
     def _entitlement_error():
         exc = Exception("model unavailable on subscription")
         exc.status_code = 429
         exc.body = {"error": {"code": "1311"}}
         return exc
+
+    @staticmethod
+    def _vision_resolves(zai_client, aggregator_client, model):
+        return [
+            ("zai", zai_client, "glm-5v-turbo"),
+            ("openrouter", aggregator_client, model),  # probe
+            ("openrouter", aggregator_client, model),  # re-entered resolve
+        ]
 
     def test_sync_reroutes_before_pool_recovery(self):
         zai_client = MagicMock()
@@ -1993,10 +2046,9 @@ class TestZaiVisionEntitlementFallback:
             ),
             patch(
                 "agent.auxiliary_client.resolve_vision_provider_client",
-                side_effect=[
-                    ("zai", zai_client, "glm-5v-turbo"),
-                    ("openrouter", aggregator_client, "google/gemini-3-flash-preview"),
-                ],
+                side_effect=self._vision_resolves(
+                    zai_client, aggregator_client, "google/gemini-3-flash-preview"
+                ),
             ) as resolve_vision,
             patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
         ):
@@ -2008,11 +2060,16 @@ class TestZaiVisionEntitlementFallback:
         assert response.choices[0].message.content == "aggregator-sync"
         assert zai_client.chat.completions.create.call_count == 1
         recover_pool.assert_not_called()
+        # The probe resolves the aggregator chain with zai excluded...
         assert resolve_vision.call_args_list[1].kwargs == {
             "provider": "auto",
             "async_mode": False,
             "exclude_providers": frozenset({"zai"}),
         }
+        # ...and the re-entered call keeps the exclusion (no recursion).
+        reentry_kwargs = resolve_vision.call_args_list[2].kwargs
+        assert reentry_kwargs["provider"] == "auto"
+        assert reentry_kwargs["exclude_providers"] == frozenset({"zai"})
         assert aggregator_client.chat.completions.create.call_args.kwargs["model"] == (
             "google/gemini-3-flash-preview"
         )
@@ -2038,10 +2095,9 @@ class TestZaiVisionEntitlementFallback:
             ),
             patch(
                 "agent.auxiliary_client.resolve_vision_provider_client",
-                side_effect=[
-                    ("zai", zai_client, "glm-5v-turbo"),
-                    ("openrouter", aggregator_client, "google/gemini-3-flash-preview"),
-                ],
+                side_effect=self._vision_resolves(
+                    zai_client, aggregator_client, "google/gemini-3-flash-preview"
+                ),
             ) as resolve_vision,
             patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
         ):
@@ -2058,9 +2114,331 @@ class TestZaiVisionEntitlementFallback:
             "async_mode": True,
             "exclude_providers": frozenset({"zai"}),
         }
+        reentry_kwargs = resolve_vision.call_args_list[2].kwargs
+        assert reentry_kwargs["provider"] == "auto"
+        assert reentry_kwargs["exclude_providers"] == frozenset({"zai"})
         assert aggregator_client.chat.completions.create.call_args.kwargs["model"] == (
             "google/gemini-3-flash-preview"
         )
+
+    def test_sync_reroute_gets_parameter_strip_recovery(self):
+        """The rerouted attempt runs through call_llm's normal except chain:
+        an aggregator that rejects ``temperature`` gets the parameter-strip
+        retry instead of hard-failing the vision turn (the old bare-create()
+        reroute skipped all recovery machinery)."""
+        zai_client = MagicMock()
+        zai_client.base_url = "https://api.z.ai/api/paas/v4"
+        zai_client.chat.completions.create.side_effect = self._entitlement_error()
+
+        aggregator_client = MagicMock()
+        aggregator_client.base_url = OPENROUTER_BASE_URL
+        aggregator_client.chat.completions.create.side_effect = [
+            Exception("Unsupported parameter: 'temperature' is not supported"),
+            _DummyResponse("aggregator-recovered"),
+        ]
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=self._vision_resolves(
+                    zai_client, aggregator_client, "agg/vision-test"
+                ),
+            ),
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+        ):
+            response = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+                temperature=0.2,
+            )
+
+        assert response.choices[0].message.content == "aggregator-recovered"
+        agg_calls = aggregator_client.chat.completions.create.call_args_list
+        assert len(agg_calls) == 2
+        assert agg_calls[0].kwargs["temperature"] == 0.2
+        assert "temperature" not in agg_calls[1].kwargs
+        recover_pool.assert_not_called()
+
+    def test_sync_no_aggregator_raises_original_1311(self):
+        """With no vision aggregator and no configured fallback, the original
+        1311 (the actionable error: the plan lacks this model) propagates —
+        via fall-through to the generic chain's final re-raise, without
+        rotating the pool along the way."""
+        err = self._entitlement_error()
+        zai_client = MagicMock()
+        zai_client.base_url = "https://api.z.ai/api/paas/v4"
+        zai_client.chat.completions.create.side_effect = err
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[
+                    ("zai", zai_client, "glm-5v-turbo"),
+                    (None, None, None),  # probe: nothing but zai available
+                ],
+            ),
+            patch(
+                "agent.auxiliary_client._recoverable_pool_provider",
+                return_value="zai",
+            ),
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(None, None, ""),
+            ),
+        ):
+            with pytest.raises(Exception) as excinfo:
+                call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": "describe image"}],
+                )
+
+        assert excinfo.value is err
+        # The entitlement guard (keyed on the pool actually rotated) skips
+        # rotation and the extra same-key retry even though a pool exists.
+        recover_pool.assert_not_called()
+        assert zai_client.chat.completions.create.call_count == 1
+
+    def test_sync_no_aggregator_still_consults_configured_fallback_chain(self):
+        """A user whose only vision fallback is auxiliary.vision.fallback_chain
+        (no OpenRouter/Nous/DeepInfra key) must still be served: the probe
+        miss falls through to the generic capacity path, which consults the
+        configured chain — it must not bare-raise past it."""
+        err = self._entitlement_error()
+        zai_client = MagicMock()
+        zai_client.base_url = "https://api.z.ai/api/paas/v4"
+        zai_client.chat.completions.create.side_effect = err
+
+        fb_client = MagicMock()
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[
+                    ("zai", zai_client, "glm-5v-turbo"),
+                    (None, None, None),  # probe: no strict aggregator
+                ],
+            ),
+            patch(
+                "agent.auxiliary_client._recoverable_pool_provider",
+                return_value="zai",
+            ),
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fb_client, "custom-vision-model", "custom-fb"),
+            ) as configured_chain,
+            patch(
+                "agent.auxiliary_client._call_fallback_candidate_sync",
+                return_value=_DummyResponse("fallback-chain-serves"),
+            ),
+        ):
+            response = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+            )
+
+        assert response.choices[0].message.content == "fallback-chain-serves"
+        configured_chain.assert_called_once()
+        recover_pool.assert_not_called()
+
+    def test_sync_base_url_pin_never_reroutes(self):
+        """provider: zai + an explicit base_url is an endpoint pin (data
+        residency, private gateway): the image payload must not be rerouted
+        to a public aggregator. No probe fires; the 1311 surfaces via the
+        generic chain's final re-raise."""
+        err = self._entitlement_error()
+        zai_client = MagicMock()
+        zai_client.base_url = "https://open.bigmodel.cn/api/paas/v4"
+        zai_client.chat.completions.create.side_effect = err
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=(
+                    "zai", None, "https://open.bigmodel.cn/api/paas/v4", "sk-x", None,
+                ),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("zai", zai_client, "glm-5v-turbo"),
+            ) as resolve_vision,
+            patch(
+                "agent.auxiliary_client._recoverable_pool_provider",
+                return_value=None,
+            ),
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(None, None, ""),
+            ),
+        ):
+            with pytest.raises(Exception) as excinfo:
+                call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": "describe image"}],
+                )
+
+        assert excinfo.value is err
+        # Exactly one resolve — the original route. No aggregator probe.
+        assert resolve_vision.call_count == 1
+        recover_pool.assert_not_called()
+
+    def test_sync_reentry_resolve_divergence_surfaces_1311(self):
+        """If the aggregator vanishes between the probe and the re-entered
+        call's own resolve (transient blip, concurrent unhealthy-marking),
+        the actionable 1311 must surface — not the re-entry's generic
+        "no provider configured" RuntimeError."""
+        err = self._entitlement_error()
+        zai_client = MagicMock()
+        zai_client.base_url = "https://api.z.ai/api/paas/v4"
+        zai_client.chat.completions.create.side_effect = err
+
+        aggregator_client = MagicMock()
+        aggregator_client.base_url = OPENROUTER_BASE_URL
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[
+                    ("zai", zai_client, "glm-5v-turbo"),
+                    ("openrouter", aggregator_client, "agg-model"),  # probe OK
+                    (None, None, None),  # re-entry resolve: aggregator gone
+                ],
+            ),
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+        ):
+            with pytest.raises(Exception) as excinfo:
+                call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": "describe image"}],
+                )
+
+        assert excinfo.value is err
+        # The re-entry's RuntimeError remains visible as the cause chain.
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        recover_pool.assert_not_called()
+
+    def test_sync_non_vision_1311_skips_pool_rotation(self):
+        """A non-vision task that lands on an unentitled Z.AI model must not
+        rotate/penalize the healthy credential pool: 1311 is a model-level
+        entitlement error, so rotation cannot help. Uses the *auto* route —
+        resolved_provider stays "auto" while the pool being rotated is "zai" —
+        so this only passes if the guard keys on pool_provider, not the route
+        label. The generic capacity fallback still runs (and here finds
+        nothing, so the 1311 surfaces)."""
+        err = self._entitlement_error()
+        zai_client = MagicMock()
+        zai_client.base_url = "https://api.z.ai/api/paas/v4"
+        zai_client.chat.completions.create.side_effect = err
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", "glm-5.1", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(zai_client, "glm-5.1"),
+            ),
+            patch(
+                "agent.auxiliary_client._recoverable_pool_provider",
+                return_value="zai",
+            ),
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_payment_fallback",
+                return_value=(None, None, ""),
+            ),
+        ):
+            with pytest.raises(Exception) as excinfo:
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "summarize"}],
+                )
+
+        assert excinfo.value is err
+        # No rotation, and no doubled same-key retry against the same plan.
+        recover_pool.assert_not_called()
+        assert zai_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_non_vision_1311_skips_pool_rotation(self):
+        """Async mirror of the pool-rotation guard (the async except chain is
+        separate code)."""
+        err = self._entitlement_error()
+        zai_client = MagicMock()
+        zai_client.base_url = "https://api.z.ai/api/paas/v4"
+        zai_client.chat.completions.create = AsyncMock(side_effect=err)
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", "glm-5.1", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(zai_client, "glm-5.1"),
+            ),
+            patch(
+                "agent.auxiliary_client._recoverable_pool_provider",
+                return_value="zai",
+            ),
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_payment_fallback",
+                return_value=(None, None, ""),
+            ),
+        ):
+            with pytest.raises(Exception) as excinfo:
+                await async_call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "summarize"}],
+                )
+
+        assert excinfo.value is err
+        recover_pool.assert_not_called()
+        assert zai_client.chat.completions.create.await_count == 1
 
 
 class TestIsRateLimitError:

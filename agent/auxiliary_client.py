@@ -2929,13 +2929,39 @@ def _is_zai_model_not_entitled(exc: Exception, provider: Optional[str]) -> bool:
     MUST NOT mark it unhealthy; they re-resolve onto a vision-capable
     aggregator for this one request.
 
-    Scoped to provider ``zai`` and matched on the structured error code
-    (``exc.code`` / parsed ``exc.body``, as :func:`_summarize_api_error` reads
-    the message) rather than the localized message text — so it can't misfire
-    on an auth/quota error or on another vendor that happens to reuse 1311.
+    Scoped to provider ``zai`` (after :func:`_normalize_aux_provider`, so the
+    documented aliases — ``glm``, ``z-ai``, ``z.ai``, ``zhipu`` — and a
+    ``main`` route that resolves to Z.AI all match) and matched on the
+    structured error code (``exc.code`` / parsed ``exc.body``, as
+    :func:`_summarize_api_error` reads the message) rather than the localized
+    message text — so it can't misfire on an auth/quota error or on another
+    vendor that happens to reuse 1311.
+
+    User-defined endpoints are never classified as Z.AI, whatever their label
+    normalizes to: ``custom`` / ``custom:<name>`` routes, and an alias label
+    shadowed by a ``custom_providers`` entry of the same name (an entry
+    literally named ``glm`` is the user's own gateway, not Z.AI). An explicit
+    endpoint pin is a user choice callers must never reroute away from —
+    the reroute decision additionally refuses any route with a configured
+    ``base_url`` (see :func:`_zai_vision_reroute_exclusions`).
     """
-    if (provider or "").strip().lower() != "zai":
+    label = (provider or "").strip().lower()
+    if label.startswith("custom"):
         return False
+    if _normalize_aux_provider(label) != "zai":
+        return False
+    if label != "zai":
+        # Alias label — make sure a user-defined custom_providers entry of
+        # the same name isn't the actual route (entries matching a canonical
+        # provider name defer to the built-in, so "zai" itself can't shadow).
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+            if _get_named_custom_provider(label) is not None:
+                return False
+        except Exception:
+            logger.debug(
+                "custom_providers shadow check failed for %s", label, exc_info=True
+            )
     code = getattr(exc, "code", None)
     if code is None:
         body = getattr(exc, "body", None)
@@ -2943,6 +2969,50 @@ def _is_zai_model_not_entitled(exc: Exception, provider: Optional[str]) -> bool:
             err = body.get("error")
             code = err.get("code") if isinstance(err, dict) else body.get("code")
     return str(code) == "1311"
+
+
+def _zai_vision_reroute_exclusions(
+    task: Optional[str],
+    exc: Exception,
+    resolved_provider: Optional[str],
+    exclude_vision_providers: Optional[frozenset],
+    *,
+    resolved_base_url: Optional[str] = None,
+    async_mode: bool,
+) -> Optional[frozenset]:
+    """Decide whether a failed vision call should re-enter with zai excluded.
+
+    Returns the exclusion set for the re-entry, or ``None`` to fall through to
+    the standard except-chain handling (pool guard, configured fallback_chain,
+    final re-raise of the original error). Shared by call_llm/async_call_llm so
+    the sync and async 1311 branches cannot drift.
+
+    A route with a configured ``base_url`` never reroutes, even when the
+    provider label is ``zai``: pinning an endpoint (data residency, a private
+    gateway) is a user choice an image payload must not be routed away from.
+
+    Caller exclusions are preserved (unioned with zai); if zai is already
+    excluded this returns ``None`` — that is the re-entry's own failure, which
+    must not re-fire the reroute (recursion guard).
+    """
+    if task != "vision" or resolved_base_url:
+        return None
+    if not _is_zai_model_not_entitled(exc, resolved_provider):
+        return None
+    prior = frozenset(exclude_vision_providers or ())
+    exclusions = prior | frozenset({"zai"})
+    if exclusions == prior:
+        return None
+    # Probe availability so the reroute only fires when a strict vision
+    # aggregator actually exists; otherwise the caller falls through to the
+    # generic chain (which consults the user's configured fallback_chain and
+    # ultimately re-raises the original 1311 — the actionable error). The
+    # probe duplicates the re-entered call's resolution: one extra resolve on
+    # an already-failed turn, in exchange for not masking that 1311.
+    _, probe, _ = resolve_vision_provider_client(
+        provider="auto", async_mode=async_mode, exclude_providers=exclusions
+    )
+    return exclusions if probe is not None else None
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -5360,7 +5430,11 @@ def resolve_vision_provider_client(
     ``exclude_providers`` lets a caller re-resolve vision while skipping a
     provider whose vision model just failed (e.g. a Z.AI Coding plan that is
     not licensed for ``glm-5v-turbo``), so auto-detect lands on the next
-    vision-capable aggregator instead of the broken main provider.
+    vision-capable aggregator instead of the broken main provider. Under
+    exclusion, a config-pinned ``auxiliary.vision.model`` is treated as
+    belonging to the failed route: every candidate resolves with its own
+    default model rather than the pin (which the surviving provider would
+    otherwise 404 on).
     """
     exclude_providers = exclude_providers or frozenset()
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
@@ -5371,7 +5445,15 @@ def resolve_vision_provider_client(
     def _finalize(resolved_provider: str, sync_client: Any, default_model: Optional[str]):
         if sync_client is None:
             return resolved_provider, None, None
-        final_model = resolved_model or default_model
+        # Under exclusion (a reroute away from a failed vision provider), a
+        # config-pinned model belongs to the failed route — sending it to a
+        # different provider that doesn't host it would 404. Every candidate
+        # (main-provider shortcut or aggregator chain) uses its own known-good
+        # default instead; the pin only applies when no provider is excluded.
+        if exclude_providers:
+            final_model = default_model or resolved_model
+        else:
+            final_model = resolved_model or default_model
         if async_mode:
             async_client, async_model = _to_async_client(sync_client, final_model, is_vision=True)
             return resolved_provider, async_client, async_model
@@ -5416,7 +5498,10 @@ def resolve_vision_provider_client(
         if (
             main_provider
             and main_provider not in {"auto", ""}
-            and main_provider not in exclude_providers
+            # Normalize before the membership test: exclude_providers holds
+            # canonical ids ("zai"), while main_provider may be a config alias
+            # ("glm", "z.ai", "zhipu") that resolves to the same backend.
+            and _normalize_aux_provider(main_provider) not in exclude_providers
         ):
             # A provider-specific vision default wins over the user's chat model:
             # static overrides (xiaomi/zai) and catalog-backed discovery (the
@@ -6396,42 +6481,6 @@ def _build_call_kwargs(
     return kwargs
 
 
-def _resolve_zai_vision_entitlement_fallback(
-    *,
-    messages: list,
-    temperature: Optional[float],
-    max_tokens: Optional[int],
-    tools: Optional[list],
-    timeout: float,
-    extra_body: Optional[dict],
-    async_mode: bool,
-) -> Tuple[Optional[Any], Optional[dict]]:
-    """Build an aggregator request without retrying the unentitled Z.AI model."""
-    _, client, model = resolve_vision_provider_client(
-        provider="auto",
-        async_mode=async_mode,
-        exclude_providers=frozenset({"zai"}),
-    )
-    if client is None:
-        return None, None
-
-    base_url = str(getattr(client, "base_url", "") or "")
-    kwargs = _build_call_kwargs(
-        "auto",
-        model,
-        messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        tools=tools,
-        timeout=timeout,
-        extra_body=extra_body,
-        base_url=base_url,
-    )
-    if _is_anthropic_compat_endpoint("auto", base_url):
-        kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
-    return client, kwargs
-
-
 def _validate_llm_response(response: Any, task: str = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -6541,6 +6590,7 @@ def call_llm(
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
+    exclude_vision_providers: Optional[frozenset] = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -6567,6 +6617,12 @@ def call_llm(
             output can stream to the user.
         stream_options: Passed through to the request when stream is True
             (e.g. {"include_usage": True}).
+        exclude_vision_providers: Vision-task providers (canonical ids) to
+            skip during resolution. Set internally when re-routing after a
+            provider's vision model turned out to be unentitled (Z.AI 1311);
+            the reroute unions its own exclusion into whatever the caller
+            passed, and never re-fires for a provider already excluded (the
+            recursion guard).
 
     Returns:
         Response object with .choices[0].message.content, OR — when stream=True —
@@ -6589,6 +6645,7 @@ def call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=False,
+            exclude_providers=exclude_vision_providers,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -6599,6 +6656,7 @@ def call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=False,
+                exclude_providers=exclude_vision_providers,
             )
         if client is None:
             raise RuntimeError(
@@ -6751,24 +6809,44 @@ def call_llm(
         # not entitled to its dedicated vision model. Retrying or rotating a
         # credential cannot change that model-level entitlement, so reroute
         # before the generic 429 recovery path can penalize the healthy pool.
-        if task == "vision" and _is_zai_model_not_entitled(first_err, resolved_provider):
-            fallback_client, fallback_kwargs = _resolve_zai_vision_entitlement_fallback(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                tools=tools,
-                timeout=effective_timeout,
-                extra_body=effective_extra_body,
-                async_mode=False,
-            )
-            if fallback_client is None or fallback_kwargs is None:
-                raise
+        # Re-entering call_llm (instead of issuing a bare aggregator create())
+        # gives the rerouted attempt the same transient-retry, parameter-strip,
+        # and fallback machinery as any other vision call; the exclusion set
+        # makes the resolver skip zai and disarms the reroute (no recursion).
+        # When no aggregator exists the helper returns None and this falls
+        # through to the generic chain below — pool rotation is skipped by the
+        # entitlement guard, the user's configured fallback_chain still gets
+        # consulted, and the original 1311 is what ultimately re-raises.
+        _reroute_exclusions = _zai_vision_reroute_exclusions(
+            task, first_err, resolved_provider, exclude_vision_providers,
+            resolved_base_url=resolved_base_url,
+            async_mode=False,
+        )
+        if _reroute_exclusions is not None:
             logger.info(
-                "Auxiliary vision: Z.AI model unavailable on plan; trying vision aggregator"
+                "Auxiliary vision: Z.AI model unavailable on plan; "
+                "re-routing through vision aggregator chain"
             )
-            return _validate_llm_response(
-                fallback_client.chat.completions.create(**fallback_kwargs), task
-            )
+            try:
+                return call_llm(
+                    task="vision",
+                    provider="auto",
+                    main_runtime=main_runtime,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    timeout=timeout,
+                    extra_body=extra_body,
+                    exclude_vision_providers=_reroute_exclusions,
+                )
+            except RuntimeError as reentry_err:
+                # The aggregator vanished between the probe and the re-entry
+                # (transient resolve failure, concurrent unhealthy-marking):
+                # surface the actionable 1311 — the plan lacks this model —
+                # instead of a generic "no provider configured" error. The
+                # re-entry failure stays visible as the exception's cause.
+                raise first_err from reentry_err
 
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -6949,7 +7027,19 @@ def call_llm(
         # between this call and recovery (which leaves current()=None and makes
         # _select_unlocked() return the NEXT key by mistake).
         _client_api_key = str(getattr(client, "api_key", "") or "")
-        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+        # A Z.AI 1311 is a model-entitlement error, not a credential problem:
+        # rotating the pool cannot help, and the pool is healthy for the plan's
+        # other models. Skip rotation (and the extra same-key retry) and let
+        # the capacity fallback below reroute instead. Keyed on pool_provider —
+        # the pool actually rotated — not the route label, so auto-routed and
+        # alias-configured Z.AI clients are covered too. Guards non-vision
+        # tasks pinned to an unentitled Z.AI model, plus the vision case where
+        # no aggregator existed and the reroute above fell through.
+        if (
+            pool_provider
+            and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err))
+            and not _is_zai_model_not_entitled(first_err, pool_provider)
+        ):
             recovery_err = first_err
             # Skip the extra retry for clear payment/quota errors — the endpoint
             # won't accept another request with the same exhausted key.
@@ -7212,6 +7302,7 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    exclude_vision_providers: Optional[frozenset] = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -7229,6 +7320,7 @@ async def async_call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=True,
+            exclude_providers=exclude_vision_providers,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -7239,6 +7331,7 @@ async def async_call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=True,
+                exclude_providers=exclude_vision_providers,
             )
         if client is None:
             raise RuntimeError(
@@ -7328,25 +7421,35 @@ async def async_call_llm(
         # Keep model-level entitlement failures out of generic 429 pool
         # recovery. A different credential on the same Z.AI plan cannot make
         # glm-5v-turbo available, but a configured vision aggregator can.
-        if task == "vision" and _is_zai_model_not_entitled(first_err, resolved_provider):
-            fallback_client, fallback_kwargs = _resolve_zai_vision_entitlement_fallback(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                tools=tools,
-                timeout=effective_timeout,
-                extra_body=effective_extra_body,
-                async_mode=True,
-            )
-            if fallback_client is None or fallback_kwargs is None:
-                raise
+        # See the sync twin in call_llm for the full rationale; the shared
+        # helper keeps the two branches from drifting.
+        _reroute_exclusions = _zai_vision_reroute_exclusions(
+            task, first_err, resolved_provider, exclude_vision_providers,
+            resolved_base_url=resolved_base_url,
+            async_mode=True,
+        )
+        if _reroute_exclusions is not None:
             logger.info(
                 "Auxiliary vision (async): Z.AI model unavailable on plan; "
-                "trying vision aggregator"
+                "re-routing through vision aggregator chain"
             )
-            return _validate_llm_response(
-                await fallback_client.chat.completions.create(**fallback_kwargs), task
-            )
+            try:
+                return await async_call_llm(
+                    task="vision",
+                    provider="auto",
+                    main_runtime=main_runtime,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    timeout=timeout,
+                    extra_body=extra_body,
+                    exclude_vision_providers=_reroute_exclusions,
+                )
+            except RuntimeError as reentry_err:
+                # See the sync twin: probe/re-entry divergence must surface
+                # the actionable 1311, not a generic no-provider error.
+                raise first_err from reentry_err
 
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -7515,7 +7618,19 @@ async def async_call_llm(
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
         pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
         _client_api_key = str(getattr(client, "api_key", "") or "")
-        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+        # A Z.AI 1311 is a model-entitlement error, not a credential problem:
+        # rotating the pool cannot help, and the pool is healthy for the plan's
+        # other models. Skip rotation (and the extra same-key retry) and let
+        # the capacity fallback below reroute instead. Keyed on pool_provider —
+        # the pool actually rotated — not the route label, so auto-routed and
+        # alias-configured Z.AI clients are covered too. Guards non-vision
+        # tasks pinned to an unentitled Z.AI model, plus the vision case where
+        # no aggregator existed and the reroute above fell through.
+        if (
+            pool_provider
+            and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err))
+            and not _is_zai_model_not_entitled(first_err, pool_provider)
+        ):
             recovery_err = first_err
             # Skip the extra retry for clear payment/quota errors — the endpoint
             # won't accept another request with the same exhausted key.

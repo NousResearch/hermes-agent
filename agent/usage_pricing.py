@@ -747,6 +747,32 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
+# Above this threshold (in dollars), a pricing field cannot plausibly be a
+# per-token rate — it would imply >$1,000 per million tokens, which no real
+# model charges. Many provider catalogs (notably Crof, see #34256) expose
+# ``cost.input`` / ``cost.output`` already in per-million dollars (e.g.
+# 0.04 = $0.04/M). Without this guard we'd multiply by 1,000,000 and report
+# nonsensical session costs ($555 for a 13k-token cron run).
+#
+# 0.001 corresponds to $1,000/M tokens. Real frontier models in 2026 top out
+# around $75/M (Anthropic Opus 4 input) and even Grok-4-fast is ~$10/M input,
+# so any value at or above 0.001 is unambiguously per-million units.
+_PER_MILLION_HEURISTIC_THRESHOLD = Decimal("0.001")
+
+
+def _pricing_field_looks_per_million(*values: Optional[Decimal]) -> bool:
+    """Heuristic: return True when at least one pricing value is too large
+    to be a per-token rate, indicating the source already publishes
+    per-million-token rates (Crof-style metadata).
+
+    See #34256 for the failure mode this prevents.
+    """
+    for v in values:
+        if v is not None and v >= _PER_MILLION_HEURISTIC_THRESHOLD:
+            return True
+    return False
+
+
 def _pricing_entry_from_metadata(
     metadata: Dict[str, Dict[str, Any]],
     model_id: str,
@@ -773,16 +799,27 @@ def _pricing_entry_from_metadata(
     if prompt is None and completion is None and request is None:
         return None
 
-    def _per_token_to_per_million(value: Optional[Decimal]) -> Optional[Decimal]:
-        if value is None:
-            return None
-        return value * _ONE_MILLION
+    # Detect whether the source publishes per-million-token rates (Crof,
+    # etc.) or per-token rates (OpenRouter, official OpenAI/Anthropic docs)
+    # via a value-range heuristic. See #34256.
+    already_per_million = _pricing_field_looks_per_million(prompt, completion, cache_read, cache_write)
+
+    if already_per_million:
+        def _passthrough(value: Optional[Decimal]) -> Optional[Decimal]:
+            return value
+        convert = _passthrough
+    else:
+        def _per_token_to_per_million(value: Optional[Decimal]) -> Optional[Decimal]:
+            if value is None:
+                return None
+            return value * _ONE_MILLION
+        convert = _per_token_to_per_million
 
     return PricingEntry(
-        input_cost_per_million=_per_token_to_per_million(prompt),
-        output_cost_per_million=_per_token_to_per_million(completion),
-        cache_read_cost_per_million=_per_token_to_per_million(cache_read),
-        cache_write_cost_per_million=_per_token_to_per_million(cache_write),
+        input_cost_per_million=convert(prompt),
+        output_cost_per_million=convert(completion),
+        cache_read_cost_per_million=convert(cache_read),
+        cache_write_cost_per_million=convert(cache_write),
         request_cost=request,
         source="provider_models_api",
         source_url=source_url,

@@ -322,3 +322,122 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+# ---------------------------------------------------------------------------
+# #34256: Custom endpoint pricing 1,000,000x overestimate
+# ---------------------------------------------------------------------------
+
+def test_crof_custom_endpoint_per_million_rates_are_not_re_multiplied(monkeypatch):
+    """#34256: Crof custom endpoint metadata exposes ``cost.input`` /
+    ``cost.output`` already in per-million-token dollars (e.g. 0.04 = $0.04/M).
+    The previous code path treated those as dollars-per-token and multiplied
+    by 1,000,000, producing nonsensical $555 estimates for a 13k-token
+    session. The heuristic must detect the per-million scale by value range
+    and pass the value through unchanged.
+    """
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda base_url, api_key=None: {
+            "qwen3.5-9b": {
+                "pricing": {
+                    # Crof catalog uses per-million dollars.
+                    "prompt": "0.04",
+                    "completion": "0.15",
+                    "cache_read": "0.008",
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "qwen3.5-9b",
+        provider="custom",
+        base_url="https://crof.ai/v1",
+        api_key="test-key",
+    )
+
+    # Values pass through as-is when they look like per-million rates.
+    assert float(entry.input_cost_per_million) == 0.04
+    assert float(entry.output_cost_per_million) == 0.15
+    assert float(entry.cache_read_cost_per_million) == 0.008
+
+
+def test_crof_per_million_pricing_produces_correct_cost(monkeypatch):
+    """End-to-end: a 13k-token Crof session should cost a fraction of a
+    dollar, not $555. (#34256 headline regression.)"""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda base_url, api_key=None: {
+            "qwen3.5-9b": {
+                "pricing": {
+                    "prompt": "0.04",
+                    "completion": "0.15",
+                }
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "qwen3.5-9b",
+        CanonicalUsage(input_tokens=12998, output_tokens=235),
+        provider="custom",
+        base_url="https://crof.ai/v1",
+    )
+
+    # 12998 * 0.04/M + 235 * 0.15/M ≈ $0.00055517
+    # Before the fix: 12998 * 0.04 + 235 * 0.15 = $555.17 (1,000,000x too large)
+    cost = float(result.amount_usd)
+    assert cost < 0.01, f"Expected sub-penny cost, got ${cost} — #34256 regression"
+    # Sanity: cost is in the right ballpark.
+    assert cost > 0.0
+
+
+def test_openrouter_per_token_pricing_still_works(monkeypatch):
+    """The fix must not break the dominant OpenRouter case: ``pricing.prompt``
+    values like ``"0.000005"`` (= $5/M) are per-token and MUST be multiplied
+    by 1M. The value-range heuristic correctly classifies them."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "anthropic/claude-opus-4.6": {
+                "pricing": {
+                    "prompt": "0.000005",  # 5e-6 per token = $5/M
+                    "completion": "0.000025",  # 2.5e-5 per token = $25/M
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "anthropic/claude-opus-4.6",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert float(entry.input_cost_per_million) == 5.0
+    assert float(entry.output_cost_per_million) == 25.0
+
+
+def test_per_million_heuristic_unit_function():
+    """The heuristic itself: return True when ANY value is >= 0.001."""
+    from decimal import Decimal
+    from agent.usage_pricing import _pricing_field_looks_per_million
+
+    # Per-token values (all tiny):
+    assert not _pricing_field_looks_per_million(
+        Decimal("0.000005"), Decimal("0.000025"), None, None
+    )
+    # Per-million values (all multi-cent):
+    assert _pricing_field_looks_per_million(
+        Decimal("0.04"), Decimal("0.15"), None, None
+    )
+    # Edge: exactly the threshold counts as per-million.
+    assert _pricing_field_looks_per_million(Decimal("0.001"), None, None, None)
+    # Just below threshold: per-token.
+    assert not _pricing_field_looks_per_million(Decimal("0.0009999"), None, None, None)
+    # Mixed (one value is suspicious — assume per-million for safety):
+    assert _pricing_field_looks_per_million(
+        Decimal("0.000005"), Decimal("0.04"), None, None
+    )
+    # All None:
+    assert not _pricing_field_looks_per_million(None, None, None, None)

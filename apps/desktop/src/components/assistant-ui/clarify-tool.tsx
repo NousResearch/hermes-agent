@@ -212,6 +212,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null)
+  const [activeIndex, setActiveIndex] = useState(0)
   const [otherFocused, setOtherFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -260,11 +261,27 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   // confirms with Continue (or Enter from the field).
   const pendingAnswer = selectedChoice ?? (trimmedDraft || null)
 
-  const selectChoice = useCallback((choice: string) => {
+  const selectChoice = useCallback((choice: string, index: number) => {
     // Picking a choice and typing are mutually exclusive answers.
     setDraft('')
     setSelectedChoice(choice)
+    setActiveIndex(index)
   }, [])
+
+  useEffect(() => {
+    setActiveIndex(index => Math.min(index, choices.length))
+  }, [choices.length])
+
+  const moveActive = useCallback(
+    (delta: number) => {
+      const itemCount = choices.length + 1
+
+      setDraft('')
+      setSelectedChoice(null)
+      setActiveIndex(index => (index + delta + itemCount) % itemCount)
+    },
+    [choices.length]
+  )
 
   const submitAnswer = useCallback(() => {
     if (selectedChoice !== null) {
@@ -300,10 +317,28 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     [submitAnswer]
   )
 
-  // Letter shortcuts: A/B/C… pick the matching option, the trailing letter jumps
-  // into "Other", and Enter confirms the current pick. Stands down whenever a
-  // field is focused (you're typing, not navigating) so it never eats keystrokes
-  // meant for the composer or the Other box.
+  const activateActive = useCallback(() => {
+    if (pendingAnswer) {
+      submitAnswer()
+
+      return
+    }
+
+    const choice = choices[activeIndex]
+
+    if (choice) {
+      void respond(choice)
+
+      return
+    }
+
+    textareaRef.current?.focus()
+  }, [activeIndex, choices, pendingAnswer, respond, submitAnswer])
+
+  // Arrow keys move a visual cursor, 1-9 and A/B/C… pick directly, and Enter
+  // confirms the current answer (or the highlighted row). Stands down whenever
+  // a field is focused so it never eats keystrokes meant for the composer or
+  // the Other box.
   useEffect(() => {
     if (!ready || !hasChoices || submitting) {
       return
@@ -316,7 +351,32 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
       const active = document.activeElement as HTMLElement | null
 
-      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+      if (
+        active &&
+        (active.isContentEditable || active.matches('a[href], button, input, select, textarea, [role="button"]'))
+      ) {
+        return
+      }
+
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        moveActive(event.key === 'ArrowDown' ? 1 : -1)
+
+        return
+      }
+
+      if (/^[1-9]$/.test(event.key)) {
+        const index = Number(event.key) - 1
+
+        if (index < choices.length) {
+          event.preventDefault()
+          selectChoice(choices[index], index)
+        } else if (index === choices.length) {
+          event.preventDefault()
+          setActiveIndex(index)
+          textareaRef.current?.focus()
+        }
+
         return
       }
 
@@ -327,25 +387,26 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
         if (index < choices.length) {
           event.preventDefault()
-          selectChoice(choices[index])
+          selectChoice(choices[index], index)
         } else if (index === choices.length) {
           event.preventDefault()
+          setActiveIndex(index)
           textareaRef.current?.focus()
         }
 
         return
       }
 
-      if (event.key === 'Enter' && pendingAnswer) {
+      if (event.key === 'Enter') {
         event.preventDefault()
-        submitAnswer()
+        activateActive()
       }
     }
 
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [choices, hasChoices, pendingAnswer, ready, selectChoice, submitAnswer, submitting])
+  }, [activateActive, choices, hasChoices, moveActive, ready, selectChoice, submitting])
 
   if (loading) {
     return (
@@ -381,30 +442,52 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           <div className="grid gap-px" role="group">
             {choices.map((choice, index) => (
               <button
+                aria-current={activeIndex === index || undefined}
+                aria-keyshortcuts={`${letterFor(index)} ${index + 1}`}
                 className={cn(
                   OPTION_ROW_CLASS,
                   'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+                  activeIndex === index && 'bg-(--chrome-action-hover) text-(--ui-text-primary)',
                   selectedChoice === choice && 'text-(--ui-text-primary)'
                 )}
                 data-choice
+                data-highlighted={activeIndex === index || undefined}
                 disabled={submitting}
                 key={`${index}-${choice}`}
-                onClick={() => selectChoice(choice)}
+                onClick={() => selectChoice(choice, index)}
                 type="button"
               >
-                <KeyBadge char={letterFor(index)} selected={selectedChoice === choice} />
+                <KeyBadge
+                  char={letterFor(index)}
+                  preview={activeIndex === index}
+                  selected={selectedChoice === choice}
+                />
                 <span className="flex-1 wrap-anywhere">{choice}</span>
               </button>
             ))}
-            <label className={cn(OPTION_ROW_CLASS, 'items-center')}>
-              <KeyBadge char={letterFor(choices.length)} preview={otherFocused} selected={Boolean(trimmedDraft)} />
+            <label
+              className={cn(
+                OPTION_ROW_CLASS,
+                'items-center',
+                activeIndex === choices.length && 'bg-(--chrome-action-hover)'
+              )}
+              data-highlighted={activeIndex === choices.length || undefined}
+            >
+              <KeyBadge
+                char={letterFor(choices.length)}
+                preview={otherFocused || activeIndex === choices.length}
+                selected={Boolean(trimmedDraft)}
+              />
               <Textarea
+                aria-current={activeIndex === choices.length || undefined}
+                aria-keyshortcuts={`${letterFor(choices.length)} ${choices.length + 1}`}
                 className={CLARIFY_TEXTAREA_CLASS}
                 disabled={submitting}
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
                 onFocus={() => {
                   setSelectedChoice(null)
+                  setActiveIndex(choices.length)
                   setOtherFocused(true)
                 }}
                 onKeyDown={handleTextareaKey}

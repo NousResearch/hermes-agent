@@ -2582,6 +2582,15 @@ class SessionStore:
             platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
             observed=bool(message.get("observed")),
             timestamp=message.get("timestamp"),
+            # api_content sidecar: the exact bytes sent to the API for
+            # this message (prompt-cache-stable replay). Must survive
+            # any gateway-side persistence path or the next turn's
+            # replay diverges at this row.
+            api_content=(
+                message.get("api_content")
+                if isinstance(message.get("api_content"), str)
+                else None
+            ),
         )
 
     # Maximum in-memory pending messages per session before dropping the

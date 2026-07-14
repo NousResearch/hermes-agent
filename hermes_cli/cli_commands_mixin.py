@@ -953,6 +953,14 @@ class CLICommandsMixin:
                     tool_calls=msg.get("tool_calls"),
                     tool_call_id=msg.get("tool_call_id"),
                     reasoning=msg.get("reasoning"),
+                    # Keep the api_content sidecar so the branch's first turn
+                    # replays the parent's exact wire bytes (warm provider
+                    # prompt cache) instead of a full cold prefill.
+                    api_content=(
+                        msg.get("api_content")
+                        if isinstance(msg.get("api_content"), str)
+                        else None
+                    ),
                 )
             except Exception:
                 pass  # Best-effort copy

@@ -4104,6 +4104,14 @@ class GatewaySlashCommandsMixin:
                     reasoning_details=msg.get("reasoning_details"),
                     codex_reasoning_items=msg.get("codex_reasoning_items"),
                     codex_message_items=msg.get("codex_message_items"),
+                    # Keep the api_content sidecar so the branch's first turn
+                    # replays the parent's exact wire bytes (warm provider
+                    # prompt cache) instead of a full cold prefill.
+                    api_content=(
+                        msg.get("api_content")
+                        if isinstance(msg.get("api_content"), str)
+                        else None
+                    ),
                 )
             except Exception:
                 pass  # Best-effort copy

@@ -587,6 +587,10 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                     if prev_content and new_content
                     else (prev_content or new_content)
                 )
+                # Merged content invalidates the api_content sidecar (exact
+                # bytes previously sent for the pre-merge message) — drop it
+                # so replay can't substitute stale bytes.
+                prev.pop("api_content", None)
                 repairs += 1
                 continue
         merged.append(msg)

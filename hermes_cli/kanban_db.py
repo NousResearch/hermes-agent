@@ -7706,6 +7706,45 @@ def _default_spawn(
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
 
+    # Load root ~/.hermes/.env so shared secrets (API keys, tokens) are
+    # available to workers. When HERMES_HOME is set to a profile directory
+    # below, the worker's load_hermes_dotenv() looks for .env in the
+    # profile dir only, losing root-level credentials.
+    # See: t_47a84988, t_086a03d3, t_2b16eaa5
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        _root_env = get_default_hermes_root() / ".env"
+        if _root_env.exists():
+            # Pre-sanitize: fix concatenated-line mangling (#8908) and
+            # strip null bytes before dotenv_values() reads the file.
+            from hermes_cli.env_loader import _sanitize_env_file_if_needed
+
+            _sanitize_env_file_if_needed(_root_env)
+            from dotenv import dotenv_values
+
+            _root_vars = dotenv_values(_root_env)
+            if _root_vars:
+                for _k, _v in _root_vars.items():
+                    if _v is not None and _k not in env:
+                        env[_k] = _v
+                # Strip non-ASCII from credential values so Unicode
+                # lookalike glyphs (copy-paste from PDF / rich-text)
+                # don't reach the provider as corrupted API keys.
+                _cred_suffixes = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
+                for _k in _root_vars:
+                    if _k in env and env[_k] is not None and any(
+                        _k.endswith(s) for s in _cred_suffixes
+                    ):
+                        try:
+                            env[_k].encode("ascii")
+                        except UnicodeEncodeError:
+                            env[_k] = env[_k].encode(
+                                "ascii", errors="ignore"
+                            ).decode("ascii")
+    except Exception:
+        _log.debug("root .env injection failed for worker", exc_info=True)
+
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's

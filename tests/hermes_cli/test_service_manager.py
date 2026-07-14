@@ -450,8 +450,11 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # Top-level event/ — s6-svlisten1 event subscription dir.
     event = svc_dir / "event"
     assert event.is_dir(), "missing top-level event/"
-    assert stat.S_IMODE(event.stat().st_mode) == 0o3730, (
-        f"event/ mode = {oct(event.stat().st_mode)}, want 03730"
+    # macOS may clear setgid when the directory's group is not in the
+    # caller's groups; sticky and ordinary permissions remain contractual.
+    event_mode = stat.S_IMODE(event.stat().st_mode)
+    assert event_mode & ~stat.S_ISGID == 0o1730, (
+        f"event/ mode = {oct(event_mode)}, want 01730 plus optional setgid"
     )
 
     # supervise/ dir.
@@ -462,7 +465,8 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # supervise/event/.
     supervise_event = supervise / "event"
     assert supervise_event.is_dir(), "missing supervise/event/"
-    assert stat.S_IMODE(supervise_event.stat().st_mode) == 0o3730
+    supervise_event_mode = stat.S_IMODE(supervise_event.stat().st_mode)
+    assert supervise_event_mode & ~stat.S_ISGID == 0o1730
 
     # supervise/control FIFO.
     control = supervise / "control"
@@ -497,7 +501,8 @@ def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
     log_control = log_supervise / "control"
 
     assert log_event.is_dir()
-    assert stat.S_IMODE(log_event.stat().st_mode) == 0o3730
+    log_event_mode = stat.S_IMODE(log_event.stat().st_mode)
+    assert log_event_mode & ~stat.S_ISGID == 0o1730
     assert log_supervise.is_dir()
     assert log_supervise_event.is_dir()
     assert log_control.exists() and stat.S_ISFIFO(log_control.stat().st_mode)

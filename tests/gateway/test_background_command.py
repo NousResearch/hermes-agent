@@ -335,16 +335,22 @@ class TestRunBackgroundTask:
         )
 
         try:
+            # Canonicalize the expected paths the same way the runtime
+            # does: on macOS, ``tempfile.mkdtemp`` under ``/tmp`` resolves
+            # through ``/private/tmp``. Comparing the raw ``/tmp/...``
+            # strings would falsely fail there even though the call was
+            # wired correctly.
+            _canon = _os.path.realpath
             await runner._run_background_task("make stuff", source, "bg_test")
 
             mock_adapter.send_voice.assert_called_once()
-            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            assert _canon(mock_adapter.send_voice.call_args.kwargs["audio_path"]) == _canon(_ogg)
             mock_adapter.send_video.assert_called_once()
-            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            assert _canon(mock_adapter.send_video.call_args.kwargs["video_path"]) == _canon(_mp4)
             mock_adapter.send_image_file.assert_called_once()
-            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            assert _canon(mock_adapter.send_image_file.call_args.kwargs["image_path"]) == _canon(_png)
             mock_adapter.send_document.assert_called_once()
-            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+            assert _canon(mock_adapter.send_document.call_args.kwargs["file_path"]) == _canon(_pdf)
         finally:
             import shutil as _shutil
             _shutil.rmtree(_tmpdir, ignore_errors=True)

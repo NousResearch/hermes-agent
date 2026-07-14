@@ -6,6 +6,7 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import os
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -75,9 +76,16 @@ class TestWriteFileHandler:
         mock_get.return_value = mock_ops
 
         from tools.file_tools import write_file_tool
+        # Canonicalize both sides — realpath("/tmp/...") is "/private/tmp/..."
+        # on macOS. The portable contract is "the same file path was written";
+        # the platform's symlink resolution is a kernel detail we don't want
+        # to bake into the assertion.
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        _real = os.path.realpath
+        mock_ops.write_file.assert_called_once_with(
+            _real("/tmp/out.txt"), "hello world!\n"
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -182,7 +190,13 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        # Canonicalize the path arg so macOS /tmp → /private/tmp symlink
+        # resolution doesn't make the assertion brittle. The portable
+        # contract is "the same file was patched"; the platform's symlink
+        # layer is a kernel detail we don't want to bake in.
+        mock_ops.patch_replace.assert_called_once_with(
+            os.path.realpath("/tmp/f.py"), "foo", "bar", False
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_replace_all_flag(self, mock_get):
@@ -193,9 +207,13 @@ class TestPatchHandler:
         mock_get.return_value = mock_ops
 
         from tools.file_tools import patch_tool
+        # See TestWriteFileHandler.test_writes_content for the macOS
+        # /tmp → /private/tmp canonicalization rationale.
         patch_tool(mode="replace", path="/tmp/f.py",
                    old_string="x", new_string="y", replace_all=True)
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
+        mock_ops.patch_replace.assert_called_once_with(
+            os.path.realpath("/tmp/f.py"), "x", "y", True
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_missing_path_errors(self, mock_get):

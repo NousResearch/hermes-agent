@@ -173,6 +173,42 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     return out
 
 
+def _moa_slot_supports_reasoning(
+    base_url: str, provider: str, model: str,
+) -> bool:
+    """Check if a resolved MoA slot supports reasoning extra_body.
+
+    Mirrors the gate in ``AIAgent._supports_reasoning_extra_body`` but
+    evaluated against the aggregator slot's *resolved* runtime rather
+    than the virtual "moa" / "moa://local" identity.  (#64187)
+    """
+    from utils import base_url_host_matches
+
+    if base_url_host_matches(base_url, "nousresearch.com"):
+        return True
+    if (
+        base_url_host_matches(base_url, "models.github.ai")
+        or base_url_host_matches(base_url, "githubcopilot.com")
+    ):
+        try:
+            from hermes_cli.models import github_model_reasoning_efforts
+            return bool(github_model_reasoning_efforts(model))
+        except Exception:
+            return False
+    if provider == "lmstudio":
+        return True  # conservative; actual probe happens in the transport
+    if "openrouter" not in base_url:
+        return False
+    if "api.mistral.ai" in base_url:
+        return False
+    reasoning_model_prefixes = (
+        "deepseek/", "anthropic/", "openai/", "x-ai/",
+        "google/gemini-2", "google/gemma-4", "qwen/qwen3",
+        "tencent/hy3", "xiaomi/",
+    )
+    return any(model.startswith(p) for p in reasoning_model_prefixes)
+
+
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]],
     runtime: dict[str, Any],
@@ -683,7 +719,7 @@ def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str
 class MoAChatCompletions:
     """OpenAI-chat-compatible facade where the aggregator is the acting model."""
 
-    def __init__(self, preset_name: str, reference_callback: Any = None):
+    def __init__(self, preset_name: str, reference_callback: Any = None, reasoning_config: dict | None = None):
         self.preset_name = preset_name or "default"
         # Optional display hook. Called as reference outputs become available so
         # frontends can show each reference model's answer as a labelled block
@@ -694,6 +730,12 @@ class MoAChatCompletions:
         #   "moa.aggregating" kwargs: aggregator (label), ref_count
         # Never raises into the model call — display is best-effort.
         self.reference_callback = reference_callback
+        # The acting agent's reasoning_config, stashed here so create() can
+        # inject it into the aggregator's extra_body after resolving the
+        # aggregator slot's real provider. Without this, the reasoning gate
+        # in build_kwargs sees the virtual "moa" provider and never emits
+        # extra_body["reasoning"]. (#64187)
+        self.reasoning_config = reasoning_config
         # State-scoped reference cache. The agent loop calls create() once per
         # tool-loop iteration; references should re-run whenever the task STATE
         # advances — i.e. on every new user message AND every new tool result —
@@ -1010,13 +1052,39 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
+        # ── Reasoning injection for the aggregator (#64187) ──
+        # build_kwargs gates reasoning on _supports_reasoning_extra_body(),
+        # which checks the agent's own provider/base_url — for MoA that's the
+        # virtual "moa" / "moa://local", which always fails the gate. Resolve
+        # the aggregator's REAL runtime and re-evaluate so the aggregator gets
+        # the same reasoning config any direct call to that provider would.
+        _agg_extra_body = dict(agg_kwargs.get("extra_body") or {})
+        if self.reasoning_config and isinstance(self.reasoning_config, dict):
+            _agg_rt = _slot_runtime(aggregator)
+            _agg_base = str(_agg_rt.get("base_url") or "").lower()
+            _agg_prov = str(_agg_rt.get("provider") or "").strip().lower()
+            _agg_model = str(aggregator.get("model") or "").lower()
+            _agg_supports = _moa_slot_supports_reasoning(
+                _agg_base, _agg_prov, _agg_model,
+            )
+            if _agg_supports:
+                if self.reasoning_config.get("enabled") is False:
+                    _agg_extra_body["reasoning"] = {"enabled": False}
+                else:
+                    _effort = str(
+                        self.reasoning_config.get("effort", "medium") or "medium"
+                    ).strip().lower()
+                    _agg_extra_body["reasoning"] = {
+                        "enabled": True,
+                        "effort": _effort,
+                    }
         _agg_response = call_llm(
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
+            extra_body=_agg_extra_body,
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )
@@ -1039,9 +1107,9 @@ class MoAChatCompletions:
 
 
 class MoAClient:
-    def __init__(self, preset_name: str, reference_callback: Any = None):
+    def __init__(self, preset_name: str, reference_callback: Any = None, reasoning_config: dict | None = None):
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)
+        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback, reasoning_config=reasoning_config)
 
     def consume_reference_usage(self) -> Any:
         """Pop the pending reference-fan-out usage from the completions facade.

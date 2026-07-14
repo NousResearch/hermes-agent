@@ -113,7 +113,7 @@ Status vocabularies (three distinct enums; never mix them):
 |---|---|---|---|
 | Job (lowercase) | started, processing, input_required, result_pending, completed, failed, payment_pending, payment_failed, refund_pending, refund_resolved, dispute_pending, dispute_resolved | completed, failed, payment_failed, refund_resolved, dispute_resolved | input_required |
 | Job event (UPPERCASE) | INITIATED, AWAITING_PAYMENT, AWAITING_INPUT, RUNNING, COMPLETED, FAILED | - | - |
-| Task (UPPERCASE) | DRAFT, READY, INPUT_REQUIRED, AUTHENTICATION_REQUIRED, OUT_OF_CREDITS, CREDITS_TOPPED_UP, RUNNING, AWAITING_EXTERNAL, COMPLETED, FAILED, CANCEL_REQUESTED, CANCELED | COMPLETED, FAILED, CANCELED | INPUT_REQUIRED, AUTHENTICATION_REQUIRED, OUT_OF_CREDITS |
+| Task (UPPERCASE) | DRAFT, QUEUED, READY, INPUT_REQUIRED, APPROVAL_REQUIRED, AUTHENTICATION_REQUIRED, OUT_OF_CREDITS, CREDITS_TOPPED_UP, RUNNING, AWAITING_EXTERNAL, COMPLETED, FAILED, CANCEL_REQUESTED, CANCELED | COMPLETED, FAILED, CANCELED | INPUT_REQUIRED, APPROVAL_REQUIRED, AUTHENTICATION_REQUIRED, OUT_OF_CREDITS |
 
 ## Procedure
 
@@ -158,7 +158,8 @@ waiting for input.
 - Jobs are slow by design: minimum ~7 minutes, commonly 15-30+. Do not declare
   failure early. There are no webhooks; polling is the only completion
   mechanism. Defaults (60s interval, 60-minute cap) match upstream guidance.
-- `QUEUED` is not a status anywhere, and `RUNNING` is never a `job.status`
+- `QUEUED` exists only as a task status (accepted by a coworker, waiting to
+  start), never a job or job-event status; `RUNNING` is never a `job.status`
   (only a job-event or task status). Match against the exact enums above or
   use `wait`, which encodes them.
 - Every raw API response wraps in `{data, meta}` with cursor pagination

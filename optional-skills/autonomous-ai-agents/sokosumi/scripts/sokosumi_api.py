@@ -30,9 +30,9 @@ JOB_TERMINAL = {"completed", "failed", "payment_failed", "refund_resolved", "dis
 JOB_BLOCKED = {"input_required"}
 # Job *event* status is a different, UPPERCASE enum:
 # INITIATED | AWAITING_PAYMENT | AWAITING_INPUT | RUNNING | COMPLETED | FAILED
-# Task.status (UPPERCASE):
+# Task.status (UPPERCASE; QUEUED = accepted, waiting to start):
 TASK_TERMINAL = {"COMPLETED", "FAILED", "CANCELED"}
-TASK_BLOCKED = {"INPUT_REQUIRED", "AUTHENTICATION_REQUIRED", "OUT_OF_CREDITS"}
+TASK_BLOCKED = {"INPUT_REQUIRED", "APPROVAL_REQUIRED", "AUTHENTICATION_REQUIRED", "OUT_OF_CREDITS"}
 
 KEY_HELP = (
     "Set SOKOSUMI_API_KEY (create one at https://app.sokosumi.com/connections; "

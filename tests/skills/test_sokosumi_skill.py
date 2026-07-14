@@ -36,9 +36,10 @@ SPEC_JOB_STATUSES = {
     "refund_resolved", "dispute_pending", "dispute_resolved",
 }
 SPEC_TASK_STATUSES = {
-    "DRAFT", "READY", "INPUT_REQUIRED", "AUTHENTICATION_REQUIRED",
-    "OUT_OF_CREDITS", "CREDITS_TOPPED_UP", "RUNNING", "AWAITING_EXTERNAL",
-    "COMPLETED", "FAILED", "CANCEL_REQUESTED", "CANCELED",
+    "DRAFT", "QUEUED", "READY", "INPUT_REQUIRED", "APPROVAL_REQUIRED",
+    "AUTHENTICATION_REQUIRED", "OUT_OF_CREDITS", "CREDITS_TOPPED_UP",
+    "RUNNING", "AWAITING_EXTERNAL", "COMPLETED", "FAILED",
+    "CANCEL_REQUESTED", "CANCELED",
 }
 
 # ── Fixture builders ────────────────────────────────────────────────────────
@@ -395,9 +396,23 @@ class TestWait:
         assert api.wait("task", "tsk_123", interval=60, timeout=3600) == 0
         transport(monkeypatch, [envelope({"id": "tsk_123", "status": "CANCELED"})])
         assert api.wait("task", "tsk_123", interval=60, timeout=3600) == 1
-        for status in ("INPUT_REQUIRED", "AUTHENTICATION_REQUIRED", "OUT_OF_CREDITS"):
+        for status in ("INPUT_REQUIRED", "APPROVAL_REQUIRED",
+                       "AUTHENTICATION_REQUIRED", "OUT_OF_CREDITS"):
             transport(monkeypatch, [envelope({"id": "tsk_123", "status": status})])
             assert api.wait("task", "tsk_123", interval=60, timeout=3600) == 2
+
+    def test_task_queued_is_not_terminal(self, monkeypatch):
+        # QUEUED (added to the live Task enum 2026-06) means accepted and
+        # waiting to start; the wait loop must keep polling through it.
+        transport(
+            monkeypatch,
+            [
+                envelope({"id": "tsk_123", "status": "QUEUED"}),
+                envelope({"id": "tsk_123", "status": "RUNNING"}),
+                envelope({"id": "tsk_123", "status": "COMPLETED"}),
+            ],
+        )
+        assert api.wait("task", "tsk_123", interval=60, timeout=3600) == 0
 
     def test_timeout_exits_1(self, monkeypatch):
         clock = iter([0, 0, 4000])
@@ -419,9 +434,11 @@ class TestStatusVocabularies:
         assert api.TASK_BLOCKED <= SPEC_TASK_STATUSES
 
     def test_no_invented_statuses(self):
-        # QUEUED never existed; RUNNING is never a job.status.
-        assert "QUEUED" not in SPEC_JOB_STATUSES | SPEC_TASK_STATUSES
+        # QUEUED and RUNNING exist only in the task/event vocabularies;
+        # neither is ever a job.status.
+        assert "QUEUED" not in SPEC_JOB_STATUSES
         assert "RUNNING" not in SPEC_JOB_STATUSES
+        assert "QUEUED" in SPEC_TASK_STATUSES
         assert not (api.JOB_TERMINAL | api.JOB_BLOCKED) & {"QUEUED", "RUNNING"}
 
 

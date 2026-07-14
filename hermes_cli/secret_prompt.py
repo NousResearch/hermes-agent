@@ -105,6 +105,56 @@ def _masked_secret_prompt_windows(prompt: str, *, mask: str) -> str:
     return _collect_masked_input(read_char, write, prompt, mask=mask)
 
 
+def _read_posix_raw_char(fd: int) -> str:
+    """Read one Unicode character from *fd* using ``os.read``.
+
+    Bypasses ``sys.stdin``'s ``TextIOWrapper`` buffer so it can't hide bytes
+    from the escape-sequence drain below. When the first byte is ESC (``\\x1b``),
+    any bytes belonging to a CSI/SS3 escape sequence (arrow keys, function
+    keys, Home/End, PageUp/PageDown, etc.) are drained with a short ``select``
+    poll so their tail (e.g. ``b"[A"`` for arrow-up) does not leak into the
+    caller's secret buffer. Every keystroke is masked, so without the drain
+    the corruption would be silent — the user would just see wrong-password
+    errors and no clue why. A 5 ms window is longer than any local terminal
+    takes to burst these bytes and shorter than a plausible human ESC-then-
+    typed-key interval.
+
+    Multi-byte UTF-8 code points are reassembled by reading continuation
+    bytes until the accumulated buffer decodes cleanly (max 4 bytes per
+    code point).
+    """
+    import select
+
+    try:
+        b = os.read(fd, 1)
+    except OSError:
+        return ""
+    if not b:
+        return ""
+    if b == b"\x1b":
+        while select.select([fd], [], [], 0.005)[0]:
+            try:
+                if not os.read(fd, 1):
+                    break
+            except OSError:
+                break
+        return "\x1b"
+    buf = bytearray(b)
+    for _ in range(3):
+        try:
+            return buf.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        try:
+            more = os.read(fd, 1)
+        except OSError:
+            break
+        if not more:
+            break
+        buf.extend(more)
+    return buf.decode("utf-8", errors="replace")
+
+
 def _masked_secret_prompt_posix(prompt: str, *, mask: str) -> str:
     import termios
     import tty
@@ -113,7 +163,7 @@ def _masked_secret_prompt_posix(prompt: str, *, mask: str) -> str:
     old_attrs = termios.tcgetattr(fd)
 
     def read_char() -> str:
-        return sys.stdin.read(1)
+        return _read_posix_raw_char(fd)
 
     def write(text: str) -> None:
         sys.stdout.write(text)

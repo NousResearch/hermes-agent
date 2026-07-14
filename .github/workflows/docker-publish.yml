@@ -14,7 +14,7 @@ on:
       - 'Dockerfile'
       - 'docker/**'
       - '.github/workflows/docker-publish.yml'
-      - '.github/actions/hermes-smoke-test/**'
+      - 'tests/docker/**'
 
   # No paths filter — the job must always run so the required check
   # reports a status (path-gated workflows leave checks "pending" forever
@@ -100,53 +100,32 @@ jobs:
           cache-from: type=gha,scope=docker-amd64
           cache-to: type=gha,mode=max,scope=docker-amd64
 
-      - name: Smoke test image
-        if: github.event_name != 'pull_request'
-        uses: ./.github/actions/hermes-smoke-test
-        with:
-          image: ${{ env.IMAGE_NAME }}:test
-
-      # ---------------------------------------------------------------------
-      # Run the docker-integration test suite against the freshly-built
-      # image already loaded into the local daemon (`:test`).  These tests
-      # are excluded from the sharded `tests.yml :: test` matrix on purpose
-      # (see `_SKIP_PARTS` in scripts/run_tests_parallel.py) because each
-      # shard would otherwise reach the session-scoped ``built_image``
-      # fixture in ``tests/docker/conftest.py`` and start a 3-7min
-      # ``docker build`` — guaranteed to
-      # die in fixture setup.
-      #
-      # Piggybacking here avoids a second image build: the smoke test
-      # already proved the image loads + runs, so the daemon has it under
-      # `${IMAGE_NAME}:test` and we just point ``HERMES_TEST_IMAGE`` at
-      # that.  The fixture's ``HERMES_TEST_IMAGE`` branch (see
-      # tests/docker/conftest.py:62-63) short-circuits the rebuild.
-      #
-      # Gated to main pushes / releases only: they are the heaviest steps in
-      # CI (~15-45 min) and would needlessly slow branch-publish validation
-      # and manual dispatch runs, which already get build + smoke coverage.
-      # ---------------------------------------------------------------------
+      # Lightweight runtime smoke test (hermes --help + dashboard --help).
+      # Upstream migrated these checks out of the old
+      # ``.github/actions/hermes-smoke-test`` composite action into
+      # ``tests/docker/test_smoke.py`` (commit f0cb04921), so we run that file
+      # via the standard test wrapper instead of a local action. Runs on every
+      # non-PR event (branch publish + manual dispatch included) so the image
+      # gets a fast pre-push runtime gate before it is pushed by digest.
       - name: Install uv (for docker tests)
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        if: github.event_name != 'pull_request'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # 8.2.0
 
       - name: Set up Python 3.11 (for docker tests)
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
+        if: github.event_name != 'pull_request'
         run: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
+        if: github.event_name != 'pull_request'
         run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
           # ``dev`` extra pulls in pytest, pytest-asyncio —
           # everything tests/docker/ needs.  We deliberately avoid ``all``
           # here because the docker tests only drive the container via
           # subprocess and don't import hermes_agent's optional deps.
-          uv pip install -e ".[dev]"
+          uv sync --locked --python 3.11 --extra dev
 
-      - name: Run docker integration tests
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
+      - name: Smoke test image
+        if: github.event_name != 'pull_request'
         env:
           # Skip rebuild; use the image already loaded by the build step.
           HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
@@ -156,8 +135,35 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
         run: |
-          source .venv/bin/activate
-          python -m pytest tests/docker/ -v --tb=short
+          scripts/run_tests.sh tests/docker/test_smoke.py --file-timeout 300
+
+      # ---------------------------------------------------------------------
+      # Full docker-integration suite against the freshly-built image already
+      # loaded into the local daemon (`:test`).  Excluded from the sharded
+      # `tests.yml :: test` matrix on purpose (see `_SKIP_PARTS` in
+      # scripts/run_tests_parallel.py) because each shard would otherwise reach
+      # the session-scoped ``built_image`` fixture in
+      # ``tests/docker/conftest.py`` and start a 3-7min ``docker build`` —
+      # guaranteed to die in fixture setup.
+      #
+      # Piggybacking here avoids a second image build: the smoke step above
+      # already proved the image loads + runs, so the daemon has it under
+      # `${IMAGE_NAME}:test` and we just point ``HERMES_TEST_IMAGE`` at that.
+      # The fixture's ``HERMES_TEST_IMAGE`` branch short-circuits the rebuild.
+      #
+      # Gated to main pushes / releases only: they are the heaviest steps in
+      # CI (~15-45 min) and would needlessly slow branch-publish validation
+      # and manual dispatch runs, which already get build + smoke coverage.
+      # ---------------------------------------------------------------------
+      - name: Run docker integration tests
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
+        env:
+          HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: |
+          scripts/run_tests.sh tests/docker/ --file-timeout 600
 
       # Push amd64 by digest only (no tag).  The merge job assembles the
       # tagged manifest list.  `push-by-digest=true` is docker's recommended
@@ -254,11 +260,31 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/jetbrains/hermes-agent:buildcache-arm64
           cache-to: type=registry,ref=ghcr.io/jetbrains/hermes-agent:buildcache-arm64,mode=max
 
+      # Runtime smoke test via the migrated tests/docker/test_smoke.py (see the
+      # amd64 job for why this replaced the deleted composite action). arm64
+      # keeps smoke-only coverage; the heavy full suite runs on amd64.
+      - name: Install uv (for docker tests)
+        if: github.event_name != 'pull_request'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # 8.2.0
+
+      - name: Set up Python 3.11 (for docker tests)
+        if: github.event_name != 'pull_request'
+        run: uv python install 3.11
+
+      - name: Install Python dependencies (for docker tests)
+        if: github.event_name != 'pull_request'
+        run: |
+          uv sync --locked --python 3.11 --extra dev
+
       - name: Smoke test image
         if: github.event_name != 'pull_request'
-        uses: ./.github/actions/hermes-smoke-test
-        with:
-          image: ${{ env.IMAGE_NAME }}:test
+        env:
+          HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: |
+          scripts/run_tests.sh tests/docker/test_smoke.py --file-timeout 300
 
       - name: Push arm64 by digest
         id: push

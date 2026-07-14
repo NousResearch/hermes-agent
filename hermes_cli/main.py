@@ -6400,6 +6400,22 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
+    # Verify hermes entry point exists and recreate symlink if needed
+    hermes_bin = PROJECT_ROOT / "venv/bin/hermes"
+    if hermes_bin.exists():
+        command_link_dir = Path.home() / ".local/bin"
+        command_link_dir.mkdir(parents=True, exist_ok=True)
+        symlink = command_link_dir / "hermes"
+        # Remove old symlink if broken or pointing to wrong place
+        if symlink.is_symlink() or symlink.exists():
+            symlink.unlink()
+        if not symlink.is_symlink():
+            symlink.symlink_to(hermes_bin)
+            print(f"✓ Updated hermes symlink in {command_link_dir}")
+    else:
+        print("⚠ hermes entry point not found at venv/bin/hermes")
+        print("  Try running: cd ~/.hermes/hermes-agent && uv pip install -e .")
+
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 

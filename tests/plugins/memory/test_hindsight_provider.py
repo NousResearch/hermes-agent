@@ -301,6 +301,49 @@ def test_hindsight_dependency_metadata_installs_embedded_runtime():
     assert "torch" not in api_deps
 
 
+def test_initialize_local_mode_reprobes_after_lazy_install(tmp_path, monkeypatch):
+    config = {"mode": "local_embedded"}
+    config_path = tmp_path / "hindsight" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setattr(
+        "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+    )
+
+    ensure_calls = []
+    installed = {"ready": False}
+    real_import_module = importlib.import_module
+
+    def fake_ensure(feature, prompt=True):
+        ensure_calls.append((feature, prompt))
+        installed["ready"] = True
+
+    def fake_import_module(name, package=None):
+        if name in {
+            "hindsight_client",
+            "hindsight_api.main",
+            "hindsight_embed.daemon_embed_manager",
+        }:
+            if not installed["ready"]:
+                raise ModuleNotFoundError(f"No module named {name}")
+            return SimpleNamespace()
+        return real_import_module(name, package)
+
+    monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+    monkeypatch.setattr(
+        "plugins.memory.hindsight.importlib.import_module",
+        fake_import_module,
+    )
+
+    provider = HindsightMemoryProvider()
+    provider.initialize(
+        session_id="test-session", hermes_home=str(tmp_path), platform="cli"
+    )
+
+    assert ensure_calls == [("memory.hindsight", False)]
+    assert provider._mode == "local_embedded"
+
+
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------
@@ -474,7 +517,11 @@ class TestConfig:
         real_import_module = importlib.import_module
 
         def fake_import_module(name, package=None):
-            if name in {"hindsight_client", "hindsight_embed.daemon_embed_manager"}:
+            if name in {
+                "hindsight_client",
+                "hindsight_api.main",
+                "hindsight_embed.daemon_embed_manager",
+            }:
                 return SimpleNamespace()
             return real_import_module(name, package)
 
@@ -490,7 +537,6 @@ class TestConfig:
             "tools.lazy_deps.ensure",
             lambda *args, **kwargs: pytest.fail("lazy install should be skipped when the embedded runtime is already importable"),
         )
-        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
 
         p = HindsightMemoryProvider()
         p._mode = "local_embedded"
@@ -505,6 +551,58 @@ class TestConfig:
 
         p._get_client()
 
+        assert captured["idle_timeout"] == 0
+        assert captured["llm_provider"] == "openai"
+
+    def test_get_client_reprobes_after_lazy_install(self, monkeypatch):
+        captured = {}
+        ensure_calls = []
+        installed = {"ready": False}
+        real_import_module = importlib.import_module
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        def fake_ensure(feature, prompt=True):
+            ensure_calls.append((feature, prompt))
+            installed["ready"] = True
+
+        def fake_import_module(name, package=None):
+            if name in {
+                "hindsight_client",
+                "hindsight_api.main",
+                "hindsight_embed.daemon_embed_manager",
+            }:
+                if not installed["ready"]:
+                    raise ModuleNotFoundError(f"No module named {name}")
+                return SimpleNamespace()
+            return real_import_module(name, package)
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            fake_import_module,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._EmbeddedHindsightClient",
+            FakeHindsightEmbedded,
+        )
+        monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "test-key",
+            "llm_model": "test-model",
+            "idle_timeout": 0,
+        }
+        p._llm_base_url = "http://localhost:8060/v1"
+
+        p._get_client()
+
+        assert ensure_calls == [("memory.hindsight", False)]
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
 
@@ -1723,10 +1821,6 @@ class TestAvailability:
             lambda: tmp_path / "nonexistent",
         )
         monkeypatch.setenv("HINDSIGHT_MODE", "local")
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
-            lambda name: object(),
-        )
         p = HindsightMemoryProvider()
         assert p.is_available()
 
@@ -1746,7 +1840,7 @@ class TestAvailability:
 
         assert p.is_available()
 
-    def test_local_mode_unavailable_when_runtime_import_fails(self, tmp_path, monkeypatch):
+    def test_local_mode_stays_discoverable_when_runtime_import_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_hermes_home",
             lambda: tmp_path / "nonexistent",
@@ -1763,7 +1857,26 @@ class TestAvailability:
             _raise,
         )
         p = HindsightMemoryProvider()
-        assert not p.is_available()
+        assert p.is_available()
+
+    def test_local_embedded_mode_stays_discoverable_when_runtime_import_fails(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "local_embedded"}))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path,
+        )
+
+        def _raise(_name):
+            raise RuntimeError("x86_64-v2 unsupported")
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            _raise,
+        )
+        p = HindsightMemoryProvider()
+        assert p.is_available()
 
     def test_initialize_disables_local_mode_when_runtime_import_fails(self, tmp_path, monkeypatch):
         config = {"mode": "local_embedded"}

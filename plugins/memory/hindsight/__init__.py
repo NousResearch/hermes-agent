@@ -167,6 +167,21 @@ def _ensure_hindsight_dependencies() -> None:
         raise ImportError(str(exc)) from exc
 
 
+def _ensure_local_runtime_available() -> tuple[bool, str | None]:
+    """Install and re-probe the embedded runtime before declaring it unavailable."""
+    available, reason = _check_local_runtime()
+    if available:
+        return True, None
+    try:
+        _ensure_hindsight_dependencies()
+    except Exception as exc:
+        return False, str(exc) or reason
+    available, reprobe_reason = _check_local_runtime()
+    if available:
+        return True, None
+    return False, reprobe_reason or reason
+
+
 class _EmbeddedHindsightClient:
     """Small local wrapper around hindsight-client plus hindsight-embed."""
 
@@ -822,8 +837,9 @@ class HindsightMemoryProvider(MemoryProvider):
             cfg = _load_config()
             mode = cfg.get("mode", "cloud")
             if mode in {"local", "local_embedded"}:
-                available, _ = _check_local_runtime()
-                return available
+                # Local mode should reach initialize(), which owns the
+                # probe/install/re-probe decision and the final disable path.
+                return True
             if mode == "local_external":
                 return True
             has_key = bool(
@@ -1113,17 +1129,12 @@ class HindsightMemoryProvider(MemoryProvider):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
             if self._mode == "local_embedded":
-                available, reason = _check_local_runtime()
+                available, reason = _ensure_local_runtime_available()
                 if not available:
                     raise RuntimeError(
                         "Hindsight local runtime is unavailable"
                         + (f": {reason}" if reason else "")
                     )
-                try:
-                    importlib.import_module("hindsight_client")
-                    importlib.import_module("hindsight_embed.daemon_embed_manager")
-                except ImportError:
-                    _ensure_hindsight_dependencies()
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
@@ -1384,7 +1395,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # Export the daemon health grace timeout BEFORE importing
             # daemon_embed_manager (which reads it at import time).
             _export_port_health_grace_timeout(self._config)
-            available, reason = _check_local_runtime()
+            available, reason = _ensure_local_runtime_available()
             if not available:
                 logger.warning(
                     "Hindsight local mode disabled because its runtime could not be imported: %s",

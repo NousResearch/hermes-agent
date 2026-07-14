@@ -532,7 +532,10 @@ def _switch_codex_pool_and_singleton(
         access_token = (selected.access_token or "").strip()
         refresh_token = (selected.refresh_token or "").strip()
         if not access_token:
-            return None
+            raise SystemExit(
+                "Selected openai-codex OAuth credential is missing access_token. "
+                "Re-authenticate it with `hermes auth add openai-codex` before switching."
+            )
         if not refresh_token:
             raise SystemExit(
                 "Selected openai-codex OAuth credential is missing refresh_token. "

@@ -116,8 +116,10 @@ Type [1/2]:
 | `hermes auth add <provider> --type api-key --api-key <key>` | Add an API key non-interactively |
 | `hermes auth add <provider> --type oauth` | Add an OAuth credential via browser login |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
-| `hermes auth switch <provider> <target>` | Move an index, id, or exact-label credential to #1 (the next choice under `fill_first`) |
+| `hermes auth switch <provider> <target>` | Move an index, id, or exact-label credential to #1 (preferred by `fill_first`) |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status |
+
+`auth switch` reorders the credential pool stored on disk. Rotation strategies such as `round_robin`, `least_used`, and `random` may still choose another healthy credential. Existing Gateway sessions may also keep using an API key cached by a prior `/model` override; start a `/new` session or restart the Gateway before expecting the reordered pool to take effect there.
 
 ## Rotation Strategies
 

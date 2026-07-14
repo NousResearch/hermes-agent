@@ -1163,6 +1163,238 @@ def test_auth_switch_codex_requires_refresh_token(tmp_path, monkeypatch):
     ]
 
 
+def test_auth_switch_preserves_exhausted_status(tmp_path, monkeypatch, capsys):
+    """Plain switch must reorder only; it must not clear unhealthy state."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-a",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-primary-secret",
+                    },
+                    {
+                        "id": "cred-b",
+                        "label": "backup",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-or-backup-secret",
+                        "last_status": "exhausted",
+                        "last_status_at": 1711230000.0,
+                        "last_error_code": 429,
+                        "last_error_reason": "rate_limited",
+                        "last_error_message": "quota hit",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_switch_command
+
+    class _Args:
+        provider = "openrouter"
+        target = "backup"
+
+    auth_switch_command(_Args())
+
+    out = capsys.readouterr().out
+    assert 'Switched openrouter to credential "backup" (now #1)' in out
+    assert "currently marked exhausted" in out
+    assert "sk-or-primary-secret" not in out
+    assert "sk-or-backup-secret" not in out
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openrouter"]
+    assert [entry["id"] for entry in entries] == ["cred-b", "cred-a"]
+    selected = entries[0]
+    assert selected["last_status"] == "exhausted"
+    assert selected["last_status_at"] == 1711230000.0
+    assert selected["last_error_code"] == 429
+    assert selected["last_error_reason"] == "rate_limited"
+    assert selected["last_error_message"] == "quota hit"
+    assert selected["access_token"] == "sk-or-backup-secret"
+
+
+def test_auth_switch_preserves_concurrently_added_credential(tmp_path, monkeypatch):
+    """A stale switch snapshot must not overwrite a credential added on disk."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-a",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-primary",
+                    },
+                    {
+                        "id": "cred-b",
+                        "label": "backup",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-or-backup",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    stale_pool = load_pool("openrouter")
+    auth_path = tmp_path / "hermes" / "auth.json"
+    payload = json.loads(auth_path.read_text())
+    payload["credential_pool"]["openrouter"].append(
+        {
+            "id": "cred-c",
+            "label": "concurrent",
+            "auth_type": "api_key",
+            "priority": 2,
+            "source": "manual",
+            "access_token": "sk-or-concurrent",
+        }
+    )
+    auth_path.write_text(json.dumps(payload, indent=2))
+
+    selected = stale_pool.activate_index(2)
+
+    assert selected is not None
+    payload = json.loads(auth_path.read_text())
+    assert [entry["id"] for entry in payload["credential_pool"]["openrouter"]] == [
+        "cred-b",
+        "cred-a",
+        "cred-c",
+    ]
+
+
+def test_auth_switch_ambiguous_label_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-a",
+                        "label": "shared",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-a",
+                    },
+                    {
+                        "id": "cred-b",
+                        "label": "shared",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-or-b",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_switch_command
+
+    class _Args:
+        provider = "openrouter"
+        target = "shared"
+
+    with pytest.raises(SystemExit, match="Ambiguous credential label"):
+        auth_switch_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert [entry["id"] for entry in payload["credential_pool"]["openrouter"]] == [
+        "cred-a",
+        "cred-b",
+    ]
+
+
+def test_auth_switch_codex_missing_access_token_has_clear_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "acctA-at",
+                        "refresh_token": "acctA-rt",
+                    },
+                    "auth_mode": "chatgpt",
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "acctA",
+                        "label": "account-A",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "acctA-at",
+                        "refresh_token": "acctA-rt",
+                    },
+                    {
+                        "id": "acctB",
+                        "label": "account-B",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "",
+                        "refresh_token": "acctB-rt",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_switch_command
+
+    class _Args:
+        provider = "openai-codex"
+        target = "account-B"
+
+    with pytest.raises(SystemExit, match="missing access_token"):
+        auth_switch_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert [entry["id"] for entry in payload["credential_pool"]["openai-codex"]] == [
+        "acctA",
+        "acctB",
+    ]
+
+
 def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

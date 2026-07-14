@@ -3,6 +3,7 @@ import stat
 
 import pytest
 
+import hermes_constants
 import tools.browser_tool as browser_tool
 
 
@@ -30,13 +31,13 @@ def test_agent_browser_native_binary_names_include_published_package_variants(
     monkeypatch,
 ):
     monkeypatch.setattr(browser_tool.sys, "platform", "linux")
-    monkeypatch.setattr(browser_tool.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(hermes_constants.platform, "machine", lambda: "x86_64")
     assert browser_tool._agent_browser_native_binary_names() == (
         "agent-browser-linux-x64",
         "agent-browser-linux-musl-x64",
     )
 
-    monkeypatch.setattr(browser_tool.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(hermes_constants.platform, "machine", lambda: "aarch64")
     assert browser_tool._agent_browser_native_binary_names() == (
         "agent-browser-linux-arm64",
         "agent-browser-linux-musl-arm64",
@@ -47,6 +48,37 @@ def test_agent_browser_native_binary_names_include_published_package_variants(
         "agent-browser-win32-arm64.exe",
         "agent-browser-windows-arm64.exe",
     )
+
+    monkeypatch.setattr(browser_tool.sys, "platform", "linux")
+    monkeypatch.setattr(hermes_constants.platform, "machine", lambda: "riscv64")
+    assert browser_tool._agent_browser_native_binary_names() == ()
+
+
+def test_find_agent_browser_resolves_windows_global_cmd_nested_native(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(browser_tool.sys, "platform", "win32")
+    monkeypatch.setattr(hermes_constants.platform, "machine", lambda: "AMD64")
+    package_bin = tmp_path / "node_modules" / "agent-browser" / "bin"
+    package_bin.mkdir(parents=True)
+    shim = _make_executable(
+        tmp_path / "agent-browser.cmd",
+        b"#!/bin/sh\n# node agent-browser.js\nexit 1\n",
+    )
+    native = _make_runnable(package_bin / "agent-browser-win32-x64.exe")
+
+    monkeypatch.setattr(
+        browser_tool, "_candidate_agent_browser_native_bins", lambda: []
+    )
+
+    def fake_which(cmd, path=None):
+        if cmd == "agent-browser" and path is None:
+            return shim
+        return None
+
+    monkeypatch.setattr(browser_tool.shutil, "which", fake_which)
+
+    assert browser_tool._find_agent_browser() == native
 
 
 def test_find_agent_browser_skips_bad_native_sibling_for_runnable_sibling_without_node(
@@ -158,6 +190,47 @@ def test_find_agent_browser_skips_non_runnable_native_candidate(tmp_path, monkey
 
     assert browser_tool._find_agent_browser() == good_native
     assert browser_tool._find_agent_browser() != bad_native
+
+
+def test_find_agent_browser_validate_false_does_not_probe_native(
+    tmp_path, monkeypatch
+):
+    native = _make_executable(
+        tmp_path / browser_tool._agent_browser_native_binary_names()[0],
+        b"#!/bin/sh\nexit 1\n",
+    )
+    calls = []
+    monkeypatch.setattr(
+        browser_tool,
+        "_candidate_agent_browser_native_bins",
+        lambda: [tmp_path / browser_tool._agent_browser_native_binary_names()[0]],
+    )
+    monkeypatch.setattr(browser_tool.shutil, "which", lambda _cmd, path=None: None)
+    monkeypatch.setattr(
+        browser_tool,
+        "agent_browser_runnable",
+        lambda path, **kwargs: calls.append((path, kwargs)) or False,
+    )
+
+    assert browser_tool._find_agent_browser(validate=False) == native
+    assert calls == []
+
+
+def test_native_probe_uses_credential_scrubbed_environment(tmp_path, monkeypatch):
+    native_path = tmp_path / browser_tool._agent_browser_native_binary_names()[0]
+    native = _make_runnable(native_path)
+    captured = []
+    monkeypatch.setenv("GH_TOKEN", "must-not-leak")
+
+    def fake_runnable(path, **kwargs):
+        captured.append((path, kwargs["env"]))
+        return True
+
+    monkeypatch.setattr(browser_tool, "agent_browser_runnable", fake_runnable)
+
+    assert browser_tool._native_agent_browser_candidate(native_path, validate=True) == native
+    assert captured[0][0] == native
+    assert "GH_TOKEN" not in captured[0][1]
 
 
 def test_find_agent_browser_keeps_path_shim_when_node_is_available(

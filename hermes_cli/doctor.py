@@ -13,7 +13,8 @@ from pathlib import Path
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
-from hermes_constants import agent_browser_runnable
+from hermes_constants import resolve_agent_browser_candidate
+from tools.environments.local import hermes_subprocess_env
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -72,12 +73,21 @@ def _system_package_install_cmd(pkg: str) -> str:
     return f"sudo apt install {pkg}"
 
 
-def _safe_which(cmd: str) -> str | None:
+def _safe_which(cmd: str, path: str | None = None) -> str | None:
     """shutil.which wrapper resilient to platform monkeypatching in tests."""
     try:
-        return shutil.which(cmd)
+        if path is None:
+            return shutil.which(cmd)
+        return shutil.which(cmd, path=path)
     except Exception:
         return None
+
+
+def _resolve_agent_browser_for_doctor(path: str | None) -> str | None:
+    return resolve_agent_browser_candidate(
+        path,
+        env=hermes_subprocess_env(inherit_credentials=False),
+    )
 
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
@@ -1560,14 +1570,16 @@ def run_doctor(args):
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
         agent_browser_ok = False
-        _which_ab = shutil.which("agent-browser")
-        if agent_browser_path.exists():
-            check_ok("agent-browser (Node.js)", "(browser automation)")
-            agent_browser_ok = True
-        elif _which_ab and agent_browser_runnable(_which_ab):
+        _which_ab = _safe_which("agent-browser")
+        local_bin_dir = PROJECT_ROOT / "node_modules" / ".bin"
+        _local_ab = _safe_which("agent-browser", path=str(local_bin_dir))
+        _resolved_ab = _resolve_agent_browser_for_doctor(
+            _which_ab
+        ) or _resolve_agent_browser_for_doctor(_local_ab)
+        if _resolved_ab:
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
-        elif _which_ab:
+        elif _which_ab or agent_browser_path.exists():
             # Found on PATH but won't run — almost always a dangling global
             # symlink left behind by agent-browser's npm postinstall after a
             # `hermes update` wiped node_modules (issue #48521).

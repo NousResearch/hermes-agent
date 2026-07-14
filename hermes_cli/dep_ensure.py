@@ -22,15 +22,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_constants import agent_browser_runnable
+from hermes_constants import resolve_agent_browser_candidate
 from tools.environments.local import hermes_subprocess_env
 
 _IS_WINDOWS = platform.system() == "Windows"
 
+
+def _resolve_agent_browser(path: str | None) -> str | None:
+    return resolve_agent_browser_candidate(
+        path,
+        env=hermes_subprocess_env(inherit_credentials=False),
+    )
+
+
 _DEP_CHECKS = {
     "node": lambda: shutil.which("node") is not None,
     "browser": lambda: (
-        agent_browser_runnable(shutil.which("agent-browser"))
+        _resolve_agent_browser(shutil.which("agent-browser")) is not None
         or _has_system_browser()
         or _has_hermes_agent_browser()
     ),
@@ -62,13 +70,15 @@ def _has_hermes_agent_browser() -> bool:
     home = get_hermes_home()
     if _IS_WINDOWS:
         # npm -g --prefix puts .cmd shims directly in the prefix dir on Windows
-        return (home / "node" / "agent-browser.cmd").is_file()
-    # install.sh installs globally into $HERMES_HOME/node/bin/ via npm -g --prefix
-    # Also check legacy node_modules/.bin/ path for git-clone installs.
-    return (
-        (home / "node" / "bin" / "agent-browser").is_file()
-        or (home / "node_modules" / ".bin" / "agent-browser").is_file()
-    )
+        candidates = (home / "node" / "agent-browser.cmd",)
+    else:
+        # install.sh installs globally into $HERMES_HOME/node/bin/ via npm -g --prefix
+        # Also check legacy node_modules/.bin/ path for git-clone installs.
+        candidates = (
+            home / "node" / "bin" / "agent-browser",
+            home / "node_modules" / ".bin" / "agent-browser",
+        )
+    return any(_resolve_agent_browser(str(candidate)) for candidate in candidates)
 
 
 def _find_install_script(

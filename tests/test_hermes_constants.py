@@ -9,6 +9,7 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    agent_browser_native_binary_names,
     agent_browser_runnable,
     find_hermes_node_executable,
     find_node_executable,
@@ -22,6 +23,7 @@ from hermes_constants import (
     is_container,
     node_tool_runnable,
     parse_reasoning_effort,
+    resolve_agent_browser_candidate,
     secure_parent_dir,
     with_hermes_node_path,
 )
@@ -641,6 +643,39 @@ class TestAgentBrowserRunnable:
         assert agent_browser_runnable(str(good)) is True
         assert captured[0][0] == [str(good), "--version"]
         assert captured[0][1]["creationflags"] == 0x08000000
+
+    def test_version_probe_uses_supplied_environment(self, tmp_path, monkeypatch):
+        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\nexit 0\n")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        import subprocess as subprocess_mod
+
+        monkeypatch.setattr(subprocess_mod, "run", fake_run)
+
+        probe_env = {"PATH": os.environ.get("PATH", ""), "SAFE_MARKER": "present"}
+        assert agent_browser_runnable(str(good), env=probe_env) is True
+        assert captured[0][1]["env"]["SAFE_MARKER"] == "present"
+        assert "GH_TOKEN" not in captured[0][1]["env"]
+
+    def test_windows_cmd_resolves_nested_native(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setattr(hermes_constants.platform, "machine", lambda: "AMD64")
+        shim = self._stub(tmp_path, "agent-browser.cmd", "#!/bin/sh\nexit 1\n")
+        package_bin = tmp_path / "node_modules" / "agent-browser" / "bin"
+        package_bin.mkdir(parents=True)
+        native = self._stub(
+            package_bin,
+            agent_browser_native_binary_names()[0],
+            "#!/bin/sh\nexit 0\n",
+        )
+
+        assert resolve_agent_browser_candidate(str(shim), env={"PATH": ""}) == str(
+            native
+        )
 
 
     def test_node_tool_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):

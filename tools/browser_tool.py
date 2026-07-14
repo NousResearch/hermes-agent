@@ -61,13 +61,17 @@ import sys
 import tempfile
 import threading
 import time
-import platform
 import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from agent.redact import redact_cdp_url
-from hermes_constants import agent_browser_runnable, get_hermes_home
+from hermes_constants import (
+    agent_browser_native_binary_names,
+    agent_browser_native_sibling_candidates,
+    agent_browser_runnable,
+    get_hermes_home,
+)
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -2109,26 +2113,18 @@ def _browser_node_available(extended_path: str = "") -> bool:
     )
 
 
+def _agent_browser_runnable(path: str) -> bool:
+    from tools.environments.local import hermes_subprocess_env
+
+    return agent_browser_runnable(
+        path,
+        env=hermes_subprocess_env(inherit_credentials=False),
+    )
+
+
 def _agent_browser_native_binary_names() -> Tuple[str, ...]:
     """Return plausible bundled native agent-browser binary names for this host."""
-    machine = platform.machine().lower()
-    arch = "arm64" if machine in {"arm64", "aarch64"} else "x64"
-    if sys.platform.startswith("linux"):
-        return (
-            f"agent-browser-linux-{arch}",
-            f"agent-browser-linux-musl-{arch}",
-        )
-    if sys.platform == "darwin":
-        return (
-            f"agent-browser-darwin-{arch}",
-            f"agent-browser-macos-{arch}",
-        )
-    if sys.platform.startswith("win"):
-        return (
-            f"agent-browser-win32-{arch}.exe",
-            f"agent-browser-windows-{arch}.exe",
-        )
-    return ()
+    return agent_browser_native_binary_names()
 
 
 def _candidate_agent_browser_native_bins() -> List[Path]:
@@ -2166,7 +2162,7 @@ def _native_agent_browser_candidate(path: Path, *, validate: bool) -> str | None
     if not _is_executable_file(path):
         return None
     candidate = str(path)
-    if validate and not agent_browser_runnable(candidate):
+    if validate and not _agent_browser_runnable(candidate):
         return None
     return candidate
 
@@ -2200,7 +2196,7 @@ def _usable_agent_browser_candidate(
         logger.debug("browser: skipping agent-browser shim without node on PATH: %s", path)
         return None
     if validate:
-        return path if agent_browser_runnable(path) else None
+        return path if _agent_browser_runnable(path) else None
     return path if _agent_browser_candidate_present(path) else None
 
 
@@ -2220,15 +2216,8 @@ def _native_agent_browser_sibling_for_shim(
     """Find a usable native agent-browser binary adjacent to a resolved wrapper."""
     if not path:
         return None
-    try:
-        resolved = Path(path).resolve(strict=False)
-    except OSError:
-        return None
-    for name in _agent_browser_native_binary_names():
-        usable = _native_agent_browser_candidate(
-            resolved.parent / name,
-            validate=validate,
-        )
+    for candidate in agent_browser_native_sibling_candidates(path):
+        usable = _native_agent_browser_candidate(candidate, validate=validate)
         if usable:
             return usable
     return None

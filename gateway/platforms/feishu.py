@@ -4221,15 +4221,36 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    def _split_content(self, content: str, max_len: int = 8000) -> list[str]:
+        """将长内容分片，每片不超过max_len字符"""
+        chunks = []
+        while len(content) > max_len:
+            # 找到合适的分割点（优先在换行处分割）
+            split_pos = content.rfind('\n', 0, max_len)
+            if split_pos == -1:
+                split_pos = max_len
+            chunks.append(content[:split_pos])
+            content = content[split_pos:].lstrip('\n')
+        if content:
+            chunks.append(content)
+        return chunks
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        """构建飞书消息payload，支持卡片失败时回退到文本"""
         # 飞书卡片消息：自动将 Markdown 转为卡片格式
         # 对于表格内容，仍然使用纯文本（卡片不支持表格渲染）
         if _MARKDOWN_TABLE_RE.search(content):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
-        # 其他内容都转成卡片
-        card_payload = self._convert_to_card(content)
-        return "interactive", json.dumps(card_payload, ensure_ascii=False)
+        
+        # 尝试转为卡片，失败则回退到文本
+        try:
+            card_payload = self._convert_to_card(content)
+            return "interactive", json.dumps(card_payload, ensure_ascii=False)
+        except Exception as e:
+            logger.warning("[Feishu] Card conversion failed, falling back to text: %s", e)
+            text_payload = {"text": content}
+            return "text", json.dumps(text_payload, ensure_ascii=False)
 
     def _convert_to_card(self, content: str) -> dict:
         """将 Markdown 内容转换为飞书卡片格式"""
@@ -4243,7 +4264,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if lines:
             first_line = lines[0].strip()
             # emoji + 文字作为标题
-            emoji_title_match = re.match(r'^[\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF]\s*(.+)\'', first_line)
+            emoji_title_match = re.match(r'^[🌀-🧿☀-⛿✀-➿]\s*(.+)$', first_line)
             if emoji_title_match:
                 title = emoji_title_match.group(0)
                 body = "\n".join(lines[1:]).strip()
@@ -4276,18 +4297,18 @@ class FeishuAdapter(BasePlatformAdapter):
         # 构建卡片元素
         elements = []
 
-        # 主要内容
+        # 主要内容（支持长内容分片）
         if body:
-            # 限制单个元素长度
-            if len(body) > 4000:
-                body = body[:3997] + "..."
-            elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": body
-                }
-            })
+            # 分片处理长内容
+            chunks = self._split_content(body, max_len=4000)
+            for chunk in chunks:
+                elements.append({
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": chunk
+                    }
+                })
 
         # 如果没有内容，添加占位
         if not elements:

@@ -43,6 +43,7 @@ class _StubChild:
         tool_schema=None,
     ):
         self._subagent_id = subagent_id
+        self.session_id = subagent_id
         self._delegate_depth = 1
         self._delegate_role = "leaf"
         self.model = "test/model"

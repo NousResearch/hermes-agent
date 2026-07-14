@@ -1541,6 +1541,79 @@ class TestCallConverseInvalidatesOnStaleError:
         assert _bedrock_runtime_client_cache.get("us-east-1") is live_client
 
 
+class TestStreamConsumptionStaleEviction:
+    """Regression for the mid-stream stale-connection bug: a dead pooled
+    connection can survive the initial converse_stream() call and only fail
+    while the *stream is being consumed*, surfacing as a bare AssertionError
+    raised from inside urllib3/botocore (empty str(exc)). The true-streaming
+    path in chat_completion_helpers caught that in a bare ``except`` and stored
+    the error WITHOUT evicting the cached client, so every outer retry reused
+    the same wedged pool and reproduced the AssertionError forever. The fix
+    mirrors the inner eviction on the consumption-failure branch.
+
+    This test pins the two invariants the fix depends on:
+      1. a bare AssertionError raised from a urllib3 frame is classified as a
+         stale-connection error, and
+      2. evicting on that classification removes the region's cached client so
+         the next attempt rebuilds a fresh pool.
+    """
+
+    def _raise_bare_assertion_from_urllib3(self):
+        # Build an AssertionError whose traceback top frame reports a
+        # urllib3.* module name — the real failure has an empty message and a
+        # urllib3-internal frame (connectionpool / response reader).
+        try:
+            exec(
+                compile("raise AssertionError()", "<urllib3.connectionpool>", "exec"),
+                {"__name__": "urllib3.connectionpool"},
+            )
+        except AssertionError as exc:  # noqa: PERF203
+            return exc
+        raise RuntimeError("expected AssertionError")
+
+    def test_bare_urllib3_assertion_is_stale(self):
+        from agent.bedrock_adapter import is_stale_connection_error
+
+        exc = self._raise_bare_assertion_from_urllib3()
+        assert str(exc) == "", "the real mid-stream failure has an empty message"
+        assert is_stale_connection_error(exc) is True
+
+    def test_application_assertion_is_not_stale(self):
+        # An AssertionError from application code (no urllib3/botocore/boto3
+        # frame) must NOT be treated as a stale connection — otherwise a real
+        # invariant bug would be silently retried.
+        from agent.bedrock_adapter import is_stale_connection_error
+
+        try:
+            assert False, "app-level invariant"
+        except AssertionError as exc:
+            assert is_stale_connection_error(exc) is False
+
+    def test_consumption_stale_error_evicts_client(self):
+        """Simulate the patched consumption-failure branch: on a stale error we
+        must invalidate the region's cached client."""
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            invalidate_runtime_client,
+            is_stale_connection_error,
+            reset_client_cache,
+        )
+
+        reset_client_cache()
+        wedged_client = MagicMock()
+        _bedrock_runtime_client_cache["us-west-2"] = wedged_client
+
+        exc = self._raise_bare_assertion_from_urllib3()
+        # This mirrors the fixed except-branch logic in chat_completion_helpers.
+        if is_stale_connection_error(exc):
+            invalidate_runtime_client("us-west-2")
+
+        assert "us-west-2" not in _bedrock_runtime_client_cache, (
+            "stale mid-stream error must evict the cached client so the outer "
+            "retry rebuilds a fresh connection pool"
+        )
+
+
 class TestStreamingAccessDeniedDetection:
     """is_streaming_access_denied_error() recognizes IAM denials of
     bedrock:InvokeModelWithResponseStream (InvokeModel-only policies)."""

@@ -2001,6 +2001,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     pass
 
         def _bedrock_call():
+            _region_holder = {"region": "us-east-1"}
             try:
                 from agent.bedrock_adapter import (
                     _get_bedrock_runtime_client,
@@ -2011,6 +2012,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     stream_converse_with_callbacks,
                 )
                 region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+                _region_holder["region"] = region
                 api_kwargs.pop("__bedrock_converse__", None)
                 client = _get_bedrock_runtime_client(region)
                 try:
@@ -2066,6 +2068,28 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     on_interrupt_check=lambda: agent._interrupt_requested,
                 )
             except Exception as e:
+                # A stale/dead pooled connection can survive the initial
+                # converse_stream() call and only fail while the stream is
+                # being consumed — surfacing as a bare AssertionError raised
+                # from inside urllib3/botocore (empty str(exc)). The inner
+                # except above evicts the cached client on stale-connection
+                # errors, but failures during stream consumption land here
+                # instead, where the client was never evicted — so all outer
+                # retries reused the same wedged pool and reproduced the
+                # AssertionError forever. Mirror the inner eviction so the
+                # outer retry loop rebuilds a fresh client/pool. Import and
+                # region are re-resolved locally: this except also covers a
+                # failure before the outer try's import/region binding, so we
+                # cannot assume those names are bound here.
+                try:
+                    from agent.bedrock_adapter import (
+                        invalidate_runtime_client as _invalidate,
+                        is_stale_connection_error as _is_stale,
+                    )
+                    if _is_stale(e):
+                        _invalidate(_region_holder["region"])
+                except Exception:
+                    pass
                 result["error"] = e
 
         t = threading.Thread(target=_bedrock_call, daemon=True)

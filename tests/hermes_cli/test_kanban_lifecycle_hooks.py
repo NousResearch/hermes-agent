@@ -36,7 +36,7 @@ def captured_hooks(monkeypatch):
     mgr = get_plugin_manager()
     events: list[tuple[str, dict]] = []
     saved = {k: list(v) for k, v in mgr._hooks.items()}
-    for hook in ("kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked"):
+    for hook in ("kanban_task_claimed", "kanban_worker_started", "kanban_task_completed", "kanban_task_blocked"):
         mgr._hooks.setdefault(hook, []).append(
             lambda _h=hook, **kw: events.append((_h, kw))
         )
@@ -47,10 +47,65 @@ def captured_hooks(monkeypatch):
 
 
 def test_hooks_are_registered_as_valid():
-    """The three lifecycle hook names are part of VALID_HOOKS."""
+    """The lifecycle hook names are part of VALID_HOOKS."""
     assert "kanban_task_claimed" in VALID_HOOKS
+    assert "kanban_worker_started" in VALID_HOOKS
     assert "kanban_task_completed" in VALID_HOOKS
     assert "kanban_task_blocked" in VALID_HOOKS
+
+
+def test_worker_started_hook_carries_worker_context(kanban_home, captured_hooks, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "demo")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/demo-work")
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    kb._fire_kanban_lifecycle_hook(
+        "kanban_worker_started",
+        "t_worker",
+        board="demo",
+        assignee="builder",
+        run_id=42,
+        workspace="/tmp/demo-work",
+    )
+    fired = [e for e in captured_hooks if e[0] == "kanban_worker_started"]
+    assert len(fired) == 1
+    kw = fired[0][1]
+    assert kw["task_id"] == "t_worker"
+    assert kw["board"] == "demo"
+    assert kw["assignee"] == "builder"
+    assert kw["run_id"] == 42
+    assert kw["workspace"] == "/tmp/demo-work"
+    assert "profile_name" in kw
+
+
+def test_cli_worker_started_hook_fires_once(monkeypatch):
+    from cli import HermesCLI
+
+    calls = []
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_cli")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "demo")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/demo-work")
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
+    monkeypatch.setattr(
+        kb,
+        "_fire_kanban_lifecycle_hook",
+        lambda event, task_id, **fields: calls.append((event, task_id, fields)),
+    )
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._fire_kanban_worker_started_hook_once()
+    cli._fire_kanban_worker_started_hook_once()
+
+    assert calls == [(
+        "kanban_worker_started",
+        "t_cli",
+        {
+            "board": "demo",
+            "assignee": "builder",
+            "run_id": 42,
+            "workspace": "/tmp/demo-work",
+        },
+    )]
 
 
 def test_claim_fires_hook(kanban_home, captured_hooks):

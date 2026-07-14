@@ -197,6 +197,8 @@ VALID_HOOKS: Set[str] = {
     #   - kanban_task_claimed   -> the DISPATCHER process (gateway-embedded
     #                              dispatcher or `hermes kanban dispatch`),
     #                              right before the worker subprocess spawns.
+    #   - kanban_worker_started -> the WORKER process, before the first agent
+    #                              turn starts for a claimed task.
     #   - kanban_task_completed -> the WORKER process, when it calls
     #                              kanban_complete (or a CLI/manual complete).
     #   - kanban_task_blocked   -> the WORKER process (worker-initiated block)
@@ -210,6 +212,7 @@ VALID_HOOKS: Set[str] = {
     # kanban_task_completed adds: summary: str | None.
     # kanban_task_blocked adds:   reason: str | None.
     "kanban_task_claimed",
+    "kanban_worker_started",
     "kanban_task_completed",
     "kanban_task_blocked",
 }

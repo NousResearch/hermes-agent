@@ -58,28 +58,52 @@ class _SyncThread:
             self._target()
 
 
-class _ReviewAgentRecorder:
-    """Stand-in for the review-fork AIAgent that records the prompt assignment."""
+def _make_recorder_class(captured=None, record_on_run=()):
+    """Build a Recorder class standing in for the review-fork AIAgent.
 
-    def __init__(self, *args, **kwargs):
-        self._cached_system_prompt = None
-        self._memory_write_origin = None
-        self._memory_write_context = None
-        self._memory_store = None
-        self._memory_enabled = None
-        self._user_profile_enabled = None
-        self._memory_nudge_interval = None
-        self._skill_nudge_interval = None
-        self.suppress_status_output = None
+    Keeps the stub attribute list in ONE place: when
+    ``_spawn_background_review`` starts touching a new fork attribute, only
+    this factory needs the extra stub — not one copy per test.
 
-    def run_conversation(self, *args, **kwargs):
-        raise RuntimeError("stop after recording state — don't actually call the API")
+    ``captured`` (dict): if given, ``__init__`` stores the full constructor
+    kwargs under ``captured["init_kwargs"]`` so tests can assert on both
+    kwarg values and kwarg *presence*.
+    ``record_on_run``: instance attribute names copied into ``captured`` when
+    ``run_conversation`` fires — for values the production code assigns
+    after construction.
+    """
 
-    def shutdown_memory_provider(self):
-        pass
+    class _Recorder:
+        def __init__(self, *args, **kwargs):
+            if captured is not None:
+                captured["init_kwargs"] = dict(kwargs)
+            self._cached_system_prompt = None
+            self._memory_write_origin = None
+            self._memory_write_context = None
+            self._memory_store = None
+            self._memory_enabled = None
+            self._user_profile_enabled = None
+            self._memory_nudge_interval = None
+            self._skill_nudge_interval = None
+            self.suppress_status_output = None
+            self.session_start = None
+            self.session_id = None
 
-    def close(self):
-        pass
+        def run_conversation(self, *args, **kwargs):
+            if captured is not None:
+                for _name in record_on_run:
+                    captured[_name] = getattr(self, _name)
+            raise RuntimeError(
+                "stop after recording — don't actually call the API"
+            )
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    return _Recorder
 
 
 def test_review_fork_inherits_parent_cached_system_prompt():
@@ -97,27 +121,21 @@ def test_review_fork_inherits_parent_cached_system_prompt():
     captured = {}
     parent_prompt = agent._cached_system_prompt
 
-    # Hook the assignment site: record what gets put on the review agent.
-    real_recorder_init = _ReviewAgentRecorder.__init__
+    _Recorder = _make_recorder_class()
 
-    def _recorder_init(self, *args, **kwargs):
-        real_recorder_init(self, *args, **kwargs)
-        # The actual production code assigns _cached_system_prompt AFTER __init__,
-        # so we need to capture it on attribute set. Use a property-style sentinel
-        # via __setattr__ on this instance.
-
-    with patch.object(run_agent, "AIAgent", _ReviewAgentRecorder), \
+    with patch.object(run_agent, "AIAgent", _Recorder), \
          patch("threading.Thread", _SyncThread):
-        # Wrap the recorder's __setattr__ so we can see the _cached_system_prompt
-        # write that _spawn_background_review performs after construction.
-        orig_setattr = _ReviewAgentRecorder.__setattr__
+        # The production code assigns _cached_system_prompt AFTER __init__,
+        # so wrap the recorder's __setattr__ to see that post-construction
+        # write from _spawn_background_review.
+        orig_setattr = _Recorder.__setattr__
 
         def _spy_setattr(self, name, value):
             if name == "_cached_system_prompt":
                 captured["written_prompt"] = value
             orig_setattr(self, name, value)
 
-        with patch.object(_ReviewAgentRecorder, "__setattr__", _spy_setattr):
+        with patch.object(_Recorder, "__setattr__", _spy_setattr):
             agent._spawn_background_review(
                 messages_snapshot=[],
                 review_memory=True,
@@ -147,31 +165,9 @@ def test_review_fork_pins_session_start_and_session_id():
     agent = _make_agent_stub(run_agent.AIAgent)
 
     captured = {}
-
-    class _Recorder:
-        def __init__(self, *args, **kwargs):
-            self._cached_system_prompt = None
-            self._memory_write_origin = None
-            self._memory_write_context = None
-            self._memory_store = None
-            self._memory_enabled = None
-            self._user_profile_enabled = None
-            self._memory_nudge_interval = None
-            self._skill_nudge_interval = None
-            self.suppress_status_output = None
-            self.session_start = None
-            self.session_id = None
-
-        def run_conversation(self, *args, **kwargs):
-            captured["session_start"] = self.session_start
-            captured["session_id"] = self.session_id
-            raise RuntimeError("stop after recording")
-
-        def shutdown_memory_provider(self):
-            pass
-
-        def close(self):
-            pass
+    _Recorder = _make_recorder_class(
+        captured, record_on_run=("session_start", "session_id")
+    )
 
     with patch.object(run_agent, "AIAgent", _Recorder), \
          patch("threading.Thread", _SyncThread):
@@ -198,31 +194,7 @@ def test_review_fork_inherits_parent_toolset_config():
     agent = _make_agent_stub(run_agent.AIAgent)
 
     captured = {}
-
-    class _Recorder:
-        def __init__(self, *args, **kwargs):
-            captured["enabled_toolsets"] = kwargs.get("enabled_toolsets")
-            captured["disabled_toolsets"] = kwargs.get("disabled_toolsets")
-            self._cached_system_prompt = None
-            self._memory_write_origin = None
-            self._memory_write_context = None
-            self._memory_store = None
-            self._memory_enabled = None
-            self._user_profile_enabled = None
-            self._memory_nudge_interval = None
-            self._skill_nudge_interval = None
-            self.suppress_status_output = None
-            self.session_start = None
-            self.session_id = None
-
-        def run_conversation(self, *args, **kwargs):
-            raise RuntimeError("stop after recording — don't actually call the API")
-
-        def shutdown_memory_provider(self):
-            pass
-
-        def close(self):
-            pass
+    _Recorder = _make_recorder_class(captured)
 
     with patch.object(run_agent, "AIAgent", _Recorder), \
          patch("threading.Thread", _SyncThread):
@@ -232,47 +204,30 @@ def test_review_fork_inherits_parent_toolset_config():
             review_skills=False,
         )
 
-    assert captured.get("enabled_toolsets") == agent.enabled_toolsets, (
-        f"enabled_toolsets mismatch: {captured.get('enabled_toolsets')!r} "
+    init_kwargs = captured.get("init_kwargs", {})
+    assert init_kwargs.get("enabled_toolsets") == agent.enabled_toolsets, (
+        f"enabled_toolsets mismatch: {init_kwargs.get('enabled_toolsets')!r} "
         f"vs expected {agent.enabled_toolsets!r}"
     )
-    assert captured.get("disabled_toolsets") == agent.disabled_toolsets, (
-        f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "
+    assert init_kwargs.get("disabled_toolsets") == agent.disabled_toolsets, (
+        f"disabled_toolsets mismatch: {init_kwargs.get('disabled_toolsets')!r} "
         f"vs expected {agent.disabled_toolsets!r}"
     )
 
 
 def test_review_fork_inherits_parent_reasoning_config():
-    """``reasoning_config`` parity: fork must inherit parent's value so the request body's ``thinking`` / ``output_config`` match (Anthropic cache is namespaced by ``thinking`` presence)."""
+    """``reasoning_config`` parity on the default (non-routed) path.
+
+    The fork must inherit the parent's value so the request body's
+    ``thinking`` / ``output_config`` match — Anthropic's cache is
+    namespaced by ``thinking`` presence.
+    """
     import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
 
     captured = {}
-
-    class _Recorder:
-        def __init__(self, *args, **kwargs):
-            captured["reasoning_config"] = kwargs.get("reasoning_config")
-            self._cached_system_prompt = None
-            self._memory_write_origin = None
-            self._memory_write_context = None
-            self._memory_store = None
-            self._memory_enabled = None
-            self._user_profile_enabled = None
-            self._memory_nudge_interval = None
-            self._skill_nudge_interval = None
-            self.suppress_status_output = None
-            self.session_start = None
-            self.session_id = None
-
-        def run_conversation(self, *args, **kwargs):
-            raise RuntimeError("stop after recording — don't actually call the API")
-
-        def shutdown_memory_provider(self):
-            pass
-
-        def close(self):
-            pass
+    _Recorder = _make_recorder_class(captured)
 
     with patch.object(run_agent, "AIAgent", _Recorder), \
          patch("threading.Thread", _SyncThread):
@@ -282,7 +237,62 @@ def test_review_fork_inherits_parent_reasoning_config():
             review_skills=False,
         )
 
-    assert captured.get("reasoning_config") == agent.reasoning_config, (
-        f"reasoning_config mismatch: {captured.get('reasoning_config')!r} "
+    init_kwargs = captured.get("init_kwargs", {})
+    assert init_kwargs.get("reasoning_config") == agent.reasoning_config, (
+        f"reasoning_config mismatch: {init_kwargs.get('reasoning_config')!r} "
         f"vs expected {agent.reasoning_config!r}"
+    )
+
+
+def test_routed_review_fork_does_not_inherit_reasoning_config():
+    """Routed aux path: the fork must NOT inherit the parent's reasoning_config.
+
+    When ``auxiliary.background_review.{provider,model}`` routes the review
+    to a different model, cache parity is moot (the cache is cold on that
+    model regardless) and the parent's effort vocabulary may be invalid for
+    the routed model/provider (OpenRouter ``extra_body.reasoning.effort`` is
+    forwarded unclamped; codex_responses passes ``max``/``ultra`` through
+    unmapped except on gpt-5.6/xAI). The routed fork must fall back to
+    provider defaults, mirroring the ``not _routed`` gate on
+    ``_cached_system_prompt`` inheritance.
+    """
+    import run_agent
+    import agent.background_review as bg_review
+
+    agent_stub = _make_agent_stub(run_agent.AIAgent)
+
+    captured = {}
+    _Recorder = _make_recorder_class(captured)
+
+    routed_runtime = {
+        "provider": "openrouter",
+        "model": "aux-cheap-model",
+        "api_key": "test-key",
+        "base_url": None,
+        "api_mode": None,
+        "credential_pool": None,
+        "request_overrides": {},
+        "max_tokens": None,
+        "command": None,
+        "args": [],
+        "routed": True,
+    }
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch.object(bg_review, "_resolve_review_runtime",
+                      return_value=routed_runtime), \
+         patch("threading.Thread", _SyncThread):
+        agent_stub._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    init_kwargs = captured.get("init_kwargs", {})
+    assert "reasoning_config" not in init_kwargs, (
+        f"Routed review fork was passed the parent's reasoning_config "
+        f"({init_kwargs.get('reasoning_config')!r}). On the routed path the "
+        "cache is cold (no parity benefit) and the parent's effort value may "
+        "be invalid for the routed model/provider — it must be omitted so "
+        "the fork uses provider defaults."
     )

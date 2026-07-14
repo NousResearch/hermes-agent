@@ -182,6 +182,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
         setSessionProfileTotals(result.profile_totals ?? {})
       }
+    } catch (err) {
+      // Preserve the previous session list on transient fetch failures
+      // (backend startup delay, network blip). Without this guard, the
+      // try/finally pattern left $sessions at its initial [] — the sidebar
+      // rendered "no sessions" with zero error indication, and on cold
+      // boot after an update this looks exactly like data loss.
+      console.error('refreshSessions: fetch failed, preserving previous list', err)
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {
         setSessionsLoading(false)

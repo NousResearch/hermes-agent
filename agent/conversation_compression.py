@@ -935,15 +935,6 @@ def compress_context(
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
             return messages, _existing_sp
-        if _lock_holder is not None:
-            _lock_refresher = _CompressionLockLeaseRefresher(
-                _lock_db,
-                _lock_sid,
-                _lock_holder,
-                _lock_ttl,
-                _lock_refresh_interval,
-            ).start()
-
     def _release_lock() -> None:
         """Release the lock keyed on the OLD session_id (before rotation)."""
         if _lock_refresher is not None:
@@ -1007,6 +998,16 @@ def compress_context(
             return messages, existing_prompt
 
     try:
+        if _lock_holder is not None:
+            _lock_refresher = _CompressionLockLeaseRefresher(
+                _lock_db,
+                _lock_sid,
+                _lock_holder,
+                _lock_ttl,
+                _lock_refresh_interval,
+            )
+            _lock_refresher.start()
+
         # Notify external memory provider before compression discards context.
         # The provider's on_pre_compress() may return a string of insights it
         # wants surfaced inside the compression summary; capture and forward it

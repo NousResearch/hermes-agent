@@ -46,8 +46,8 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     return app
 
 
-def _github_signature(body: bytes, secret: str) -> str:
-    """Compute X-Hub-Signature-256 for *body* using *secret*."""
+def _hmac_sha256_signature(body: bytes, secret: str) -> str:
+    """Compute HMAC-SHA256 signature (`sha256=<hex>`) for *body* using *secret*."""
     return "sha256=" + hmac.new(
         secret.encode(), body, hashlib.sha256
     ).hexdigest()
@@ -116,7 +116,7 @@ class TestSignatureBeforeRateLimit:
             # consumed the rate limit bucket.
             # AFTER FIX: Bad requests don't touch rate limiting, so valid
             # request succeeds.
-            valid_sig = _github_signature(body, secret)
+            valid_sig = _hmac_sha256_signature(body, secret)
             resp = await cli.post(
                 f"/webhooks/{route_name}",
                 data=body,
@@ -168,7 +168,7 @@ class TestSignatureBeforeRateLimit:
         async with TestClient(TestServer(app)) as cli:
             # Send 'rate_limit' valid requests — all should succeed
             for i in range(rate_limit):
-                valid_sig = _github_signature(body, secret)
+                valid_sig = _hmac_sha256_signature(body, secret)
                 resp = await cli.post(
                     f"/webhooks/{route_name}",
                     data=body,
@@ -182,7 +182,7 @@ class TestSignatureBeforeRateLimit:
                 assert resp.status == 202
 
             # The next valid request SHOULD be rate-limited
-            valid_sig = _github_signature(body, secret)
+            valid_sig = _hmac_sha256_signature(body, secret)
             resp = await cli.post(
                 f"/webhooks/{route_name}",
                 data=body,
@@ -228,7 +228,7 @@ class TestSignatureBeforeRateLimit:
         async with TestClient(TestServer(app)) as cli:
             # Send 2 valid requests (should succeed)
             for i in range(2):
-                valid_sig = _github_signature(body, secret)
+                valid_sig = _hmac_sha256_signature(body, secret)
                 resp = await cli.post(
                     f"/webhooks/{route_name}",
                     data=body,
@@ -256,7 +256,7 @@ class TestSignatureBeforeRateLimit:
                 assert resp.status == 401
 
             # One more valid request should STILL succeed (only 2 consumed)
-            valid_sig = _github_signature(body, secret)
+            valid_sig = _hmac_sha256_signature(body, secret)
             resp = await cli.post(
                 f"/webhooks/{route_name}",
                 data=body,
@@ -273,7 +273,7 @@ class TestSignatureBeforeRateLimit:
             )
 
             # The 4th valid request should be rate-limited (2 + 2 = 4 = limit)
-            valid_sig = _github_signature(body, secret)
+            valid_sig = _hmac_sha256_signature(body, secret)
             resp = await cli.post(
                 f"/webhooks/{route_name}",
                 data=body,

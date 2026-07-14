@@ -895,7 +895,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, Jira, GitLab, Svix, generic HMAC-SHA256)."""
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -920,14 +920,16 @@ class WebhookAdapter(BasePlatformAdapter):
                 timestamp=svix_timestamp,
                 signature_header=svix_signature,
             )
-
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
-        gh_sig = request.headers.get("X-Hub-Signature-256", "")
-        if gh_sig:
+        # Jira/Atlassian: X-Hub-Signature = sha256=<hex> (same format, no -256 suffix)
+        hub_sig = request.headers.get(
+            "X-Hub-Signature-256", ""
+        ) or request.headers.get("X-Hub-Signature", "")
+        if hub_sig:
             expected = "sha256=" + hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
-            return hmac.compare_digest(gh_sig, expected)
+            return hmac.compare_digest(hub_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")

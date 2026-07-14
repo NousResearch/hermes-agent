@@ -46,8 +46,8 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     return app
 
 
-def _github_signature(body: bytes, secret: str) -> str:
-    """Compute X-Hub-Signature-256 for *body* using *secret*."""
+def _hmac_sha256_signature(body: bytes, secret: str) -> str:
+    """Compute HMAC-SHA256 signature (`sha256=<hex>`) for *body* using *secret*."""
     return "sha256=" + hmac.new(
         secret.encode(), body, hashlib.sha256
     ).hexdigest()
@@ -110,7 +110,7 @@ class TestGitHubPRWebhook:
 
         app = _create_app(adapter)
         body = json.dumps(GITHUB_PR_PAYLOAD).encode()
-        sig = _github_signature(body, secret)
+        sig = _hmac_sha256_signature(body, secret)
 
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(

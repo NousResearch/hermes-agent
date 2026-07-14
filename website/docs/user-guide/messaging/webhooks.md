@@ -293,6 +293,49 @@ platforms:
 
 ---
 
+## Jira Webhook Setup {#jira-webhook-setup}
+
+Jira webhooks authenticate via HMAC-SHA256 using the `X-Hub-Signature` header, with the signature value prefixed by `sha256=`.
+
+### 1. Create the webhook in Jira
+
+1. Go to **Jira Settings** → **System** → **WebHooks** (under "Advanced")
+2. Click **Create a WebHook**
+3. Fill in:
+   - **Name:** e.g. "Hermes Issue Triage"
+   - **URL:** `http://your-server:8644/webhooks/jira-issues`
+   - **Secret:** the same value you'll set as `secret` in your route config
+4. Under **Events**, check the events you want to trigger on (e.g. `jira:issue_created`, `jira:issue_updated`, `comment_created`)
+5. Click **Create**
+
+### 2. Add the route config
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        jira-issues:
+          secret: "your-jira-webhook-secret"
+          prompt: |
+            A Jira event was received:
+            Event: {webhookEvent}
+            Issue: {issue.key} — {issue.fields.summary}
+            Reporter: {user.displayName}
+
+            Take appropriate action based on the event type and issue content.
+          deliver: "slack"
+          deliver_extra:
+            chat_id: "C07ABCDEFGH"   # Slack channel ID
+```
+
+### 3. Test it
+
+Create an issue in your Jira project and watch for the agent's follow-up in your Slack channel.
+
+---
+
 ## Delivery Options {#delivery-options}
 
 The `deliver` field controls where the agent's response goes after processing the webhook event.
@@ -454,6 +497,7 @@ The webhook adapter includes multiple layers of security:
 The adapter validates incoming webhook signatures using the appropriate method for each source:
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
+- **Jira**: `X-Hub-Signature` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
 - **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.

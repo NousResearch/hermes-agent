@@ -91,8 +91,8 @@ def _mock_request(headers=None, body=b"", content_length=None, match_info=None):
     return req
 
 
-def _github_signature(body: bytes, secret: str) -> str:
-    """Compute X-Hub-Signature-256 for *body* using *secret*."""
+def _hmac_sha256_signature(body: bytes, secret: str) -> str:
+    """Compute HMAC-SHA256 signature (`sha256=<hex>`) for *body* using *secret*."""
     return "sha256=" + hmac.new(
         secret.encode(), body, hashlib.sha256
     ).hexdigest()
@@ -129,21 +129,38 @@ def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> st
 class TestValidateSignature:
     """Tests for WebhookAdapter._validate_signature."""
 
-    def test_validate_github_signature_valid(self):
+    def test_validate_hmac_sha256_signature_valid(self):
         """Valid X-Hub-Signature-256 is accepted."""
         adapter = _make_adapter()
         body = b'{"action": "opened"}'
         secret = "webhook-secret-42"
-        sig = _github_signature(body, secret)
+        sig = _hmac_sha256_signature(body, secret)
         req = _mock_request(headers={"X-Hub-Signature-256": sig})
         assert adapter._validate_signature(req, body, secret) is True
 
-    def test_validate_github_signature_invalid(self):
+    def test_validate_hmac_sha256_signature_invalid(self):
         """Wrong X-Hub-Signature-256 is rejected."""
         adapter = _make_adapter()
         body = b'{"action": "opened"}'
         secret = "webhook-secret-42"
         req = _mock_request(headers={"X-Hub-Signature-256": "sha256=deadbeef"})
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_jira_signature_valid(self):
+        """Valid X-Hub-Signature (Jira/Atlassian style, no -256 suffix) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"webhookEvent": "jira:issue_updated"}'
+        secret = "jira-secret"
+        sig = _hmac_sha256_signature(body, secret)
+        req = _mock_request(headers={"X-Hub-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_jira_signature_invalid(self):
+        """Wrong X-Hub-Signature (Jira style) is rejected."""
+        adapter = _make_adapter()
+        body = b'{"webhookEvent": "jira:issue_updated"}'
+        secret = "jira-secret"
+        req = _mock_request(headers={"X-Hub-Signature": "sha256=deadbeef"})
         assert adapter._validate_signature(req, body, secret) is False
 
     def test_validate_gitlab_token(self):

@@ -9403,12 +9403,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         old_session_id = self.session_id
         # Plugin hook: on_session_pre_switch — fires before session rotation.
         try:
-            from hermes_cli.plugins import invoke_hook as _pre_switch
-            _pre_switch(
-                "on_session_pre_switch",
-                old_session_id=old_session_id,
-                cli=self,
-            )
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if has_hook("on_session_pre_switch"):
+                invoke_hook(
+                    "on_session_pre_switch",
+                    old_session_id=old_session_id,
+                    cli=self,
+                )
         except Exception:
             pass
         _boundary_snapshot = None
@@ -9542,13 +9543,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Plugin hook: on_session_post_switch — fires after session rotation completes.
             try:
-                from hermes_cli.plugins import invoke_hook as _post_switch
-                _post_switch(
-                    "on_session_post_switch",
-                    old_session_id=old_session_id,
-                    new_session_id=self.session_id,
-                    cli=self,
-                )
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("on_session_post_switch"):
+                    invoke_hook(
+                        "on_session_post_switch",
+                        old_session_id=old_session_id,
+                        new_session_id=self.session_id,
+                        cli=self,
+                    )
             except Exception:
                 pass
 

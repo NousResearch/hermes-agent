@@ -603,16 +603,22 @@ class FactRetriever:
         _FTS_SPECIAL = '"()*^:-+'
         tokens: list[str] = []
         for raw in query.lower().split():
-            cleaned = raw.strip(".,;:!?\"'()[]{}#@<>") .translate(
-                str.maketrans("", "", _FTS_SPECIAL)
-            )
-            if len(cleaned) < 2:
-                continue
-            if cleaned in cls._FTS_STOPWORDS:
-                continue
-            # FTS5 phrase-literal each token to ensure no special chars
-            # sneak through as operators.
-            tokens.append(f'"{cleaned}"')
+            # Split on hyphen/underscore FIRST so hyphenated identifiers
+            # ("vibe-trading", "cincin-coord", "fastembed_bge-small") expand
+            # into OR-joined sub-tokens. FTS5's default tokenizer also splits
+            # on those separators, so gluing them (the old behavior) produced a
+            # token that never exists in the index and silently returned 0 hits.
+            word = raw.strip(".,;:!?\"'()[]{}#@<>")
+            for part in word.split("-"):
+                for sub in part.split("_"):
+                    cleaned = sub.translate(str.maketrans("", "", _FTS_SPECIAL))
+                    if len(cleaned) < 2:
+                        continue
+                    if cleaned in cls._FTS_STOPWORDS:
+                        continue
+                    # FTS5 phrase-literal each token to ensure no special chars
+                    # sneak through as operators.
+                    tokens.append(f'"{cleaned}"')
         if not tokens:
             # Fallback: raw query (likely returns 0, but never crashes)
             return query

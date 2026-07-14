@@ -723,6 +723,19 @@ node_version_looks_valid() {
     [[ "$1" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]
 }
 
+# Probe the `node` currently on PATH: succeeds only when the binary actually
+# runs, prints a well-formed version string, and clears the desktop-build
+# version floor. Prints the version on success. Used both for the initial
+# system probe and — crucially — to re-verify after a package-manager repair,
+# so a zero `pkg` exit is never mistaken for a runnable Node (issue #38636).
+node_probe_ok() {
+    local ver
+    ver=$(node --version 2>/dev/null) || return 1
+    node_version_looks_valid "$ver" || return 1
+    node_satisfies_build "$ver" || return 1
+    printf '%s' "$ver"
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
@@ -764,7 +777,14 @@ check_node() {
     fi
 
     if [ "$node_unusable" = true ]; then
-        log_info "Installing Hermes-managed Node.js $NODE_VERSION LTS because the system Node.js binary is unusable..."
+        if [ "$DISTRO" = "termux" ]; then
+            # Termux cannot run the bundled tarball (Android is unsupported by
+            # the Node dist server), so repair through pkg instead of forcing
+            # the managed route into a dead end.
+            log_info "System Node.js binary is unusable — repairing via Termux pkg..."
+        else
+            log_info "Installing Hermes-managed Node.js $NODE_VERSION LTS because the system Node.js binary is unusable..."
+        fi
         install_node true
         return 0
     elif command -v node &> /dev/null; then
@@ -778,15 +798,33 @@ check_node() {
 }
 
 install_node() {
-    # Broken system binaries must not loop back through Termux pkg no-ops.
     local force_managed="${1:-false}"
-    if [ "$DISTRO" = "termux" ] && [ "$force_managed" != "true" ]; then
-        log_info "Installing Node.js via pkg..."
-        if pkg install -y nodejs >/dev/null; then
+
+    # Termux/Android is the one supported remediation target the bundled Node
+    # tarballs cannot serve (the dist server ships linux/macos builds only), so
+    # pkg is the sole route here — including when the existing binary is broken.
+    # A plain `pkg install` of an already-present package is a no-op, so a broken
+    # binary (force_managed) is repaired with `pkg reinstall`. In every case we
+    # re-probe before reporting success: a zero `pkg` exit is not proof that
+    # `node` runs a supported version (issue #38636).
+    if [ "$DISTRO" = "termux" ]; then
+        local pkg_action="install"
+        if [ "$force_managed" = "true" ]; then
+            log_info "Repairing the broken Termux Node.js via pkg reinstall..."
+            pkg_action="reinstall"
+        else
+            log_info "Installing Node.js via pkg..."
+        fi
+        if pkg "$pkg_action" -y nodejs >/dev/null 2>&1; then
             local installed_ver
-            installed_ver=$(node --version 2>/dev/null)
-            log_success "Node.js $installed_ver installed via pkg"
-            HAS_NODE=true
+            if installed_ver=$(node_probe_ok); then
+                log_success "Node.js $installed_ver installed via pkg"
+                HAS_NODE=true
+            else
+                log_warn "pkg completed but Node.js still does not run a supported version on this Termux install."
+                log_info "Try: pkg update && pkg upgrade nodejs   (or install the LTS build: pkg install nodejs-lts)"
+                HAS_NODE=false
+            fi
         else
             log_warn "Failed to install Node.js via pkg"
             HAS_NODE=false

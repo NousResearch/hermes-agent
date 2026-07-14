@@ -212,7 +212,13 @@ class ResponsesApiTransport(ProviderTransport):
         # Scoped to ``is_xai_responses`` deliberately; narrow to specific
         # models if a future grok variant should keep the client-side
         # function.
-        if is_xai_responses and response_tools:
+        # A provider that supports native Responses web_search replaces
+        # Hermes's function-style ``web_search`` with the Responses-native
+        # ``{"type":"web_search"}``.  Scoped to xAI and openai-codex
+        # so non-native providers keep their client-side function tool.
+        provider = str(params.get("provider") or "").strip()
+        is_native_search_provider = is_xai_responses or provider == "openai-codex"
+        if is_native_search_provider and response_tools:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
                 for t in response_tools

@@ -586,10 +586,12 @@ class GatewayKanbanWatchersMixin:
                 _synth = "\n---\n".join(_lines)
 
             _first_sub = group[0]["sub"]
+            # chat_type persisted on sub row (issue #56580). Fall back to
+            # "group" for legacy rows; handle_message rebuilds the key.
             _source = SessionSource(
                 platform=_plat,
                 chat_id=_chat_id,
-                chat_type="group",
+                chat_type=_first_sub.get("chat_type") or "group",
                 thread_id=_thread_id or None,
                 user_id=_first_sub.get("user_id"),
                 profile=_profile or None,

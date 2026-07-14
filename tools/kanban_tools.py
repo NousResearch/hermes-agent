@@ -1027,6 +1027,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             chat_id = session_key
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "")
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")
             or os.environ.get("HERMES_PROFILE")
@@ -1039,6 +1040,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             platform=platform, chat_id=chat_id,
             thread_id=thread_id, user_id=user_id,
             notifier_profile=notifier_profile,
+            chat_type=chat_type,
         )
         return True
     except Exception as _exc:

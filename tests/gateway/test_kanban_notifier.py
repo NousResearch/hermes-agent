@@ -307,3 +307,109 @@ def _unseen_terminal_events_for(tid, chat_id):
         return events
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# chat_type persistence + wake routing (issue #56580)
+# ---------------------------------------------------------------------------
+
+
+class WakeCapturingAdapter:
+    """Records both notification sends and wake-up handle_message calls so a
+    test can assert the synthetic wake SessionSource carries the right
+    chat_type (the bug: hardcoded "group" mis-routed DM/thread creators)."""
+
+    def __init__(self):
+        self.sent = []
+        self.handled = []
+
+    async def send(self, chat_id, text, metadata=None):
+        self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def handle_message(self, event):
+        self.handled.append(event)
+
+
+def _task_with_session(session_id: str, chat_type: str = "") -> str:
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="wake-route task", assignee="worker",
+            session_id=session_id,
+        )
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram",
+            chat_id="dm-123", chat_type=chat_type,
+        )
+        kb.complete_task(conn, tid, summary="done")
+        return tid
+    finally:
+        conn.close()
+
+
+def test_wake_uses_persisted_dm_chat_type(tmp_path, monkeypatch):
+    """DM-originated sub must wake a SessionSource with chat_type='dm', not
+    the legacy hardcoded 'group' (issue #56580)."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake.db"))
+    kb.init_db()
+
+    _task_with_session(
+        session_id="agent:main:telegram:dm:dm-123", chat_type="dm",
+    )
+
+    adapter = WakeCapturingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.handled) == 1, "wake handle_message should fire once"
+    wake_source = adapter.handled[0].source
+    assert wake_source.chat_type == "dm", (
+        f"DM sub wake must preserve chat_type='dm' (got {wake_source.chat_type!r})"
+    )
+    assert wake_source.chat_id == "dm-123"
+
+
+def test_wake_falls_back_to_group_for_legacy_rows(tmp_path, monkeypatch):
+    """Sub rows written before the chat_type column existed (or with empty
+    chat_type) must keep degrading to 'group' so existing flows don't break."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-legacy.db"))
+    kb.init_db()
+
+    _task_with_session(
+        session_id="agent:main:telegram:group:legacy", chat_type="",
+    )
+
+    adapter = WakeCapturingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.handled) == 1
+    assert adapter.handled[0].source.chat_type == "group", (
+        "empty chat_type on sub row must fall back to 'group'"
+    )
+
+
+def test_add_notify_sub_persists_and_self_heals_chat_type(tmp_path, monkeypatch):
+    """add_notify_sub writes chat_type on insert and backfills it on a later
+    call if the row predated the column (self-heal for legacy rows)."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "chat-type.db"))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="persist test", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="c1",
+        )
+        row = kb.list_notify_subs(conn, tid)[0]
+        assert row["chat_type"] == ""
+
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="c1", chat_type="dm",
+        )
+        row = kb.list_notify_subs(conn, tid)[0]
+        assert row["chat_type"] == "dm"
+    finally:
+        conn.close()

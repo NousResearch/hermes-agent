@@ -54,16 +54,6 @@ _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
 
-# QQ Bot API supported formats (narrower than cross-platform sets)
-_QQBOT_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
-_QQBOT_VIDEO_EXTS = {".mp4"}
-_QQBOT_VOICE_EXTS = {".silk", ".wav", ".mp3", ".flac"}
-_QQBOT_DOC_EXTS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt"}
-# QQ Bot API inline-base64 upload cap.  The API accepts a JSON body with
-# a base64-encoded file_data field.  Base64 expands ~33 %, so a 7 MB raw
-# file becomes ~9.3 MB in the JSON body (under the 10 MB cap).  For larger
-# files the adapter uses chunked upload (up to ~100 MB).
-_MAX_QQBOT_INLINE_RAW_FILE_BYTES = 7 * 1024 * 1024  # 7 MB raw file (~9.3 MB base64 body, under 10 MB JSON cap)
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
@@ -786,9 +776,27 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- QQBot: direct REST media upload (no adapter dependency) ---
-    if platform == Platform.QQBOT and media_files:
-        return await _send_qqbot_with_media(pconfig, chat_id, message, media_files, force_document=force_document)
+    # --- QQBot: route through live adapter or standalone sender ---
+    # Both text and media are delivered via _send_via_adapter so that
+    # a single QQ outbound/upload implementation is used regardless of
+    # whether the gateway is in-process (live adapter) or standalone.
+    if platform == Platform.QQBOT:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
 
     # --- Non-media platforms ---
     if media_files and not message.strip():
@@ -827,8 +835,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
-        elif platform == Platform.QQBOT:
-            result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
@@ -1702,415 +1708,6 @@ def _check_send_message():
         return is_gateway_running()
     except Exception:
         return False
-
-
-def _resolve_qqbot_target(chat_id: str):
-    """Resolve a QQBot chat_id into (target_type, target_id, endpoint_order).
-
-    Handles explicit prefixes (c2c:, user:, group:, guild:) and raw OpenIDs.
-    Returns (target_type, target_id, ep_order) where:
-      - target_type: "c2c" | "group" | "guild" | "unknown"
-      - target_id: stripped bare ID (may be empty for empty-prefixed inputs)
-      - ep_order: list of endpoint prefixes to try
-
-    Callers MUST check for empty target_id and reject it before making
-    any network requests.
-    """
-    target_type = "unknown"
-    target_id = str(chat_id)
-    if ":" in target_id:
-        prefix, raw_id = target_id.split(":", 1)
-        prefix = prefix.lower()
-        if prefix in {"c2c", "user"}:
-            return "c2c", raw_id, ["users"]
-        elif prefix == "group":
-            return "group", raw_id, ["groups"]
-        elif prefix == "guild":
-            return "guild", raw_id, []  # unsupported for media
-    # Raw OpenID — try C2C first, fallback to group
-    return "unknown", target_id, ["users", "groups"]
-
-
-async def _send_qqbot(pconfig, chat_id, message):
-    """Send via QQBot using the REST API directly (no WebSocket needed).
-
-    Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Supports guild channels, C2C (private) chats,
-    and group chats by trying the appropriate endpoints.
-    """
-    try:
-        import httpx
-    except ImportError:
-        return _error("QQBot direct send requires httpx. Run: pip install httpx")
-    from urllib.parse import quote
-
-    extra = pconfig.extra or {}
-    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
-    secret = (pconfig.token or extra.get("client_secret")
-              or os.getenv("QQ_CLIENT_SECRET", ""))
-    if not appid or not secret:
-        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
-
-    target_type, target_id, ep_order = _resolve_qqbot_target(chat_id)
-    if not target_id:
-        return _error(f"QQBot: empty target ID in chat_id '{chat_id}'")
-    safe_target_id = quote(target_id, safe="")
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            # Step 1: Get access token
-            token_resp = await client.post(
-                "https://bots.qq.com/app/getAppAccessToken",
-                json={"appId": str(appid), "clientSecret": str(secret)},
-            )
-            if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
-            token_data = token_resp.json()
-            access_token = token_data.get("access_token")
-            if not access_token:
-                return _error("QQBot: no access_token in response")
-
-            # Step 2: Send message via REST
-            headers = {
-                "Authorization": f"QQBot {access_token}",
-                "Content-Type": "application/json",
-            }
-            payload = {"content": message[:4000], "msg_type": 0}
-
-            # For guild channels or unknown targets, try channel endpoint first
-            if target_type != "c2c" and target_type != "group":
-                url = f"https://api.sgroup.qq.com/channels/{safe_target_id}/messages"
-                resp = await client.post(url, json=payload, headers=headers)
-                if resp.status_code in {200, 201}:
-                    data = resp.json()
-                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                            "message_id": data.get("id")}
-
-            # Try resolved endpoints (C2C / group)
-            errors = []
-            for ep in ep_order:
-                url = f"https://api.sgroup.qq.com/v2/{ep}/{safe_target_id}/messages"
-                resp = await client.post(url, json=payload, headers=headers)
-                if resp.status_code in {200, 201}:
-                    data = resp.json()
-                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                            "message_id": data.get("id")}
-                errors.append(f"{ep}={resp.status_code}")
-
-            return _error(f"QQBot send failed: {' '.join(errors)}")
-    except Exception as e:
-        return _error(f"QQBot send failed: {e}")
-
-
-async def _send_qqbot_with_media(pconfig, chat_id, message, media_files, force_document=False):
-    """Send text plus MEDIA attachments via QQBot C2C/group REST APIs.
-
-    Uses the same REST pattern as _send_qqbot but adds media upload support.
-    Files are base64-encoded and uploaded via the QQ Bot file API, then sent
-    as rich-media messages (msg_type=7).  No adapter dependency — runs
-    entirely in the caller's event loop via httpx.
-
-    Target resolution:
-    - Explicit prefixes: "c2c:<id>", "user:<id>", "group:<id>"
-    - Raw OpenIDs: try C2C first, fallback to group (matches _send_qqbot)
-
-    When *force_document* is True (user requested [[as_document]]):
-    - All attachments are uploaded as file_type=4 (generic document).
-    - Group targets are rejected outright (groups don't support file uploads).
-    - Raw OpenIDs try C2C only; 404 triggers "group not supported" error
-      instead of falling back to the group endpoint.
-
-    Design decisions:
-    - Probe-first: upload first media to confirm endpoint before sending text.
-    - Caption on first media: short text attached as content on first media
-      message; overflow chunks sent separately.
-    - Validate all media before sending: rejects group documents early.
-    - Every send checked: non-success responses return errors immediately.
-    """
-    try:
-        import httpx
-    except ImportError:
-        return _error("QQBot direct send requires httpx. Run: pip install httpx")
-    import base64
-    from pathlib import Path
-    from urllib.parse import quote
-    from gateway.platforms.qqbot.constants import (
-        API_BASE, TOKEN_URL, MSG_TYPE_MEDIA,
-        MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE,
-        FILE_UPLOAD_TIMEOUT, MAX_MESSAGE_LENGTH,
-    )
-
-    extra = pconfig.extra or {}
-    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
-    secret = (pconfig.token or extra.get("client_secret")
-              or os.getenv("QQ_CLIENT_SECRET", ""))
-    if not appid or not secret:
-        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
-
-    # --- Resolve target type from chat_id ---
-    target_type, target_id, ep_order = _resolve_qqbot_target(chat_id)
-    if not target_id:
-        return _error(f"QQBot: empty target ID in chat_id '{chat_id}'")
-    if target_type == "guild":
-        return _error("QQBot MEDIA delivery is only supported for C2C and group chats, not guild channels")
-
-    # URL-safe encoding for target ID
-    safe_target_id = quote(target_id, safe="")
-
-    # --- Group + force_document: reject before any HTTP ---
-    if force_document and target_type == "group":
-        return _error(
-            "QQ Bot API does not support document uploads to groups. "
-            "Cannot send as document to a group target."
-        )
-
-    # --- Raw OpenID + force_document: only try C2C (skip group fallback) ---
-    if force_document and target_type == "unknown":
-        ep_order = ["users"]  # C2C only — no group fallback
-
-    # --- Classify each media file with QQBot-specific validation ---
-    media_items = []
-    for media_path, is_voice in (media_files or []):
-        media_p = Path(media_path)
-        if not media_p.is_file():
-            return _error(f"Media file not found: {media_path}")
-        ext = media_p.suffix.lower()
-        if force_document:
-            # [[as_document]]: force all attachments as generic file
-            file_type = MEDIA_TYPE_FILE
-        elif ext in _QQBOT_IMAGE_EXTS:
-            file_type = MEDIA_TYPE_IMAGE
-        elif ext in _QQBOT_VIDEO_EXTS:
-            file_type = MEDIA_TYPE_VIDEO
-        elif ext in _QQBOT_VOICE_EXTS and is_voice:
-            file_type = MEDIA_TYPE_VOICE
-        elif ext in _QQBOT_VOICE_EXTS:
-            file_type = MEDIA_TYPE_VOICE
-        elif ext in _QQBOT_DOC_EXTS or ext in _IMAGE_EXTS or ext in _VIDEO_EXTS:
-            # Cross-platform formats: accept for C2C, will reject for group
-            file_type = MEDIA_TYPE_FILE
-        elif target_type != "group":
-            # C2C: allow any file as generic document (file_type=4)
-            file_type = MEDIA_TYPE_FILE
-        else:
-            return _error(f"QQBot does not support file format: {ext} ({media_p.name})")
-        media_items.append((media_path, file_type, is_voice))
-
-    # --- Reject oversized files before reading into memory ---
-    for media_path, _, _ in media_items:
-        file_size = os.path.getsize(media_path)
-        if file_size > _MAX_QQBOT_INLINE_RAW_FILE_BYTES:
-            size_mb = file_size / (1024 * 1024)
-            limit_mb = _MAX_QQBOT_INLINE_RAW_FILE_BYTES / (1024 * 1024)
-            return _error(
-                f"File too large for QQBot inline upload: {Path(media_path).name} "
-                f"({size_mb:.1f} MB > {limit_mb:.0f} MB limit)"
-            )
-
-    # --- Validate: group cannot have documents ---
-    if target_type == "group":
-        docs = [m for m in media_items if m[1] == MEDIA_TYPE_FILE]
-        if docs:
-            names = ", ".join(Path(m[0]).name for m in docs)
-            return _error(
-                f"QQ Bot API does not support document uploads to groups. "
-                f"Rejected: {names}. Use image/video/audio for group targets."
-            )
-
-    # --- Chunk long text ---
-    text_chunks = []
-    if message.strip():
-        text_chunks = _split_text(message, MAX_MESSAGE_LENGTH)
-        if not text_chunks:
-            text_chunks = [message[:MAX_MESSAGE_LENGTH]]
-
-    try:
-        async with httpx.AsyncClient(timeout=FILE_UPLOAD_TIMEOUT) as client:
-            # Get access token
-            token_resp = await client.post(TOKEN_URL, json={
-                "appId": str(appid), "clientSecret": str(secret)
-            })
-            if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
-            access_token = token_resp.json().get("access_token")
-            if not access_token:
-                return _error("QQBot: no access_token in response")
-
-            headers = {
-                "Authorization": f"QQBot {access_token}",
-                "Content-Type": "application/json",
-            }
-
-            for ep_idx, ep in enumerate(ep_order):
-                try:
-                    # --- Group document validation for fallback path ---
-                    if ep == "groups" and target_type == "unknown":
-                        docs = [m for m in media_items if m[1] == MEDIA_TYPE_FILE]
-                        if docs:
-                            if ep_idx < len(ep_order) - 1:
-                                continue  # try next endpoint (C2C)
-                            names = ", ".join(Path(m[0]).name for m in docs)
-                            return _error(
-                                f"QQ Bot API does not support document uploads to groups. "
-                                f"Rejected: {names}."
-                            )
-
-                    # --- Probe: upload first media to confirm endpoint ---
-                    uploaded_infos = []  # [(file_info, file_type, file_name), ...]
-                    if media_items:
-                        first_path, first_type, _ = media_items[0]
-                        file_bytes = Path(first_path).read_bytes()
-                        file_data = base64.b64encode(file_bytes).decode("ascii")
-                        file_name = Path(first_path).name
-
-                        upload_body = {"file_type": first_type, "file_data": file_data,
-                                       "srv_send_msg": False}
-                        if first_type == MEDIA_TYPE_FILE:
-                            upload_body["file_name"] = file_name
-
-                        upload_resp = await client.post(
-                            f"{API_BASE}/v2/{ep}/{safe_target_id}/files",
-                            json=upload_body,
-                            headers=headers,
-                        )
-                        if upload_resp.status_code not in {200, 201}:
-                            if _is_endpoint_mismatch(upload_resp.status_code) and ep_idx < len(ep_order) - 1:
-                                continue  # target-type mismatch — try next endpoint
-                            # Raw OpenID + force_document + 404 on C2C: group not supported
-                            if (force_document and target_type == "unknown"
-                                    and upload_resp.status_code == 404):
-                                return _error(
-                                    "QQBot: target appears to be a group (404 on C2C endpoint). "
-                                    "Group targets do not support document uploads. "
-                                    "Remove [[as_document]] to send as image/voice/video."
-                                )
-                            return _error(f"QQBot file upload failed ({file_name}): {upload_resp.status_code} {upload_resp.text[:200]}")
-
-                        upload_json = upload_resp.json()
-                        file_info = upload_json.get("file_info") or (
-                            upload_json.get("data", {}) or {}
-                        ).get("file_info")
-                        if not file_info:
-                            return _error(f"QQBot: no file_info for {file_name}: {upload_json}")
-
-                        uploaded_infos.append((file_info, first_type, file_name))
-
-                    # --- Upload remaining media files ---
-                    for media_path, file_type, _ in media_items[1:]:
-                        file_bytes = Path(media_path).read_bytes()
-                        file_data = base64.b64encode(file_bytes).decode("ascii")
-                        file_name = Path(media_path).name
-
-                        upload_body = {"file_type": file_type, "file_data": file_data,
-                                       "srv_send_msg": False}
-                        if file_type == MEDIA_TYPE_FILE:
-                            upload_body["file_name"] = file_name
-
-                        upload_resp = await client.post(
-                            f"{API_BASE}/v2/{ep}/{safe_target_id}/files",
-                            json=upload_body,
-                            headers=headers,
-                        )
-                        if upload_resp.status_code not in {200, 201}:
-                            return _error(f"QQBot file upload failed ({file_name}): {upload_resp.status_code} {upload_resp.text[:200]}")
-
-                        upload_json = upload_resp.json()
-                        fi = upload_json.get("file_info") or (
-                            upload_json.get("data", {}) or {}
-                        ).get("file_info")
-                        if not fi:
-                            return _error(f"QQBot: no file_info for {file_name}: {upload_json}")
-
-                        uploaded_infos.append((fi, file_type, file_name))
-
-                    # --- Send media messages (with caption on first) ---
-                    last_msg_id = None
-                    for idx, (file_info, file_type, file_name) in enumerate(uploaded_infos):
-                        msg_body = {"msg_type": MSG_TYPE_MEDIA,
-                                    "media": {"file_info": file_info},
-                                    "msg_seq": idx + 1}
-                        # Attach caption to first media message.
-                        # For media-only sends (no text), content is intentionally
-                        # omitted — matches adapter behavior (adapter.py line 2909)
-                        # and works for both C2C and group targets in production.
-                        if idx == 0 and text_chunks:
-                            msg_body["content"] = text_chunks[0][:MAX_MESSAGE_LENGTH]
-
-                        msg_resp = await client.post(
-                            f"{API_BASE}/v2/{ep}/{safe_target_id}/messages",
-                            json=msg_body,
-                            headers=headers,
-                        )
-                        if msg_resp.status_code not in {200, 201}:
-                            return _error(
-                                f"QQBot media send failed ({file_name}): "
-                                f"{msg_resp.status_code} {msg_resp.text[:200]}"
-                            )
-                        last_msg_id = msg_resp.json().get("id")
-
-                    # --- Send remaining text chunks ---
-                    for chunk in text_chunks[1 if uploaded_infos else 0:]:
-                        chunk_resp = await client.post(
-                            f"{API_BASE}/v2/{ep}/{safe_target_id}/messages",
-                            json={"content": chunk, "msg_type": 0},
-                            headers=headers,
-                        )
-                        if chunk_resp.status_code not in {200, 201}:
-                            return _error(
-                                f"QQBot text send failed: "
-                                f"{chunk_resp.status_code} {chunk_resp.text[:200]}"
-                            )
-                        last_msg_id = chunk_resp.json().get("id")
-
-                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                            "message_id": last_msg_id, "endpoint": ep}
-
-                except Exception as exc:
-                    # Exceptions (timeouts, JSON errors, network failures) are
-                    # real errors — do NOT fall back to the next endpoint.
-                    return _error(f"QQBot send failed on {ep}: {exc}")
-
-            return _error("QQBot media send failed: no valid endpoint")
-    except Exception as e:
-        return _error(f"QQBot send failed: {e}")
-
-
-def _is_endpoint_mismatch(status_code: int) -> bool:
-    """Return True if the HTTP status likely indicates a target-type mismatch.
-
-    Only 404 (target not found) triggers cross-endpoint fallback.
-    403 is intentionally excluded — it can represent genuine permission,
-    scope, or policy failures unrelated to target type.  Authentication
-    failures (401), rate limits (429), server errors (5xx), and other
-    codes surface immediately.
-    """
-    return status_code == 404
-
-
-def _split_text(text: str, max_length: int) -> list:
-    """Split text into chunks respecting max_length.
-
-    Attempts to break at newlines for readability. Does NOT preserve
-    markdown structures (code blocks, tables) across chunk boundaries.
-    """
-    if len(text) <= max_length:
-        return [text]
-
-    chunks = []
-    remaining = text
-    while remaining:
-        if len(remaining) <= max_length:
-            chunks.append(remaining)
-            break
-
-        # Try to split at newline near max_length
-        split_at = remaining.rfind("\n", 0, max_length)
-        if split_at < max_length // 2:
-            split_at = max_length
-        chunks.append(remaining[:split_at])
-        remaining = remaining[split_at:].lstrip("\n")
-
-    return chunks
 
 
 async def _send_yuanbao(chat_id, message, media_files=None):

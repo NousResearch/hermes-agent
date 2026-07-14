@@ -133,6 +133,41 @@ class TestFinalizeCapabilityGate:
         assert picky.edit_message.call_args[1]["finalize"] is True
 
 
+class TestEditResultTargetCapability:
+    """A fresh edit result id is not globally the next edit target."""
+
+    @staticmethod
+    def _adapter(*, chains_result_ids: bool):
+        adapter = MagicMock()
+        adapter.EDIT_RESULT_ID_IS_NEXT_TARGET = chains_result_ids
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="original")
+        )
+        adapter.edit_message = AsyncMock(
+            side_effect=[
+                SimpleNamespace(success=True, message_id="replacement-1"),
+                SimpleNamespace(success=True, message_id="replacement-2"),
+            ]
+        )
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_replacement_event_adapter_keeps_original_edit_target(self):
+        adapter = self._adapter(chains_result_ids=False)
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        await consumer._send_or_edit("first")
+        await consumer._send_or_edit("second")
+        await consumer._send_or_edit("third")
+
+        assert [
+            call.kwargs["message_id"] for call in adapter.edit_message.await_args_list
+        ] == ["original", "original"]
+        assert consumer._message_id == "original"
+
+
 class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.
 
@@ -2367,8 +2402,9 @@ class TestStripOrphanCloseTags:
 
 class TestEditMessageIdPropagation:
     @pytest.mark.asyncio
-    async def test_successful_edit_adopts_fresh_message_id(self):
+    async def test_timestamp_chain_capability_adopts_fresh_message_id(self):
         adapter = MagicMock()
+        adapter.EDIT_RESULT_ID_IS_NEXT_TARGET = True
         adapter.MAX_MESSAGE_LENGTH = 4096
         adapter.REQUIRES_EDIT_FINALIZE = False
         adapter.send = AsyncMock(return_value=SimpleNamespace(

@@ -27,6 +27,7 @@ from typing import Any, Callable, Optional
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+from gateway.platforms.base import next_edit_target_message_id
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -1662,12 +1663,16 @@ class GatewayStreamConsumer:
                             self._last_sent_text = ""
                             self._notify_new_message()
                         else:
-                            # Some edit APIs return a fresh identifier/timestamp
-                            # for the same visible message after every edit.
-                            # Adopt it so a later explicit edit/finalize targets
-                            # the newest platform handle instead of a stale one.
-                            if _new_message_id and str(_new_message_id) != str(_current_message_id):
-                                self._message_id = str(_new_message_id)
+                            # Only timestamp-chained adapters may replace the
+                            # next edit target. Replacement-event APIs (Matrix)
+                            # can return a fresh id while still requiring future
+                            # edits to target the original event.
+                            self._message_id = next_edit_target_message_id(
+                                self.adapter,
+                                _current_message_id,
+                                result,
+                            )
+                            if self._message_id != _current_message_id:
                                 self._message_created_ts = time.monotonic()
                             self._last_sent_text = text
                         # Successful edit — reset flood strike counter

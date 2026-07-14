@@ -153,6 +153,41 @@ class NoProgressEditCaptureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id="progress-2")
 
 
+class ChainedHeartbeatAdapter(ProgressCaptureAdapter):
+    """Timestamp-style adapter whose edit result becomes the next target."""
+
+    EDIT_RESULT_ID_IS_NEXT_TARGET = True
+
+    def __init__(self, platform=Platform.SIGNAL):
+        super().__init__(platform=platform)
+        self._next_id = 0
+
+    def _mint_id(self):
+        self._next_id += 1
+        return f"heartbeat-{self._next_id}"
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -169,6 +204,21 @@ class FakeAgent:
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SlowHeartbeatAgent:
+    """Keep a turn alive long enough for three heartbeat intervals."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.35)
         return {
             "final_response": "done",
             "messages": [],
@@ -818,6 +868,7 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    configure_runner=None,
 ):
     if config_data:
         import yaml
@@ -834,6 +885,8 @@ async def _run_with_agent(
 
     adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
+    if configure_runner is not None:
+        configure_runner(runner)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
@@ -865,6 +918,44 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_long_running_heartbeat_adopts_timestamp_chain_targets(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SlowHeartbeatAgent,
+        session_id="sess-signal-heartbeat-chain",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "long_running_notifications": True,
+            }
+        },
+        platform=Platform.SIGNAL,
+        chat_id="+155****4567",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=ChainedHeartbeatAdapter,
+        configure_runner=lambda runner: setattr(
+            runner,
+            "_should_emit_long_running_notification",
+            lambda _session_key, agent, executor: (
+                agent is not None and (executor is None or not executor.done())
+            ),
+        ),
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert len(adapter.edits) >= 2
+    assert [call["message_id"] for call in adapter.edits[:2]] == [
+        "heartbeat-1",
+        "heartbeat-2",
+    ]
 
 
 @pytest.mark.asyncio

@@ -255,6 +255,7 @@ class SignalAdapter(BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = True
     SUPPORTS_STREAMING_EDITS = False
     SUPPORTS_PROGRESS_EDITS = False
+    EDIT_RESULT_ID_IS_NEXT_TARGET = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)

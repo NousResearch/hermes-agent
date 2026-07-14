@@ -1067,6 +1067,7 @@ class TestSignalStreamingCapabilities:
         assert adapter.SUPPORTS_MESSAGE_EDITING is True
         assert adapter.SUPPORTS_STREAMING_EDITS is False
         assert adapter.SUPPORTS_PROGRESS_EDITS is False
+        assert adapter.EDIT_RESULT_ID_IS_NEXT_TARGET is True
 
     def test_gateway_streaming_capability_uses_narrow_flag(self, monkeypatch):
         from gateway.run import _adapter_supports_streaming_edits
@@ -1156,6 +1157,40 @@ class TestSignalSendReturnsMessageId:
         assert params["editTimestamp"] == 1712345678000
         assert params["message"] == "edited hello"
         assert params["recipient"] == ["+155****4567"]
+
+    @pytest.mark.asyncio
+    async def test_successive_edits_chain_through_fresh_timestamps(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        responses = iter([
+            {"timestamp": 1712345679000},
+            {"timestamp": 1712345680000},
+        ])
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None):
+            captured.append({"method": method, "params": dict(params)})
+            return next(responses)
+
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        first = await adapter.edit_message(
+            chat_id="+155****4567",
+            message_id="1712345678000",
+            content="first edit",
+        )
+        second = await adapter.edit_message(
+            chat_id="+155****4567",
+            message_id=first.message_id,
+            content="second edit",
+        )
+
+        assert first.message_id == "1712345679000"
+        assert second.message_id == "1712345680000"
+        assert [call["params"]["editTimestamp"] for call in captured] == [
+            1712345678000,
+            1712345679000,
+        ]
 
     @pytest.mark.asyncio
     async def test_edit_message_requires_numeric_message_id(self, monkeypatch):

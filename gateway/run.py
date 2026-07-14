@@ -1750,6 +1750,7 @@ from gateway.platforms.base import (
     MessageType,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    next_edit_target_message_id,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -18897,7 +18898,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception as _ee:
                             logger.debug("Heartbeat edit failed: %s", _ee)
                             _notify_res = None
-                    if not (_notify_res and getattr(_notify_res, "success", False)):
+                    if _notify_res and getattr(_notify_res, "success", False):
+                        _heartbeat_msg_id = next_edit_target_message_id(
+                            _notify_adapter,
+                            _heartbeat_msg_id,
+                            _notify_res,
+                        )
+                    else:
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,

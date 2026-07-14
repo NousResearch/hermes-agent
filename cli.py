@@ -5872,7 +5872,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if (
             self._stream_buf
             and not self._in_stream_table
-            and not self._stream_buf.lstrip().startswith("|")
+            and not looks_like_table_row(self._stream_buf)
         ):
             wrap_w = max(40, _terminal_width_for_streaming())
             while len(self._stream_buf) >= wrap_w:

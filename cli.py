@@ -8373,6 +8373,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
+    def _handle_restart_command(self):
+        """Handle /restart — gracefully restart the gateway via SIGUSR1."""
+        import signal
+        from hermes_cli.gateway import (
+            find_gateway_pids,
+            _graceful_restart_via_sigusr1,
+            _get_restart_drain_timeout,
+        )
+        pids = find_gateway_pids()
+        if not pids:
+            print("  No gateway process found. Start one with: hermes gateway run")
+            return
+        pid = pids[0]
+        drain_timeout = _get_restart_drain_timeout()
+        ok = _graceful_restart_via_sigusr1(pid, drain_timeout)
+        if ok:
+            print(f"  ♻ Restarting gateway (PID {pid})...")
+        else:
+            # Fallback: try SIGUSR1 directly without waiting
+            if not hasattr(signal, "SIGUSR1"):
+                print("  ✗ Restart signaling via SIGUSR1 is not supported on this platform.")
+                print("    Try restarting the gateway with: hermes gateway restart")
+                return
+            try:
+                os.kill(pid, signal.SIGUSR1)
+                print(f"  ♻ Sent restart signal to gateway (PID {pid})...")
+            except (ProcessLookupError, PermissionError, OSError) as e:
+                print(f"  ✗ Failed to restart gateway: {e}")
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -8692,6 +8721,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
+        elif canonical == "restart":
+            self._handle_restart_command()
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

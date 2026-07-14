@@ -49,6 +49,22 @@ class _RoutingClient:
         return _Response(self._payloads[url])
 
 
+class _RecordingClient:
+    def __init__(self, payload):
+        self._payload = payload
+        self.requests = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        self.requests.append((url, dict(headers or {})))
+        return _Response(self._payload)
+
+
 def test_fetch_account_usage_codex(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_codex_runtime_credentials",
@@ -93,6 +109,26 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_anthropic_prefers_explicit_runtime_key_over_resolver(monkeypatch):
+    client = _RecordingClient(
+        {
+            "five_hour": {"utilization": 0.25},
+        }
+    )
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=15.0: client)
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token",
+        lambda: "rotated-pool-token",
+    )
+
+    snapshot = fetch_account_usage("anthropic", api_key="runtime-token")
+
+    assert snapshot is not None
+    assert snapshot.provider == "anthropic"
+    assert client.requests[0][1]["Authorization"] == "Bearer runtime-token"
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():
@@ -201,3 +237,73 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_deepseek_balance_uses_official_endpoint(monkeypatch):
+    client = _RecordingClient(
+        {
+            "is_available": True,
+            "balance_infos": [
+                {
+                    "currency": "CNY",
+                    "total_balance": "110.00",
+                    "granted_balance": "10.00",
+                    "topped_up_balance": "100.00",
+                },
+                {
+                    "currency": "USD",
+                    "total_balance": "2.50",
+                    "granted_balance": "0.00",
+                    "topped_up_balance": "2.50",
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=10.0: client)
+
+    snapshot = fetch_account_usage(
+        "deepseek",
+        base_url="https://api.deepseek.com/v1",
+        api_key="deepseek-token",
+    )
+
+    assert snapshot is not None
+    assert snapshot.provider == "deepseek"
+    assert snapshot.source == "balance_api"
+    assert snapshot.details == (
+        "Balance: ¥110.00 CNY (granted ¥10.00, topped up ¥100.00)",
+        "Balance: $2.50 USD (topped up $2.50)",
+    )
+    assert client.requests == [
+        (
+            "https://api.deepseek.com/user/balance",
+            {"Authorization": "Bearer deepseek-token", "Accept": "application/json"},
+        )
+    ]
+
+
+def test_fetch_account_usage_custom_deepseek_base_url_is_supported(monkeypatch):
+    client = _RecordingClient(
+        {
+            "is_available": True,
+            "balance_infos": [
+                {
+                    "currency": "CNY",
+                    "total_balance": "25.50",
+                    "granted_balance": "0.00",
+                    "topped_up_balance": "25.50",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=10.0: client)
+
+    snapshot = fetch_account_usage(
+        "custom",
+        base_url="https://api.deepseek.com/beta/v1/",
+        api_key="deepseek-token",
+    )
+
+    assert snapshot is not None
+    assert snapshot.provider == "deepseek"
+    assert snapshot.details == ("Balance: ¥25.50 CNY (topped up ¥25.50)",)

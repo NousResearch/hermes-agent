@@ -4,8 +4,10 @@ appended to final gateway replies."""
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 
 from gateway.runtime_footer import (
     _home_relative_cwd,
@@ -137,6 +139,99 @@ def test_format_footer_custom_field_order():
     assert out == "50% · gpt-5.4"
 
 
+
+def test_format_footer_extended_fields_with_quota_and_underline():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        plan="Team",
+        windows=(
+            AccountUsageWindow(label="Session", used_percent=20, reset_at=None),
+            AccountUsageWindow(label="Weekly", used_percent=30, reset_at=None),
+        ),
+    )
+    out = format_runtime_footer(
+        model="openai/gpt-5.5",
+        provider="openai-codex",
+        account_label="openai-codex-team-main",
+        context_tokens=21_800,
+        context_length=200_000,
+        account_usage=snapshot,
+        cwd="",
+        fields=("provider", "account", "model", "context", "quota"),
+        underline=True,
+    )
+    assert out == "──────────────\nopenai-codex · team-main · gpt-5.5 · ctx 21.8K/200K · 5h 80% · 7d 70%"
+
+
+def test_format_footer_compacts_reset_times_for_quota():
+    snapshot = AccountUsageSnapshot(
+        provider="anthropic",
+        source="oauth_usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(
+                label="Current session",
+                used_percent=32.2,
+                reset_at=datetime.now(timezone.utc) + timedelta(hours=2, minutes=10),
+            ),
+        ),
+    )
+    out = format_runtime_footer(
+        model="anthropic/claude-sonnet-4-6",
+        context_tokens=21_800,
+        context_length=200_000,
+        account_usage=snapshot,
+        cwd="",
+        fields=("quota",),
+    )
+    assert out.startswith("5h 68% 2h")
+
+
+
+def test_format_footer_uses_provider_specific_compact_quota_labels():
+    snapshot = AccountUsageSnapshot(
+        provider="anthropic",
+        source="oauth_usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="Current week", used_percent=40, reset_at=None),
+            AccountUsageWindow(label="Opus week", used_percent=50, reset_at=None),
+            AccountUsageWindow(label="Sonnet week", used_percent=60, reset_at=None),
+        ),
+    )
+    out = format_runtime_footer(
+        model="anthropic/claude-opus-4-5",
+        provider="anthropic",
+        context_tokens=0,
+        context_length=200_000,
+        account_usage=snapshot,
+        fields=("quota",),
+    )
+    assert out == "7d 60% · opus7d 50% · sonnet7d 40%"
+
+
+def test_format_footer_includes_balance_details_for_quota():
+    snapshot = AccountUsageSnapshot(
+        provider="deepseek",
+        source="balance_api",
+        fetched_at=datetime.now(timezone.utc),
+        details=("Balance: ¥110.00 CNY (granted ¥10.00, topped up ¥100.00)",),
+    )
+
+    out = format_runtime_footer(
+        model="deepseek/deepseek-chat",
+        provider="deepseek",
+        context_tokens=0,
+        context_length=200_000,
+        account_usage=snapshot,
+        fields=("quota",),
+    )
+
+    assert out == "balance ¥110.00 CNY"
+
+
 def test_format_footer_unknown_field_silently_ignored():
     out = format_runtime_footer(
         model="openai/gpt-5.4",
@@ -153,7 +248,7 @@ def test_format_footer_unknown_field_silently_ignored():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"], "underline": False}
 
 
 def test_resolve_global_enable():
@@ -161,6 +256,13 @@ def test_resolve_global_enable():
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
     assert cfg["fields"] == ["model", "context_pct", "cwd"]
+
+
+
+def test_resolve_supports_underline_flag():
+    user = {"display": {"runtime_footer": {"enabled": True, "underline": True}}}
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["underline"] is True
 
 
 def test_resolve_platform_override_wins():
@@ -229,6 +331,40 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
     assert "25%" in out
+
+
+
+def test_build_footer_passes_extended_runtime_metadata():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        plan="Team",
+        windows=(
+            AccountUsageWindow(label="Session", used_percent=20, reset_at=None),
+            AccountUsageWindow(label="Weekly", used_percent=30, reset_at=None),
+        ),
+    )
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "underline": True,
+                    "fields": ["provider", "account", "model", "context", "quota"],
+                }
+            }
+        },
+        platform_key="feishu",
+        model="openai/gpt-5.5",
+        provider="openai-codex",
+        account_label="team-main",
+        context_tokens=18_200,
+        context_length=400_000,
+        account_usage=snapshot,
+        cwd="",
+    )
+    assert out == "──────────────\nopenai-codex · team-main · gpt-5.5 · ctx 18.2K/400K · 5h 80% · 7d 70%"
 
 
 def test_build_footer_per_platform_off_suppresses():

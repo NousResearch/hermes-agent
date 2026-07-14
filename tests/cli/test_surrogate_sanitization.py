@@ -6,6 +6,8 @@ editors like Google Docs, OR from byte-level reasoning models (xiaomi/mimo,
 kimi, glm) emitting lone halves in reasoning output.
 """
 import json
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -333,3 +335,70 @@ class TestRunConversationSurrogateSanitization:
             if msg.get("role") == "user":
                 assert "\udce2" not in msg["content"], "Surrogate leaked into stored message"
                 assert "\ufffd" in msg["content"], "Replacement char not in stored message"
+
+
+class TestSuppressedContentSurrogates:
+    """Suppressed-content streaming path sanitizes surrogates.
+
+    Once tool call deltas start accumulating, content deltas bypass
+    _fire_stream_delta() and go straight to agent.stream_delta_callback
+    (agent/chat_completion_helpers.py). A lone surrogate in that provider
+    delta must be scrubbed before the callback and before being recorded,
+    or a downstream UTF-8 consumer crashes.
+    """
+
+    @staticmethod
+    def _make_stream_chunk(content=None, tool_calls=None, finish_reason=None):
+        delta = SimpleNamespace(
+            content=content, tool_calls=tool_calls,
+            reasoning_content=None, reasoning=None,
+        )
+        choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+        return SimpleNamespace(choices=[choice], model=None, usage=None)
+
+    @staticmethod
+    def _make_tool_call_delta(index=0, tc_id=None, name=None, arguments=None):
+        func = SimpleNamespace(name=name, arguments=arguments)
+        return SimpleNamespace(index=index, id=tc_id, function=func)
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_suppressed_content_sanitized_before_callback(self, _mock_close, mock_create):
+        from run_agent import AIAgent
+
+        def _stream():
+            yield self._make_stream_chunk(tool_calls=[
+                self._make_tool_call_delta(index=0, tc_id="call_1", name="write_file"),
+            ])
+            yield self._make_stream_chunk(content="bad \udce7 chunk")
+            yield self._make_stream_chunk(
+                tool_calls=[self._make_tool_call_delta(index=0, arguments="{}")],
+                finish_reason="tool_calls",
+            )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _stream()
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://example.com/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._current_streamed_assistant_text = ""
+
+        observed = []
+        agent.stream_delta_callback = observed.append
+
+        agent._interruptible_streaming_api_call({})
+
+        assert observed == ["bad \ufffd chunk"]
+        observed[0].encode("utf-8")
+        recorded = agent._current_streamed_assistant_text
+        assert "\udce7" not in recorded, "Surrogate leaked into recorded stream text"
+        recorded.encode("utf-8")

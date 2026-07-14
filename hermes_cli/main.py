@@ -4528,13 +4528,16 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
         return None
 
 
-def _count_local_commits_ahead_of_remote(git_cmd, cwd, branch: str) -> int:
-    """Return count of local-only commits relative to origin/{branch}.
+def _count_local_commits_ahead_of_remote(git_cmd, cwd, branch: str) -> int | None:
+    """Return count of local-only commits relative to origin/{branch}, or None if unknown.
 
     A diverged ``hermes update`` used to hard-reset to origin/{branch}. That is
     acceptable for pure upstream rewrites, but destructive when users carry a
     local patch commit (for example a site-specific hotfix). This helper lets
     the update path distinguish those cases before choosing reset vs rebase.
+
+    Returns None when the count cannot be determined (git command failure, parse
+    error) — the caller must fail closed rather than guess.
     """
     try:
         result = subprocess.run(
@@ -4546,7 +4549,7 @@ def _count_local_commits_ahead_of_remote(git_cmd, cwd, branch: str) -> int:
         )
         return int((result.stdout or "0").strip() or "0")
     except (ValueError, subprocess.CalledProcessError, OSError):
-        return 0
+        return None
 
 
 def _create_local_update_backup_branch(git_cmd, cwd, branch: str) -> str | None:
@@ -9947,7 +9950,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 local_commit_count = _count_local_commits_ahead_of_remote(
                     git_cmd, PROJECT_ROOT, branch
                 )
-                if local_commit_count > 0:
+                if local_commit_count is None:
+                    # Cannot determine local commit count — fail closed rather
+                    # than risk discarding user work with reset --hard.
+                    print("✗ Fast-forward failed and local commit status is unknown.")
+                    print("  Cannot safely proceed — check your local state:")
+                    print(f"    git status")
+                    print(f"    git log --oneline origin/{branch}..HEAD")
+                    print("  Then retry: hermes update")
+                    sys.exit(1)
+                elif local_commit_count > 0:
                     print(
                         "  ⚠ Fast-forward not possible; "
                         f"preserving {local_commit_count} local commit(s)."
@@ -9967,7 +9979,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         text=True,
                     )
                     if rebase_result.returncode != 0:
-                        subprocess.run(
+                        abort_result = subprocess.run(
                             git_cmd + ["rebase", "--abort"],
                             cwd=PROJECT_ROOT,
                             capture_output=True,
@@ -9976,6 +9988,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print("✗ Could not rebase local commits onto the updated upstream.")
                         if rebase_result.stderr.strip():
                             print(f"  {rebase_result.stderr.strip().splitlines()[0]}")
+                        if abort_result.returncode != 0:
+                            print("  ⚠ Rebase --abort also failed; your working tree may be in a partial rebase state.")
+                            print("     Run: git rebase --abort")
+                            print("     Then check: git status")
                         if backup_branch:
                             print(
                                 f"  Your local commits are preserved on: {backup_branch}"

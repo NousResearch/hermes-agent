@@ -534,6 +534,7 @@ def _make_update_side_effect(
     ff_only_fails=False,
     reset_fails=False,
     rebase_fails=False,
+    rebase_abort_fails=False,
     fetch_fails=False,
     fetch_stderr="",
 ):
@@ -564,6 +565,8 @@ def _make_update_side_effect(
                 )
             return SimpleNamespace(stdout="Updating abc..def\n", stderr="", returncode=0)
         if "rebase" in joined and "--abort" in joined:
+            if rebase_abort_fails:
+                return SimpleNamespace(stdout="", stderr="fatal: cannot abort\n", returncode=1)
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rebase" in joined and f"origin/{current_branch}" in joined:
             if rebase_fails:
@@ -674,17 +677,82 @@ def test_cmd_update_rebase_failure_preserves_local_commits_without_reset(
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert reset_calls == []
 
-    # Assert a backup branch was created
+    # Assert a backup branch was created with correct naming format
     backup_branch_calls = [
         c for c in recorded if c[:2] == ["git", "branch"] and "hermes-local-backup" in " ".join(c)
     ]
     assert len(backup_branch_calls) == 1
+    # Verify branch name starts with correct prefix (hermes-local-backup/main- for main branch)
+    assert backup_branch_calls[0][2].startswith("hermes-local-backup/main-")
 
     # Verify user-facing output mentions backup branch preservation
     out = capsys.readouterr().out
     assert "Could not rebase local commits" in out
     assert "hermes-local-backup" in out
     assert "local commits are preserved" in out
+
+
+def test_cmd_update_fails_closed_when_local_commit_count_unknown(
+    monkeypatch, tmp_path, capsys
+):
+    """When ff-only fails but local commit count cannot be determined, fail safely
+    without running reset --hard that might discard unknown local work."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    # Mock _count_local_commits_ahead_of_remote to return None (unknown)
+    monkeypatch.setattr(
+        hermes_main, "_count_local_commits_ahead_of_remote",
+        lambda *args, **kwargs: None,
+    )
+
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    # Assert no reset --hard was executed (fail closed)
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    assert reset_calls == []
+
+    # Assert no rebase was attempted
+    rebase_calls = [c for c in recorded if "rebase" in c]
+    assert rebase_calls == []
+
+    # Verify user-facing output explains the situation
+    out = capsys.readouterr().out
+    assert "local commit status is unknown" in out
+    assert "git status" in out
+
+
+def test_cmd_update_reports_abort_failure_explicitly(
+    monkeypatch, tmp_path, capsys
+):
+    """When rebase fails AND rebase --abort also fails, provide explicit recovery guidance."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        local_ahead_count="1",
+        rebase_fails=True,
+        rebase_abort_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    # Assert rebase --abort was attempted
+    rebase_abort_calls = [c for c in recorded if "rebase" in c and "--abort" in c]
+    assert len(rebase_abort_calls) == 1
+
+    # Verify output mentions abort failure and provides manual recovery steps
+    out = capsys.readouterr().out
+    assert "Rebase --abort also failed" in out
+    assert "partial rebase state" in out
+    assert "git rebase --abort" in out
 
 
 # ---------------------------------------------------------------------------

@@ -144,11 +144,15 @@ def test_usage_from_message_extracts_counters():
     }
 
 
-def test_usage_accumulates_across_assistant_events():
+def test_usage_input_is_last_wins_output_accumulates():
+    """Input-side counters describe the CONTEXT at each step, so a multi-step turn
+    must report the LAST step's values (final occupancy), not the sum — summing the
+    re-reported cached prefix is what inflated the context meter. output_tokens is
+    what was generated per step, so it accumulates."""
     lines = [
         _line({"type": "system", "subtype": "init", "session_id": "sess-1"}),
-        _line({"type": "assistant", "message": {"usage": {"input_tokens": 4, "output_tokens": 1}, "content": [{"type": "text", "text": "hi"}]}}),
-        _line({"type": "assistant", "message": {"usage": {"input_tokens": 2, "output_tokens": 3}, "content": [{"type": "text", "text": "there"}]}}),
+        _line({"type": "assistant", "message": {"usage": {"input_tokens": 4, "cache_read_input_tokens": 40000, "output_tokens": 1}, "content": [{"type": "text", "text": "hi"}]}}),
+        _line({"type": "assistant", "message": {"usage": {"input_tokens": 2, "cache_read_input_tokens": 40100, "output_tokens": 3}, "content": [{"type": "text", "text": "there"}]}}),
         _line({"type": "result", "subtype": "success", "is_error": False}),
     ]
     session = s.LiveSession(_make_config(), popen=lambda *a, **k: FakeProc(stdout_lines=lines))
@@ -156,7 +160,10 @@ def test_usage_accumulates_across_assistant_events():
     result = session.send_turn("go", fresh=True, quiet_budget=2.0, hard_deadline=10.0)
     assert result.session_id == "sess-1"
     assert result.text == "hi\nthere"
-    assert result.usage["input_tokens"] == 6
+    # last-wins input-side: NOT 4+2, NOT 40000+40100 (that multi-counting is the bug)
+    assert result.usage["input_tokens"] == 2
+    assert result.usage["cache_read_input_tokens"] == 40100
+    # output accumulates across steps
     assert result.usage["output_tokens"] == 4
     assert not result.orphaned_tool_use
     session.teardown()

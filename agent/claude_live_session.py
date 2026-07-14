@@ -154,6 +154,26 @@ def _accumulate_usage(dst: dict[str, int], src: dict[str, int]) -> dict[str, int
     return merged
 
 
+def _fold_turn_usage(prev: dict[str, int], new: dict[str, int]) -> dict[str, int]:
+    """Fold one assistant/result usage block into the running turn total.
+
+    The input-side counters (``input`` / ``cache_creation`` / ``cache_read``)
+    each describe the model's CONTEXT at that step. In a multi-step tool turn
+    every assistant sub-message re-reports the full cached prefix, so *summing*
+    them multi-counts the same context and makes ``prompt_tokens`` — and the
+    Hermes context meter that reads it — balloon far past the real occupancy.
+    The LATEST step's input-side values are the turn's final context size, so we
+    take them last-wins. ``output_tokens`` is what was generated at each step, so
+    it accumulates. Immutable: returns a new dict."""
+    if not new:
+        return dict(prev)
+    folded = dict(new)  # input-side counters = latest step (context occupancy)
+    folded["output_tokens"] = int(prev.get("output_tokens", 0)) + int(
+        new.get("output_tokens", 0)
+    )
+    return folded
+
+
 # ---------------------------------------------------------------------------
 # Stream reader threads
 # ---------------------------------------------------------------------------
@@ -249,6 +269,14 @@ class LiveSession:
         # a fingerprint-drift respawn (/model, /effort switch) or an eviction would
         # silently drop all prior context.
         self.has_prior_context: bool = False
+        # Long-session alignment: the warm child keeps its OWN growing transcript,
+        # so when Hermes compresses its history the child never sees it and its
+        # context grows unbounded. ``history_tokens`` is the estimated size of the
+        # history we last aligned the child to; ``last_cache_read`` is the child's
+        # actual reported context size last turn. The client compares the incoming
+        # history against these to detect compression / drift and respawn+reseed.
+        self.history_tokens: int = 0
+        self.last_cache_read: int = 0
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -449,7 +477,7 @@ class LiveSession:
         reasoning_parts: list[str],
     ) -> None:
         message = evt.get("message") or {}
-        result.usage = _accumulate_usage(
+        result.usage = _fold_turn_usage(
             result.usage, usage_from_message(message.get("usage"))
         )
         for block in message.get("content", []) or []:

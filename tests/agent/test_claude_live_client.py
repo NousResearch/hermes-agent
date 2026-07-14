@@ -249,6 +249,86 @@ def test_effort_switch_also_reseeds_full_history(wired):
     client.close()
 
 
+def test_compression_respawns_and_reseeds_compressed_history(wired):
+    """The long-session regression: when Hermes compresses its history (old turns
+    replaced by a summary → the message list shrinks materially), the warm child
+    still holds the OLD uncompressed transcript. The client must respawn and reseed
+    the child with the CURRENT compressed history so the child's context realigns —
+    otherwise it grows without bound (inflated meter + rising latency)."""
+    factory, _ = wired
+    client = _client()
+
+    # Turn 1: a large history so the child is aligned to ~2000 tokens.
+    big = [
+        {"role": "system", "content": "STABLE-SYS"},
+        {"role": "user", "content": "x" * 8000},
+    ]
+    client._create_chat_completion(model="sonnet", messages=big, tools=[])
+    assert len(factory.spawned) == 1
+
+    # Turn 2: Hermes compressed — the history is now tiny (a summary + new turn).
+    compressed = [
+        {"role": "system", "content": "STABLE-SYS"},
+        {"role": "assistant", "content": "SUMMARY-of-earlier"},
+        {"role": "user", "content": "new question"},
+    ]
+    client._create_chat_completion(model="sonnet", messages=compressed, tools=[])
+    assert len(factory.spawned) == 2, "compression must respawn to reset the child"
+
+    reseed = factory.last_envelope(1)
+    # The fresh child is reseeded with the compressed history (full render), not a
+    # bare delta — so it holds the summary and the new turn, and nothing more.
+    assert "SUMMARY-of-earlier" in reseed
+    assert "new question" in reseed
+    assert reseed != "new question"
+    client.close()
+
+
+def test_context_drift_ceiling_respawns(wired, monkeypatch):
+    """Even without a compression pass, if the child's reported context grows well
+    past Hermes's view (its own transcript bloating), a drift ceiling respawns and
+    reseeds so the child cannot climb toward the model window unbounded."""
+    factory, _ = wired
+    # FakeProc reports cache_read=900; make the ceiling bite at a tiny scale.
+    monkeypatch.setenv("HERMES_CLAUDE_LIVE_DRIFT_MIN", "100")
+    monkeypatch.setenv("HERMES_CLAUDE_LIVE_DRIFT_RATIO", "1.5")
+    client = _client()
+
+    small1 = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "hi"},
+    ]
+    client._create_chat_completion(model="sonnet", messages=small1, tools=[])
+    assert len(factory.spawned) == 1
+
+    # Child context (900) far exceeds Hermes's tiny view → drift → respawn.
+    small2 = [
+        {"role": "system", "content": "SYS"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "again"},
+    ]
+    client._create_chat_completion(model="sonnet", messages=small2, tools=[])
+    assert len(factory.spawned) == 2, "drift ceiling must respawn the child"
+    client.close()
+
+
+def test_normal_growth_does_not_respawn(wired):
+    """The guard: a normally GROWING history (no compression, child context within
+    bounds) must NOT respawn — that would throw away the warm cache every turn."""
+    factory, _ = wired
+    client = _client()
+
+    client._create_chat_completion(model="sonnet", messages=_messages_turn1(), tools=[])
+    # A much larger second turn — history grows, does not shrink.
+    grown = _messages_turn2() + [
+        {"role": "assistant", "content": "reply-2"},
+        {"role": "user", "content": "third question " * 50},
+    ]
+    client._create_chat_completion(model="sonnet", messages=grown, tools=[])
+    assert len(factory.spawned) == 1, "growth alone must not respawn"
+    client.close()
+
+
 def test_has_prior_context_transition():
     """A fresh session reseeds; once it has taken a turn it sends deltas."""
     session = s.LiveSession(

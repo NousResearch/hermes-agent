@@ -44,13 +44,23 @@ design of "Claude Code owns the model call"):
     execute through Hermes's dispatcher with real guardrails, but session
     export/replay is turn-level, not tool-step-level.
 
-Long-session efficiency: ordinary Hermes context compression does NOT respawn
-(the rebuilt system prompt is byte-identical, so the fingerprint is unchanged and
-the warm process keeps its cache, which is better than the API path that loses
-cache at each compression). The volatile identity tail (date/session/model/
-provider) is stripped from the fingerprint so a day-rollover does not evict the
-cache either. Genuine respawns only happen on a model/effort switch, an auth or
-tool change, or a crash.
+Long-session correctness: the warm child keeps its OWN transcript, which grows
+every turn. Hermes compresses ITS history to bound the context, but since we send
+the child only the latest delta, that compression never reaches it — so the
+child's real context would climb without bound (a context meter reading far above
+Hermes's view, and every turn slowing as the model attends over a huge context).
+To keep them aligned, the client tracks the history size the child was last
+seeded with and the child's reported context size, and RESPAWNS+reseeds the child
+with the current (compressed) history when it detects a compression pass (history
+shrinks) or drift (child's context outgrows Hermes's view) — the same context
+reset the API path performs at every compression. Thresholds are tunable via
+HERMES_CLAUDE_LIVE_COMPRESSION_DROP / _DRIFT_RATIO / _DRIFT_MIN.
+
+Cache efficiency: the volatile identity tail (date/session/model/provider) is
+stripped from the fingerprint so a day-rollover does not evict the cache, and a
+turn that does NOT trigger a reseed reuses the warm child (and its cache) as
+before. Genuine respawns happen on a model/effort switch, an auth or tool change,
+a crash, or a detected compression/drift.
 """
 
 from __future__ import annotations
@@ -84,6 +94,7 @@ from agent.claude_cli_client import (
 from agent.claude_live_session import (
     LiveSessionConfig,
     TurnResult,
+    _env_float,
     get_registry,
 )
 from tools.environments.local import hermes_subprocess_env
@@ -492,6 +503,67 @@ def _build_turn_content(messages: list[dict[str, Any]], *, full: bool) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Long-session context alignment
+# ---------------------------------------------------------------------------
+#
+# A warm ``claude -p`` child keeps its OWN transcript, which grows every turn.
+# Hermes, meanwhile, compresses ITS history (old turns → a summary) to bound the
+# context. Because we send the warm child only the latest delta, that compression
+# never reaches it: the child's real context keeps climbing while Hermes thinks
+# it is small. Symptoms: the context meter reads the child's ballooning context
+# (well past Hermes's view, even over the model window) and every turn gets slower
+# as the model attends over a huge context. The fix is to detect the divergence
+# and respawn+reseed the child with Hermes's CURRENT (compressed) history so the
+# two realign — the same context reset the API path performs at every compression.
+
+
+def _estimate_history_tokens(messages: list[dict[str, Any]]) -> int:
+    """Rough token estimate of the non-system history (~4 chars/token). Used only
+    for ratio comparisons, so approximate is fine — never for billing."""
+    chars = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("role")).lower() == "system":
+            continue
+        chars += len(_render_message_content(message.get("content")))
+    return chars // 4
+
+
+def _reseed_reason(session: Any, cur_tokens: int) -> str | None:
+    """Why the warm child must be respawned+reseeded before this turn, or None.
+
+    * ``compression`` — Hermes's history shrank materially vs what the child was
+      last aligned to (a compression pass replaced old turns with a summary).
+    * ``drift`` — the child's actual context (last cache_read) has grown well past
+      Hermes's current view, so its transcript has bloated beyond the shared
+      history (a safety ceiling that also catches non-compression divergence).
+    A fresh session (no prior context) needs no reseed decision here — the normal
+    seed path already sends the full history."""
+    if not getattr(session, "has_prior_context", False):
+        return None
+    prior = int(getattr(session, "history_tokens", 0) or 0)
+    if prior > 0 and cur_tokens < prior * _compression_drop_ratio():
+        return "compression"
+    last_cache = int(getattr(session, "last_cache_read", 0) or 0)
+    if last_cache > _drift_min_tokens() and last_cache > cur_tokens * _drift_ratio():
+        return "drift"
+    return None
+
+
+def _compression_drop_ratio() -> float:
+    return _env_float("HERMES_CLAUDE_LIVE_COMPRESSION_DROP", 0.85)
+
+
+def _drift_ratio() -> float:
+    return _env_float("HERMES_CLAUDE_LIVE_DRIFT_RATIO", 1.5)
+
+
+def _drift_min_tokens() -> int:
+    return int(_env_float("HERMES_CLAUDE_LIVE_DRIFT_MIN", 50000.0))
+
+
+# ---------------------------------------------------------------------------
 # Environment / auth hardening
 # ---------------------------------------------------------------------------
 
@@ -745,6 +817,19 @@ class ClaudeLiveClient:
         registry = get_registry()
         key = self._session_key()
         session = registry.get_or_create(key, config)
+        # Before sending, check whether Hermes compressed its history (or the warm
+        # child's context has drifted far past Hermes's view). If so, respawn fresh
+        # so the child's transcript is reset and reseeded with the CURRENT
+        # (compressed) history — otherwise the child's context grows without bound,
+        # inflating the meter and slowing every turn. A fresh respawn reports
+        # has_prior_context=False, so _turn_content then sends the full history.
+        cur_tokens = _estimate_history_tokens(messages)
+        reseed = _reseed_reason(session, cur_tokens)
+        if reseed is not None:
+            session._needs_fresh = True
+            respawned = registry.recover(key)
+            if respawned is not None:
+                session = respawned
         last = session
         try:
             result = session.send_turn(
@@ -781,6 +866,12 @@ class ClaudeLiveClient:
                 + (f" (claude stderr: {detail[-800:]})" if detail else
                    " (no output from claude; check `claude` auth and connectivity)")
             )
+        # Record what the child is now aligned to so the NEXT turn can detect a
+        # compression pass (history shrinks) or context drift (child grows past
+        # Hermes's view). Include this turn's reply in the history estimate since
+        # the next turn's message list will carry it.
+        last.history_tokens = cur_tokens + max(0, len(result.text)) // 4
+        last.last_cache_read = int(result.usage.get("cache_read_input_tokens", 0) or 0)
         return result
 
     # -- result shaping -----------------------------------------------------

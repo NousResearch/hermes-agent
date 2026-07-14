@@ -5956,6 +5956,7 @@ def _start_inflight_turn(
     session: dict,
     text: Any,
     *,
+    submitted_at: float | None = None,
     message_id: str | None = None,
 ) -> None:
     now = time.time()
@@ -5966,6 +5967,8 @@ def _start_inflight_turn(
         "updated_at": now,
         "user": _inflight_text(text),
     }
+    if submitted_at is not None:
+        session["inflight_turn"]["submitted_at"] = submitted_at
     if message_id is not None:
         session["inflight_turn"]["message_id"] = message_id
 
@@ -6125,10 +6128,9 @@ def _handle_busy_submit(
     default policy now redirects a capable core agent in place; older agents
     retain the proven interrupt-and-queue path drained from ``run``'s tail.
 
-    Modes: ``interrupt`` (default) → redirect the live turn, falling back to
-    hard interrupt + queue for older agents; ``queue`` → queue without
-    interrupting; ``steer`` → inject after the current atomic action.
-    """
+    Modes: ``interrupt`` (default) interrupts the live turn before queueing;
+    ``queue`` and legacy ``steer`` queue without interruption. Live non-canonical
+    injection remains available only through the explicit ``session.steer`` API.
     mode = _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
@@ -6207,6 +6209,12 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         session["running"] = True
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
+        _start_inflight_turn(
+            session,
+            queued["text"],
+            submitted_at=queued.get("submitted_at"),
+            message_id=queued.get("message_id"),
+        )
     run_kwargs = {
         key: queued[key]
         for key in ("submitted_at", "message_id")
@@ -6232,6 +6240,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             file=sys.stderr,
         )
         with session["history_lock"]:
+            _clear_inflight_turn(session)
             next_queued = session.get("queued_prompt")
             if next_queued:
                 session.setdefault("queued_prompts", []).insert(0, next_queued)
@@ -10216,7 +10225,12 @@ def _(rid, params: dict) -> dict:
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
-        _start_inflight_turn(session, text, message_id=message_id)
+        _start_inflight_turn(
+            session,
+            text,
+            submitted_at=submitted_at,
+            message_id=message_id,
+        )
 
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
@@ -10772,7 +10786,12 @@ def _run_prompt_submit(
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
-            _start_inflight_turn(session, text, message_id=message_id)
+            _start_inflight_turn(
+                session,
+                text,
+                submitted_at=submitted_at,
+                message_id=message_id,
+            )
     agent = session["agent"]
     if hasattr(agent, "clear_interrupt"):
         try:

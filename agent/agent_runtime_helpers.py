@@ -1284,29 +1284,25 @@ def drop_thinking_only_and_merge_users(
             # purposes. If either side is a list (multimodal), append as a
             # separate block rather than collapsing.
             if isinstance(prev_content, str) and isinstance(cur_content, str):
-                sep = (
-                    f"\n\n{boundary_text}\n\n"
-                    if prev_content and cur_content
-                    else ""
+                prev_copy["content"] = "\n\n".join(
+                    part
+                    for part in (prev_content, boundary_text, cur_content)
+                    if part
                 )
-                prev_copy["content"] = prev_content + sep + cur_content
             elif isinstance(prev_content, list) and isinstance(cur_content, list):
                 prev_copy["content"] = (
                     list(prev_content) + [dict(boundary_block)] + list(cur_content)
                 )
             elif isinstance(prev_content, list) and isinstance(cur_content, str):
+                new_blocks = list(prev_content) + [dict(boundary_block)]
                 if cur_content:
-                    prev_copy["content"] = list(prev_content) + [
-                        dict(boundary_block),
-                        {"type": "text", "text": cur_content}
-                    ]
-                else:
-                    prev_copy["content"] = list(prev_content)
+                    new_blocks.append({"type": "text", "text": cur_content})
+                prev_copy["content"] = new_blocks
             elif isinstance(prev_content, str) and isinstance(cur_content, list):
                 new_blocks: List[Dict[str, Any]] = []
                 if prev_content:
                     new_blocks.append({"type": "text", "text": prev_content})
-                    new_blocks.append(dict(boundary_block))
+                new_blocks.append(dict(boundary_block))
                 new_blocks.extend(cur_content)
                 prev_copy["content"] = new_blocks
             else:
@@ -2694,6 +2690,22 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+_API_SOURCE_METADATA_KEYS = (
+    "timestamp",
+    "message_id",
+    "platform_message_id",
+    "_source_message_id",
+)
+
+
+def copy_message_for_api(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy one canonical message without transcript-only source metadata."""
+    api_message = message.copy()
+    for key in _API_SOURCE_METADATA_KEYS:
+        api_message.pop(key, None)
+    return api_message
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -3508,6 +3520,7 @@ __all__ = [
     "invoke_tool",
     "repair_tool_call",
     "sanitize_api_messages",
+    "copy_message_for_api",
     "looks_like_codex_intermediate_ack",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",

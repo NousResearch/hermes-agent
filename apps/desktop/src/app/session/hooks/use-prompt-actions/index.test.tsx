@@ -4,9 +4,16 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getSession } from '@/hermes'
+import type { QueueEditState } from '@/app/chat/composer/composer-utils'
+import { useComposerQueue } from '@/app/chat/composer/hooks/use-composer-queue'
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import {
+  $queuedPromptsBySession,
+  enqueueQueuedPrompt,
+  getQueuedPrompts
+} from '@/store/composer-queue'
 import {
   $busy,
   $connection,
@@ -193,6 +200,79 @@ function Harness({
     activeSessionIdRef,
     onReady
   ])
+
+  return null
+}
+
+interface QueueHarnessHandle {
+  drainNextQueued: () => Promise<boolean>
+}
+
+function QueueHarness({
+  activeQueueSessionKey,
+  activeSessionId,
+  activeSessionIdRef,
+  onReady,
+  requestGateway,
+  routeTokenRef,
+  selectedStoredSessionIdRef
+}: {
+  activeQueueSessionKey: string
+  activeSessionId: null | string
+  activeSessionIdRef: MutableRefObject<string | null>
+  onReady: (handle: QueueHarnessHandle) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  routeTokenRef: MutableRefObject<string>
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
+}) {
+  const stateRef = useRef({
+    messages: [],
+    busy: false,
+    awaitingResponse: false,
+    interrupted: false
+  } as never)
+  const draftRef = useRef('')
+  const queueEditRef = useRef<QueueEditState | null>(null)
+  const actions = usePromptActions({
+    activeSessionId,
+    activeSessionIdRef,
+    branchCurrentSession: async () => true,
+    busyRef: { current: false },
+    createBackendSessionForSend: async () => null,
+    getRouteToken: () => routeTokenRef.current,
+    handleSkinCommand: () => '',
+    openMemoryGraph: () => undefined,
+    refreshSessions: async () => undefined,
+    requestGateway,
+    resumeStoredSession: () => undefined,
+    selectedStoredSessionIdRef,
+    startFreshSessionDraft: () => undefined,
+    sttEnabled: false,
+    updateSessionState: (_sessionId, updater) => {
+      const next = updater(stateRef.current) as never
+      stateRef.current = next
+
+      return next
+    }
+  })
+  const queue = useComposerQueue({
+    activeQueueSessionKey,
+    attachments: [],
+    busy: true,
+    clearDraft: () => undefined,
+    draftRef,
+    focusInput: () => undefined,
+    loadIntoComposer: () => undefined,
+    onCancel: actions.cancelRun,
+    onSubmit: actions.submitText,
+    queueEditRef,
+    queueSessionKey: activeQueueSessionKey,
+    sessionId: activeSessionId
+  })
+
+  useEffect(() => {
+    onReady({ drainNextQueued: queue.drainNextQueued })
+  }, [onReady, queue.drainNextQueued])
 
   return null
 }
@@ -1294,6 +1374,164 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     expect(accepted).toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+  })
+})
+
+describe('useComposerQueue source-session retention', () => {
+  const STORED_SESSION_A = 'stored-queue-a'
+  const STORED_SESSION_B = 'stored-queue-b'
+
+  beforeEach(() => {
+    window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+    $queuedPromptsBySession.set({})
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('keeps A queued across a pending switch and retries the same source on A recovery', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+    const entry = enqueueQueuedPrompt(STORED_SESSION_A, {
+      attachments: [],
+      text: 'keep this in session A'
+    })!
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
+      current: STORED_SESSION_A
+    }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const routeTokenRef: MutableRefObject<string> = { current: 'route-a' }
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const promptCalls: Record<string, unknown>[] = []
+    const ownedSourceIds = new Set<string>()
+    let canonicalRows = 0
+    let releaseInitialResume: () => void = () => undefined
+    let markInitialResumeStarted: () => void = () => undefined
+    const initialResumeStarted = new Promise<void>(resolve => {
+      markInitialResumeStarted = resolve
+    })
+    let firstResume = true
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        if (firstResume) {
+          firstResume = false
+          markInitialResumeStarted()
+          await new Promise<void>(resolve => {
+            releaseInitialResume = resolve
+          })
+
+          return { session_id: 'rt-a-abandoned' } as never
+        }
+
+        return { session_id: 'rt-a-recovered' } as never
+      }
+
+      if (method === 'prompt.submit') {
+        const payload = params ?? {}
+        const sourceId = String(payload.message_id)
+        promptCalls.push(payload)
+
+        if (!ownedSourceIds.has(sourceId)) {
+          ownedSourceIds.add(sourceId)
+          canonicalRows += 1
+          throw new Error('request timed out: prompt.submit')
+        }
+
+        return { status: 'duplicate' } as never
+      }
+
+      return {} as never
+    })
+    let handle: QueueHarnessHandle | null = null
+    const view = render(
+      <QueueHarness
+        activeQueueSessionKey={STORED_SESSION_A}
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={next => (handle = next)}
+        requestGateway={requestGateway}
+        routeTokenRef={routeTokenRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    let firstAttempt!: Promise<boolean>
+    act(() => {
+      firstAttempt = handle!.drainNextQueued()
+    })
+    await initialResumeStarted
+
+    selectedStoredSessionIdRef.current = STORED_SESSION_B
+    activeSessionIdRef.current = 'rt-b'
+    routeTokenRef.current = 'route-b'
+    view.rerender(
+      <QueueHarness
+        activeQueueSessionKey={STORED_SESSION_B}
+        activeSessionId="rt-b"
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={next => (handle = next)}
+        requestGateway={requestGateway}
+        routeTokenRef={routeTokenRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    let firstAccepted = true
+    await act(async () => {
+      releaseInitialResume()
+      firstAccepted = await firstAttempt
+    })
+
+    expect(firstAccepted).toBe(false)
+    expect(getQueuedPrompts(STORED_SESSION_A)).toEqual([entry])
+    expect(getQueuedPrompts(STORED_SESSION_B)).toEqual([])
+    expect(promptCalls).toEqual([])
+
+    selectedStoredSessionIdRef.current = STORED_SESSION_A
+    activeSessionIdRef.current = 'rt-a-stale'
+    routeTokenRef.current = 'route-a'
+    view.rerender(
+      <QueueHarness
+        activeQueueSessionKey={STORED_SESSION_A}
+        activeSessionId="rt-a-stale"
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={next => (handle = next)}
+        requestGateway={requestGateway}
+        routeTokenRef={routeTokenRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    let retryAccepted = false
+    await act(async () => {
+      retryAccepted = await handle!.drainNextQueued()
+    })
+
+    expect(retryAccepted).toBe(true)
+    expect(promptCalls).toEqual([
+      {
+        message_id: entry.id,
+        session_id: 'rt-a-stale',
+        submitted_at: entry.queuedAt / 1000,
+        text: entry.text
+      },
+      {
+        message_id: entry.id,
+        session_id: 'rt-a-recovered',
+        submitted_at: entry.queuedAt / 1000,
+        text: entry.text
+      }
+    ])
+    expect(canonicalRows).toBe(1)
+    expect(ownedSourceIds).toEqual(new Set([entry.id]))
+    expect(getQueuedPrompts(STORED_SESSION_A)).toEqual([])
+    expect(getQueuedPrompts(STORED_SESSION_B)).toEqual([])
+    expect(calls.filter(call => call.method === 'session.resume')).toHaveLength(2)
   })
 })
 

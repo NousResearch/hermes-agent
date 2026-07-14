@@ -1913,12 +1913,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     messages.append({"role": "user", "content": summary_request})
 
     try:
+        from agent.agent_runtime_helpers import copy_message_for_api
+
         # Build API messages, stripping internal-only fields
-        # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
+        # (finish_reason, reasoning) that strict APIs like Mistral reject with 422.
         _needs_sanitize = agent._should_sanitize_tool_calls()
         api_messages = []
         for msg in messages:
-            api_msg = msg.copy()
+            api_msg = copy_message_for_api(msg)
             agent._copy_reasoning_content_for_api(msg, api_msg)
             for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                 api_msg.pop(internal_field, None)
@@ -1926,13 +1928,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # Mistral, Moonshot/Kimi) reject any message key outside the Chat
             # Completions schema. The main loop drops these via
             # ChatCompletionsTransport.convert_messages(), but the summary path
-            # hand-builds messages and calls chat.completions.create() directly,
-            # bypassing the transport — so mirror that sanitization here:
-            # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers,
-            # timestamp (preserved on gateway user replay entries for the
-            # stale-confirmation expiry check — #47868 rejection class),
-            # and every Hermes-internal underscore-prefixed scaffolding key.
-            for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
+            # calls chat.completions.create() directly. Reuse the shared source
+            # metadata copy policy above, then strip remaining schema-foreign
+            # bookkeeping and every Hermes-internal underscore-prefixed key.
+            for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items"):
                 api_msg.pop(schema_foreign, None)
             # api_content (the persist-what-you-send sidecar) carries the
             # exact bytes every main-loop call sent for this message —

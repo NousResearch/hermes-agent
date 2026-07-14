@@ -143,26 +143,33 @@ def test_busy_queue_mode_queues_without_interrupting(monkeypatch):
     assert session["queued_prompt"]["text"] == "later"
 
 
-def test_busy_steer_mode_injects_when_accepted(monkeypatch):
+def test_busy_steer_mode_queues_canonical_turn_without_live_injection(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
-    agent = types.SimpleNamespace(steer=lambda text: True, interrupt=lambda *a, **k: None)
+    calls = {"interrupt": 0, "steer": 0}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupt", calls["interrupt"] + 1),
+        steer=lambda _text: calls.__setitem__("steer", calls["steer"] + 1),
+    )
     session = _session(agent=agent, running=True)
 
-    resp = server._handle_busy_submit("r1", "sid", session, "nudge", "ws-1")
-
-    assert resp["result"]["status"] == "steered"
-    assert session.get("queued_prompt") is None
-
-
-def test_busy_steer_mode_falls_back_to_queue_when_rejected(monkeypatch):
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
-    agent = types.SimpleNamespace(steer=lambda text: False, interrupt=lambda *a, **k: None)
-    session = _session(agent=agent, running=True)
-
-    resp = server._handle_busy_submit("r1", "sid", session, "nudge", "ws-1")
+    resp = server._handle_busy_submit(
+        "r1",
+        "sid",
+        session,
+        "nudge",
+        "ws-1",
+        submitted_at=101.25,
+        message_id="desktop-steer-1",
+    )
 
     assert resp["result"]["status"] == "queued"
-    assert session["queued_prompt"]["text"] == "nudge"
+    assert calls == {"interrupt": 0, "steer": 0}
+    assert session["queued_prompt"] == {
+        "text": "nudge",
+        "transport": "ws-1",
+        "submitted_at": 101.25,
+        "message_id": "desktop-steer-1",
+    }
 
 
 def test_busy_interrupt_does_not_hold_history_lock_or_delay_queue(monkeypatch):
@@ -365,18 +372,84 @@ def test_drain_noop_when_session_already_running(monkeypatch):
     assert session["queued_prompt"]["text"] == "go"
 
 
-def test_drain_requeues_prompt_on_dispatch_failure(monkeypatch):
-    def _boom(*a, **k):
+def test_drain_failure_restores_exact_item_before_later_arrivals(monkeypatch):
+    first = {
+        "text": "first",
+        "transport": "ws-1",
+        "submitted_at": 101.25,
+        "message_id": "desktop-1",
+    }
+    second = {
+        "text": "second",
+        "transport": "ws-2",
+        "submitted_at": 102.5,
+        "message_id": "desktop-2",
+    }
+
+    def _boom(_rid, _sid, session, _text, **_kwargs):
+        server._enqueue_prompt(
+            session,
+            "third",
+            "ws-3",
+            submitted_at=103.75,
+            message_id="desktop-3",
+        )
         raise RuntimeError("dispatch failed")
 
     monkeypatch.setattr(server, "_run_prompt_submit", _boom)
-    queued = {"text": "go", "transport": "ws-1"}
-    session = _session(queued_prompt=queued)
+    session = _session(queued_prompt=first, queued_prompts=[second])
 
     assert server._drain_queued_prompt("r1", "sid", session) is True
-    # Failure must neither wedge the session nor drop the claimed prompt.
     assert session["running"] is False
-    assert session["queued_prompt"] == queued
+    assert session["inflight_turn"] is None
+    assert session["queued_prompt"] is first
+    assert session["queued_prompts"] == [
+        second,
+        {
+            "text": "third",
+            "transport": "ws-3",
+            "submitted_at": 103.75,
+            "message_id": "desktop-3",
+        },
+    ]
+
+
+def test_drain_claim_dedupes_retry_before_dispatch(monkeypatch):
+    retry_response = None
+    queued = {
+        "text": "first",
+        "transport": "ws-original",
+        "submitted_at": 101.25,
+        "message_id": "stable-1",
+    }
+    session = _session(queued_prompt=queued)
+    monkeypatch.setattr(server, "_sess_nowait", lambda *_a, **_k: (session, None))
+    monkeypatch.setattr(server, "current_transport", lambda: "ws-retry")
+
+    def _run(_rid, _sid, _session, _text, **_kwargs):
+        nonlocal retry_response
+        retry_response = server.handle_request(
+            {
+                "id": "rpc-retry",
+                "method": "prompt.submit",
+                "params": {
+                    "message_id": "stable-1",
+                    "session_id": "sid",
+                    "submitted_at": 101.25,
+                    "text": "first",
+                },
+            }
+        )
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _run)
+
+    assert server._drain_queued_prompt("rpc-original", "sid", session) is True
+    assert retry_response is not None
+    assert retry_response["result"]["status"] == "duplicate"
+    assert session.get("queued_prompt") is None
+    assert session.get("queued_prompts", []) == []
+    assert session["inflight_turn"]["message_id"] == "stable-1"
+    assert session["inflight_turn"]["submitted_at"] == 101.25
 
 
 def test_repeated_arrivals_drain_once_in_order_to_their_own_transports(monkeypatch):
@@ -434,6 +507,99 @@ def _model_response(text):
     )
     choice = types.SimpleNamespace(message=message, finish_reason="stop")
     return types.SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+def test_busy_steer_submit_dedupes_and_persists_one_canonical_turn(
+    monkeypatch,
+    tmp_path,
+):
+    db = SessionDB(tmp_path / "steer-source.db")
+    session_key = "steer-source"
+    db.create_session(session_key, source="desktop", model="test/model")
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        provider="custom",
+        model="test/model",
+        api_mode="chat_completions",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        session_db=db,
+        session_id=session_key,
+    )
+    agent._session_db_created = True
+    agent._cached_system_prompt = "You are a test assistant."
+    agent._disable_streaming = True
+
+    steer_calls = []
+    interrupt_calls = []
+    wire_requests = []
+    completed = threading.Event()
+    monkeypatch.setattr(agent, "steer", lambda text: steer_calls.append(text))
+    monkeypatch.setattr(agent, "interrupt", lambda: interrupt_calls.append(True))
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: (
+            wire_requests.append(api_kwargs["messages"]),
+            _model_response("ack"),
+        )[1],
+    )
+    monkeypatch.setattr(agent, "_cleanup_task_resources", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {})
+    monkeypatch.setattr(server, "_get_usage", lambda *_a, **_k: {})
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *_a, **_k: None)
+
+    session = _session(agent=agent, session_key=session_key, running=True)
+    monkeypatch.setattr(server, "_sess_nowait", lambda *_a, **_k: (session, None))
+    monkeypatch.setattr(server, "current_transport", lambda: "ws-steer")
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, _sid, _payload=None: completed.set()
+        if event == "message.complete"
+        else None,
+    )
+    request = {
+        "id": "rpc-steer",
+        "method": "prompt.submit",
+        "params": {
+            "message_id": "desktop-steer-1",
+            "session_id": "ui-session",
+            "submitted_at": 101.25,
+            "text": "canonical nudge",
+        },
+    }
+
+    first = server.handle_request(request)
+    duplicate = server.handle_request({**request, "id": "rpc-steer-retry"})
+
+    assert first["result"]["status"] == "queued"
+    assert duplicate["result"]["status"] == "duplicate"
+    assert steer_calls == []
+    assert interrupt_calls == []
+    assert session["queued_prompt"]["message_id"] == "desktop-steer-1"
+    assert session.get("queued_prompts", []) == []
+
+    session["running"] = False
+    assert server._drain_queued_prompt("rpc-steer", "ui-session", session) is True
+    assert completed.wait(10), "steer-configured canonical turn did not complete"
+
+    canonical_users = [
+        message for message in session["history"] if message.get("role") == "user"
+    ]
+    user_rows = [row for row in db.get_messages(session_key) if row["role"] == "user"]
+    assert [message["content"] for message in canonical_users] == ["canonical nudge"]
+    assert [(row["content"], row["platform_message_id"]) for row in user_rows] == [
+        ("canonical nudge", "desktop-steer-1")
+    ]
+    assert len(wire_requests) == 1
 
 
 def test_drain_persists_distinct_users_and_sends_valid_ordered_wire_history(

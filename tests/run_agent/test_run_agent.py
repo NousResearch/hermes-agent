@@ -3954,7 +3954,14 @@ class TestHandleMaxIterations:
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
         agent._cached_system_prompt = "You are helpful."
         messages = [
-            {"role": "user", "content": "do stuff"},
+            {
+                "role": "user",
+                "content": "do stuff",
+                "timestamp": 101.25,
+                "message_id": "message-1",
+                "platform_message_id": "platform-1",
+                "_source_message_id": "source-1",
+            },
             {
                 "role": "assistant",
                 "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
@@ -3968,12 +3975,25 @@ class TestHandleMaxIterations:
 
         assert result == "Summary"
         sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
+        source_metadata = (
+            "timestamp",
+            "message_id",
+            "platform_message_id",
+            "_source_message_id",
+        )
         for m in sent_msgs:
             assert "tool_name" not in m, m
             assert "codex_reasoning_items" not in m, m
             assert "codex_message_items" not in m, m
+            assert all(key not in m for key in source_metadata), m
             assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
-        # Internal history is untouched — the path copies each message.
+        # Canonical history is untouched — the path copies each message.
+        assert {key: messages[0][key] for key in source_metadata} == {
+            "timestamp": 101.25,
+            "message_id": "message-1",
+            "platform_message_id": "platform-1",
+            "_source_message_id": "source-1",
+        }
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 

@@ -11,6 +11,8 @@ mergeAdjacentUserMessages in src/utils/messages.ts). See #16823 for the
 backstory on why the alternative — fabricating "." stub text — was rejected.
 """
 
+from copy import deepcopy
+
 from run_agent import AIAgent
 
 
@@ -167,6 +169,32 @@ class TestDropThinkingOnlyAndMergeUsers:
         out = AIAgent._drop_thinking_only_and_merge_users(msgs)
         # Should return the original list untouched (identity) when no changes.
         assert out is msgs
+
+    def test_adjacent_users_always_keep_explicit_wire_boundary(self):
+        boundary = {"type": "text", "text": "[Next user message]"}
+        text = lambda value: {"type": "text", "text": value}
+        cases = [
+            ("", "real", "[Next user message]\n\nreal"),
+            ("real", "", "real\n\n[Next user message]"),
+            ("", "", "[Next user message]"),
+            ("", [text("right")], [boundary, text("right")]),
+            ("left", [], [text("left"), boundary]),
+            ([], "right", [boundary, text("right")]),
+            ([text("left")], "", [text("left"), boundary]),
+            ([text("left")], "right", [text("left"), boundary, text("right")]),
+        ]
+
+        for previous, current, expected in cases:
+            messages = [
+                {"role": "user", "content": previous},
+                {"role": "user", "content": current},
+            ]
+            canonical = deepcopy(messages)
+
+            out = AIAgent._drop_thinking_only_and_merge_users(messages)
+
+            assert out == [{"role": "user", "content": expected}]
+            assert messages == canonical
 
     def test_drops_thinking_only_between_user_messages_and_merges(self):
         msgs = [

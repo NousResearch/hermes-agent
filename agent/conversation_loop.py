@@ -1022,7 +1022,10 @@ def run_conversation(
         # flush cursor (_last_flushed_db_idx) when canonical repair compacts the
         # list, so turn-end flushing cannot skip shifted assistant/tool rows
         # (#44837).
-        from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+        from agent.agent_runtime_helpers import (
+            copy_message_for_api,
+            repair_message_sequence_with_cursor,
+        )
         repaired_seq = repair_message_sequence_with_cursor(agent, messages)
         if repaired_seq > 0:
             request_logger.info(
@@ -1033,7 +1036,11 @@ def run_conversation(
 
         api_messages = []
         for idx, msg in enumerate(messages):
-            api_msg = msg.copy()
+            # Source ordering/deduplication metadata belongs to the canonical
+            # transcript and SessionDB, never to a provider request. Strip it
+            # through the shared copy boundary so every direct API path uses
+            # the same metadata policy without mutating canonical history.
+            api_msg = copy_message_for_api(msg)
 
             # api_content is the persistence sidecar carrying the exact bytes
             # sent to the API for this message when they differ from the clean
@@ -1048,18 +1055,6 @@ def run_conversation(
             # event row enters the live history.
             api_msg.pop("display_kind", None)
             api_msg.pop("display_metadata", None)
-
-            # Source ordering/deduplication metadata belongs to the canonical
-            # transcript and SessionDB, never to a provider request. Strip it
-            # at the common API-copy boundary so native Anthropic/Codex paths
-            # do not depend on transport-specific unknown-field filtering.
-            for metadata_key in (
-                "timestamp",
-                "message_id",
-                "platform_message_id",
-                "_source_message_id",
-            ):
-                api_msg.pop(metadata_key, None)
 
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks

@@ -5930,10 +5930,12 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     tool_calls = []
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-            # Accept either `platform_message_id` (new explicit name) or
-            # `message_id` (yuanbao's existing convention on message dicts).
+            # Match append persistence precedence for external and internal
+            # canonical source identity forms.
             platform_msg_id = (
-                msg.get("platform_message_id") or msg.get("message_id")
+                msg.get("platform_message_id")
+                or msg.get("message_id")
+                or msg.get("_source_message_id")
             )
 
             api_content = msg.get("api_content")

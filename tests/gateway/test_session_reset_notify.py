@@ -30,11 +30,15 @@ def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
     )
 
 
-def _make_store(policy=None, tmp_path=None):
+def _make_store(policy=None, tmp_path=None, has_active_processes_fn=None):
     config = GatewayConfig()
     if policy:
         config.default_reset_policy = policy
-    store = SessionStore(sessions_dir=tmp_path or "/tmp/test-sessions", config=config)
+    store = SessionStore(
+        sessions_dir=tmp_path or "/tmp/test-sessions",
+        config=config,
+        has_active_processes_fn=has_active_processes_fn,
+    )
     return store
 
 
@@ -99,6 +103,45 @@ class TestShouldResetReason:
         )
         source = _make_source()
         assert store._should_reset(entry, source) is None
+
+    def test_returns_none_when_active_process_check_raises(self, tmp_path):
+        def _raise(_session_key):
+            raise RuntimeError("process registry unavailable")
+
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=30),
+            tmp_path,
+            has_active_processes_fn=_raise,
+        )
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now() - timedelta(hours=2),
+            updated_at=datetime.now() - timedelta(hours=1),
+        )
+        source = _make_source()
+
+        assert store._should_reset(entry, source) is None
+
+    def test_is_session_expired_fails_closed_when_active_process_check_raises(self, tmp_path):
+        def _raise(_session_key):
+            raise RuntimeError("process registry unavailable")
+
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=30),
+            tmp_path,
+            has_active_processes_fn=_raise,
+        )
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            created_at=datetime.now() - timedelta(hours=2),
+            updated_at=datetime.now() - timedelta(hours=1),
+        )
+
+        assert store._is_session_expired(entry) is False
 
 
 # ---------------------------------------------------------------------------

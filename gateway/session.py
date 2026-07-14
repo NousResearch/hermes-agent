@@ -1021,6 +1021,21 @@ class SessionStore:
             self._db = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+
+    def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
+        """Return whether a session has active work, failing closed on registry errors."""
+        if self._has_active_processes_fn is None:
+            return False
+        try:
+            return bool(self._has_active_processes_fn(session_key))
+        except Exception as exc:
+            logger.warning(
+                "has_active_processes_fn raised during %s for %s; keeping session alive: %s",
+                context,
+                session_key,
+                exc,
+            )
+            return True
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -1568,13 +1583,12 @@ class SessionStore:
         Used by the background expiry watcher to proactively flush memories.
         Sessions with active background processes are never considered expired.
         """
-        if self._has_active_processes_fn:
-            if self._has_active_processes_fn(entry.session_key):
-                logger.debug(
-                    "Session %s not expired — active background processes",
-                    entry.session_key,
-                )
-                return False
+        if self._has_active_processes_safe(entry.session_key, context="expiry"):
+            logger.debug(
+                "Session %s not expired — active background processes",
+                entry.session_key,
+            )
+            return False
 
         policy = self.config.get_reset_policy(
             platform=entry.platform,
@@ -1669,14 +1683,13 @@ class SessionStore:
         
         Sessions with active background processes are never reset.
         """
-        if self._has_active_processes_fn:
-            session_key = self._generate_session_key(source)
-            if self._has_active_processes_fn(session_key):
-                logger.debug(
-                    "Session reset skipped for %s — active background processes",
-                    session_key,
-                )
-                return None
+        session_key = self._generate_session_key(source)
+        if self._has_active_processes_safe(session_key, context="reset"):
+            logger.debug(
+                "Session reset skipped for %s — active background processes",
+                session_key,
+            )
+            return None
 
         policy = self.config.get_reset_policy(
             platform=source.platform,
@@ -2170,19 +2183,8 @@ class SessionStore:
                 # The callback is keyed by session_key (see process_registry.
                 # has_active_for_session); passing session_id here used to
                 # never match, so active sessions got pruned anyway.
-                if self._has_active_processes_fn is not None:
-                    try:
-                        if self._has_active_processes_fn(entry.session_key):
-                            continue
-                    except Exception as exc:
-                        logger.debug(
-                            "has_active_processes_fn raised during prune for %s: %s",
-                            entry.session_key, exc,
-                        )
-                        # Fail safe: if we can't tell whether a background
-                        # process is attached, keep the entry rather than
-                        # risk orphaning live work.
-                        continue
+                if self._has_active_processes_safe(entry.session_key, context="prune"):
+                    continue
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
             for key in removed_keys:

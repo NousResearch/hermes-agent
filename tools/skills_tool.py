@@ -1372,6 +1372,7 @@ def skill_view(
                     {
                         "success": True,
                         "name": name,
+                        "skill_name": resolved_name,
                         "file": file_path,
                         "content": f"[Binary file: {target_file.name}, size: {target_file.stat().st_size} bytes]",
                         "is_binary": True,
@@ -1390,10 +1391,14 @@ def skill_view(
                     exc_info=True,
                 )
 
+            # ``name`` echoes the request identifier (possibly category-
+            # qualified); ``skill_name`` is the canonical frontmatter name so
+            # telemetry keys stay unsplit (see _skill_view_with_bump).
             return json.dumps(
                 {
                     "success": True,
                     "name": name,
+                    "skill_name": resolved_name,
                     "file": file_path,
                     "content": content,
                     "file_type": target_file.suffix,
@@ -1564,6 +1569,7 @@ def skill_view(
         result = {
             "success": True,
             "name": skill_name,
+            "skill_name": skill_name,
             "description": frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
@@ -1735,20 +1741,16 @@ def _skill_view_with_bump(args, **kw):
     try:
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            # Use the resolved skill name from the payload when present —
-            # qualified forms ("plugin:skill") return with the canonical name.
-            resolved = parsed.get("name") or name
-            # Canonicalize to the bare skill name so usage isn't split across
-            # keys. skill_view returns the bare frontmatter name on its main
-            # path, but echoes the input identifier ("category/skill") for
-            # sub-file and category-qualified views; the bundle and slash-command
-            # loaders always bump the bare name (skill_bundles / skill_commands),
-            # so a qualified view here would fragment use_count/last_used_at into
-            # a second key and make an active skill look stale to the Curator's
-            # lifecycle timer (#17782). Strip a leading "category/" segment;
-            # leave "plugin:skill" qualified forms (which use ':') intact.
-            if resolved and "/" in resolved and ":" not in resolved:
-                resolved = resolved.rsplit("/", 1)[-1]
+            # Key telemetry by the canonical frontmatter name ("skill_name"),
+            # not the echoed request identifier ("name"). Support-file views
+            # echo the input, which may be qualified as "category/skill" or
+            # "category:skill"; the bundle and slash-command loaders always
+            # bump the bare name (skill_bundles / skill_commands), so bumping
+            # a qualified key here would fragment use_count/last_used_at and
+            # make an active skill look stale to the Curator's lifecycle
+            # timer (#17782). Plugin skills don't set "skill_name" and keep
+            # their canonical "plugin:skill" key via the "name" fallback.
+            resolved = parsed.get("skill_name") or parsed.get("name") or name
             if resolved:
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

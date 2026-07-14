@@ -815,32 +815,43 @@ def test_usage_report_covers_all_provenance(skills_home):
         assert rows[n]["_persisted"] is True
 
 
+
 # ---------------------------------------------------------------------------
 # skill_view bump canonicalizes the usage key (split-key regression)
 # ---------------------------------------------------------------------------
 
-def test_skill_view_bump_canonicalizes_category_qualified_name(skills_home, monkeypatch):
-    """A category-qualified view ("category/skill") records usage under the bare
-    frontmatter name, not a second "category/skill" key.
+def _write_skill_with_reference(skills_dir: Path, name: str, category: str):
+    """A categorized skill with a references/ support file."""
+    d = _write_skill(skills_dir, name, category=category)
+    refs = d / "references"
+    refs.mkdir()
+    (refs / "api.md").write_text("# api notes\n", encoding="utf-8")
+    return d
 
-    skill_view returns the bare name on its main path but echoes the input
-    identifier for sub-file / category-qualified views, while the bundle and
-    slash-command loaders always bump the bare name. Without canonicalization the
-    same skill's use_count/last_used_at split across two keys, making an active
-    skill look stale to the Curator's lifecycle timer (#17782).
+
+def test_support_file_view_slash_qualified_bumps_bare_name(skills_home):
+    """A real support-file view of "category/skill" records usage under the
+    bare frontmatter name, not a second "category/skill" key.
+
+    skill_view returns the bare name on its main path but echoes the request
+    identifier for support-file views, while the bundle and slash-command
+    loaders always bump the bare name. Without a canonical telemetry key the
+    same skill's use_count/last_used_at split across two keys, making an
+    active skill look stale to the Curator's lifecycle timer (#17782).
     """
     import tools.skills_tool as st
     from tools.skill_usage import load_usage
 
-    # Simulate skill_view echoing the qualified input identifier in "name".
-    monkeypatch.setattr(
-        st, "skill_view",
-        lambda name, file_path=None, task_id=None: json.dumps(
-            {"success": True, "name": "conversation/my-skill"}
-        ),
-    )
+    _write_skill_with_reference(skills_home / "skills", "my-skill", "conversation")
 
-    st._skill_view_with_bump({"name": "conversation/my-skill"})
+    result = json.loads(st._skill_view_with_bump(
+        {"name": "conversation/my-skill", "file_path": "references/api.md"}
+    ))
+    assert result["success"] is True
+    # The response still echoes the request identifier...
+    assert result["name"] == "conversation/my-skill"
+    # ...and exposes the canonical frontmatter name for telemetry.
+    assert result["skill_name"] == "my-skill"
 
     usage = load_usage()
     assert "my-skill" in usage, "usage must be keyed by the bare skill name"
@@ -849,9 +860,51 @@ def test_skill_view_bump_canonicalizes_category_qualified_name(skills_home, monk
     assert usage["my-skill"]["view_count"] == 1
 
 
+def test_support_file_view_colon_qualified_bumps_bare_name(skills_home):
+    """The supported "category:skill" form for categorized local skills (it
+    maps to the on-disk "category/skill" path when no plugin owns the
+    namespace) must also record usage under the bare frontmatter name."""
+    import tools.skills_tool as st
+    from tools.skill_usage import load_usage
+
+    _write_skill_with_reference(skills_home / "skills", "my-skill", "conversation")
+
+    result = json.loads(st._skill_view_with_bump(
+        {"name": "conversation:my-skill", "file_path": "references/api.md"}
+    ))
+    assert result["success"] is True
+    assert result["skill_name"] == "my-skill"
+
+    usage = load_usage()
+    assert "my-skill" in usage, "usage must be keyed by the bare skill name"
+    assert "conversation:my-skill" not in usage, "qualified key must not be created"
+    assert usage["my-skill"]["use_count"] == 1
+    assert usage["my-skill"]["view_count"] == 1
+
+
+def test_main_and_support_file_views_share_one_usage_key(skills_home):
+    """The split-key regression end to end: a main view by bare name plus a
+    qualified support-file view must accumulate on ONE key."""
+    import tools.skills_tool as st
+    from tools.skill_usage import load_usage
+
+    _write_skill_with_reference(skills_home / "skills", "my-skill", "conversation")
+
+    assert json.loads(st._skill_view_with_bump({"name": "my-skill"}))["success"]
+    assert json.loads(st._skill_view_with_bump(
+        {"name": "conversation/my-skill", "file_path": "references/api.md"}
+    ))["success"]
+
+    usage = load_usage()
+    assert set(usage) == {"my-skill"}
+    assert usage["my-skill"]["use_count"] == 2
+    assert usage["my-skill"]["view_count"] == 2
+
+
 def test_skill_view_bump_preserves_plugin_qualified_name(skills_home, monkeypatch):
-    """Plugin-qualified names ("plugin:skill") are canonical and kept intact —
-    only "/"-style category prefixes are stripped."""
+    """Plugin skills carry no "skill_name" field and keep their canonical
+    "plugin:skill" usage key via the "name" fallback (mocked: plugin payloads
+    come from the plugin registry, not the local skills tree)."""
     import tools.skills_tool as st
     from tools.skill_usage import load_usage
 

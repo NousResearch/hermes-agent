@@ -16613,6 +16613,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._cleanup_agent_resources(agent)
         except Exception:
             pass
+        # Shut down the memory provider to release threads, executors, and
+        # HTTP connections. A fresh AIAgent built on session resume creates
+        # its own MemoryManager and provider, so the old one must not be
+        # left alive leaking resources (#64278).
+        try:
+            if hasattr(agent, "shutdown_memory_provider"):
+                _msgs = getattr(agent, "_session_messages", None)
+                if isinstance(_msgs, list):
+                    agent.shutdown_memory_provider(_msgs)
+                else:
+                    agent.shutdown_memory_provider()
+        except Exception:
+            pass
         # Free conversation history memory — can be tens of MB with tool
         # outputs (file reads, terminal output, search results) on heavy
         # 100+-tool-call sessions. release_clients() deliberately preserves

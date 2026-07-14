@@ -290,6 +290,40 @@ class TestStringTypedConfigValues:
 
 
 # ---------------------------------------------------------------------------
+# Structured config values — regression tests for #64323
+# ---------------------------------------------------------------------------
+
+class TestStructuredConfigValues:
+    def test_list_typed_value_is_saved_as_a_list(self, _isolated_hermes_home):
+        set_config_value(
+            "terminal.docker_volumes",
+            '["/tmp/demo-host:/client:rw"]',
+        )
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["docker_volumes"] == [
+            "/tmp/demo-host:/client:rw"
+        ]
+
+    def test_mapping_literal_is_saved_as_a_mapping(self, _isolated_hermes_home):
+        set_config_value("custom.settings", '{"mode": "strict"}')
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["custom"]["settings"] == {"mode": "strict"}
+
+    def test_malformed_list_value_is_rejected_cleanly(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit):
+            set_config_value("terminal.docker_volumes", '["unterminated"')
+
+        assert "expected a list value" in capsys.readouterr().err
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+
+
+# ---------------------------------------------------------------------------
 # Secret redaction in display output (issue #50245)
 # ---------------------------------------------------------------------------
 

@@ -8563,6 +8563,22 @@ class TelegramAdapter(BasePlatformAdapter):
         # Inject delivery constraint so the LLM knows direct Bot API calls to this
         # chat will fail (bot is not a member).  Media must go via MEDIA: tag so the
         # platform can stage → file_id → editMessageMedia on the stub.
+        #
+        # Only ever reference ONE path here — the same convention every other
+        # MEDIA:/absolute/path instruction in prompt_builder.py already uses.
+        # An earlier version of this note told the model to write to a
+        # hardcoded container-side path (``/cache/videos``) and cite a
+        # separately-computed host path in the MEDIA: tag, on the assumption
+        # that operators mount their cache dir at that exact container path.
+        # That's a ``terminal.docker_volumes`` mapping the operator chooses
+        # (see docs/configuration.md#docker-backend); nothing pins it to
+        # ``/cache/videos``, so on any deployment that maps it elsewhere the
+        # write silently lands somewhere the host-side validator can never
+        # see, and delivery fails with no actionable signal. Using the single
+        # HERMES_HOME-relative path for both the write and the MEDIA: tag
+        # works whenever the sandbox exposes it at the same path it has on
+        # the host — the same assumption the non-guest MEDIA: prompts already
+        # rely on — without hardcoding any particular mount layout.
         try:
             from hermes_constants import get_hermes_home as _ghh
             _host_video_dir = str(_ghh() / "cache" / "videos")
@@ -8575,10 +8591,10 @@ class TelegramAdapter(BasePlatformAdapter):
             "curl to api.telegram.org, etc.) to this chat will fail with "
             "\"Forbidden: bot is not a member\" — do NOT attempt them.\n"
             "To deliver a file:\n"
-            "1. Download it to `/cache/videos/<filename>` "
-            "(this directory is shared with the host).\n"
-            f"2. Output `MEDIA: {_host_video_dir}/<filename>` "
-            "(the host-visible path — NOT `/tmp/` which is container-local). "
+            f"1. Save it to `{_host_video_dir}/<filename>` "
+            "(this is the same path from inside the sandbox and on the host — "
+            "do not use `/tmp/` or any other container-local path).\n"
+            f"2. Output `MEDIA: {_host_video_dir}/<filename>` — the exact same path. "
             "The platform will upload it to Telegram and deliver it to the chat automatically."
         )
         if event.channel_prompt:

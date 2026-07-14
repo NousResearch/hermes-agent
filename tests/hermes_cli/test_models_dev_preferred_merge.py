@@ -62,6 +62,15 @@ class TestMergeHelper:
         # models.dev casing wins since it came first
         assert out == ["MiniMax-M2.7", "minimax-m2.5"]
 
+    def test_deepseek_is_curated_first(self):
+        """DeepSeek leads with V4 curated models even if models.dev returns legacy aliases first."""
+        mdev = ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro"]
+        curated = ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"]
+        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+            out = _merge_with_models_dev("deepseek", curated)
+        # Curated order (V4 first) preserved despite models.dev listing legacy aliases first.
+        assert out[:4] == curated
+
 
 class TestProviderModelIdsPreferred:
     def test_opencode_go_is_preferred(self):
@@ -137,6 +146,33 @@ class TestProviderModelIdsPreferred:
 
         assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
         assert captured["models"][0] == "kimi-k2.7-code"
+
+    def test_deepseek_curated_first_through_fallback_path(self):
+        """provider_model_ids('deepseek') leads with V4 models through the models.dev fallback path.
+
+        The live-catalog path (lines 2514-2525 in models.py) already handles curated-first
+        for DeepSeek via _LIVE_FIRST_PICKER_PROVIDERS. This test covers the fallback path
+        (lines 2533-2535) where _merge_with_models_dev is the gate — when the provider's
+        API-key block falls through (no key set, profile lookup fails), the curated static
+        list must still lead with V4 slugs even if models.dev/live returns legacy aliases
+        first.
+        """
+        assert "deepseek" in _MODELS_DEV_PREFERRED
+        mdev = ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro"]
+        with (
+            patch("agent.models_dev.list_agentic_models", return_value=mdev),
+            patch("providers.get_provider_profile", return_value=None),
+        ):
+            out = provider_model_ids("deepseek")
+        # V4 models must appear before legacy aliases.
+        idx_v4pro = out.index("deepseek-v4-pro")
+        idx_v4flash = out.index("deepseek-v4-flash")
+        idx_chat = out.index("deepseek-chat")
+        idx_reasoner = out.index("deepseek-reasoner")
+        assert idx_v4pro < idx_chat, f"v4-pro ({idx_v4pro}) must appear before chat ({idx_chat}): {out}"
+        assert idx_v4pro < idx_reasoner
+        assert idx_v4flash < idx_chat
+        assert idx_v4flash < idx_reasoner
 
 
 class TestOpenRouterAndNousUnchanged:

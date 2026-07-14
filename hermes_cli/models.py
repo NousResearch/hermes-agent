@@ -2272,15 +2272,19 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
         return list(curated)
 
     # Case-insensitive dedup while preserving order and curated casing.
+    # DeepSeek is intentionally curated-first: models.dev/live discovery can
+    # surface legacy aliases first (chat/reasoner) while the picker should lead
+    # with the current V4 agentic slugs.
+    primary, secondary = (curated, mdev) if provider == "deepseek" else (mdev, curated)
     seen_lower: set[str] = set()
     merged: list[str] = []
-    for mid in mdev:
+    for mid in primary:
         key = str(mid).lower()
         if key in seen_lower:
             continue
         seen_lower.add(key)
         merged.append(mid)
-    for mid in curated:
+    for mid in secondary:
         key = str(mid).lower()
         if key in seen_lower:
             continue

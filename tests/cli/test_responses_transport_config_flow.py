@@ -91,4 +91,4 @@ def test_classic_cli_passes_resolved_responses_transport_to_agent(monkeypatch):
     harness = _CLISetupHarness()
     assert harness._init_agent()
     assert captured["responses_transport"] == "websocket-cached"
-    assert harness._active_agent_route_signature[4] == "websocket-cached"
+    assert harness._active_agent_route_signature[5] == "websocket-cached"

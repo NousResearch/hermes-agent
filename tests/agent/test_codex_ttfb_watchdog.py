@@ -59,6 +59,52 @@ def _make_codex_agent(tmp_path, monkeypatch):
 
 
 
+def test_ttfb_marks_active_websocket_timeout_as_non_replayable(tmp_path, monkeypatch):
+    from agent import chat_completion_helpers as h
+    from agent.codex_websocket_transport import WebSocketStartedError
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.responses_transport = "websocket-cached"
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+
+    closes: list = []
+    stop = {"flag": False}
+    monkeypatch.setattr(
+        agent,
+        "_create_request_openai_client",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda _client, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda _client, reason=None: closes.append(reason),
+    )
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        agent._active_codex_websocket_abort = lambda: None
+        while not stop["flag"]:
+            time.sleep(0.02)
+        raise RuntimeError("worker released")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    try:
+        with pytest.raises(WebSocketStartedError) as excinfo:
+            h.interruptible_api_call(
+                agent,
+                {"model": "gpt-5.5", "input": "hi"},
+            )
+        assert excinfo.value.request_replay_safe is False
+        assert "TTFB" in str(excinfo.value)
+        assert "codex_ttfb_kill" in closes
+    finally:
+        stop["flag"] = True
+
 
 
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
@@ -345,7 +391,6 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         assert "with no response" in str(excinfo.value)
     finally:
         stop["flag"] = True
-
 
 
 

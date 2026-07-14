@@ -1728,27 +1728,28 @@ async def video_analyze_tool(
             }
         ]
 
-        vision_timeout = 180.0
-        vision_temperature = 0.1
+        video_temperature = 0.1
         try:
             from hermes_cli.config import cfg_get, load_config
             _cfg = load_config()
+            _video_cfg = cfg_get(_cfg, "auxiliary", "video", default={})
             _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
-            _vt = _vision_cfg.get("timeout")
-            if _vt is not None:
-                vision_timeout = max(float(_vt), 180.0)
-            _vtemp = _vision_cfg.get("temperature")
+            _vtemp = (_video_cfg.get("temperature")
+                      if _video_cfg.get("temperature") is not None
+                      else _vision_cfg.get("temperature"))
             if _vtemp is not None:
-                vision_temperature = float(_vtemp)
+                try:
+                    video_temperature = float(_vtemp)
+                except (ValueError, TypeError):
+                    pass
         except Exception:
             pass
 
         call_kwargs = {
-            "task": "vision",
+            "task": "video",
             "messages": messages,
-            "temperature": vision_temperature,
+            "temperature": video_temperature,
             "max_tokens": 4000,
-            "timeout": vision_timeout,
         }
         if model:
             call_kwargs["model"] = model

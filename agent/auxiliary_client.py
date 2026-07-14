@@ -3430,7 +3430,7 @@ def _retry_same_provider_sync(
     effective_timeout: float,
     effective_extra_body: dict,
 ) -> Any:
-    if task == "vision":
+    if task in ("vision", "video"):
         _, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider,
             model=final_model,
@@ -3487,7 +3487,7 @@ async def _retry_same_provider_async(
     effective_timeout: float,
     effective_extra_body: dict,
 ) -> Any:
-    if task == "vision":
+    if task in ("vision", "video"):
         _, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider,
             model=final_model,
@@ -6110,11 +6110,13 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+    """Read a task timeout, inheriting vision's value for unconfigured video."""
     if not task:
         return default
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("timeout")
+    if raw is None and task == "video":
+        raw = _get_auxiliary_task_config("vision").get("timeout")
     if raw is not None:
         try:
             return float(raw)
@@ -6141,9 +6143,11 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
-    """Read auxiliary.<task>.extra_body and return a shallow copy when valid."""
+    """Read a task request body, inheriting vision's value for unconfigured video."""
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("extra_body")
+    if not raw and task == "video":
+        raw = _get_auxiliary_task_config("vision").get("extra_body")
     if isinstance(raw, dict):
         return dict(raw)
     return {}
@@ -6473,7 +6477,7 @@ def call_llm(
     handles auth, request formatting, and model-specific arg adjustments.
 
     Args:
-        task: Auxiliary task name ("compression", "vision", "web_extract",
+        task: Auxiliary task name ("compression", "vision", "video", "web_extract",
               "session_search", "skills_hub", "mcp", "title_generation").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
@@ -6528,6 +6532,37 @@ def call_llm(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
+                f"Run: hermes setup"
+            )
+        resolved_provider = effective_provider or resolved_provider
+    elif task == "video":
+        # Use auxiliary.video config; fall back to auxiliary.vision when video backend is unset.
+        _vp = resolved_provider
+        _vm = resolved_model or model
+        _vbu = resolved_base_url or base_url
+        _vak = resolved_api_key or api_key
+        if _vp in ("auto", None) and not _vm and not _vbu:
+            _vp2, _vm2, _vbu2, _vak2, _ = _resolve_task_provider_model(
+                "vision", provider, model, base_url, api_key)
+            _vp = _vp2
+            _vm = _vm2 or _vm
+            _vbu = _vbu2 or _vbu
+            _vak = _vak2 or _vak
+        effective_provider, client, final_model = resolve_vision_provider_client(
+            provider=_vp if _vp != "auto" else provider,
+            model=_vm,
+            base_url=_vbu,
+            api_key=_vak,
+            async_mode=False,
+        )
+        if client is None and _vp not in ("auto", None) and not _vbu:
+            logger.warning(
+                "Video provider %s unavailable, falling back to auto vision backends", _vp)
+            effective_provider, client, final_model = resolve_vision_provider_client(
+                provider="auto", model=resolved_model, async_mode=False)
+        if client is None:
+            raise RuntimeError(
+                f"No LLM provider configured for task={task} provider={_vp}. "
                 f"Run: hermes setup"
             )
         resolved_provider = effective_provider or resolved_provider
@@ -6802,7 +6837,7 @@ def call_llm(
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
                 main_runtime=main_runtime,
-                is_vision=(task == "vision"),
+                is_vision=(task in ("vision", "video")),
             )
             if refreshed_client is not None:
                 logger.info("Auxiliary %s: refreshed Nous runtime credentials after 401, retrying",
@@ -7148,6 +7183,37 @@ async def async_call_llm(
                 f"Run: hermes setup"
             )
         resolved_provider = effective_provider or resolved_provider
+    elif task == "video":
+        # Use auxiliary.video config; fall back to auxiliary.vision when video backend is unset.
+        _vp = resolved_provider
+        _vm = resolved_model or model
+        _vbu = resolved_base_url or base_url
+        _vak = resolved_api_key or api_key
+        if _vp in ("auto", None) and not _vm and not _vbu:
+            _vp2, _vm2, _vbu2, _vak2, _ = _resolve_task_provider_model(
+                "vision", provider, model, base_url, api_key)
+            _vp = _vp2
+            _vm = _vm2 or _vm
+            _vbu = _vbu2 or _vbu
+            _vak = _vak2 or _vak
+        effective_provider, client, final_model = resolve_vision_provider_client(
+            provider=_vp if _vp != "auto" else provider,
+            model=_vm,
+            base_url=_vbu,
+            api_key=_vak,
+            async_mode=True,
+        )
+        if client is None and _vp not in ("auto", None) and not _vbu:
+            logger.warning(
+                "Video provider %s unavailable, falling back to auto vision backends", _vp)
+            effective_provider, client, final_model = resolve_vision_provider_client(
+                provider="auto", model=resolved_model, async_mode=True)
+        if client is None:
+            raise RuntimeError(
+                f"No LLM provider configured for task={task} provider={_vp}. "
+                f"Run: hermes setup"
+            )
+        resolved_provider = effective_provider or resolved_provider
     else:
         client, final_model = _get_cached_client(
             resolved_provider,
@@ -7350,7 +7416,7 @@ async def async_call_llm(
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
-                is_vision=(task == "vision"),
+                is_vision=(task in ("vision", "video")),
             )
             if refreshed_client is not None:
                 logger.info("Auxiliary %s (async): refreshed Nous runtime credentials after 401, retrying",
@@ -7507,7 +7573,7 @@ async def async_call_llm(
             if fb_client is not None:
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(
-                    fb_client, fb_model or "", is_vision=(task == "vision")
+                    fb_client, fb_model or "", is_vision=(task in ("vision", "video"))
                 )
                 fb_resp = await _call_fallback_candidate_async(
                     async_fb, async_fb_model or fb_model, fb_label,
@@ -7523,7 +7589,7 @@ async def async_call_llm(
                     resolved_provider, task, reason="stale fallback credential")
                 if fb_client is not None:
                     async_fb, async_fb_model = _to_async_client(
-                        fb_client, fb_model or "", is_vision=(task == "vision")
+                        fb_client, fb_model or "", is_vision=(task in ("vision", "video"))
                     )
                     fb_resp = await _call_fallback_candidate_async(
                         async_fb, async_fb_model or fb_model, fb_label,

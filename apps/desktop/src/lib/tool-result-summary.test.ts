@@ -64,6 +64,13 @@ describe('formatToolResultSummary', () => {
     expect(summary).toContain('- Title: Build report')
     expect(summary).toContain('- Completed: true')
   })
+
+  it('does not count empty-valued fields as hidden "more fields"', () => {
+    const summary = formatToolResultSummary({ name: 'deploy', warnings: [], tags: [] })
+
+    expect(summary).toContain('- Name: deploy')
+    expect(summary).not.toContain('more field')
+  })
 })
 
 describe('extractToolErrorMessage', () => {

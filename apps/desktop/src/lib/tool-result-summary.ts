@@ -260,28 +260,19 @@ function formatRecordSummary(record: Json, depth: number): string {
 
   const candidates = orderedKeys(keys).filter(k => !skipField(k, record[k]))
   const max = 8
-  const lines: string[] = []
 
-  for (const k of candidates) {
-    const v = formatFieldValue(record[k], depth + 1)
+  const rendered = candidates
+    .map(k => ({ k, v: formatFieldValue(record[k], depth + 1) }))
+    .filter(({ v }) => v)
 
-    if (!v) {
-      continue
-    }
-
-    lines.push(`- ${titleCase(k)}: ${v}`)
-
-    if (lines.length >= max) {
-      break
-    }
-  }
-
-  if (!lines.length) {
+  if (!rendered.length) {
     return ''
   }
 
-  if (candidates.length > lines.length) {
-    const remaining = candidates.length - lines.length
+  const lines = rendered.slice(0, max).map(({ k, v }) => `- ${titleCase(k)}: ${v}`)
+
+  if (rendered.length > max) {
+    const remaining = rendered.length - max
     lines.push(`- … ${remaining} more ${remaining === 1 ? 'field' : 'fields'}`)
   }
 

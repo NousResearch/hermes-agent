@@ -124,3 +124,57 @@ def test_substantive_tool_only_turn_invalidates_older_housekeeping_fallback():
         f"Expected text_response exit, got: {result['turn_exit_reason']}. "
         f"This indicates the wrong fallback path was taken."
     )
+
+
+def test_housekeeping_only_turn_still_sets_fallback():
+    """Regression: pure housekeeping turns (content + only housekeeping tools)
+    must still set the fallback so the post-response mute path works.  This
+    verifies the fix doesn't break the original use case the fallback was
+    designed for.
+    """
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_tool_defs("memory")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1/",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.valid_tool_names = {"memory"}
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = [
+        # Turn 1: Content + housekeeping tool (should set fallback)
+        _response(
+            content="You're welcome!",
+            finish_reason="tool_calls",
+            tool_calls=[_tool_call("memory", "mem1")],
+        ),
+        # Turn 2: Empty response (should use the housekeeping fallback)
+        _response(content="", finish_reason="stop"),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value="ok"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("save this")
+
+    assert result["final_response"] == "You're welcome!", (
+        f"Expected housekeeping fallback content, got: {result['final_response']}. "
+        f"Pure housekeeping turns should still set the fallback."
+    )
+    assert "fallback_prior_turn_content" in result.get("turn_exit_reason", ""), (
+        f"Expected fallback_prior_turn_content exit, got: {result['turn_exit_reason']}."
+    )

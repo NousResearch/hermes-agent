@@ -1332,6 +1332,20 @@ def load_gateway_config() -> GatewayConfig:
             # plugin's apply_yaml_config_fn hook
             # (plugins/platforms/telegram/adapter.py). #41112 / #3823.
 
+            # Propagate telegram.extra.* keys (e.g. base_url for custom Bot API
+            # servers) into platforms.telegram.extra so the adapter can read
+            # them at runtime.  The apply_yaml_config_fn hook above handles
+            # many extras, but base_url must be bridged here because the hook
+            # may not run when plugin discovery is skipped or the platform
+            # isn't in the registry.  (#26359)
+            _tg_section = yaml_cfg.get("telegram") or {}
+            if isinstance(_tg_section, dict):
+                _tg_extra_src = _tg_section.get("extra")
+                if isinstance(_tg_extra_src, dict) and "base_url" in _tg_extra_src:
+                    _tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                    _tg_extra = _tg_plat.setdefault("extra", {})
+                    _tg_extra.setdefault("base_url", _tg_extra_src["base_url"])
+
             # WhatsApp settings → env vars: migrated to the whatsapp plugin's
             # apply_yaml_config_fn hook (plugins/platforms/whatsapp/adapter.py).
             # #41112 / #3823.

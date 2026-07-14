@@ -129,6 +129,83 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
     assert ["git", "fetch", "origin", "--quiet"] not in calls
 
 
+def test_check_via_local_git_official_ssh_local_branch_ahead_is_up_to_date(tmp_path):
+    """A local branch containing upstream main must not be reported as behind."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="git@github.com:NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="local-ahead-sha\n")
+        if cmd == [
+            "git",
+            "ls-remote",
+            "https://github.com/NousResearch/hermes-agent.git",
+            "refs/heads/main",
+        ]:
+            return MagicMock(returncode=0, stdout="upstream-sha\trefs/heads/main\n")
+        if cmd == ["git", "merge-base", "--is-ancestor", "upstream-sha", "HEAD"]:
+            return MagicMock(returncode=0, stdout="")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 0
+
+
+def test_check_via_local_git_official_ssh_counts_via_https(tmp_path):
+    """Official SSH installs count behind commits without invoking SSH auth."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    calls = []
+    network_envs = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="git@github.com:NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="local-sha\n")
+        if cmd == [
+            "git",
+            "ls-remote",
+            "https://github.com/NousResearch/hermes-agent.git",
+            "refs/heads/main",
+        ]:
+            network_envs.append(kwargs.get("env"))
+            return MagicMock(returncode=0, stdout="upstream-sha\trefs/heads/main\n")
+        if cmd == [
+            "git",
+            "fetch",
+            "https://github.com/NousResearch/hermes-agent.git",
+            "main",
+            "--quiet",
+        ]:
+            network_envs.append(kwargs.get("env"))
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "rev-list", "--count", "HEAD..FETCH_HEAD"]:
+            return MagicMock(returncode=0, stdout="7\n")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 7
+    assert ["git", "fetch", "origin", "--quiet"] not in calls
+    assert len(network_envs) == 2
+    assert all(env["GIT_TERMINAL_PROMPT"] == "0" for env in network_envs)
+    assert all(env["GCM_INTERACTIVE"] == "Never" for env in network_envs)
+
+
 def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
     """Shallow installer clones must report presence-only, never a bogus count.
 
@@ -204,13 +281,16 @@ def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
+    fetch_env = None
 
     def fake_run(cmd, **kwargs):
+        nonlocal fetch_env
         if cmd == ["git", "remote", "get-url", "origin"]:
             return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
             return MagicMock(returncode=0, stdout="false\n")
         if cmd[:2] == ["git", "fetch"]:
+            fetch_env = kwargs.get("env")
             return MagicMock(returncode=0, stdout="")
         if cmd[:3] == ["git", "rev-list", "--count"]:
             return MagicMock(returncode=0, stdout="7\n")
@@ -220,6 +300,9 @@ def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
         result = banner._check_via_local_git(repo_dir)
 
     assert result == 7
+    assert fetch_env is not None
+    assert fetch_env["GIT_TERMINAL_PROMPT"] == "0"
+    assert fetch_env["GCM_INTERACTIVE"] == "Never"
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

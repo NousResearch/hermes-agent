@@ -170,25 +170,59 @@ def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str
     return (result.stdout or "").strip()
 
 
-def _check_via_rev(local_rev: str) -> Optional[int]:
-    """Compare an embedded git revision to upstream main via ls-remote.
+def _git_network_env() -> dict[str, str]:
+    """Return a git environment that cannot open credential prompts."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "Never"
+    return env
 
-    Returns 0 if up-to-date, ``UPDATE_AVAILABLE_NO_COUNT`` if behind,
-    or ``None`` on failure.
-    """
+
+def _upstream_main_rev() -> Optional[str]:
+    """Return the current upstream-main revision without using SSH auth."""
     try:
         result = subprocess.run(
             ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
             capture_output=True, text=True, timeout=10,
+            env=_git_network_env(),
         )
     except Exception:
         return None
     if result.returncode != 0 or not result.stdout:
         return None
     upstream_rev = result.stdout.split()[0]
+    return upstream_rev or None
+
+
+def _check_via_rev(local_rev: str) -> Optional[int]:
+    """Compare an embedded git revision to upstream main via ls-remote.
+
+    Returns 0 if up-to-date, ``UPDATE_AVAILABLE_NO_COUNT`` if behind,
+    or ``None`` on failure.
+    """
+    upstream_rev = _upstream_main_rev()
     if not upstream_rev:
         return None
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
+
+
+def _git_is_ancestor(ancestor: str, descendant: str, *, cwd: Path) -> Optional[bool]:
+    """Return whether ``ancestor`` is contained in ``descendant`` history."""
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    return None
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
@@ -196,10 +230,36 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        checked = _check_via_rev(head_rev) if head_rev else None
-        if checked == UPDATE_AVAILABLE_NO_COUNT:
-            return 1
-        return checked
+        upstream_rev = _upstream_main_rev()
+        if not head_rev or not upstream_rev:
+            return None
+        if head_rev == upstream_rev:
+            return 0
+        # Fetch over HTTPS so passive checks never trigger an SSH key prompt,
+        # then count the actual graph distance instead of treating every
+        # differing developer-branch tip as exactly one commit behind.
+        try:
+            fetched = subprocess.run(
+                ["git", "fetch", _UPSTREAM_REPO_URL, "main", "--quiet"],
+                capture_output=True,
+                timeout=10,
+                cwd=str(repo_dir),
+                env=_git_network_env(),
+            )
+            if fetched.returncode == 0:
+                count = _git_stdout(
+                    ["rev-list", "--count", "HEAD..FETCH_HEAD"], cwd=repo_dir
+                )
+                if count is not None:
+                    return int(count)
+        except Exception:
+            pass
+        # Developer/fork branches legitimately sit ahead of upstream main.
+        # A differing tip is not evidence of being behind when the upstream
+        # revision is already an ancestor of the local branch.
+        if _git_is_ancestor(upstream_rev, "HEAD", cwd=repo_dir):
+            return 0
+        return 1
 
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would
@@ -221,6 +281,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
+            env=_git_network_env(),
         )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine

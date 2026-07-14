@@ -105,6 +105,31 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _has_provider_auth_config(content: str) -> bool:
+    """Return True when API-key, endpoint, or OAuth provider auth is usable."""
+    if _has_provider_env_config(content):
+        return True
+    try:
+        import hermes_cli.auth as auth
+    except Exception:
+        return False
+
+    for status_name in (
+        "get_nous_auth_status",
+        "get_codex_auth_status",
+        "get_minimax_oauth_auth_status",
+        "get_xai_oauth_auth_status",
+        "get_qwen_auth_status",
+    ):
+        try:
+            status = getattr(auth, status_name)() or {}
+        except Exception:
+            continue
+        if status.get("logged_in"):
+            return True
+    return False
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -704,6 +729,8 @@ def run_doctor(args):
         content = env_path.read_text(encoding="utf-8")
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
+        elif _has_provider_auth_config(content):
+            check_ok("OAuth provider authentication configured")
         else:
             check_warn(f"No API key found in {_DHH}/.env")
             issues.append("Run 'hermes setup' to configure API keys")
@@ -712,6 +739,8 @@ def run_doctor(args):
         fallback_env = PROJECT_ROOT / '.env'
         if fallback_env.exists():
             check_ok(".env file exists (in project directory)")
+        elif _has_provider_auth_config(""):
+            check_ok("OAuth provider authentication configured")
         else:
             check_fail(f"{_DHH}/.env file missing")
             if should_fix:

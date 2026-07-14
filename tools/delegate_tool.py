@@ -2727,6 +2727,8 @@ def delegate_task(
         # subagent_stop hook loop so we don't walk `results` twice.
         _children_cost_total = 0.0
         for entry in results:
+            if not isinstance(entry, dict):
+                continue
             child_role = entry.pop("_child_role", None)
             child_cost = entry.pop("_child_cost_usd", 0.0)
             try:
@@ -2737,24 +2739,29 @@ def delegate_task(
             if _invoke_hook is None:
                 continue
             try:
-                _child_index = entry.get("task_index", -1)
+                _child_index = entry.pop("_child_index", None)
                 _child_agent = (
-                    children[_child_index][2]
+                    children[_child_index][0]
                     if isinstance(_child_index, int) and 0 <= _child_index < len(children)
                     else None
+                )
+                _child_task = (
+                    children[_child_index][1].get("goal", "")
+                    if isinstance(_child_index, int) and 0 <= _child_index < len(children)
+                    else ""
                 )
                 _invoke_hook(
                     "subagent_stop",
                     parent_session_id=_parent_session_id,
-                    parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
-                    child_session_id=getattr(_child_agent, "session_id", None),
+                    child_session_id=entry.get("session_id"),
                     child_role=child_role,
                     child_summary=entry.get("summary"),
                     child_status=entry.get("status"),
+                    child_task=_child_task,
                     duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
                 )
             except Exception:
-                logger.debug("subagent_stop hook invocation failed", exc_info=True)
+                logger.warning("subagent_stop hook invocation failed", exc_info=True)
 
         # Fold the aggregated child cost into the parent's session total.  This is
         # additive — each delegate_task call contributes its own children — so

@@ -708,6 +708,18 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_skips_agents_md_in_install_tree(self, monkeypatch, tmp_path):
+        # A backend launched from, or self-spawning into, the install tree must not
+        # load that tree's contributor AGENTS.md as project context. The guard keys
+        # off the package root, so point it at a fake tree holding an AGENTS.md.
+        import agent.runtime_cwd as rt
+
+        monkeypatch.setattr(rt, "_PACKAGE_ROOT", tmp_path.resolve())
+        (tmp_path / "AGENTS.md").write_text("Never give up on the right solution.")
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert "Never give up" not in result
+        assert result == ""
+
     def test_loads_cursorrules(self, tmp_path):
         (tmp_path / ".cursorrules").write_text("Always use type hints.")
         result = build_context_files_prompt(cwd=str(tmp_path))

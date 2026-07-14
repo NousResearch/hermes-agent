@@ -1945,3 +1945,72 @@ class TestClaimDispatch:
         # At minimum, the good job's record is still intact (no corruption from the bad neighbor)
         loaded = {j["id"]: j for j in load_jobs()}
         assert "good" in loaded
+
+
+class TestScheduleNoneSiblingCrashes:
+    """A non-dict 'schedule' (direct jobs.json edit, old writer, corruption)
+
+    is repaired by ``_get_due_jobs_locked`` during the periodic due-scan tick,
+    but ``resume_job``/``mark_job_run``/``claim_dispatch``/``advance_next_run``/
+    ``update_job`` can all run on a record the scan hasn't repaired yet (a
+    paused job, or a call made before the scheduler's first tick) — each read
+    ``schedule.get(...)`` directly, and a non-dict value raised
+    ``AttributeError`` before this fix. Sibling of the id-less/malformed
+    next_run_at/non-dict schedule due-scan fixes, but for the direct-call
+    paths rather than the scan.
+    """
+
+    def _write_bad_job(self, job_id="bad-sched", **overrides):
+        job = {
+            "id": job_id,
+            "name": "bad",
+            "prompt": "test",
+            "enabled": True,
+            "schedule": None,  # poison: not a dict
+            "state": "scheduled",
+            "next_run_at": None,
+        }
+        job.update(overrides)
+        save_jobs([job])
+        return job
+
+    def test_resume_job_does_not_crash(self, tmp_cron_dir):
+        self._write_bad_job(enabled=False, state="paused")
+        result = resume_job("bad-sched")
+        assert result is not None
+        assert result["schedule"] == {}
+
+    def test_mark_job_run_does_not_crash(self, tmp_cron_dir):
+        self._write_bad_job(enabled=False, state="paused")
+        mark_job_run("bad-sched", success=True)  # must not raise
+        assert load_jobs()[0]["schedule"] == {}
+
+    def test_claim_dispatch_does_not_crash(self, tmp_cron_dir):
+        self._write_bad_job(enabled=False, state="paused")
+        assert claim_dispatch("bad-sched") is True
+        # The in-place schedule repair must be persisted, not just avoid the
+        # crash in memory — otherwise jobs.json stays malformed on disk and
+        # every future call pays the same repair-without-persist cost.
+        assert load_jobs()[0]["schedule"] == {}
+
+    def test_advance_next_run_does_not_crash(self, tmp_cron_dir):
+        self._write_bad_job(enabled=False, state="paused")
+        assert advance_next_run("bad-sched") is False
+        assert load_jobs()[0]["schedule"] == {}
+
+    def test_update_job_does_not_crash_on_unrelated_field(self, tmp_cron_dir):
+        """Updating a field other than 'schedule' must not crash just
+        because the stored schedule is malformed."""
+        self._write_bad_job(enabled=True, state="scheduled")
+        result = update_job("bad-sched", {"assignee": "someone"})
+        assert result is not None
+        assert result["schedule"] == {}
+        assert result["assignee"] == "someone"
+
+    def test_update_job_still_parses_raw_string_schedule(self, tmp_cron_dir):
+        """The malformed-schedule guard must not swallow a legitimate raw
+        string schedule update (e.g. "every 10m") before it's parsed."""
+        job = create_job(prompt="hi", schedule="every 1h")
+        updated = update_job(job["id"], {"schedule": "every 2h"})
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["schedule"]["minutes"] == 120

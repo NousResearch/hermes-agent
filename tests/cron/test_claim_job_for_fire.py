@@ -82,3 +82,21 @@ def test_mark_job_run_clears_claim(temp_home):
     assert get_job(jid).get("fire_claim") is None
     # …and the re-armed recurring job is claimable again.
     assert claim_job_for_fire(jid) is True
+
+
+def test_claim_does_not_crash_on_non_dict_schedule(temp_home):
+    """A non-dict 'schedule' (direct jobs.json edit, old writer, corruption)
+    must not crash claim_job_for_fire with AttributeError — it's repaired
+    in place like the due-scan's own malformed-schedule guard."""
+    from cron.jobs import claim_job_for_fire, save_jobs, get_job
+
+    save_jobs([{
+        "id": "bad-sched",
+        "name": "bad",
+        "enabled": True,
+        "schedule": None,  # poison: not a dict
+        "state": "scheduled",
+    }])
+
+    assert claim_job_for_fire("bad-sched") is True
+    assert get_job("bad-sched")["schedule"] == {}

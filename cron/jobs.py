@@ -687,6 +687,28 @@ def _compute_grace_seconds(schedule: dict) -> int:
     return MIN_GRACE
 
 
+def _job_schedule_dict(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``job["schedule"]`` as a dict, repairing it in place if malformed.
+
+    A jobs.json record can carry a non-dict ``schedule`` (``null``, a stray
+    string, etc.) from a direct edit or an old writer. ``_get_due_jobs_locked``
+    already repairs this during the periodic due-scan tick (#61525), but
+    ``resume_job`` / ``mark_job_run`` / ``claim_dispatch`` / ``advance_next_run``
+    / ``claim_job_for_fire`` can all run on a record the scan hasn't repaired
+    yet (e.g. a paused job, or a call made before the scheduler's first tick) —
+    each calls ``schedule.get(...)`` directly and a non-dict value raises
+    ``AttributeError`` before that caller's own ``save_jobs()`` can persist
+    anything, crashing the request outright instead of treating the schedule
+    as merely absent. Repairing in place here means each caller's normal
+    save path already persists the fix.
+    """
+    schedule = job.get("schedule")
+    if not isinstance(schedule, dict):
+        schedule = {}
+        job["schedule"] = schedule
+    return schedule
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -1317,6 +1339,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            # A stored or caller-supplied non-dict, non-string schedule (null,
+            # a stray int, etc.) makes every `.get()` below raise before this
+            # loop's save_jobs() can persist anything — repair it the same way
+            # `_get_due_jobs_locked` does for the due-scan tick (#61525). A
+            # string is left alone here — it's a valid raw-schedule update
+            # ("every 10m") that the block below still needs to parse.
+            if not isinstance(updated.get("schedule"), (dict, str)):
+                updated["schedule"] = {}
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
@@ -1412,9 +1442,10 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     if not job:
         return None
 
-    next_run_at = compute_next_run(job["schedule"])
-    if next_run_at is None and job["schedule"].get("kind") == "once":
-        run_at = job["schedule"].get("run_at", "unknown")
+    schedule = _job_schedule_dict(job)
+    next_run_at = compute_next_run(schedule)
+    if next_run_at is None and schedule.get("kind") == "once":
+        run_at = schedule.get("run_at", "unknown")
         raise ValueError(
             f"Cannot resume: one-shot time {run_at} is in the past "
             f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire."
@@ -1486,6 +1517,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
+                schedule = _job_schedule_dict(job)
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
@@ -1510,7 +1542,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     repeat = job["repeat"]
                     times = repeat.get("times")
                     completed = repeat.get("completed", 0)
-                    kind = job.get("schedule", {}).get("kind")
+                    kind = schedule.get("kind")
                     preclaimed_oneshot = (
                         kind == "once"
                         and times is not None
@@ -1529,7 +1561,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         return
                 
                 # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                job["next_run_at"] = compute_next_run(schedule, now)
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't
@@ -1538,7 +1570,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # missing runtime dep into "job completed" and the user's
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
-                    kind = job.get("schedule", {}).get("kind")
+                    kind = schedule.get("kind")
                     if kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
@@ -1588,7 +1620,13 @@ def claim_dispatch(job_id: str) -> bool:
         for i, job in enumerate(jobs):
             if job["id"] != job_id:
                 continue
-            if job.get("schedule", {}).get("kind") != "once":
+            schedule_was_malformed = not isinstance(job.get("schedule"), dict)
+            if _job_schedule_dict(job).get("kind") != "once":
+                if schedule_was_malformed:
+                    # _job_schedule_dict() repaired job["schedule"] in place;
+                    # persist it now since this path returns before the
+                    # dispatch-claim save below would otherwise do it.
+                    save_jobs(jobs)
                 return True  # recurring jobs use advance_next_run(), not dispatch claims
             repeat = job.get("repeat")
             if not repeat:
@@ -1677,11 +1715,18 @@ def advance_next_run(job_id: str) -> bool:
         jobs = load_jobs()
         for job in jobs:
             if job["id"] == job_id:
-                kind = job.get("schedule", {}).get("kind")
+                schedule_was_malformed = not isinstance(job.get("schedule"), dict)
+                schedule = _job_schedule_dict(job)
+                kind = schedule.get("kind")
                 if kind not in {"cron", "interval"}:
+                    if schedule_was_malformed:
+                        # _job_schedule_dict() repaired job["schedule"] in
+                        # place; persist it now since this path returns
+                        # before the save below would otherwise do it.
+                        save_jobs(jobs)
                     return False
                 now = _hermes_now().isoformat()
-                new_next = compute_next_run(job["schedule"], now)
+                new_next = compute_next_run(schedule, now)
                 if new_next and new_next != job.get("next_run_at"):
                     job["next_run_at"] = new_next
                     save_jobs(jobs)
@@ -1752,9 +1797,10 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                 except Exception:
                     pass  # malformed claim → overwrite
             job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
-            kind = job.get("schedule", {}).get("kind")
+            schedule = _job_schedule_dict(job)
+            kind = schedule.get("kind")
             if kind in {"cron", "interval"}:
-                nxt = compute_next_run(job["schedule"], now.isoformat())
+                nxt = compute_next_run(schedule, now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
             save_jobs(jobs)

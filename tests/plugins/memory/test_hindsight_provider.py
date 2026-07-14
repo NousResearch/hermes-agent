@@ -1437,6 +1437,270 @@ class TestUpdateModeAppendCapability:
 
 
 # ---------------------------------------------------------------------------
+# Append retain acknowledgement behavior
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def append_provider(provider_with_config, monkeypatch):
+    """Build deterministic append providers and clean up all shared state."""
+    import asyncio
+    from plugins.memory.hindsight import (
+        _append_capability_cache,
+        _append_capability_lock,
+    )
+
+    providers = []
+    release_events = []
+
+    def clear_capability_cache():
+        with _append_capability_lock:
+            _append_capability_cache.clear()
+
+    def make(*, release_on_cleanup=None, **config):
+        p = provider_with_config(**config)
+        p._run_sync = lambda coro: asyncio.run(coro)
+        providers.append(p)
+        if release_on_cleanup is not None:
+            release_events.append(release_on_cleanup)
+        return p
+
+    clear_capability_cache()
+    monkeypatch.setattr(
+        "plugins.memory.hindsight._fetch_hindsight_api_version",
+        lambda *args, **kwargs: "0.5.6",
+    )
+    yield make
+    for event in release_events:
+        event.set()
+    try:
+        for p in reversed(providers):
+            p.shutdown()
+    finally:
+        clear_capability_cache()
+
+
+class TestAppendRetainAcknowledgements:
+    @staticmethod
+    def _turns(call):
+        payload = json.loads(call["items"][0]["content"])
+        return [(turn[0]["content"], turn[1]["content"]) for turn in payload]
+
+    @staticmethod
+    def _turn(number):
+        return (f"User: turn{number}-user", f"Assistant: turn{number}-asst")
+
+    @classmethod
+    def _payloads(cls, calls):
+        return [cls._turns(call) for call in calls]
+
+    def test_failed_append_retain_is_retried_with_next_boundary(
+        self, append_provider
+    ):
+        """A queued append is not acknowledged until aretain_batch succeeds."""
+        calls = []
+
+        async def _fail_first_retain(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError("first append failed")
+            return SimpleNamespace(ok=True)
+
+        p = append_provider(retain_every_n_turns=1)
+        p._client.aretain_batch = AsyncMock(side_effect=_fail_first_retain)
+        p.sync_turn("turn1-user", "turn1-asst")
+        p._retain_queue.join()
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        assert self._payloads(calls) == [
+            [self._turn(1)],
+            [self._turn(1), self._turn(2)],
+        ]
+
+    def test_in_flight_append_failure_preserves_queued_turns_exactly_once(
+        self, append_provider
+    ):
+        """Queued work observes the first append's eventual failure in FIFO order."""
+        import threading
+
+        first_started = threading.Event()
+        release_first = threading.Event()
+        successful_calls = []
+        call_count = 0
+
+        async def _block_then_fail_first_retain(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                first_started.set()
+                if not release_first.wait(timeout=5.0):
+                    raise AssertionError("test did not release the first retain")
+                raise RuntimeError("in-flight append failed")
+            successful_calls.append(kwargs)
+            return SimpleNamespace(ok=True)
+
+        p = append_provider(
+            retain_every_n_turns=1, release_on_cleanup=release_first
+        )
+        p._client.aretain_batch = AsyncMock(
+            side_effect=_block_then_fail_first_retain
+        )
+        p.sync_turn("turn1-user", "turn1-asst")
+        assert first_started.wait(timeout=5.0), (
+            "first retain never entered aretain_batch"
+        )
+        p.sync_turn("turn2-user", "turn2-asst")
+        p.sync_turn("turn3-user", "turn3-asst")
+        release_first.set()
+        p._retain_queue.join()
+
+        assert self._payloads(successful_calls) == [
+            [self._turn(1), self._turn(2)],
+            [self._turn(3)],
+        ]
+
+    def test_in_flight_append_success_preserves_queued_turns_exactly_once(
+        self, append_provider
+    ):
+        """Queued append targets account for an earlier in-flight ACK."""
+        import threading
+
+        first_started = threading.Event()
+        release_first = threading.Event()
+        writer_drained = threading.Event()
+        successful_calls = []
+        call_count = 0
+
+        async def _block_then_succeed_first_retain(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                first_started.set()
+                if not release_first.wait(timeout=5.0):
+                    raise AssertionError("test did not release the first retain")
+            successful_calls.append(kwargs)
+            return SimpleNamespace(ok=True)
+
+        p = append_provider(
+            retain_every_n_turns=1, release_on_cleanup=release_first
+        )
+        p._client.aretain_batch = AsyncMock(
+            side_effect=_block_then_succeed_first_retain
+        )
+        p.sync_turn("turn1-user", "turn1-asst")
+        assert first_started.wait(timeout=5.0), (
+            "first retain never entered aretain_batch"
+        )
+        p.sync_turn("turn2-user", "turn2-asst")
+        p.sync_turn("turn3-user", "turn3-asst")
+        p._retain_queue.put(writer_drained.set)
+        release_first.set()
+        assert writer_drained.wait(timeout=5.0), "retain queue did not drain"
+
+        assert self._payloads(successful_calls) == [
+            [self._turn(1)],
+            [self._turn(2)],
+            [self._turn(3)],
+        ]
+
+    def test_session_switch_flushes_only_unacknowledged_append_turn(
+        self, append_provider
+    ):
+        """A switch flush uses the old stable document after an earlier ACK."""
+        import threading
+
+        batch_acknowledged = threading.Event()
+        switch_flush_finished = threading.Event()
+        successful_calls = []
+
+        async def _record_successful_retain(**kwargs):
+            successful_calls.append(kwargs)
+            return SimpleNamespace(ok=True)
+
+        p = append_provider(retain_every_n_turns=2)
+        p._client.aretain_batch = AsyncMock(side_effect=_record_successful_retain)
+        old_stable_document = p._session_id
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.put(batch_acknowledged.set)
+        assert batch_acknowledged.wait(timeout=5.0), (
+            "initial batch was not acknowledged"
+        )
+        assert p._session_turns == []
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.put(switch_flush_finished.set)
+        assert switch_flush_finished.wait(timeout=5.0), (
+            "switch flush did not finish"
+        )
+
+        assert p._client.aretain_batch.await_count == 2
+        flush = successful_calls[1]
+        assert flush["document_id"] == old_stable_document
+        assert flush["items"][0]["update_mode"] == "append"
+        assert self._turns(flush) == [self._turn(3)]
+
+    @pytest.mark.parametrize(
+        ("fail_first", "expected_call_count"), [(False, 1), (True, 2)]
+    )
+    def test_session_switch_while_append_is_in_flight_keeps_old_state_isolated(
+        self,
+        append_provider,
+        fail_first,
+        expected_call_count,
+    ):
+        """A switch neither duplicates an ACK nor drops a failed old-session turn."""
+        import threading
+
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls = []
+
+        async def _block_first_retain(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                first_started.set()
+                if not release_first.wait(timeout=5.0):
+                    raise AssertionError("test did not release the first retain")
+                if fail_first:
+                    raise RuntimeError("in-flight append failed")
+            return SimpleNamespace(ok=True)
+
+        p = append_provider(
+            retain_every_n_turns=1, release_on_cleanup=release_first
+        )
+        p._client.aretain_batch = AsyncMock(side_effect=_block_first_retain)
+        old_document_id = p._session_id
+        p.sync_turn("turn1-user", "turn1-asst")
+        assert first_started.wait(timeout=5.0), (
+            "first retain never entered aretain_batch"
+        )
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        release_first.set()
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.await_count == expected_call_count
+        assert all(call["document_id"] == old_document_id for call in calls)
+        assert all(call["items"][0]["update_mode"] == "append" for call in calls)
+        assert self._payloads(calls) == [[self._turn(1)]] * expected_call_count
+        assert p._session_id == "new-sid"
+        assert p._session_turns == []
+
+    def test_successful_append_retain_prunes_acknowledged_turns_from_buffer(
+        self, append_provider
+    ):
+        """Append mode prunes acknowledged turns from its in-memory buffer."""
+        p = append_provider(retain_every_n_turns=2)
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        assert p._session_turns == []
+
+
+# ---------------------------------------------------------------------------
 # System prompt tests
 # ---------------------------------------------------------------------------
 

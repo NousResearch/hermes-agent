@@ -4586,19 +4586,30 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    # Voice mode: generate TTS audio and include path in the SSE event
-                    # so the caller (spire-ui proxy) can intercept and route it.
-                    tts_audio_path: Optional[str] = None
+                    # Voice mode: generate TTS audio and include base64-encoded bytes
+                    # in the SSE event so the caller (spire-ui in a separate container)
+                    # receives the audio in-band — a filesystem path would be meaningless
+                    # across container boundaries.
+                    tts_audio_b64: Optional[str] = None
                     if _voice_mode and final_response:
                         try:
                             from tools.tts_tool import check_tts_requirements, text_to_speech_tool
+                            import base64 as _b64
                             import json as _json
+                            import os as _os
                             if check_tts_requirements():
                                 _tts_result = await asyncio.get_running_loop().run_in_executor(
                                     None, text_to_speech_tool, final_response
                                 )
                                 _tts_data = _json.loads(_tts_result) if isinstance(_tts_result, str) else {}
-                                tts_audio_path = _tts_data.get("file_path")
+                                _tts_path = _tts_data.get("file_path")
+                                if _tts_path and _os.path.exists(_tts_path):
+                                    with open(_tts_path, "rb") as _f:
+                                        tts_audio_b64 = _b64.b64encode(_f.read()).decode()
+                                    try:
+                                        _os.unlink(_tts_path)
+                                    except Exception:
+                                        pass
                         except Exception as _tts_err:
                             logger.warning("[api_server] Voice TTS failed: %s", _tts_err)
                     q.put_nowait({
@@ -4606,7 +4617,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
-                        **({"audio_path": tts_audio_path} if tts_audio_path else {}),
+                        **({"audio_base64": tts_audio_b64} if tts_audio_b64 else {}),
                         "usage": usage,
                     })
                     self._set_run_status(

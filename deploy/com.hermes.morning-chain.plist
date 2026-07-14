@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Equivalent cron expression (UTC):
+    45 22 * * * /path/to/hermes-agent/deploy/bin/morning-chain.sh
+  That fires at 22:45 UTC = 05:45 Asia/Bangkok (UTC+7) each morning.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hermes.morning-chain</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>HERMES_REPO/deploy/bin/morning-chain.sh</string>
+  </array>
+
+  <!--
+    Fire at 22:45 UTC daily = 05:45 Asia/Bangkok (UTC+7).
+    Ensure the Mac is already awake before this fires; see deploy/README.md
+    for the recommended pmset wakeorpoweron command.
+  -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>22</integer>
+    <key>Minute</key>
+    <integer>45</integer>
+  </dict>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!--
+      Non-interactive Claude auth: export your OAuth token here.
+      See deploy/README.md for details on obtaining this token.
+    -->
+    <key>CLAUDE_CODE_OAUTH_TOKEN</key>
+    <string>REPLACE_WITH_YOUR_TOKEN</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>HERMES_REPO/logs/morning-chain-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>HERMES_REPO/logs/morning-chain-launchd.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>HERMES_REPO</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

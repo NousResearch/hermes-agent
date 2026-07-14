@@ -20,6 +20,8 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+import urllib.parse as _urllib_parse
+
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -3301,6 +3303,82 @@ class BasePlatformAdapter(ABC):
         lower = url.lower().split('?')[0]  # Strip query params
         return lower.endswith('.gif')
 
+    def _normalize_file_url(url: str) -> Optional[str]:
+        """Normalize a ``file://`` URI to a local file path.
+
+        Supports the following formats:
+
+        * ``file:///C:/path/to/file.png`` (three slashes + Windows drive letter)
+        * ``file://C:/path/to/file.png``  (two slashes + Windows drive letter)
+        * ``file://C:\\path\\to\\file.png`` (backslash variant)
+        * ``file:///tmp/foo.png``          (POSIX absolute)
+        * ``%20`` / ``%23`` / etc. encoded chars are decoded.
+        * ``'file://...'`` / ``"file://..."`` / backtick-quoted URIs are
+          stripped of surrounding quotes.
+
+        First version rejects UNC paths (``file://server/share/...``).
+
+        Returns:
+            Resolved local path string, or ``None`` for invalid / unsupported URIs.
+        """
+        import urllib.parse
+
+        if not url:
+            return None
+        raw = url.strip()
+        # Strip surrounding quotes / backticks
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "`\"'":
+            raw = raw[1:-1].strip()
+        if not raw.lower().startswith('file://'):
+            return None
+
+        # Normalise backslashes to forward slashes for URL parsing
+        normalised = raw.replace('\\', '/')
+
+        parsed = urllib.parse.urlparse(normalised)
+        if parsed.scheme.lower() != 'file':
+            return None
+
+        if parsed.netloc:
+            # ``file://C:/path``   → netloc="C:", path="/path"
+            # ``file://server/…``  → netloc="server", …
+            if len(parsed.netloc) == 2 and parsed.netloc[1] == ':':
+                # Windows drive letter
+                local = parsed.netloc + parsed.path
+            else:
+                # UNC — reject in first version
+                logger.debug(
+                    "Rejecting UNC file:// URI: %s", _log_safe_path(url)
+                )
+                return None
+        else:
+            # ``file:///C:/path``  → path="/C:/path"
+            # ``file:///tmp/foo``  → path="/tmp/foo"
+            local = parsed.path
+            # Strip leading ``/`` for Windows drive-letter patterns
+            if len(local) >= 3 and local[0] == '/' and local[1].isalpha() and local[2] == ':':
+                local = local[1:]
+
+        # URL-decode
+        local = urllib.parse.unquote(local)
+
+        # Normalise backslashes to forward slashes in the decoded result
+        # so encoded variants (``%5C%5C``) are caught by the ``//`` check below.
+        local = local.replace('\\', '/')
+
+        # After decoding and normalising, reject paths starting with ``//`` —
+        # these are UNC paths that slipped past ``netloc`` (e.g.
+        # ``file:////server/share``, ``file:///%2F%2Fserver/share``,
+        # or ``file:///%5C%5Cserver/share``).
+        if local.startswith('//'):
+            logger.debug(
+                "Rejecting decoded UNC file:// URI: %s", _log_safe_path(url)
+            )
+            return None
+
+        return local
+
+
     @staticmethod
     def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
         """
@@ -3310,7 +3388,14 @@ class BasePlatformAdapter(ABC):
         - ![alt text](https://example.com/image.png)
         - <img src="https://example.com/image.png">
         - <img src="https://example.com/image.png"></img>
-        
+        - ![alt text](file:///C:/path/to/screenshot.png)
+        - <img src="file:///C:/path/to/screenshot.png">
+
+        ``file://`` URIs are normalised via :meth:`_normalize_file_url` and
+        validated through :func:`validate_media_delivery_path`.  Invalid,
+        missing, unsafe or non-image ``file://`` candidates are silently
+        skipped so the original text is never deleted.
+
         Args:
             content: The response text to scan.
         
@@ -3319,34 +3404,129 @@ class BasePlatformAdapter(ABC):
         """
         images = []
         cleaned = content
-        
+
+        FILE_LIKE_EXTS = frozenset({
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tiff',
+        })
+
+        # Mask protected spans so file:// examples in code/sample text
+        # are not promoted to real attachments.  Scan against the masked
+        # copy; only matches that survived masking (still begin with `![`
+        # or `<img`) emit source-paths from the original content.
+        scan_content = BasePlatformAdapter._mask_protected_spans(content)
+        scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+
+        # Accepted tag spans for cleanup — (start, end) in original content
+        # coordinates (masking is offset-preserving).
+        accepted_spans: list = []
+
         # Match markdown images: ![alt](url)
-        md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
-        for match in re.finditer(md_pattern, content):
-            alt_text = match.group(1)
-            url = match.group(2)
-            # Only extract URLs that look like actual images
-            if any(url.lower().endswith(ext) or ext in url.lower() for ext in
-                   ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
-                images.append((url, alt_text))
-        
-        # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
-        html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-        for match in re.finditer(html_pattern, content):
-            url = match.group(1)
-            images.append((url, ""))
-        
-        # Remove only the matched image tags from content (not all markdown images)
-        if images:
-            extracted_urls = {url for url, _ in images}
-            def _remove_if_extracted(match):
-                url = match.group(2) if match.lastindex >= 2 else match.group(1)
-                return '' if url in extracted_urls else match.group(0)
-            cleaned = re.sub(md_pattern, _remove_if_extracted, cleaned)
-            cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
+        # HTTPS variant: space-delimited (unchanged).
+        # file:// variant: allows bare spaces in the path so that
+        # ``![shot](file:///C:/Users/Alice/Desktop/screen shot.png)``
+        # is correctly captured.
+        md_http_re = re.compile(
+            r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
+        )
+        md_file_re = re.compile(
+            r'!\[([^\]]*)\]\((file://[^\)]+)\)', re.IGNORECASE
+        )
+        for md_re, is_file_pattern in [(md_http_re, False), (md_file_re, True)]:
+            for match in md_re.finditer(scan_content):
+                # Reject matches that landed in a masked region
+                if not match.group(0).startswith('!['):
+                    continue
+                # Resolve real text from *original* content at same offset
+                real_match = md_re.match(content[match.start():])
+                if not real_match:
+                    continue
+                alt_text = real_match.group(1)
+                url = real_match.group(2)
+                if is_file_pattern or url.lower().startswith('file://'):
+                    local_path = BasePlatformAdapter._normalize_file_url(url)
+                    if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
+                        validated = validate_media_delivery_path(local_path)
+                        if validated:
+                            norm_url = 'file://' + _urllib_parse.quote(validated, safe='/:\\')
+                            images.append((norm_url, alt_text))
+                            accepted_spans.append(match.span())
+                            continue
+                    logger.debug(
+                        "Skipping file:// image candidate (not found/unsafe): %s",
+                        _log_safe_path(url),
+                    )
+                elif any(url.lower().endswith(ext) or ext in url.lower() for ext in
+                       ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
+                    images.append((url, alt_text))
+                    accepted_spans.append(match.span())
+
+        # Match HTML img tags, case-insensitive, with optional extra
+        # attributes before or after ``src`` (e.g. ``<img width="200" src="...">``).
+        # Uses proper attribute parsing so ``data-src``, ``notsrc``, and
+        # ``src`` inside a quoted attribute *value* (e.g.
+        # ``alt="example src=file://..."``) are all rejected.
+        _html_img_tag_re = re.compile(
+            r'<img\s+[^>]*/?>\s*(?:</img>)?', re.IGNORECASE
+        )
+        _html_attr_re = re.compile(
+            r'([a-zA-Z_][-a-zA-Z0-9_]*)\s*=\s*(?:'
+            r'"([^"]*)"|\'([^\']*)\'|([^\s>]+))',
+            re.IGNORECASE,
+        )
+        for match in _html_img_tag_re.finditer(scan_content):
+            # Reject matches in masked regions
+            if not match.group(0).lower().startswith('<img'):
+                continue
+            real_tag = content[match.start():match.end()]
+            src_url = ""
+            for attr_m in _html_attr_re.finditer(real_tag):
+                if attr_m.group(1).lower() == "src":
+                    src_url = (
+                        attr_m.group(2)
+                        or attr_m.group(3)
+                        or attr_m.group(4)
+                        or ""
+                    )
+                    break
+            if not src_url:
+                continue
+            # Only handle http(s):// and file:// values. Bare Windows
+            # paths (``C:\...``), bare POSIX paths (``/tmp/...``),
+            # and other schemes are left in the response text.
+            if not src_url.lower().startswith(('http://', 'https://', 'file://')):
+                continue
+            url = src_url
+            if url.lower().startswith('file://'):
+                local_path = BasePlatformAdapter._normalize_file_url(url)
+                if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
+                    validated = validate_media_delivery_path(local_path)
+                    if validated:
+                        norm_url = 'file://' + _urllib_parse.quote(validated, safe='/:\\')
+                        images.append((norm_url, ""))
+                        accepted_spans.append(match.span())
+                        continue
+                logger.debug(
+                    "Skipping file:// image candidate (not found/unsafe): %s",
+                    _log_safe_path(url),
+                )
+            else:
+                images.append((url, ""))
+                accepted_spans.append(match.span())
+
+        # Delete only the spans that were accepted during the first scan.
+        # This is precise: a non-image tag (e.g. PDF) is never deleted, and
+        # a tag whose file:// validation failed is not deleted either. A tag
+        # that appears both in normal text AND in fenced code will have only
+        # the normal-text span recorded (the fenced-code span was masked in
+        # scan_content and never visited), so the code example survives.
+        if accepted_spans:
+            chars = list(cleaned)
+            for start, end in sorted(accepted_spans, reverse=True):
+                del chars[start:end]
+            cleaned = ''.join(chars)
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-        
+
         return images, cleaned
     
     async def send_voice(
@@ -3535,8 +3715,10 @@ class BasePlatformAdapter(ABC):
         # Build list of (start, end) spans to mask
         spans: list = []
 
-        # Fenced code blocks: ```...```
-        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+        # Fenced code blocks: ```...``` or ~~~...~~~ (same open/close pair,
+        # unclosed fences are masked to end of content).
+        fence_re = re.compile(r'(```|~~~)[^\n]*\n.*?(?:\1|$)', re.DOTALL)
+        for m in fence_re.finditer(content):
             spans.append((m.start(), m.end()))
 
         # Inline code: `...` but NOT backtick-quoted paths in MEDIA: tags
@@ -3548,8 +3730,9 @@ class BasePlatformAdapter(ABC):
                 continue  # This is a MEDIA path quote, not inline code
             spans.append((start, m.end()))
 
-        # Blockquote lines: > at line start
-        for m in re.finditer(r'^>.*$', content, re.MULTILINE):
+        # Blockquote lines: > at line start, with 0-3 leading spaces
+        # (CommonMark spec). Four or more spaces = indented code, not quote.
+        for m in re.finditer(r'^ {0,3}>.*$', content, re.MULTILINE):
             spans.append((m.start(), m.end()))
 
         # Apply masking
@@ -3563,39 +3746,44 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _mask_json_string_media(content: str) -> str:
-        """Blank out ``MEDIA:<bare-path>`` occurrences that sit inside a JSON
-        string *value* so they are never delivered as real attachments.
+        """Blank out ``MEDIA:<bare-path>`` and ``file://`` image tag occurrences
+        that sit inside a JSON string *value* so they are never delivered as
+        real attachments.
 
         Serialized tool results frequently embed a previous reply's text, e.g.::
 
             {"result": "MEDIA:/Users/x/.hermes/media/generated/stale.png"}
+            {"result": "![img](file:///tmp/generated.png)"}
+            {"result": "<img src=file:///tmp/generated.png>"}
 
-        Here the ``MEDIA:`` is part of stored text, not an outbound directive,
-        but the bare-path branch of ``MEDIA_TAG_CLEANUP_RE`` would still match it
-        and re-deliver a stale file. (Regression report #34375.)
+        Here the ``file://`` paths are part of stored text, not outbound
+        directives, but ``extract_images`` would still match them and trigger
+        a native upload. (Regression report #PR43332 review.)
 
-        The discriminator is precise so legitimate tags are untouched:
+        The discriminator:
 
         * Only spans opened by a JSON value-context quote (``:``, ``,``, ``{`` or
           ``[`` immediately before the ``"``) are considered.
-        * Within such a span, only a ``MEDIA:`` followed by a **bare** path
-          (``/``, ``~/`` or ``X:\\``) is masked. A ``MEDIA:"..."`` quoted-path
-          tag — a real LLM output format the extractor supports — is not bare and
-          is left alone.
+        * Within such a span, any ``file://`` presence or ``MEDIA:`` followed by
+          a bare path is masked.
         * Tags at line start, after prose whitespace, or indented are outside any
           JSON value span and are never affected.
 
         Offsets are preserved (matched chars replaced with spaces, newlines kept)
         so downstream match positions stay valid.
         """
-        if '"' not in content or "MEDIA:" not in content:
+        # Use case-insensitive checks so FILE:// (accepted by extract_images)
+        # is also blocked.
+        content_lower = content.lower()
+        if '"' not in content or ("media:" not in content_lower and "file://" not in content_lower):
             return content
         chars = list(content)
         # JSON value-context string: a quote preceded by : , { or [ (optional ws),
         # capturing the (escape-aware) string body up to the closing quote.
         for m in re.finditer(r'(?<=[:,{\[])\s*"((?:[^"\\\n]|\\.)*)"', content):
             seg = m.group(1)
-            if re.search(r'MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\])', seg):
+            seg_lower = seg.lower()
+            if re.search(r'(?:media:\s*(?:~/|/|[A-Za-z]:[/\\])|file://)', seg_lower):
                 for i in range(m.start(1), m.end(1)):
                     if chars[i] != '\n':
                         chars[i] = ' '

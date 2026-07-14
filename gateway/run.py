@@ -13347,7 +13347,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # extract_local_files scanned text that still contained MEDIA: tags,
             # producing false-positive bare-path matches with the MEDIA: prefix
             # glued on. This matches the chain order in gateway/platforms/base.py.
-            _, cleaned = adapter.extract_images(cleaned)
+            images, cleaned = adapter.extract_images(cleaned)
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
@@ -13360,14 +13360,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (e.g. Signal's multi-attachment RPC). When [[as_document]] was
             # set, image-extension files skip the photo path and route to
             # send_document below — preserving original bytes.
-            image_paths: list = []
+            image_delivery: list = []
             non_image_media: list = []
             for media_path, is_voice in media_files:
                 ext = Path(media_path).suffix.lower()
                 if (ext in _IMAGE_EXTS
                         and not is_voice
                         and not force_document_attachments):
-                    image_paths.append(media_path)
+                    image_delivery.append((f"file://{_quote(media_path)}", ""))
                 else:
                     non_image_media.append((media_path, is_voice))
 
@@ -13375,16 +13375,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for file_path in local_files:
                 if (Path(file_path).suffix.lower() in _IMAGE_EXTS
                         and not force_document_attachments):
-                    image_paths.append(file_path)
+                    image_delivery.append((f"file://{_quote(file_path)}", ""))
                 else:
                     non_image_local.append(file_path)
 
-            if image_paths:
+            # Also include explicit image tags (HTTP(S) or file:// URIs)
+            # from extract_images, deduplicated against MEDIA / bare paths.
+            for img_url, img_alt in images:
+                if not any(img_url in u for u, _ in image_delivery):
+                    image_delivery.append((img_url, img_alt))
+
+            if image_delivery:
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
-                        images=images,
+                        images=image_delivery,
                         metadata=_thread_meta,
                     )
                 except Exception as e:
@@ -13572,13 +13577,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata=_thread_metadata,
                     )
 
-                # Send extracted images
-                for image_url, alt_text in (images or []):
+                # Send extracted images via send_multiple_images so that
+                # ``file://`` URIs reach ``send_image_file`` (decoded) instead
+                # of being passed as a literal pathname to ``send_image``.
+                if images:
                     try:
-                        await adapter.send_image(
+                        await adapter.send_multiple_images(
                             chat_id=source.chat_id,
-                            image_url=image_url,
-                            caption=alt_text,
+                            images=images,
                             metadata=_thread_metadata,
                         )
                     except Exception:

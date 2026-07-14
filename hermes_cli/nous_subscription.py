@@ -169,9 +169,11 @@ def _has_agent_browser() -> bool:
     probe_env = hermes_subprocess_env(inherit_credentials=False)
 
     local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
-    local_bin = shutil.which("agent-browser", path=str(local_bin_dir)) or str(
-        local_bin_dir / "agent-browser"
-    )
+    try:
+        local_bin = shutil.which("agent-browser", path=str(local_bin_dir))
+    except Exception:
+        local_bin = None
+    local_bin = local_bin or str(local_bin_dir / "agent-browser")
     candidates = (
         shutil.which("agent-browser"),
         local_bin,

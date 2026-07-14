@@ -78,7 +78,7 @@ class TestUpstageReasoning:
         assert extra_body == {}
         assert top_level == {"reasoning_effort": effort}
 
-    @pytest.mark.parametrize("effort", ["xhigh", "max"])
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
     def test_pro_strong_efforts_collapse_to_high(self, upstage_profile, effort):
         _, top_level = upstage_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}, model="solar-pro2"

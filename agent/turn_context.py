@@ -121,6 +121,46 @@ def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     return v if isinstance(v, str) else None
 
 
+def consume_gateway_turn_context_notes(agent: Any) -> str:
+    """Pop the gateway's per-turn must-deliver notes off the agent (one-shot).
+
+    The gateway relocates volatile per-turn facts OUT of the ephemeral system
+    prompt (auto-reset notes, the first-contact intro, voice-channel changes)
+    and delivers them on the current user message via the api_content sidecar
+    instead, so the composed system prompt stays byte-stable turn-over-turn.
+    It stages the rendered notes on ``agent._gateway_turn_context_notes``
+    right before ``run_conversation``; this consumes them so a cached agent
+    can never replay a stale note on a later turn.
+    """
+    notes = getattr(agent, "_gateway_turn_context_notes", "") or ""
+    if hasattr(agent, "_gateway_turn_context_notes"):
+        try:
+            agent._gateway_turn_context_notes = ""
+        except Exception:
+            pass
+    return notes if isinstance(notes, str) else ""
+
+
+def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
+    """Deliver must-deliver notes on a multimodal (list) user message.
+
+    ``compose_user_api_content`` returns ``None`` for non-string content, so
+    sidecar-borne facts would silently drop on image/attachment turns.  For
+    gateway must-deliver notes we instead append a text part to the content
+    list in place — the part becomes durable message content (persisted and
+    replayed as-is), which keeps the wire and the transcript byte-identical.
+
+    Returns ``True`` when a part was appended.
+    """
+    if not notes or not isinstance(content, list):
+        return False
+    try:
+        content.append({"type": "text", "text": notes})
+        return True
+    except Exception:
+        return False
+
+
 def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
@@ -701,6 +741,29 @@ def build_turn_context(
             plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
+
+    # Gateway must-deliver notes (auto-reset note, first-contact intro,
+    # voice-channel change) ride the same user-message injection channel as
+    # plugin context so the ephemeral system prompt can stay byte-stable.
+    # One-shot: staged by the gateway right before this turn, consumed here.
+    # Multimodal (list) content can't take the string sidecar — append a
+    # durable text part instead of dropping the fact.
+    _gateway_notes = consume_gateway_turn_context_notes(agent)
+    if _gateway_notes:
+        _gw_turn_content = (
+            messages[current_turn_user_idx].get("content")
+            if 0 <= current_turn_user_idx < len(messages)
+            and isinstance(messages[current_turn_user_idx], dict)
+            else None
+        )
+        if isinstance(_gw_turn_content, list):
+            append_notes_to_multimodal_content(_gw_turn_content, _gateway_notes)
+        else:
+            plugin_user_context = (
+                plugin_user_context + "\n\n" + _gateway_notes
+                if plugin_user_context
+                else _gateway_notes
+            )
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}

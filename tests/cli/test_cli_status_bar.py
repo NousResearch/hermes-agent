@@ -537,6 +537,122 @@ class TestCLIUsageReport:
         assert "Cache read tokens:" not in output
         assert "Cache write tokens:" not in output
 
+    def test_show_usage_without_live_agent_uses_persisted_session_snapshot(self, capsys):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "session-usage-fallback"
+        cli_obj._session_db = SimpleNamespace(
+            get_session=lambda session_id: {
+                "id": session_id,
+                "model": "gpt-5.5",
+                "input_tokens": 1234,
+                "output_tokens": 567,
+                "cache_read_tokens": 100,
+                "cache_write_tokens": 25,
+                "reasoning_tokens": 42,
+                "api_call_count": 3,
+                "message_count": 6,
+                "estimated_cost_usd": 0.0123,
+                "actual_cost_usd": None,
+                "cost_status": "estimated",
+                "cost_source": "pricing",
+            }
+        )
+        cli_obj._print_nous_credits_block = lambda: False
+        cli_obj._print_account_limits = lambda: False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Persisted Session Token Usage" in output
+        assert "No active agent" not in output
+        assert "gpt-5.5" in output
+        assert "1,234" in output
+        assert "567" in output
+        assert "API calls:" in output
+        assert "3" in output
+        assert "persisted DB snapshot" in output
+
+    def test_show_usage_without_live_agent_keeps_no_agent_message_when_no_snapshot(self, capsys):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "empty-session"
+        cli_obj._session_db = SimpleNamespace(
+            get_session=lambda session_id: {
+                "id": session_id,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "api_call_count": 0,
+            }
+        )
+        cli_obj._print_nous_credits_block = lambda: False
+        cli_obj._print_account_limits = lambda: False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "No active agent -- send a message first" in output
+        assert "Persisted Session Token Usage" not in output
+
+    def test_show_usage_without_live_agent_prints_account_limits(self, capsys, monkeypatch):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "openai-codex"
+        cli_obj.base_url = None
+        cli_obj.api_key = None
+        cli_obj.session_id = "session-usage-limits"
+        cli_obj._session_db = SimpleNamespace(
+            get_session=lambda session_id: {
+                "id": session_id,
+                "model": "gpt-5.5",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "api_call_count": 1,
+                "message_count": 2,
+            }
+        )
+        cli_obj._print_nous_credits_block = lambda: False
+        monkeypatch.setattr(
+            "agent.account_usage.fetch_account_usage",
+            lambda provider, **kwargs: SimpleNamespace(provider=provider),
+        )
+        monkeypatch.setattr(
+            "agent.account_usage.render_account_usage_lines",
+            lambda snapshot: [
+                "Account limits",
+                "Provider: openai-codex",
+                "Weekly: 80% remaining (20% used) • resets Jun 10 12:00 UTC",
+            ],
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Persisted Session Token Usage" in output
+        assert "Account limits" in output
+        assert "Provider: openai-codex" in output
+        assert "resets Jun 10" in output
+        assert "No active agent" not in output
+
+    def test_show_usage_without_live_agent_skips_missing_account_limits(self, capsys, monkeypatch):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "openai-codex"
+        cli_obj.session_id = "empty-session"
+        cli_obj._session_db = SimpleNamespace(
+            get_session=lambda session_id: {
+                "id": session_id,
+                "model": "gpt-5.5",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "api_call_count": 0,
+            }
+        )
+        cli_obj._print_nous_credits_block = lambda: False
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda provider, **kwargs: None)
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "No active agent -- send a message first" in output
+        assert "Account limits" not in output
+
 
 class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""

@@ -26702,6 +26702,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
         message: str,
         handler,
+        allow_always: bool = True,
     ) -> Optional[str]:
         """Ask the user to confirm an expensive slash command.
 
@@ -26709,6 +26710,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         where ``choice`` is ``"once"``, ``"always"``, or ``"cancel"``.
         The handler runs on the event loop when the user responds; its
         return value is sent back as a gateway message.
+
+        ``allow_always`` (default True) is forwarded to the adapter's
+        ``send_slash_confirm`` to control whether the middle "Always
+        Approve" button renders.  Pass False for rare high-stakes commands
+        (e.g. ``/update``) where a permanent one-tap opt-out is a footgun.
 
         Returns a short acknowledgment string to send immediately (before
         the user's response).  If buttons rendered successfully the ack
@@ -26747,6 +26753,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key,
                     confirm_id=confirm_id,
                     metadata=metadata,
+                    allow_always=allow_always,
                 )
                 if button_result and getattr(button_result, "success", False):
                     used_buttons = True

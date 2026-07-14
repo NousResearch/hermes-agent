@@ -3,6 +3,8 @@
 import asyncio
 
 import pytest
+
+pytest.importorskip("telegram")  # PTB is an optional dependency; skip if absent.
 from telegram.error import Conflict, TelegramError
 from telegram.request import BaseRequest
 

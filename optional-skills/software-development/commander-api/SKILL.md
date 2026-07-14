@@ -1,6 +1,6 @@
 ---
 name: commander-api
-description: Commander sprint dashboard API: board, sprints, tickets, issues.
+description: "Commander sprint dashboard API: board, sprints, tickets, issues."
 version: 1.0.0
 author: zealchaiwut, Hermes Agent
 license: MIT

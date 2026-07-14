@@ -1,6 +1,6 @@
 ---
 name: asset-studio-api
-description: asset-studio carousel API: Instagram/FB posts, flows, characters.
+description: "asset-studio carousel API: Instagram/FB posts, flows, characters."
 version: 1.0.0
 author: zealchaiwut, Hermes Agent
 license: MIT

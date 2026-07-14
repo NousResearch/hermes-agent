@@ -537,7 +537,12 @@ def _build_setup_note(
 ) -> str | None:
     if readiness_status == SkillReadinessStatus.SETUP_NEEDED:
         missing_str = ", ".join(missing) if missing else "required prerequisites"
-        note = f"Setup needed before using this skill: missing {missing_str}."
+        note = (
+            f"Optional setup is incomplete: missing {missing_str}. The skill is still "
+            "loaded and may have documented fallback paths or reduced functionality. "
+            "Continue with an available path. Only ask the user for credentials if the "
+            "requested task requires them and no documented fallback works."
+        )
         if setup_help:
             return f"{note} {setup_help}"
         return note

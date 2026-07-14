@@ -151,6 +151,9 @@ Each entry supports:
 - `prompt` (optional) — prompt text when asking the user for the value
 - `help` (optional) — help text or URL for obtaining the value
 - `required_for` (optional) — describes which feature needs this variable
+- `optional` (optional, default `false`) — when `true`, register the variable for sandbox passthrough if present without prompting or marking the skill as needing setup. Use this when the credential enables only one path and the skill documents a working fallback.
+
+A missing required variable does not make the skill unusable: `skill_view` still returns the full skill and tells the agent to try documented fallback or degraded paths before asking the user for credentials.
 
 Users can also manually configure passthrough variables in `config.yaml`:
 

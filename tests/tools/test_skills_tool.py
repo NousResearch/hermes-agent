@@ -894,6 +894,12 @@ class TestSkillViewPrerequisites:
                 "prompt": "Enter value for MISSING_KEY_XYZ",
             }
         ]
+        assert "skill is still loaded and may have documented fallback paths" in result[
+            "setup_note"
+        ]
+        assert "Only ask the user for credentials if the requested task requires them" in result[
+            "setup_note"
+        ]
 
     def test_no_setup_needed_when_legacy_prereqs_are_met(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PRESENT_KEY", "value")

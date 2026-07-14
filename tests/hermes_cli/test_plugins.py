@@ -815,6 +815,108 @@ class TestPluginHooks:
 
         assert any("on_banana" in record.message for record in caplog.records)
 
+
+
+
+class TestLazyDiscoverAndSingleton:
+    """Hook delivery guarantees for #64178 (lazy discover + singleton lock)."""
+
+    def test_module_level_invoke_hook_lazily_discovers_plugins(self, tmp_path, monkeypatch):
+        """invoke_hook discovers when manager has not been loaded yet."""
+        called = []
+
+        def _cb(**kw):
+            called.append(kw)
+            return "ok"
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "lazy_discover",
+            register_body='ctx.register_hook("kanban_task_claimed", lambda **kw: None)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        import hermes_cli.plugins as _plugins_mod
+
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+
+        pm = _plugins_mod.get_plugin_manager()
+        pm._hooks["test_hook"] = [_cb]
+
+        results = _plugins_mod.invoke_hook("test_hook", task_id="t1")
+
+        assert len(called) == 1
+        assert results == ["ok"]
+        assert pm.has_hook("kanban_task_claimed")
+
+    def test_module_level_invoke_middleware_lazily_discovers(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins as _plugins_mod
+
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+
+        called = []
+
+        def _mw(**kw):
+            called.append(kw)
+            return "mw-ok"
+
+        pm = _plugins_mod.get_plugin_manager()
+        pm._middleware["test_mw"] = [_mw]
+
+        results = _plugins_mod.invoke_middleware("test_mw")
+
+        assert len(called) == 1
+        assert results == ["mw-ok"]
+
+    def test_get_plugin_manager_thread_safe_singleton(self, monkeypatch):
+        import hermes_cli.plugins as _plugins_mod
+        import concurrent.futures
+
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+        ids = []
+
+        def _get():
+            ids.append(id(_plugins_mod.get_plugin_manager()))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+            list(ex.map(lambda _: _get(), range(64)))
+        assert len(set(ids)) == 1
+
+    def test_force_reload_deregisters_tools_from_global_registry(self, monkeypatch):
+        """force=True removes plugin tools via tools.registry.deregister (#60050)."""
+        from unittest.mock import MagicMock
+        from hermes_cli.plugins import PluginManager
+
+        mgr = PluginManager()
+        mgr._plugin_tool_names.add("zombie_tool")
+        mgr._plugin_platform_names.add("zombie_platform")
+        mgr._discovered = True
+
+        tool_reg = MagicMock()
+        plat_reg = MagicMock()
+
+        import tools.registry as tool_mod
+        import gateway.platform_registry as plat_mod
+
+        monkeypatch.setattr(tool_mod, "registry", tool_reg, raising=False)
+        # package may expose registry differently; patch where unload imports
+        monkeypatch.setattr(
+            "tools.registry.registry", tool_reg, raising=False
+        )
+        monkeypatch.setattr(
+            "gateway.platform_registry.platform_registry", plat_reg, raising=False
+        )
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", lambda self_inner: None)
+        monkeypatch.setattr(
+            PluginManager, "_re_register_shell_hooks_after_force", lambda self_inner: None
+        )
+
+        mgr.discover_and_load(force=True)
+        tool_reg.deregister.assert_called_with("zombie_tool")
+        plat_reg.unregister.assert_called_with("zombie_platform")
+
+
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 

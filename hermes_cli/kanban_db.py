@@ -152,12 +152,15 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
     it through.
     """
     try:
-        from hermes_cli.plugins import invoke_hook
+        # invoke_hook lazy-discovers plugins (#64178 / #59775) — explicit
+        # discover keeps behavior obvious if that guarantee changes.
+        from hermes_cli.plugins import discover_plugins, invoke_hook
         from hermes_cli.profiles import get_active_profile_name
         try:
             profile_name = get_active_profile_name()
         except Exception:
             profile_name = "default"
+        discover_plugins()
         invoke_hook(event, task_id=task_id, profile_name=profile_name, **fields)
     except Exception as exc:  # pragma: no cover - defensive
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)

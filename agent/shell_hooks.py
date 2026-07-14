@@ -292,6 +292,22 @@ def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
     return _parse_hooks_block(cfg.get("hooks"))
 
 
+def re_register_config_hooks() -> None:
+    """Re-register shell hooks from config after a plugin force-reload.
+
+    ``PluginManager.discover_and_load(force=True)`` clears the plugin manager's
+    ``_hooks`` dict, which silently drops shell hooks that were registered from
+    ``config.yaml`` at startup.  Clear the idempotence set and re-run
+    ``register_from_config()`` so hooks are wired again (#60036 / PR #60267;
+    tracking #64178).
+    """
+    with _registered_lock:
+        _registered.clear()
+    from hermes_cli.config import load_config
+
+    register_from_config(load_config())
+
+
 def reset_for_tests() -> None:
     """Clear the idempotence set.  Test-only helper."""
     with _registered_lock:

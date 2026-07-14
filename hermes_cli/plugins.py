@@ -1290,6 +1290,9 @@ class PluginManager:
             self._discovered = True
             return
         if force:
+            # Unload from global registries BEFORE clearing manager bookkeeping,
+            # so force-reload does not leave stale tools/platforms (#60050).
+            self._unload_global_plugin_registrations()
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()
@@ -1310,9 +1313,66 @@ class PluginManager:
         self._discovered = True
         try:
             self._discover_and_load_inner()
+            if force:
+                # Shell hooks live in manager._hooks but are not plugin-owned;
+                # re-register them after the clear+rescan (#60036 / PR #60267).
+                self._re_register_shell_hooks_after_force()
         except BaseException:
             self._discovered = False
             raise
+
+    def _unload_global_plugin_registrations(self) -> None:
+        """Remove plugin tools/platforms from process-global registries.
+
+        ``discover_and_load(force=True)`` historically only cleared PluginManager
+        internal maps. Tools and platforms registered into the process-global
+        ``tools.registry`` / ``platform_registry`` survived, so disabled plugins
+        left zombie entries (#60050, tracking #64178).
+        """
+        tool_names = list(self._plugin_tool_names)
+        platform_names = list(self._plugin_platform_names)
+        if tool_names:
+            try:
+                from tools.registry import registry as tool_registry
+
+                for name in tool_names:
+                    try:
+                        tool_registry.deregister(name)
+                    except Exception as exc:
+                        logger.debug(
+                            "force-reload: tool deregister %s failed: %s",
+                            name,
+                            exc,
+                        )
+            except Exception as exc:
+                logger.debug("force-reload: tools.registry unavailable: %s", exc)
+        if platform_names:
+            try:
+                from gateway.platform_registry import platform_registry
+
+                for name in platform_names:
+                    try:
+                        platform_registry.unregister(name)
+                    except Exception as exc:
+                        logger.debug(
+                            "force-reload: platform unregister %s failed: %s",
+                            name,
+                            exc,
+                        )
+            except Exception as exc:
+                logger.debug(
+                    "force-reload: platform_registry unavailable: %s", exc
+                )
+
+    def _re_register_shell_hooks_after_force(self) -> None:
+        """Restore config.yaml shell hooks wiped by force-clear of ``_hooks`."""
+        try:
+            from agent.shell_hooks import re_register_config_hooks
+
+            re_register_config_hooks()
+        except Exception as exc:
+            # Import cycle / missing module must not abort force reload.
+            logger.debug("force-reload shell-hook re-register skipped: %s", exc)
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
@@ -2027,13 +2087,20 @@ class PluginManager:
 # ---------------------------------------------------------------------------
 
 _plugin_manager: Optional[PluginManager] = None
+_plugin_manager_lock = threading.Lock()
 
 
 def get_plugin_manager() -> PluginManager:
-    """Return (and lazily create) the global PluginManager singleton."""
+    """Return (and lazily create) the global PluginManager singleton.
+
+    Creation is double-checked under a lock so concurrent first access cannot
+    orphan a second manager (#24714 / tracking #64178).
+    """
     global _plugin_manager
     if _plugin_manager is None:
-        _plugin_manager = PluginManager()
+        with _plugin_manager_lock:
+            if _plugin_manager is None:
+                _plugin_manager = PluginManager()
     return _plugin_manager
 
 
@@ -2049,17 +2116,32 @@ def discover_plugins(force: bool = False) -> None:
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook on all loaded plugins.
 
+    Ensures plugins are discovered on first invocation so callers in processes
+    that never explicitly call ``discover_plugins()`` (e.g. the gateway, which
+    uses its own ``HookRegistry`` for platform events) still fire callbacks
+    registered by user plugins (tracking #64178; salvage direction of #59775).
+
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    pm = get_plugin_manager()
+    # getattr so test mocks that replace get_plugin_manager() with a
+    # SimpleNamespace don't break.
+    if not getattr(pm, "_discovered", True):
+        pm.discover_and_load()
+    return pm.invoke_hook(hook_name, **kwargs)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
     """Invoke registered middleware callbacks.
 
+    Lazy-discovers plugins on first use — same guarantee as :func:`invoke_hook`.
+
     Returns a list of non-``None`` return values from middleware callbacks.
     """
-    return get_plugin_manager().invoke_middleware(kind, **kwargs)
+    pm = get_plugin_manager()
+    if not getattr(pm, "_discovered", True):
+        pm.discover_and_load()
+    return pm.invoke_middleware(kind, **kwargs)
 
 
 def has_middleware(kind: str) -> bool:

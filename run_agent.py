@@ -428,8 +428,8 @@ class AIAgent:
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
-        enabled_toolsets: List[str] = None,
-        disabled_toolsets: List[str] = None,
+        enabled_toolsets: Optional[List[str]] = None,
+        disabled_toolsets: Optional[List[str]] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
@@ -488,6 +488,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        memory_provider_mode: Optional[str] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -554,6 +555,7 @@ class AIAgent:
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
+            memory_provider_mode=memory_provider_mode,
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,

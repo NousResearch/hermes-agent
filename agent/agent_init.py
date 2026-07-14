@@ -286,8 +286,8 @@ def init_agent(
     model: str = "",
     max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
     tool_delay: float = 1.0,
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
     save_trajectories: bool = False,
     verbose_logging: bool = False,
     quiet_mode: bool = False,
@@ -346,6 +346,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    memory_provider_mode: Optional[str] = None,
 ):
     """
     Initialize the AI Agent.
@@ -1394,15 +1395,33 @@ def init_agent(
 
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
+    # ``None`` preserves the historical contract: normal agents run the full
+    # lifecycle, while skip_memory agents do not initialize providers at all.
+    # Callers such as cron may explicitly request ``tools`` mode, which exposes
+    # provider tools while MemoryManager centrally suppresses automatic hooks.
+    if memory_provider_mode is None:
+        _memory_provider_mode = "off" if skip_memory else "full"
+    else:
+        _memory_provider_mode = str(memory_provider_mode).strip().lower()
+    if _memory_provider_mode not in {"off", "full", "tools"}:
+        raise ValueError(
+            f"Invalid memory_provider_mode '{memory_provider_mode}'; "
+            "expected one of: off, full, tools"
+        )
+    agent._memory_provider_mode = _memory_provider_mode
     agent._memory_manager = None
-    if not skip_memory:
+    if _memory_provider_mode != "off":
         try:
-            _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+            _provider_mem_config = _agent_cfg.get("memory", {})
+            _mem_provider_name = (
+                _provider_mem_config.get("provider", "")
+                if _provider_mem_config else ""
+            )
 
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
+                agent._memory_manager = _MemoryManager(mode=_memory_provider_mode)
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)

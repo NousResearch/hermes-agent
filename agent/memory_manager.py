@@ -357,7 +357,16 @@ class MemoryManager:
     provider is allowed.  Failures in one provider never block the other.
     """
 
-    def __init__(self) -> None:
+    _VALID_MODES = frozenset({"full", "tools"})
+
+    def __init__(self, *, mode: str = "full") -> None:
+        normalized_mode = str(mode or "full").strip().lower()
+        if normalized_mode not in self._VALID_MODES:
+            raise ValueError(
+                f"Invalid memory provider mode '{mode}'; expected one of: "
+                f"{', '.join(sorted(self._VALID_MODES))}"
+            )
+        self.mode = normalized_mode
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
@@ -368,6 +377,17 @@ class MemoryManager:
         # _submit_background() and the sync_all/queue_prefetch_all rationale.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
         self._sync_executor_lock = threading.Lock()
+
+    @property
+    def automatic_lifecycle_enabled(self) -> bool:
+        """Whether providers may participate automatically in agent turns.
+
+        ``tools`` mode keeps provider schemas and explicit tool dispatch
+        available while disabling automatic prompt, recall, persistence, and
+        session lifecycle hooks. Cron uses this mode so scheduler chatter is
+        never retained merely because a job can call provider tools.
+        """
+        return self.mode == "full"
 
     # -- Registration --------------------------------------------------------
 
@@ -459,6 +479,8 @@ class MemoryManager:
         Returns combined text, or empty string if no providers contribute.
         Each non-empty block is labeled with the provider name.
         """
+        if not self.automatic_lifecycle_enabled:
+            return ""
         blocks = []
         for provider in self._providers:
             try:
@@ -498,6 +520,8 @@ class MemoryManager:
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
         """
+        if not self.automatic_lifecycle_enabled:
+            return ""
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
@@ -521,6 +545,8 @@ class MemoryManager:
         wedged provider can never block the caller. See ``sync_all`` for
         the full rationale (agent stuck "running" minutes after a turn).
         """
+        if not self.automatic_lifecycle_enabled:
+            return
         providers = list(self._providers)
         if not providers:
             return
@@ -580,6 +606,8 @@ class MemoryManager:
         before turn N+1; provider implementations don't need their own
         ordering guarantees.
         """
+        if not self.automatic_lifecycle_enabled:
+            return
         providers = list(self._providers)
         if not providers:
             return
@@ -762,6 +790,8 @@ class MemoryManager:
 
         kwargs may include: remaining_tokens, model, platform, tool_count.
         """
+        if not self.automatic_lifecycle_enabled:
+            return
         for provider in self._providers:
             try:
                 provider.on_turn_start(turn_number, message, **kwargs)
@@ -773,6 +803,8 @@ class MemoryManager:
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Notify all providers of session end."""
+        if not self.automatic_lifecycle_enabled:
+            return
         for provider in self._providers:
             try:
                 provider.on_session_end(messages)
@@ -811,7 +843,7 @@ class MemoryManager:
         ``_submit_background`` degrades to inline execution — the pre-#16454
         synchronous behavior, slow but correct.
         """
-        if not self._providers:
+        if not self.automatic_lifecycle_enabled or not self._providers:
             return
         snapshot = list(messages or [])
 
@@ -856,7 +888,7 @@ class MemoryManager:
         transcript was truncated; providers caching per-turn document
         state should invalidate.
         """
-        if not new_session_id:
+        if not self.automatic_lifecycle_enabled or not new_session_id:
             return
         # Only forward ``rewound`` when it's actually set. Passing it
         # unconditionally would inject ``rewound=False`` into every
@@ -886,6 +918,8 @@ class MemoryManager:
         Returns combined text from providers to include in the compression
         summary prompt. Empty string if no provider contributes.
         """
+        if not self.automatic_lifecycle_enabled:
+            return ""
         parts = []
         for provider in self._providers:
             try:
@@ -936,6 +970,8 @@ class MemoryManager:
 
         Skips the builtin provider itself (it's the source of the write).
         """
+        if not self.automatic_lifecycle_enabled:
+            return
         for provider in self._providers:
             if provider.name == "builtin":
                 continue
@@ -1002,6 +1038,8 @@ class MemoryManager:
         session/task/tool-call provenance the manager does not) invoked once per
         mirrored op.
         """
+        if not self.automatic_lifecycle_enabled:
+            return
         if not self._memory_tool_result_succeeded(tool_result):
             return
 
@@ -1039,6 +1077,8 @@ class MemoryManager:
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:
         """Notify all providers that a subagent completed."""
+        if not self.automatic_lifecycle_enabled:
+            return
         for provider in self._providers:
             try:
                 provider.on_delegation(
@@ -1125,6 +1165,10 @@ class MemoryManager:
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
+        # The manager owns lifecycle policy. Always pass its authoritative mode
+        # so providers can suppress startup migrations/seeding in tools mode,
+        # even when a caller initializes the manager outside AIAgent.
+        kwargs["memory_provider_mode"] = self.mode
         for provider in self._providers:
             try:
                 provider.initialize(session_id=session_id, **kwargs)

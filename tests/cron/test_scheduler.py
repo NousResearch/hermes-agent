@@ -5,11 +5,25 @@ import itertools
 import json
 import logging
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import (
+    SILENT_MARKER,
+    _build_job_prompt,
+    _configure_cron_memory_surface,
+    _cron_memory_provider_mode,
+    _deliver_result,
+    _merge_mcp_into_per_job_toolsets,
+    _resolve_cron_enabled_toolsets,
+    _resolve_delivery_target,
+    _resolve_origin,
+    _send_media_via_adapter,
+    _teardown_cron_agent,
+    run_job,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -995,6 +1009,9 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
+        assert kwargs["skip_memory"] is True
+        assert kwargs["memory_provider_mode"] == "off"
+        assert "memory" in kwargs["disabled_toolsets"]
         assert kwargs["session_id"].startswith("cron_test-job_")
         fake_db.end_session.assert_called_once()
         call_args = fake_db.end_session.call_args
@@ -1252,6 +1269,253 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
+
+    def test_run_job_passes_explicit_provider_tools_mode_to_agent(self, tmp_path):
+        job = {
+            "id": "memory-tools-job",
+            "name": "test",
+            "prompt": "recall durable context",
+            "enabled_toolsets": ["memory"],
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is True
+        assert kwargs["memory_provider_mode"] == "tools"
+        assert "memory" in kwargs["disabled_toolsets"]
+
+    def test_admin_memory_denylist_overrides_per_job_opt_in(self, tmp_path):
+        job = {
+            "id": "memory-tools-denied",
+            "name": "test",
+            "prompt": "recall durable context",
+            "enabled_toolsets": ["memory"],
+        }
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n  disabled_toolsets:\n    - memory\n",
+            encoding="utf-8",
+        )
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["memory_provider_mode"] == "off"
+        assert "memory" in kwargs["disabled_toolsets"]
+
+    def test_run_job_tools_mode_isolates_provider_lifecycle_end_to_end(
+        self, tmp_path, monkeypatch
+    ):
+        """Real cron→AIAgent init exposes tools but no automatic provider hooks."""
+        from run_agent import AIAgent as RealAIAgent
+
+        class RecordingProvider:
+            name = "recording"
+
+            def __init__(self):
+                self.lifecycle_calls = []
+                self.explicit_tool_calls = []
+                self.shutdown_called = False
+
+            def is_available(self):
+                return True
+
+            def initialize(self, session_id, **kwargs):
+                self.session_id = session_id
+
+            def get_tool_schemas(self):
+                return [{
+                    "name": "recording_recall",
+                    "description": "Test-only explicit recall",
+                    "parameters": {"type": "object", "properties": {}},
+                }]
+
+            def system_prompt_block(self):
+                self.lifecycle_calls.append("prompt")
+                return "must not enter cron prompt"
+
+            def prefetch(self, query, **kwargs):
+                self.lifecycle_calls.append("prefetch")
+                return "must not enter cron turn"
+
+            def queue_prefetch(self, query, **kwargs):
+                self.lifecycle_calls.append("queue_prefetch")
+
+            def sync_turn(self, user_content, assistant_content, **kwargs):
+                self.lifecycle_calls.append("sync")
+
+            def on_turn_start(self, turn_number, message, **kwargs):
+                self.lifecycle_calls.append("turn_start")
+
+            def on_session_end(self, messages):
+                self.lifecycle_calls.append("session_end")
+
+            def handle_tool_call(self, tool_name, args, **kwargs):
+                self.explicit_tool_calls.append(tool_name)
+                return json.dumps({"success": True, "tool": tool_name})
+
+            def shutdown(self):
+                self.shutdown_called = True
+
+        provider = RecordingProvider()
+        captured_agents = []
+        post_refresh_tool_names = []
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "memory:\n  provider: recording\n",
+            encoding="utf-8",
+        )
+
+        tool_response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=[SimpleNamespace(
+                        id="call-recording-recall",
+                        type="function",
+                        function=SimpleNamespace(
+                            name="recording_recall",
+                            arguments="{}",
+                        ),
+                    )],
+                    reasoning=None,
+                    reasoning_content=None,
+                    reasoning_details=None,
+                ),
+                finish_reason="tool_calls",
+            )],
+            model="test-model",
+            usage=None,
+        )
+        final_model_response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="cron complete",
+                    tool_calls=None,
+                    reasoning=None,
+                    reasoning_content=None,
+                    reasoning_details=None,
+                ),
+                finish_reason="stop",
+            )],
+            model="test-model",
+            usage=None,
+        )
+
+        def build_real_agent(**kwargs):
+            agent = RealAIAgent(**kwargs)
+            from tools.mcp_tool import refresh_agent_mcp_tools
+
+            refresh_agent_mcp_tools(agent, quiet_mode=True)
+            post_refresh_tool_names.append(
+                set(getattr(agent, "valid_tool_names", set()))
+            )
+            agent.client.chat.completions.create.side_effect = (
+                [tool_response, final_model_response]
+                if kwargs["memory_provider_mode"] == "tools"
+                else [final_model_response]
+            )
+            captured_agents.append(agent)
+            return agent
+
+        job = {
+            "id": "memory-tools-integration",
+            "name": "memory tools integration",
+            "prompt": "Use memory only when explicitly asked.",
+            "provider": "openrouter",
+            "model": "test-model",
+            "enabled_toolsets": ["memory"],
+        }
+        fake_db = MagicMock()
+        provider_loader = MagicMock(return_value=provider)
+        with (
+            patch("cron.scheduler._hermes_home", tmp_path),
+            patch("cron.scheduler._resolve_origin", return_value=None),
+            patch("hermes_cli.env_loader.load_hermes_dotenv"),
+            patch("hermes_cli.env_loader.reset_secret_source_cache"),
+            patch("hermes_state.SessionDB", return_value=fake_db),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "api_key": "test-key",
+                    "base_url": "https://example.invalid/v1",
+                    "provider": "openrouter",
+                    "api_mode": "chat_completions",
+                },
+            ),
+            patch("plugins.memory.load_memory_provider", provider_loader),
+            patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("run_agent.AIAgent", side_effect=build_real_agent),
+        ):
+            success, _output, final_text, error = run_job(job)
+            ordinary_success, *_ = run_job({
+                "id": "memory-tools-off",
+                "name": "memory provider remains off",
+                "prompt": "Do not load provider memory.",
+                "provider": "openrouter",
+                "model": "test-model",
+            })
+
+        assert success is True, error
+        assert ordinary_success is True
+        assert final_text == "cron complete"
+        agent = captured_agents[0]
+        assert agent._memory_manager.mode == "tools"
+        assert "recording_recall" in agent.valid_tool_names
+        assert "memory" not in agent.valid_tool_names
+        assert "recording_recall" in post_refresh_tool_names[0]
+        assert "memory" not in post_refresh_tool_names[0]
+        assert provider.explicit_tool_calls == ["recording_recall"]
+        assert provider.lifecycle_calls == []
+        assert provider.shutdown_called is True
+        provider_loader.assert_called_once_with("recording")
+        assert captured_agents[1]._memory_manager is None
+        assert "memory" not in post_refresh_tool_names[1]
+
+    def test_provider_mode_uses_only_raw_per_job_memory_opt_in(self):
+        assert _cron_memory_provider_mode({}) == "off"
+        assert _cron_memory_provider_mode({"enabled_toolsets": []}) == "off"
+        assert _cron_memory_provider_mode({"enabled_toolsets": "memory"}) == "off"
+        assert _cron_memory_provider_mode({"enabled_toolsets": ["web"]}) == "off"
+        assert _cron_memory_provider_mode({"enabled_toolsets": ["memory"]}) == "tools"
+        assert _cron_memory_provider_mode({"enabled_toolsets": ["coding"]}) == "tools"
+        assert _cron_memory_provider_mode(
+            {"enabled_toolsets": ["memory"]}, ["memory"]
+        ) == "off"
+        assert _cron_memory_provider_mode(
+            {"enabled_toolsets": ["memory"]}, ["coding"]
+        ) == "off"
+
+    def test_teardown_closes_agent_when_memory_shutdown_fails(self):
+        agent = MagicMock()
+        agent._memory_manager.shutdown_all.side_effect = RuntimeError("boom")
+
+        with patch("agent.auxiliary_client.cleanup_stale_async_clients"):
+            _teardown_cron_agent(agent, "job-with-broken-provider")
+
+        agent._memory_manager.shutdown_all.assert_called_once()
+        agent.close.assert_called_once()
+
+    def test_configure_cron_memory_surface_removes_builtin_memory_tool(self):
+        agent = MagicMock()
+        agent.tools = [
+            {"type": "function", "function": {"name": "memory"}},
+            {"type": "function", "function": {"name": "hindsight_recall"}},
+            {"type": "function", "function": {"name": "terminal"}},
+        ]
+        agent.valid_tool_names = {"memory", "hindsight_recall", "terminal"}
+        agent._memory_nudge_interval = 10
+
+        _configure_cron_memory_surface(agent)
+
+        assert [tool["function"]["name"] for tool in agent.tools] == [
+            "hindsight_recall",
+            "terminal",
+        ]
+        assert agent.valid_tool_names == {"hindsight_recall", "terminal"}
+        assert agent._memory_nudge_interval == 0
 
     def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.

@@ -931,6 +931,10 @@ def test_comment_happy_path(worker_env):
     d = json.loads(out)
     assert d["ok"] is True
     assert d["comment_id"]
+    assert d["delivery"] == "durable_not_pushed"
+    assert d["active_worker_notified"] is False
+    assert "explicit kanban_show reads" in d["guidance"]
+    assert "not injected" in d["guidance"]
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -941,6 +945,34 @@ def test_comment_happy_path(worker_env):
         assert comments[0].body == "hello thread"
     finally:
         conn.close()
+
+
+def test_comment_delivery_contract_does_not_depend_on_task_status(worker_env):
+    """Task status is not evidence that an active prompt saw the comment."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET status = 'ready' WHERE id = ?",
+            (worker_env,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_comment({
+        "task_id": worker_env,
+        "body": "add this to the queued brief",
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True
+    assert d["delivery"] == "durable_not_pushed"
+    assert d["active_worker_notified"] is False
+    assert "explicit kanban_show reads" in d["guidance"]
+    assert "may be running" in d["guidance"]
 
 
 def test_comment_rejects_empty_body(worker_env):

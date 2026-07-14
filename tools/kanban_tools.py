@@ -828,7 +828,20 @@ def _handle_comment(args: dict, **kw) -> str:
         kb, conn = _connect(board=board)
         try:
             cid = kb.add_comment(conn, tid, author=author, body=str(body))
-            return _ok(task_id=tid, comment_id=cid)
+            return _ok(
+                task_id=tid,
+                comment_id=cid,
+                delivery="durable_not_pushed",
+                active_worker_notified=False,
+                guidance=(
+                    "The comment is persisted for future worker context and "
+                    "explicit kanban_show reads, but is not injected into an "
+                    "already-constructed worker prompt. For a material scope "
+                    "change to a task that may be running, create a follow-up "
+                    "task that depends on it instead of claiming its live brief "
+                    "was updated."
+                ),
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -1371,10 +1384,14 @@ KANBAN_HEARTBEAT_SCHEMA = {
 KANBAN_COMMENT_SCHEMA = {
     "name": "kanban_comment",
     "description": (
-        "Append a comment to a task's thread. Use for durable notes "
-        "that should outlive this run (questions for the next worker, "
-        "partial findings, rationale). Ephemeral reasoning doesn't "
-        "belong here — use your normal response instead."
+        "Append a durable comment to a task's thread. The comment is available "
+        "to future worker context and explicit kanban_show reads, but is not "
+        "pushed or injected into an already-constructed worker prompt. For a "
+        "material scope change to a task that may be running, create a "
+        "follow-up task that depends on it instead of claiming its live brief "
+        "was updated. Use comments for questions for the next worker, partial "
+        "findings, and rationale. Ephemeral reasoning doesn't belong here — "
+        "use your normal response instead."
     ),
     "parameters": {
         "type": "object",
@@ -1403,8 +1420,14 @@ KANBAN_CREATE_SCHEMA = {
         "one (pass the current task id in ``parents``). Used by "
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
-        "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "then complete your own task. From a gateway or TUI session, call "
+        "this native tool directly rather than shelling out to the CLI: the "
+        "native call preserves the originating delivery context and can "
+        "auto-subscribe that conversation to completion/block events. Check "
+        "the returned ``subscribed`` field; if false, do not promise an "
+        "automatic handoff until notification routing is established. The "
+        "dispatcher picks up the new tasks on its next tick and spawns the "
+        "assigned profiles."
     ),
     "parameters": {
         "type": "object",
@@ -1459,9 +1482,15 @@ KANBAN_CREATE_SCHEMA = {
                 "type": "string",
                 "enum": ["scratch", "dir", "worktree"],
                 "description": (
-                    "Workspace flavor: 'scratch' (fresh tmp dir, "
-                    "default), 'dir' (shared directory, requires "
-                    "absolute workspace_path), 'worktree' (git worktree)."
+                    "Workspace flavor: 'scratch' (fresh ephemeral tmp dir, "
+                    "default; deleted after completion), 'dir' (shared durable "
+                    "directory, requires absolute workspace_path), 'worktree' "
+                    "(git worktree). Declared scratch deliverables from "
+                    "kanban_complete(artifacts=[...]) are copied to durable "
+                    "task attachments before cleanup; each must be no larger "
+                    "than 25 MiB. Use 'dir' when multiple tasks must "
+                    "collaborate through the same files or produce larger "
+                    "artifacts."
                 ),
             },
             "workspace_path": {

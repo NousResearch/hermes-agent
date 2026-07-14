@@ -468,6 +468,12 @@ kanban_complete(
 
 The orchestrator guidance ships in the worker's system prompt automatically — there is nothing to install or sync per profile.
 
+Comments are a durable handoff channel, not a live control channel. They are
+available to future worker context and explicit `kanban_show` reads, but
+`kanban_comment` does not push or inject text into an already-constructed worker
+prompt. For a material scope change to a task that may be running, create a
+follow-up task that depends on it instead of claiming the live brief was updated.
+
 For best results, pair it with a profile whose toolsets are restricted to board operations (`kanban`, `gateway`, `memory`) so the orchestrator literally cannot execute implementation tasks even if it tries.
 
 ## Dashboard (GUI)

@@ -18418,6 +18418,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
                 send_ok = False
+                prompt_message_id = None
                 fut = safe_schedule_threadsafe(
                     _status_adapter.send_clarify(
                         chat_id=_status_chat_id,
@@ -18437,6 +18438,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         result = fut.result(timeout=15)
                         send_ok = bool(getattr(result, "success", False))
+                        _prompt_mid = getattr(result, "message_id", None)
+                        prompt_message_id = str(_prompt_mid) if _prompt_mid else None
                     except Exception as exc:
                         logger.warning("Clarify send failed: %s", exc)
                         send_ok = False
@@ -18450,6 +18453,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 timeout = _clarify_mod.get_clarify_timeout()
                 response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+                # The clarify has settled — resolved via the adapter's own
+                # callback path (button/reaction), resolved via the gateway's
+                # typed-text intercept, timed out, or cancelled.  Let the
+                # adapter retire any platform-side prompt UI it still tracks
+                # (e.g. Matrix pops its reaction prompt and redacts the bot's
+                # seeded reactions, #46495).  Fire-and-forget: cleanup must
+                # never block the agent thread, and adapter overrides are
+                # idempotent when their own callback already cleaned up.
+                safe_schedule_threadsafe(
+                    _status_adapter.cleanup_clarify(
+                        chat_id=_status_chat_id,
+                        clarify_id=clarify_id,
+                        message_id=prompt_message_id,
+                        session_key=session_key or "",
+                    ),
+                    _loop_for_step,
+                    logger=logger,
+                    log_message="Clarify cleanup failed to schedule",
+                )
                 if response is None or response == "":
                     # Timeout or session-boundary cancellation
                     return f"[user did not respond within {int(timeout / 60)}m]"

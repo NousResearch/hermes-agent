@@ -2235,6 +2235,52 @@ class MatrixAdapter(BasePlatformAdapter):
 
         return result
 
+    async def cleanup_clarify(
+        self,
+        chat_id: str,
+        clarify_id: str,
+        message_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+    ) -> None:
+        """Retire a settled clarify prompt and redact its seed reactions.
+
+        The reaction path already pops the tracked prompt in
+        ``_resolve_matrix_clarify_reaction``, but every other settlement
+        path bypasses the adapter entirely: typed replies (a number, the
+        choice text, or a free-form answer after ✏️) resolve through the
+        gateway's text-intercept (``tools.clarify_gateway.
+        resolve_text_response_for_session``), and a waiter timeout or
+        session cancellation evicts only the gateway-side entry.  Without
+        this hook those paths left the ``_clarify_prompts_by_event`` entry
+        and the bot's seeded reactions live on a dead prompt.
+
+        The gateway calls this after ``wait_for_response`` returns,
+        regardless of outcome.  Retirement is silent — no feedback message
+        is posted, because the agent (or the gateway's timeout sentinel)
+        produces the next user-facing message.  Idempotent: a prompt the
+        reaction path already cleaned up is a no-op.
+        """
+        target_event_id: Optional[str] = None
+        prompt: Optional[_MatrixClarifyPrompt] = None
+        if message_id and message_id in self._clarify_prompts_by_event:
+            target_event_id = message_id
+            prompt = self._clarify_prompts_by_event[message_id]
+        else:
+            # Fallback scan for callers that only know the clarify_id.
+            for evt_id, candidate in list(self._clarify_prompts_by_event.items()):
+                if candidate.clarify_id == clarify_id:
+                    target_event_id, prompt = evt_id, candidate
+                    break
+        if prompt is None or target_event_id is None:
+            return  # Already retired by the reaction path — nothing to do.
+        prompt.resolved = True
+        self._clarify_prompts_by_event.pop(target_event_id, None)
+        logger.debug(
+            "Matrix: retired settled clarify prompt %s (clarify_id=%s, session=%s)",
+            target_event_id, clarify_id, prompt.session_key,
+        )
+        await self._redact_bot_clarify_reactions(prompt.chat_id, prompt)
+
     def format_message(self, content: str) -> str:
         """Pass-through — Matrix supports standard Markdown natively."""
         # Strip image markdown; media is uploaded separately.

@@ -3142,6 +3142,36 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
 
+    async def cleanup_clarify(
+        self,
+        chat_id: str,
+        clarify_id: str,
+        message_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+    ) -> None:
+        """Retire platform-side clarify prompt UI after the clarify settles.
+
+        The gateway calls this once per clarify, after
+        ``tools.clarify_gateway.wait_for_response`` returns — regardless of
+        outcome (resolved via button/reaction callback, resolved via the
+        gateway's typed-text intercept, waiter timeout, or session
+        cancellation).  Adapters that render stateful prompt UI in
+        ``send_clarify`` (tracked prompt entries, seeded reactions, inline
+        keyboards) should override this to drop that state so a clarify
+        resolved outside the adapter's own callback path does not leave
+        stale controls behind.
+
+        Overrides MUST be idempotent: when the adapter's own callback path
+        already cleaned up (e.g. a Matrix reaction resolved the clarify),
+        this call arrives afterwards and must be a no-op.
+
+        ``message_id`` is the ``SendResult.message_id`` returned by
+        ``send_clarify`` (None when unavailable).  The default
+        implementation does nothing — the base text fallback keeps no
+        prompt state.
+        """
+        return None
+
     async def send_private_notice(
         self,
         chat_id: str,

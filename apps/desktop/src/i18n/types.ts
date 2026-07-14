@@ -133,9 +133,13 @@ export interface Translations {
       retry: string
       repairInstall: string
       useLocalGateway: string
+      gatewaySettings: string
+      back: string
       openLogs: string
       repairHint: string
-      remoteSignInHint: string
+      remoteSignInHint: (signInLabel: string) => string
+      signOutAndSignIn: string
+      remoteFailureHint: string
       hideRecentLogs: string
       showRecentLogs: string
       signedInTitle: string
@@ -442,10 +446,39 @@ export interface Translations {
       profileConnection: (profile: string) => string
       envOverrideTitle: string
       envOverrideDesc: string
+      modeTitle: string
       localTitle: string
       localDesc: string
       remoteTitle: string
       remoteDesc: string
+      remoteAuthHint: string
+      cloudTitle: string
+      cloudDesc: string
+      cloudSignInTitle: string
+      cloudSignIn: string
+      cloudSignedIn: string
+      cloudNeedsSignIn: string
+      cloudSignedInDesc: string
+      cloudAgentsTitle: string
+      cloudOrgPickerTitle: string
+      cloudOrgSelect: string
+      cloudOrgChange: string
+      cloudOrgRole: (role: string) => string
+      cloudLoadingAgents: string
+      cloudNoAgents: { before: string; linkText: string; after: string }
+      cloudRefresh: string
+      cloudConnect: string
+      cloudConnecting: string
+      cloudDiscoverFailed: string
+      cloudConnectFailed: string
+      cloudSignInFailed: string
+      cloudSignedOutTitle: string
+      cloudSignedOutMessage: string
+      cloudConnectedTitle: string
+      cloudConnectedPill: string
+      cloudConnectedTo: (name: string) => string
+      cloudAgentProvisioning: string
+      cloudStatusLabel: (status: string) => string
       remoteUrlTitle: string
       remoteUrlDesc: string
       probing: string
@@ -578,6 +611,9 @@ export interface Translations {
       change: string
       autoUseMain: string
       providerDefault: string
+      fallbackAdd: string
+      fallbackEmpty: string
+      notInCatalog: string
       tasks: Record<string, AuxTaskCopy>
     }
     providers: {
@@ -1175,7 +1211,10 @@ export interface Translations {
     customPlaceholder: string
     customHint: string
     optional: string
+    promptRequired: string
     promptScheduleRequired: string
+    scheduleRequired: string
+    scriptOnlyEditHint: string
     saveChanges: string
     createAction: string
   }
@@ -1273,6 +1312,9 @@ export interface Translations {
       newWorktreeTitle: string
       newWorktreeDesc: string
       branchPlaceholder: string
+      branchOff: () => { after: string; before: string }
+      baseBranchPlaceholder: string
+      baseBranchNone: string
       startWorkFailed: string
       convertBranch: string
       convertBranchTitle: string
@@ -1639,7 +1681,9 @@ export interface Translations {
       low: string
       medium: string
       high: string
+      xhigh: string
       max: string
+      ultra: string
       updateFailed: string
       fastFailed: string
     }
@@ -1657,6 +1701,16 @@ export interface Translations {
       recentActivity: string
       viewAllLogs: string
       messagingPlatforms: string
+    }
+    approvalMode: {
+      title: string
+      ariaLabel: (mode: string) => string
+      manual: string
+      manualDescription: string
+      smart: string
+      smartDescription: string
+      off: string
+      offDescription: string
     }
     statusbar: {
       unknown: string
@@ -1909,6 +1963,7 @@ export interface Translations {
       other: string
       placeholder: string
       skip: string
+      skipped: string
       continueLabel: string
     }
     tool: {

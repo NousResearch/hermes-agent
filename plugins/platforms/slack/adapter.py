@@ -1134,6 +1134,20 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # Catch-all handler for any other subscribed event types that
+            # do not have an explicit handler above. Without this, Slack Bolt
+            # logs a WARNING and returns HTTP 404 for every unrecognised event,
+            # even benign subscription events like member_joined_channel or
+            # channel_archive. The generic matcher fires for any event whose
+            # type is not already claimed by a named handler, so it does not
+            # interfere with message/app_mention/reaction/file routing.
+            @self._app.event(re.compile(r".*"))
+            async def handle_unhandled_event(event, body, logger):
+                logger.debug(
+                    "[Slack] Unhandled event type=%r — acked without processing",
+                    (event or {}).get("type", body.get("event", {}).get("type", "unknown")),
+                )
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack

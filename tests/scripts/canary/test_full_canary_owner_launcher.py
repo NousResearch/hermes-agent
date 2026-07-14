@@ -6160,6 +6160,291 @@ def test_default_http_request_disables_proxies_and_rejects_redirect(monkeypatch)
     )
 
 
+def _iap_frame_test_session(code: str) -> launcher._IapRemoteSession:
+    def popen_factory(_argv, **kwargs):
+        return subprocess.Popen((sys.executable, "-c", code), **kwargs)
+
+    return launcher._IapRemoteSession(
+        (*GCLOUD_COMMAND_PREFIX, "fixed"),
+        environment={},
+        popen_factory=popen_factory,
+        gate_timeout_seconds=2.0,
+        post_frame_timeout_seconds=5.0,
+        termination_timeout_seconds=2.0,
+    )
+
+
+def _finish_iap_frame_test_session(session: launcher._IapRemoteSession) -> None:
+    if not session._stdin_closed:
+        session._close_stdin()
+    assert session._wait_exact_exit(2.0) == 0
+    session._process.stdout.close()
+
+
+def test_iap_exchange_before_guard_failure_writes_no_bytes():
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        "data=sys.stdin.buffer.read();"
+        "sys.stdout.write('{\"received\":%d}\\n'%len(data));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+    events = []
+
+    def reject() -> None:
+        events.append("guard")
+        raise OwnerLauncherError("first_byte_guard_rejected")
+
+    assert session.read_gate() == {}
+    with pytest.raises(OwnerLauncherError, match="first_byte_guard_rejected"):
+        session.exchange_before(
+            b"must-not-cross-boundary",
+            write_guard=reject,
+            on_first_write=lambda: events.append("disclosed"),
+        )
+
+    assert events == ["guard"]
+    assert session._frames_written == 0
+    session._close_stdin()
+    assert session._read_line(2.0) == {"received": 0}
+    _finish_iap_frame_test_session(session)
+
+
+def test_iap_exchange_before_partial_write_guards_and_marks_once(monkeypatch):
+    frame = b"partial-write-secret-frame"
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        f"data=sys.stdin.buffer.read({len(frame)});"
+        "sys.stdout.write('{\"received\":%d}\\n'%len(data));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+    assert session.read_gate() == {}
+    target_fd = session._process.stdin.fileno()
+    real_write = os.write
+    events = []
+
+    def partial_write(descriptor, payload):
+        if descriptor != target_fd:
+            return real_write(descriptor, payload)
+        events.append("write")
+        return real_write(descriptor, payload[: min(5, len(payload))])
+
+    monkeypatch.setattr(launcher.os, "write", partial_write)
+
+    observed = session.exchange_before(
+        frame,
+        write_guard=lambda: events.append("guard"),
+        on_first_write=lambda: events.append("disclosed"),
+    )
+
+    assert observed == {"received": len(frame)}
+    assert events[:3] == ["guard", "disclosed", "write"]
+    assert events.count("guard") == 1
+    assert events.count("disclosed") == 1
+    assert events.count("write") > 1
+    assert session._frames_written == 1
+    _finish_iap_frame_test_session(session)
+
+
+def test_iap_exchange_before_rechecks_guard_after_zero_byte_retry(monkeypatch):
+    frame = b"must-not-write-after-guard-expiry"
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        "data=sys.stdin.buffer.read();"
+        "sys.stdout.write('{\"received\":%d}\\n'%len(data));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+    assert session.read_gate() == {}
+    target_fd = session._process.stdin.fileno()
+    real_write = os.write
+    events = []
+    write_attempts = 0
+    guard_calls = 0
+
+    def block_first_write(descriptor, payload):
+        nonlocal write_attempts
+        if descriptor != target_fd:
+            return real_write(descriptor, payload)
+        write_attempts += 1
+        events.append(f"write:{write_attempts}")
+        if write_attempts == 1:
+            raise BlockingIOError
+        return real_write(descriptor, payload)
+
+    def guard() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        events.append(f"guard:{guard_calls}")
+        if guard_calls == 2:
+            raise OwnerLauncherError("first_byte_guard_expired")
+
+    monkeypatch.setattr(launcher.os, "write", block_first_write)
+
+    with pytest.raises(OwnerLauncherError, match="first_byte_guard_expired"):
+        session.exchange_before(
+            frame,
+            write_guard=guard,
+            on_first_write=lambda: events.append("disclosed"),
+        )
+
+    assert events == ["guard:1", "disclosed", "write:1", "guard:2"]
+    assert write_attempts == 1
+    assert session._frames_written == 0
+    session._close_stdin()
+    assert session._read_line(2.0) == {"received": 0}
+    _finish_iap_frame_test_session(session)
+
+
+def test_iap_exchange_before_accepts_exact_mcb1_transport_bound():
+    frame = b"x" * launcher._MAX_REMOTE_SECRET_FRAME_BYTES
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        f"data=sys.stdin.buffer.read({len(frame)});"
+        "sys.stdout.write('{\"received\":%d}\\n'%len(data));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+    events = []
+
+    assert session.read_gate() == {}
+    observed = session.exchange_before(
+        frame,
+        write_guard=lambda: events.append("guard"),
+        on_first_write=lambda: events.append("disclosed"),
+    )
+
+    assert observed == {"received": len(frame)}
+    assert events == ["guard", "disclosed"]
+    _finish_iap_frame_test_session(session)
+
+
+def test_iap_exchange_before_accepts_exact_bound_non_byte_memoryview():
+    bound = launcher._MAX_REMOTE_SECRET_FRAME_BYTES
+    assert bound % 4 == 0
+    frame = memoryview(bytearray(bound)).cast("I")
+    assert frame.nbytes == bound
+    assert len(frame) * frame.itemsize == bound
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        f"data=sys.stdin.buffer.read({bound});"
+        "sys.stdout.write('{\"received\":%d}\\n'%len(data));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+    events = []
+
+    assert session.read_gate() == {}
+    observed = session.exchange_before(
+        frame,
+        write_guard=lambda: events.append("guard"),
+        on_first_write=lambda: events.append("disclosed"),
+    )
+
+    assert observed == {"received": bound}
+    assert events == ["guard", "disclosed"]
+    frame.release()
+    _finish_iap_frame_test_session(session)
+
+
+def test_iap_exchange_before_rejects_one_byte_above_transport_bound():
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        "data=sys.stdin.buffer.read();"
+        "sys.stdout.write('{\"received\":%d}\\n'%len(data));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+    events = []
+
+    assert session.read_gate() == {}
+    with pytest.raises(OwnerLauncherError, match="remote_frame_invalid"):
+        session.exchange_before(
+            b"x" * (launcher._MAX_REMOTE_SECRET_FRAME_BYTES + 1),
+            write_guard=lambda: events.append("guard"),
+            on_first_write=lambda: events.append("disclosed"),
+        )
+
+    assert events == []
+    session._close_stdin()
+    assert session._read_line(2.0) == {"received": 0}
+    _finish_iap_frame_test_session(session)
+
+
+def test_iap_exchange_before_rejects_non_byte_memoryview_one_byte_above_bound():
+    bound = launcher._MAX_REMOTE_SECRET_FRAME_BYTES
+    frame = memoryview(bytearray(bound + 1)).cast("?", shape=[1, bound + 1])
+    assert frame.format == "?"
+    assert len(frame) == 1
+    assert frame.nbytes == bound + 1
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        "data=sys.stdin.buffer.read();"
+        "sys.stdout.write('{\"received\":%d}\\n'%len(data));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+    events = []
+
+    assert session.read_gate() == {}
+    with pytest.raises(OwnerLauncherError, match="remote_frame_invalid"):
+        session.exchange_before(
+            frame,
+            write_guard=lambda: events.append("guard"),
+            on_first_write=lambda: events.append("disclosed"),
+        )
+
+    assert events == []
+    frame.release()
+    session._close_stdin()
+    assert session._read_line(2.0) == {"received": 0}
+    _finish_iap_frame_test_session(session)
+
+
+def test_iap_session_existing_exchange_and_finish_remain_byte_exact():
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        "first=sys.stdin.buffer.read(3);"
+        "sys.stdout.write('{\"first\":%d}\\n'%len(first));sys.stdout.flush();"
+        "second=sys.stdin.buffer.read();"
+        "sys.stdout.write('{\"second\":%d}\\n'%len(second));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+
+    assert session.read_gate() == {}
+    assert session.exchange(b"one") == {"first": 3}
+    assert session.finish(b"two") == {"second": 3}
+    assert session._frames_written == 2
+    assert session._stdin_closed is True
+    _finish_iap_frame_test_session(session)
+
+
+def test_iap_session_finish_before_remains_guarded_and_byte_exact():
+    frame = b"existing-mca2-shape"
+    code = (
+        "import sys;"
+        "sys.stdout.write('{}\\n');sys.stdout.flush();"
+        "data=sys.stdin.buffer.read();"
+        "sys.stdout.write('{\"received\":%d}\\n'%len(data));sys.stdout.flush()"
+    )
+    session = _iap_frame_test_session(code)
+    events = []
+
+    assert session.read_gate() == {}
+    observed = session.finish_before(
+        frame,
+        write_guard=lambda: events.append("guard"),
+        on_first_write=lambda: events.append("disclosed"),
+    )
+
+    assert observed == {"received": len(frame)}
+    assert events == ["guard", "disclosed"]
+    assert session._stdin_closed is True
+    _finish_iap_frame_test_session(session)
+
+
 def test_iap_session_force_stops_hung_child_and_reports_unconfirmed():
     code = "import sys,time;sys.stdout.write('{}\\n');sys.stdout.flush();time.sleep(60)"
 

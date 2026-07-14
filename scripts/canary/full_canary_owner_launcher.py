@@ -164,6 +164,10 @@ _FINAL_APPROVAL_TERMINAL_CLEANUP_GRACE_SECONDS = 300
 _HBA_EXPIRY_SAFETY_MARGIN_SECONDS = 30
 _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS = 30
 _MAX_JSON_LINE_BYTES = 256 * 1024
+# Exact upper bound for the largest secret frame the transport may carry:
+# MCB1's 76-byte header + 128 KiB authority receipt + 4 KiB password.
+# Individual frame decoders retain their own tighter semantic bounds.
+_MAX_REMOTE_SECRET_FRAME_BYTES = 76 + 128 * 1024 + 4 * 1024
 _STOPPED_RELEASE_ACTIVATION_PATHS = (
     "/etc/muncho/writer-activation/staged/writer.json",
     "/etc/muncho/writer-activation/staged/gateway.yaml",
@@ -7802,6 +7806,14 @@ class RemoteSecretSession(Protocol):
 
     def exchange(self, frame: bytes | bytearray | memoryview) -> Mapping[str, Any]: ...
 
+    def exchange_before(
+        self,
+        frame: bytes | bytearray | memoryview,
+        *,
+        write_guard: Callable[[], None],
+        on_first_write: Callable[[], None],
+    ) -> Mapping[str, Any]: ...
+
     def finish(self, frame: bytes | bytearray | memoryview) -> Mapping[str, Any]: ...
 
     def finish_before(
@@ -8005,16 +8017,25 @@ class _IapRemoteSession:
     ) -> Mapping[str, Any]:
         if self._stdin_closed:
             raise OwnerLauncherError("remote_frame_state_invalid")
-        if (
-            not isinstance(frame, (bytes, bytearray, memoryview))
-            or not frame
-            or len(frame) > 128 * 1024 + 8
-        ):
+        if not isinstance(frame, (bytes, bytearray, memoryview)):
+            raise OwnerLauncherError("remote_frame_invalid")
+        source_view: memoryview | None = None
+        try:
+            source_view = memoryview(frame)
+            if not source_view.c_contiguous:
+                raise TypeError("non-contiguous frame")
+            view = source_view.cast("B")
+        except (TypeError, ValueError):
+            if source_view is not None:
+                source_view.release()
+            raise OwnerLauncherError("remote_frame_invalid") from None
+        if not view.nbytes or view.nbytes > _MAX_REMOTE_SECRET_FRAME_BYTES:
+            view.release()
+            source_view.release()
             raise OwnerLauncherError("remote_frame_invalid")
         descriptor = self._process.stdin.fileno()
-        view = memoryview(frame)
         offset = 0
-        first_write = True
+        ambiguity_marked = False
         restore_blocking = False
         selector: selectors.BaseSelector | None = None
         try:
@@ -8027,23 +8048,32 @@ class _IapRemoteSession:
                     raise OwnerLauncherError("iap_ssh_secret_write_failed") from None
                 selector = selectors.DefaultSelector()
                 selector.register(descriptor, selectors.EVENT_WRITE)
-            while offset < len(frame):
-                if write_guard is not None:
-                    write_guard()
-                    if selector is None or not selector.select(0.05):
-                        if self._process.poll() is not None:
-                            raise OwnerLauncherError("iap_ssh_secret_write_failed")
-                        continue
-                    write_guard()
-                if first_write and on_first_write is not None:
-                    on_first_write()
+            while offset < view.nbytes:
+                if selector is not None and not selector.select(0.05):
+                    if self._process.poll() is not None:
+                        raise OwnerLauncherError("iap_ssh_secret_write_failed")
+                    continue
+                if offset == 0:
+                    # A BlockingIOError proves that no byte crossed, so a
+                    # fresh guard is required before retrying.  Once a
+                    # positive partial write occurs, disclosure is irreversible
+                    # and the remaining bytes must complete without a new
+                    # expiry decision.
+                    if write_guard is not None:
+                        write_guard()
+                    if not ambiguity_marked:
+                        if on_first_write is not None:
+                            on_first_write()
+                        ambiguity_marked = True
                 try:
                     written = os.write(descriptor, view[offset:])
                 except BlockingIOError:
+                    if selector is None:
+                        if self._process.poll() is not None:
+                            raise OwnerLauncherError("iap_ssh_secret_write_failed")
                     continue
                 if written <= 0:
                     raise OSError("short write")
-                first_write = False
                 offset += written
             if close_stdin:
                 self._close_stdin()
@@ -8058,6 +8088,7 @@ class _IapRemoteSession:
                 except OSError:
                     pass
             view.release()
+            source_view.release()
         self._frames_written += 1
         return self._read_line(self._post_frame_timeout)
 
@@ -8065,6 +8096,22 @@ class _IapRemoteSession:
         if self._messages_read != 1 or self._frames_written != 0:
             raise OwnerLauncherError("remote_frame_state_invalid")
         return self._write_frame(frame, close_stdin=False)
+
+    def exchange_before(
+        self,
+        frame: bytes | bytearray | memoryview,
+        *,
+        write_guard: Callable[[], None],
+        on_first_write: Callable[[], None],
+    ) -> Mapping[str, Any]:
+        if self._messages_read != 1 or self._frames_written != 0:
+            raise OwnerLauncherError("remote_frame_state_invalid")
+        return self._write_frame(
+            frame,
+            close_stdin=False,
+            write_guard=write_guard,
+            on_first_write=on_first_write,
+        )
 
     def finish(self, frame: bytes | bytearray | memoryview) -> Mapping[str, Any]:
         if (

@@ -38,6 +38,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from agent.context_engine import sanitize_memory_context
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
@@ -751,46 +752,50 @@ def compress_context(
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
 
-    # Notify external memory provider before compression discards context.
-    # The provider's on_pre_compress() may return a string of insights it
-    # wants surfaced inside the compression summary; capture and forward it
-    # instead of silently discarding the provider's return value.
-    memory_context = ""
-    if agent._memory_manager:
-        try:
-            _maybe_ctx = agent._memory_manager.on_pre_compress(messages)
-            if isinstance(_maybe_ctx, str):
-                memory_context = _maybe_ctx
-        except Exception:
-            pass
-
-    compress_fn = agent.context_compressor.compress
-    compress_kwargs = _supported_compression_kwargs(
-        compress_fn,
-        current_tokens=approx_tokens,
-        focus_topic=focus_topic,
-        force=force,
-        memory_context=memory_context,
-    )
-    if memory_context.strip() and "memory_context" not in compress_kwargs:
-        engine_name = getattr(
-            agent.context_compressor,
-            "name",
-            type(agent.context_compressor).__name__,
-        )
-        if getattr(agent, "_last_memory_context_unsupported_engine", None) != engine_name:
-            agent._last_memory_context_unsupported_engine = engine_name
-            logger.warning(
-                "context engine %s does not accept memory_context; continuing "
-                "without provider-supplied summary context",
-                engine_name,
-            )
-
     try:
+        # Notify external memory provider before compression discards context.
+        # The provider's on_pre_compress() may return a string of insights it
+        # wants surfaced inside the compression summary; capture and forward it
+        # instead of silently discarding the provider's return value.
+        memory_context = ""
+        if agent._memory_manager:
+            try:
+                _maybe_ctx = agent._memory_manager.on_pre_compress(messages)
+                if isinstance(_maybe_ctx, str):
+                    memory_context = sanitize_memory_context(_maybe_ctx)
+            except Exception:
+                pass
+
+        compress_fn = agent.context_compressor.compress
+        compress_kwargs = _supported_compression_kwargs(
+            compress_fn,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+            memory_context=memory_context,
+        )
+        if memory_context.strip() and "memory_context" not in compress_kwargs:
+            engine_name = getattr(
+                agent.context_compressor,
+                "name",
+                type(agent.context_compressor).__name__,
+            )
+            if (
+                getattr(agent, "_last_memory_context_unsupported_engine", None)
+                != engine_name
+            ):
+                agent._last_memory_context_unsupported_engine = engine_name
+                logger.warning(
+                    "context engine %s does not accept memory_context; continuing "
+                    "without provider-supplied summary context",
+                    engine_name,
+                )
+
         compressed = compress_fn(messages, **compress_kwargs)
     except BaseException:
-        # ANY exception during compress() must release the lock so the
-        # session isn't permanently blocked from future compression.
+        # ANY exception after lock acquisition — memory hook, capability
+        # inspection, engine lookup, or compress() — must release the lock so
+        # the session isn't permanently blocked from future compression.
         _release_lock()
         raise
 

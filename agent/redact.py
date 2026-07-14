@@ -494,6 +494,7 @@ def redact_sensitive_text(
     force: bool = False,
     code_file: bool = False,
     file_read: bool = False,
+    redact_url_credentials: bool = False,
 ) -> str:
     """Apply all redaction patterns to a block of text.
 
@@ -501,6 +502,11 @@ def redact_sensitive_text(
     Enabled by default. Disable via security.redact_secrets: false in config.yaml.
     Set force=True for safety boundaries that must never return raw secrets
     regardless of the user's global logging redaction preference.
+
+    Set redact_url_credentials=True at non-navigation egress boundaries to
+    additionally redact credential-named query parameters and ``user:pass@``
+    URL userinfo. The default remains False because actionable OAuth callback,
+    magic-link, and pre-signed URLs must survive ordinary tool flows unchanged.
 
     Set code_file=True to skip the ENV-assignment and JSON-field regex
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
@@ -665,6 +671,10 @@ def redact_sensitive_text(
     # userinfo is never a round-trip workflow token (those live in the query
     # string), so masking it can't break a skill. The ``user:pass@`` form is
     # left to pass through per #34029.
+
+    if redact_url_credentials and "://" in text:
+        text = _redact_url_query_params(text)
+        text = _redact_url_userinfo(text)
 
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:

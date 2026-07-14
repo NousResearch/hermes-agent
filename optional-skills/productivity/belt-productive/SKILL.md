@@ -1,17 +1,17 @@
 ---
 name: belt-productive
-description: "Automate AI workflows, web search, LLM routing, Twitter/X posts, video rendering, and browser automation via inference.sh CLI (belt). Route prompts to Claude, Gemini, Kimi K2, GLM-4.6 via OpenRouter. Search the web with Tavily and Exa. Render videos from React/Remotion or HyperFrames compositions. Automate browsers for scraping and testing. Use when the user wants AI-powered search, LLM calls from the terminal, Twitter/X automation, programmatic video rendering, or browser agents."
+description: "AI search, LLMs, and automation via belt."
 version: 1.0.0
 author: okaris
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [automation, search, twitter, llm-routing, workflows, tavily, exa, openrouter, remotion, hyperframes, browser, inference-sh]
-    related_skills: [belt-creative, xurl]
+    tags: [automation, search, twitter, llm-routing, workflows, tavily, exa, openrouter, remotion, hyperframes, browser, inference-sh, belt, web-search, scraping, Claude, Gemini, Kimi, batch, pipeline, scheduling, social-media, browser-automation, research]
+    related_skills: [belt-creative, xurl, computer-use, gif-search, youtube-content]
     requires_toolsets: [terminal]
 required_environment_variables:
-  - name: INFERENCE_API_KEY
+  - name: INFSH_API_KEY
     prompt: "inference.sh API Key"
     help: "Sign up at https://inference.sh and get your key from https://inference.sh/settings/api-keys"
     required_for: full functionality
@@ -37,7 +37,7 @@ All commands use the `terminal` tool to run `belt` (the inference.sh CLI).
 ## Prerequisites
 
 ```bash
-belt whoami
+belt me
 ```
 
 If not installed:
@@ -191,7 +191,7 @@ belt task get <task-id>
 
 ```bash
 # Verify CLI
-belt whoami
+belt me
 
 # Verify search works
 belt app run tavily/search --input '{"query": "hello world test"}'

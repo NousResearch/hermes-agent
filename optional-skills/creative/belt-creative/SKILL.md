@@ -1,17 +1,17 @@
 ---
 name: belt-creative
-description: "Generate images, video, audio, avatars, and music via the inference.sh CLI (belt). 250+ cloud AI models with one API key. Use when the user asks to generate images (FLUX, Seedream, GPT-Image-2, Gemini, Grok Imagine, Reve), create video (Veo, Seedance, Wan, HappyHorse), make avatars (P-Video-Avatar, OmniHuman, Fabric, PixVerse), generate speech or music (ElevenLabs, Inworld TTS, Kokoro, DIA), upscale media, remove backgrounds, or add sound effects to video."
+description: "AI media generation via inference.sh CLI."
 version: 2.0.0
 author: okaris
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [image-generation, video-generation, text-to-speech, avatars, music, ai-media, FLUX, Veo, Seedance, Seedream, ElevenLabs, inference-sh]
-    related_skills: [belt-productive, comfyui, songwriting-and-ai-music]
+    tags: [image-generation, video-generation, text-to-speech, avatars, music, ai-media, FLUX, Veo, Seedance, Seedream, ElevenLabs, inference-sh, belt, upscale, background-removal, lipsync, GPT-Image, Gemini, Grok, Reve, foley, sound-effects, voice-clone]
+    related_skills: [belt-productive, comfyui, songwriting-and-ai-music, gif-search, songsee, youtube-content]
     requires_toolsets: [terminal]
 required_environment_variables:
-  - name: INFERENCE_API_KEY
+  - name: INFSH_API_KEY
     prompt: "inference.sh API Key"
     help: "Sign up at https://inference.sh and get your key from https://inference.sh/settings/api-keys"
     required_for: full functionality
@@ -38,7 +38,7 @@ All commands use the `terminal` tool to run `belt` (the inference.sh CLI).
 The `belt` CLI must be installed and authenticated. Check with:
 
 ```bash
-belt whoami
+belt me
 ```
 
 If not installed:
@@ -215,7 +215,7 @@ belt app run elevenlabs/music --input '{"prompt": "soft podcast intro jingle", "
 
 ```bash
 # Verify CLI is installed and authenticated
-belt whoami
+belt me
 
 # Quick test — generate a simple image
 belt app run p-image --input '{"prompt": "a red circle on white background"}'

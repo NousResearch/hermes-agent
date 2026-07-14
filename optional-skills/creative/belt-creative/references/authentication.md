@@ -17,7 +17,7 @@ This opens a browser for authentication. After login, credentials are stored loc
 ## Check Authentication
 
 ```bash
-belt whoami
+belt me
 ```
 
 Shows your user info if authenticated.
@@ -27,7 +27,7 @@ Shows your user info if authenticated.
 For CI/CD or scripts, set your API key:
 
 ```bash
-export INFERENCE_API_KEY=your-api-key
+export INFSH_API_KEY=your-api-key
 ```
 
 Get your key from https://inference.sh/settings/api-keys. The environment variable overrides the config file.
@@ -50,4 +50,4 @@ curl -fsSL cli.inference.sh | sh
 |-------|----------|
 | "not authenticated" | Run `belt login` |
 | "command not found" | Reinstall CLI or add to PATH |
-| "API key invalid" | Check `INFERENCE_API_KEY` or re-login |
+| "API key invalid" | Check `INFSH_API_KEY` or re-login |

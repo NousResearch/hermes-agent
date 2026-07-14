@@ -7380,12 +7380,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
-        # Plugin hook: on_session_pre_switch — fires before session rotation.
+        # Plugin hook: session_switch_starting — fires before session rotation.
         try:
             from hermes_cli.plugins import has_hook, invoke_hook
-            if has_hook("on_session_pre_switch"):
+            if has_hook("session_switch_starting"):
                 invoke_hook(
-                    "on_session_pre_switch",
+                    "session_switch_starting",
                     old_session_id=old_session_id,
                     cli=self,
                 )
@@ -7518,12 +7518,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
 
-            # Plugin hook: on_session_post_switch — fires after session rotation completes.
+            # Plugin hook: session_switched — fires after session rotation completes.
             try:
                 from hermes_cli.plugins import has_hook, invoke_hook
-                if has_hook("on_session_post_switch"):
+                if has_hook("session_switched"):
                     invoke_hook(
-                        "on_session_post_switch",
+                        "session_switched",
                         old_session_id=old_session_id,
                         new_session_id=self.session_id,
                         cli=self,

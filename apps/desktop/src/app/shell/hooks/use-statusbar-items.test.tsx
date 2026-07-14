@@ -99,12 +99,6 @@ describe('statusbar workspace menu — "Open containing folder"', () => {
 })
 
 const statusbarOptions = {
-  agentsOpen: false,
-  chatOpen: true,
-  commandCenterOpen: false,
-  extraLeftItems: [],
-  extraRightItems: [],
-  freshDraftReady: false,
   gatewayState: 'ready' as const,
   inferenceStatus: null,
   openAgents: () => {},
@@ -189,5 +183,34 @@ describe('statusbar session timer — focused since (#103123)', () => {
 
     expect(timerSince(item)).toBeNull()
     expect(item?.hidden).toBe(true)
+  })
+})
+
+
+describe('useStatusbarItems session timer — runtime cache anchor', () => {
+  it("anchors a focused branch tile to its runtime cache instead of the parent's stored age", () => {
+    const parentRowStartedAt = 1_600_000_000
+    const branchRuntimeStartedAt = 1_800_000_000_000
+
+    $selectedStoredSessionId.set('parent-stored')
+    $sessionStartedAt.set(1_700_000_000_000)
+    $sessions.set([
+      { id: 'parent-stored', started_at: parentRowStartedAt },
+      { id: 'branch-stored', parent_session_id: 'parent-stored', started_at: parentRowStartedAt }
+    ] as never)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: null, mode: 'local', profile: 'default' },
+        runtimeId: 'branch-runtime',
+        storedSessionId: 'branch-stored'
+      }
+    ] as never)
+    $focusedTreePaneId.set('session-tile:branch-stored')
+
+    const item = sessionTimerItem()
+    const since = timerSince(item)
+
+    expect(since).toBe(branchRuntimeStartedAt)
+    expect(since).not.toBe(parentRowStartedAt * 1000)
   })
 })

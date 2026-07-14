@@ -16,6 +16,8 @@ export function resolveSessionTimerSince(input: {
   primaryFocused: boolean
   primarySessionStartedAt: number | null
   tileFocus: null | TileSessionFocusStamp
+  /** Runtime-cache anchor for the focused tile, when one exists (#64990). */
+  fallbackRuntimeStartedAt?: null | number
 }): number | null {
   if (input.primaryFocused) {
     return input.primarySessionStartedAt
@@ -24,7 +26,18 @@ export function resolveSessionTimerSince(input: {
   const focused = input.focusedStoredSessionId
   const tile = input.tileFocus
 
-  if (!focused || !tile || tile.storedId !== focused) {
+  if (!focused) {
+    return null
+  }
+
+  // A tile with live runtime state anchors to the session's own runtime
+  // start, so a warm-cache reopen or a branch keeps its true elapsed time
+  // instead of the parent row's stored age (#64990).
+  if (input.fallbackRuntimeStartedAt != null) {
+    return input.fallbackRuntimeStartedAt
+  }
+
+  if (!tile || tile.storedId !== focused) {
     return null
   }
 

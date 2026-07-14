@@ -182,6 +182,12 @@ export function useStatusbarItems({
   // Only the fields read here are selected, so an unchanged readout bails out
   // instead of rebuilding all ~9 statusbar items per token.
   const focusedBusy = useStoreSelector($focusedSessionState, state => Boolean(state?.busy))
+
+  const focusedRuntimeStartedAt = useStoreSelector(
+    $focusedSessionState,
+    state => state?.runtimeStartedAt ?? null
+  )
+
   const focusedTurnStartedAt = useStoreSelector($focusedSessionState, state => state?.turnStartedAt ?? null)
   // `usage` is an object, so it can't be compared as a scalar. It IS however
   // replaced wholesale rather than mutated, and only changes when the backend
@@ -276,7 +282,8 @@ export function useStatusbarItems({
     focusedStoredSessionId,
     primaryFocused,
     primarySessionStartedAt,
-    tileFocus: tileSessionFocusStartedAt
+    tileFocus: tileSessionFocusStartedAt,
+    fallbackRuntimeStartedAt: focusedRuntimeStartedAt
   })
 
   // The backend only knows a session's MEASURED occupancy once a turn has run

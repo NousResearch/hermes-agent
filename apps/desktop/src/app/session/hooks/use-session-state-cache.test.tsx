@@ -13,6 +13,7 @@ import {
   $currentReasoningEffort,
   $currentServiceTier,
   $messages,
+  $sessionStartedAt,
   $turnStartedAt,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -23,6 +24,7 @@ import {
   setCurrentServiceTier,
   setSelectedStoredSessionId,
   setSessions,
+  setSessionStartedAt,
   setTurnStartedAt
 } from '@/store/session'
 import {
@@ -220,7 +222,7 @@ function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessP
   return null
 }
 
-describe('useSessionStateCache — per-session turn timer', () => {
+describe('useSessionStateCache — per-session timers', () => {
   beforeEach(() => {
     // The view-sync flush runs on a real rAF in the browser path; in jsdom we
     // want it synchronous so the global mirror is observable immediately. The
@@ -241,6 +243,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    setSessionStartedAt(null)
   })
 
   afterEach(() => {
@@ -252,6 +255,30 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    setSessionStartedAt(null)
+  })
+
+  it('mirrors only the focused runtime session anchor into the global timer', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
+
+    act(() => {
+      cache.updateSessionState(
+        'bg-runtime',
+        state => ({ ...state, runtimeStartedAt: 1_700_000_000_000 }),
+        'bg-stored'
+      )
+    })
+    expect($sessionStartedAt.get()).toBeNull()
+
+    act(() => {
+      cache.updateSessionState(
+        'fg-runtime',
+        state => ({ ...state, runtimeStartedAt: 1_700_000_111_000 }),
+        'fg-stored'
+      )
+    })
+    expect($sessionStartedAt.get()).toBe(1_700_000_111_000)
   })
 
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {

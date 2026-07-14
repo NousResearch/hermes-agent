@@ -1229,6 +1229,37 @@ extra_body:
     enable_thinking: false
 ```
 
+### Built-in provider overrides (`providers.<name>.extra_body`)
+
+Named custom endpoints above require a URL. First-class / built-in providers
+(the profiles under `plugins/model-providers/`, e.g. `alibaba` / `dashscope`,
+`openai`, `openrouter`) can also pin request body fields without declaring a
+URL — put a **partial** entry under the keyed `providers:` schema:
+
+```yaml
+providers:
+  # Either the canonical profile name …
+  alibaba:
+    extra_body:
+      enable_thinking: false
+  # … or any registered alias works (dashscope → alibaba):
+  # dashscope:
+  #   extra_body:
+  #     enable_thinking: false
+```
+
+Hermes resolves this **once at agent setup** into `request_overrides.extra_body`
+(same merge path the chat-completions transport already uses). Lookup order:
+
+1. Exact session provider string
+2. Canonical profile name
+3. Other registered aliases
+
+Per-call `request_overrides.extra_body` still wins on key conflict. Entries
+that include `api` / `base_url` / `url` remain **named custom endpoints** and
+are handled by the custom-provider path above — they are not double-applied
+here.
+
 The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.

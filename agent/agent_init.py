@@ -254,16 +254,99 @@ def _custom_provider_extra_body_for_agent(
     return fallback
 
 
-def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
-    extra_body = _custom_provider_extra_body_for_agent(
-        provider=agent.provider,
-        model=agent.model,
-        base_url=agent.base_url,
-        custom_providers=custom_providers,
-    )
-    if not extra_body:
-        return
+def _providers_entry_ci(
+    providers_cfg: Dict[str, Any], key: str
+) -> Optional[Dict[str, Any]]:
+    """Return ``providers.<key>`` with case-insensitive key match."""
+    if not isinstance(providers_cfg, dict) or not key:
+        return None
+    if key in providers_cfg and isinstance(providers_cfg[key], dict):
+        return providers_cfg[key]
+    key_l = key.lower()
+    for raw_key, entry in providers_cfg.items():
+        if str(raw_key).strip().lower() == key_l and isinstance(entry, dict):
+            return entry
+    return None
 
+
+def _provider_lookup_keys(provider: str) -> List[str]:
+    """Ordered keys to probe under ``providers:`` for a session provider.
+
+    Prefer the session's exact provider string first, then the canonical
+    profile name, then registered aliases. That way a user who pins
+    ``providers.dashscope.extra_body`` still wins after Hermes resolves the
+    session provider to the canonical ``alibaba`` profile (and vice versa).
+    """
+    provider_norm = (provider or "").strip().lower()
+    if not provider_norm or provider_norm == "custom" or provider_norm.startswith("custom:"):
+        return []
+
+    keys: List[str] = [provider_norm]
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider_norm)
+    except Exception:
+        profile = None
+
+    if profile is not None:
+        canonical = (profile.name or "").strip().lower()
+        if canonical and canonical not in keys:
+            keys.append(canonical)
+        for alias in getattr(profile, "aliases", ()) or ():
+            alias_norm = str(alias or "").strip().lower()
+            if alias_norm and alias_norm not in keys:
+                keys.append(alias_norm)
+    return keys
+
+
+def _builtin_provider_extra_body_for_agent(
+    *,
+    provider: str,
+    providers_cfg: Any,
+) -> Optional[Dict[str, Any]]:
+    """Read ``providers.<name>.extra_body`` for a first-class / built-in provider.
+
+    Schema contract (distinct from named custom endpoints):
+    - Keys under ``providers:`` that include a base URL (``api`` / ``base_url`` /
+      ``url``) are **named custom endpoints** and are handled by
+      :func:`_custom_provider_extra_body_for_agent` via
+      ``get_compatible_custom_providers``.
+    - Keys that match a built-in profile name or alias may carry a partial
+      entry with only ``extra_body`` (no URL required). Those are resolved
+      here once at agent setup and merged into ``request_overrides``.
+
+    Lookup order: exact session provider string → canonical profile name →
+    aliases. First hit with a non-empty ``extra_body`` dict wins.
+    """
+    if not isinstance(providers_cfg, dict):
+        return None
+
+    for key in _provider_lookup_keys(provider):
+        entry = _providers_entry_ci(providers_cfg, key)
+        if not isinstance(entry, dict):
+            continue
+        # Named custom endpoints with a URL are owned by the custom path —
+        # skip them here so we never double-apply or steal a custom entry
+        # that simply shares a name with a built-in profile.
+        has_url = False
+        for url_key in ("base_url", "url", "api"):
+            raw_url = entry.get(url_key)
+            if isinstance(raw_url, str) and raw_url.strip():
+                has_url = True
+                break
+        if has_url:
+            continue
+        extra_body = entry.get("extra_body")
+        if isinstance(extra_body, dict) and extra_body:
+            return dict(extra_body)
+    return None
+
+
+def _apply_extra_body_to_request_overrides(
+    agent, extra_body: Dict[str, Any]
+) -> None:
+    """Merge *extra_body* under agent.request_overrides; caller keys win."""
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
     merged_extra_body = dict(extra_body)
     existing_extra_body = overrides.get("extra_body")
@@ -271,6 +354,49 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
         merged_extra_body.update(existing_extra_body)
     overrides["extra_body"] = merged_extra_body
     agent.request_overrides = overrides
+
+
+def _merge_custom_provider_extra_body(
+    agent,
+    custom_providers: List[Dict[str, Any]],
+    agent_cfg: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Resolve provider ``extra_body`` once at agent setup into request_overrides.
+
+    Order:
+    1. Named custom endpoints (``custom`` / ``custom:<key>``) via *custom_providers*.
+    2. Else first-class / built-in profile overrides from
+       ``providers.<name|alias>.extra_body`` (no URL required).
+
+    Existing ``request_overrides.extra_body`` always wins on key conflict.
+    """
+    extra_body = _custom_provider_extra_body_for_agent(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
+
+    if not extra_body:
+        providers_cfg = None
+        if isinstance(agent_cfg, dict):
+            providers_cfg = agent_cfg.get("providers")
+        else:
+            try:
+                from hermes_cli.config import load_config
+
+                providers_cfg = load_config().get("providers")
+            except Exception:
+                providers_cfg = None
+        extra_body = _builtin_provider_extra_body_for_agent(
+            provider=getattr(agent, "provider", "") or "",
+            providers_cfg=providers_cfg,
+        )
+
+    if not extra_body:
+        return
+
+    _apply_extra_body_to_request_overrides(agent, extra_body)
 
 
 def init_agent(
@@ -1707,7 +1833,7 @@ def init_agent(
     # Store for reuse by _check_compression_model_feasibility (auxiliary
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
-    _merge_custom_provider_extra_body(agent, _custom_providers)
+    _merge_custom_provider_extra_body(agent, _custom_providers, agent_cfg=_agent_cfg)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:

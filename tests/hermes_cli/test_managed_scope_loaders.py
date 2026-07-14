@@ -98,7 +98,7 @@ def test_logging_config_honors_managed(homes, monkeypatch):
     _seed(home, managed, user="logging:\n  level: INFO\n", mgd="logging:\n  level: DEBUG\n")
     import hermes_logging
 
-    level, _max, _bk = hermes_logging._read_logging_config()
+    level, _max, _bk, _loggers = hermes_logging._read_logging_config()
     assert level == "DEBUG"
 
 

@@ -7761,17 +7761,15 @@ class TelegramAdapter(BasePlatformAdapter):
         active topic conversation instead of being dropped by the mention gate.
 
         Only fires for real forum topic threads that already have a session, so
-        idle topics still need a mention to start. Builds the lookup key with
-        ``build_session_key`` using the same isolation flags the store used to
-        key the entry, so the lookup matches the stored key. Any failure returns
+        idle topics still need a mention to start. Builds the lookup key through
+        the session store's profile-aware generator, so isolation flags and
+        multiplexed profile namespaces match the stored key. Any failure returns
         False (mention still required).
         """
         store = getattr(self, "_session_store", None)
         if not store:
             return False
         try:
-            from gateway.session import SessionSource, build_session_key
-
             chat = getattr(message, "chat", None)
             chat_id = str(getattr(chat, "id", "") or "")
             if not chat_id:
@@ -7780,32 +7778,13 @@ class TelegramAdapter(BasePlatformAdapter):
             if not thread_id:
                 return False
             user = getattr(message, "from_user", None)
-            source = SessionSource(
-                platform=Platform.TELEGRAM,
+            source = self.build_source(
                 chat_id=chat_id,
                 chat_type="group",
                 user_id=str(user.id) if user is not None else None,
                 thread_id=thread_id,
             )
-            # Read isolation flags from the session store's own config, not the
-            # adapter's PlatformConfig.extra. The store keys entries via
-            # SessionStore._generate_session_key, which reads these flags from
-            # the gateway config it holds; using the same source keeps the
-            # lookup key aligned with the stored key when an operator changes
-            # group_sessions_per_user / thread_sessions_per_user. Mirrors
-            # SlackAdapter._has_active_session_for_thread.
-            store_cfg = getattr(store, "config", None)
-            group_per_user = (
-                getattr(store_cfg, "group_sessions_per_user", True) if store_cfg is not None else True
-            )
-            thread_per_user = (
-                getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg is not None else False
-            )
-            session_key = build_session_key(
-                source,
-                group_sessions_per_user=group_per_user,
-                thread_sessions_per_user=thread_per_user,
-            )
+            session_key = store._generate_session_key(source)
             store._ensure_loaded()
             return session_key in store._entries
         except Exception:

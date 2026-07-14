@@ -19,6 +19,7 @@ tests cover both the gate decision and the end-to-end media path.
 
 import sys
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,8 +52,8 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.session import SessionSource, build_session_key  # noqa: E402
 
 
-GROUP_ID = -1003917904618  # "D4J Powerhouse" supergroup id from the report
-TOPIC_ID = 14              # "Samson" forum topic id from the report
+GROUP_ID = -1001234567890
+TOPIC_ID = 42
 OTHER_TOPIC_ID = 99
 BOT_USERNAME = "hermes_bot"
 
@@ -69,16 +70,32 @@ class _FakeSessionStore:
     the store keyed the entry.
     """
 
-    def __init__(self, keys=(), *, group_sessions_per_user=True, thread_sessions_per_user=False):
+    def __init__(
+        self,
+        keys=(),
+        *,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+        multiplex_profiles=False,
+    ):
         self._entries = set(keys)
         self.ensure_loaded_called = False
         self.config = SimpleNamespace(
             group_sessions_per_user=group_sessions_per_user,
             thread_sessions_per_user=thread_sessions_per_user,
+            multiplex_profiles=multiplex_profiles,
         )
 
     def _ensure_loaded(self):
         self.ensure_loaded_called = True
+
+    def _generate_session_key(self, source):
+        return build_session_key(
+            source,
+            group_sessions_per_user=self.config.group_sessions_per_user,
+            thread_sessions_per_user=self.config.thread_sessions_per_user,
+            profile=source.profile if self.config.multiplex_profiles else None,
+        )
 
 
 class _RaisingSessionStore:
@@ -90,7 +107,13 @@ class _RaisingSessionStore:
         raise RuntimeError("store unavailable")
 
 
-def _make_adapter(*, require_mention=True, session_keys=(), session_store="fake"):
+def _make_adapter(
+    *,
+    require_mention=True,
+    session_keys=(),
+    session_store: Any = "fake",
+    profile_name=None,
+):
     config = PlatformConfig(
         enabled=True,
         token="fake-token",
@@ -104,6 +127,7 @@ def _make_adapter(*, require_mention=True, session_keys=(), session_store="fake"
         },
     )
     adapter = TelegramAdapter(config)
+    adapter.set_session_profile(profile_name)
     adapter._bot = SimpleNamespace(id=999, username=BOT_USERNAME)
     if session_store == "fake":
         adapter._session_store = _FakeSessionStore(session_keys)
@@ -140,7 +164,7 @@ def _forum_message(
         chat=SimpleNamespace(
             id=chat_id,
             type="supergroup",
-            title="D4J Powerhouse",
+            title="Example Forum",
             is_forum=True,
         ),
         from_user=SimpleNamespace(
@@ -188,6 +212,7 @@ def _topic_session_key(
     user_id=111,
     group_sessions_per_user=True,
     thread_sessions_per_user=False,
+    profile=None,
 ):
     """The session key the store would use for a forum-topic message.
 
@@ -205,6 +230,7 @@ def _topic_session_key(
         source,
         group_sessions_per_user=group_sessions_per_user,
         thread_sessions_per_user=thread_sessions_per_user,
+        profile=profile,
     )
 
 
@@ -347,11 +373,9 @@ def test_mention_still_processed_without_active_session():
 
 
 def test_active_session_lookup_uses_store_config_isolation_flags():
-    """The lookup key must use the store's isolation flags, not the adapter's
-    PlatformConfig.extra (which never carries them). With
-    thread_sessions_per_user=True the store keys the entry WITH the user id, so
-    a gate that read the adapter extra (defaulting the flag to False) would
-    build a user-less key and miss the entry."""
+    """The lookup key must use the store's isolation flags. With
+    thread_sessions_per_user=True the store keys the entry with the user id, so
+    bypassing the store's key generator would risk missing the entry."""
     adapter = _make_adapter(require_mention=True)
     user_id = 111
     keyed = _topic_session_key(user_id=user_id, thread_sessions_per_user=True)
@@ -364,6 +388,21 @@ def test_active_session_lookup_uses_store_config_isolation_flags():
     # only the user with the active session bypasses the mention requirement.
     other_user = _forum_message(caption=None, from_user_id=222)
     assert adapter._should_process_message(other_user) is False
+
+
+def test_active_session_lookup_uses_multiplexed_profile_namespace():
+    profile_name = "support"
+    keyed = _topic_session_key(profile=profile_name)
+    store = _FakeSessionStore({keyed}, multiplex_profiles=True)
+    adapter = _make_adapter(
+        require_mention=True,
+        session_store=store,
+        profile_name=profile_name,
+    )
+
+    assert adapter._should_process_message(_forum_message(caption=None)) is True
+    event = adapter._build_message_event(_forum_message(text="follow-up"), MessageType.TEXT)
+    assert event.source.profile == profile_name
 
 
 def test_gate_fails_safe_when_session_store_missing_or_raising():

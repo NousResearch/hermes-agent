@@ -8700,7 +8700,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 claimed[(platform, fp)] = profile_name
 
             # Stamp every inbound event from this adapter with its profile so
-            # the agent turn (and session key) resolve to the right home.
+            # the agent turn (and session key) resolve to the right home. The
+            # adapter-level stamp also makes pre-dispatch session lookups use the
+            # same profile namespace.
+            adapter.set_session_profile(profile_name)
             adapter.set_message_handler(
                 self._make_profile_message_handler(profile_name)
             )

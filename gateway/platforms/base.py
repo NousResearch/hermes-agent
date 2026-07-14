@@ -2348,6 +2348,12 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        # Profile namespace for adapters owned by the multi-profile gateway.
+        # The primary adapter leaves this unset and SessionStore falls back to
+        # the active profile. Secondary adapters are stamped by GatewayRunner
+        # before they connect so pre-dispatch routing checks can build the same
+        # profile-aware session key as the eventual message handler.
+        self._session_profile: Optional[str] = None
         self._message_handler: Optional[MessageHandler] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
@@ -5493,7 +5499,13 @@ class BasePlatformAdapter(ABC):
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,
+            profile=getattr(self, "_session_profile", None),
         )
+
+    def set_session_profile(self, profile_name: Optional[str]) -> None:
+        """Stamp the profile namespace used by this adapter's inbound sources."""
+        normalized = str(profile_name or "").strip()
+        self._session_profile = normalized or None
     
     @abstractmethod
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

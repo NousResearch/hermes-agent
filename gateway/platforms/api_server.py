@@ -2075,9 +2075,9 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
         try:
-            from hermes_cli.commands import gateway_command_registry
+            from hermes_cli.commands import api_plugin_command_registry
 
-            payload["commands"] = gateway_command_registry()
+            payload["commands"] = api_plugin_command_registry()
         except Exception as exc:
             logger.debug("[%s] Command registry unavailable for capabilities: %s", self.name, exc)
             payload["commands"] = []
@@ -2093,8 +2093,16 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
         except Exception:
-            body = {}
-        raw_args = body.get("args", "") if isinstance(body, dict) else ""
+            return web.json_response(
+                _openai_error("Request body must be valid JSON", code="invalid_request"),
+                status=400,
+            )
+        if not isinstance(body, dict):
+            return web.json_response(
+                _openai_error("Request body must be a JSON object", code="invalid_request"),
+                status=400,
+            )
+        raw_args = body.get("args", "")
         if not isinstance(raw_args, str):
             return web.json_response(_openai_error("args must be a string", code="invalid_request"), status=400)
         from hermes_cli.plugins import get_plugin_commands
@@ -2110,7 +2118,10 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[%s] Plugin command /%s failed: %s", self.name, name, exc)
             return web.json_response(_openai_error("Plugin command failed", code="command_failed"), status=500)
-        return web.json_response({"command": f"/{name}", "result": result})
+        return web.json_response({
+            "command": f"/{name}",
+            "result": str(result) if result is not None else None,
+        })
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.

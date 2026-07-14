@@ -510,14 +510,13 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
-def gateway_command_registry() -> list[dict[str, Any]]:
+def api_plugin_command_registry() -> list[dict[str, Any]]:
     """Return serializable/API-client-safe command metadata from the live registry.
 
     Only plugin commands are returned because these have a matching authenticated
     API-server dispatch route. Gateway-only built-ins are intentionally omitted.
     Handlers and other callable/plugin internals are never serialized.
     """
-    overrides = _resolve_config_gates()
     registry: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -569,7 +568,7 @@ def gateway_command_registry() -> list[dict[str, Any]]:
             plugin_commands = {}
 
     for raw_name, meta in plugin_commands.items():
-        if not isinstance(meta, dict):
+        if not isinstance(meta, dict) or not callable(meta.get("handler")):
             continue
         name = str(raw_name or "").strip().lower().lstrip("/").replace(" ", "-")
         _add(

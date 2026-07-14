@@ -555,6 +555,8 @@ class PluginContext:
 
         Names conflicting with built-in commands are rejected with a warning.
         """
+        if not callable(handler):
+            raise TypeError("Plugin command handler must be callable")
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning(

@@ -20,7 +20,7 @@ from hermes_cli.commands import (
     _clamp_telegram_names,
     _sanitize_telegram_name,
     discord_skill_commands,
-    gateway_command_registry,
+    api_plugin_command_registry,
     gateway_help_lines,
     resolve_command,
     slack_app_manifest,
@@ -2205,14 +2205,14 @@ class TestPluginCommandEnumeration:
                 "plugin": "jokes-plugin",
             },
             "status": {
-                "handler": lambda _a: "shadowed",
+                "handler": None,
                 "description": "Plugin status",
                 "category": "Plugin",
                 "plugin": "shadow-plugin",
             },
         })
 
-        registry = gateway_command_registry()
+        registry = api_plugin_command_registry()
         by_name = {entry["name"]: entry for entry in registry}
 
         assert by_name["joke"] == {
@@ -2226,7 +2226,7 @@ class TestPluginCommandEnumeration:
             "source": "plugin",
             "plugin": "jokes-plugin",
         }
-        assert by_name["status"]["source"] == "plugin"
+        assert "status" not in by_name
         assert "handler" not in by_name["joke"]
         assert is_gateway_known_command("definitely-not-registered") is False
 

@@ -1815,6 +1815,16 @@ class TestPluginCommands:
         assert entry["args_hint"] == ""
         assert entry["category"] == "Plugin"
 
+    def test_register_command_rejects_non_callable_handler(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with pytest.raises(TypeError, match="handler must be callable"):
+            ctx.register_command("broken", "not-callable")
+
+        assert "broken" not in mgr._plugin_commands
+
     def test_register_command_with_args_hint(self):
         """args_hint is stored and surfaced for gateway-native UI registration."""
         mgr = PluginManager()

@@ -658,6 +658,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post("/v1/commands/{name}", adapter._handle_plugin_command)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -1019,7 +1020,7 @@ class TestCapabilitiesEndpoint:
             }
         ]
         monkeypatch.setattr(
-            "hermes_cli.commands.gateway_command_registry",
+            "hermes_cli.commands.api_plugin_command_registry",
             lambda: list(expected_commands),
         )
 
@@ -1034,20 +1035,65 @@ class TestCapabilitiesEndpoint:
     async def test_advertised_plugin_command_executes_through_authenticated_api(self, auth_adapter, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.plugins.get_plugin_commands",
-            lambda: {"joke": {"handler": lambda raw: f"joke:{raw}"}},
+            lambda: {
+                "joke": {
+                    "handler": lambda raw: f"joke:{raw}",
+                    "description": "Generate a joke",
+                    "plugin": "jokes-plugin",
+                }
+            },
         )
         app = _create_app(auth_adapter)
-        app.router.add_post("/v1/commands/{name}", auth_adapter._handle_plugin_command)
         async with TestClient(TestServer(app)) as cli:
+            capabilities = await cli.get(
+                "/v1/capabilities",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            advertised = (await capabilities.json())["commands"]
+            assert [entry["name"] for entry in advertised] == ["joke"]
+
             denied = await cli.post("/v1/commands/joke", json={"args": "cats"})
             assert denied.status == 401
             response = await cli.post(
-                "/v1/commands/joke",
+                f"/v1/commands/{advertised[0]['name']}",
                 json={"args": "cats"},
                 headers={"Authorization": "Bearer sk-secret"},
             )
             assert response.status == 200
             assert await response.json() == {"command": "/joke", "result": "joke:cats"}
+
+    @pytest.mark.asyncio
+    async def test_plugin_command_rejects_malformed_json_without_invoking_handler(self, adapter, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_commands",
+            lambda: {"joke": {"handler": lambda raw: calls.append(raw)}},
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/v1/commands/joke",
+                data="{not-json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert response.status == 400
+            assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_plugin_command_serializes_result_as_text(self, adapter, monkeypatch):
+        class DisplayResult:
+            def __str__(self):
+                return "display result"
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_commands",
+            lambda: {"status": {"handler": lambda raw: DisplayResult()}},
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/commands/status", json={"args": ""})
+            assert response.status == 200
+            assert await response.json() == {"command": "/status", "result": "display result"}
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

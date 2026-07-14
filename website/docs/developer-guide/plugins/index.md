@@ -799,6 +799,8 @@ with an authenticated `POST /v1/commands/{name}` request whose JSON body is
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
 | `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+| `args_hint` | `str` | Optional usage hint appended to API/mobile command metadata |
+| `category` | `str` | Optional API/mobile picker grouping; defaults to `Plugin` |
 
 **Key differences from `register_cli_command()`:**
 

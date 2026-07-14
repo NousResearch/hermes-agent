@@ -221,6 +221,32 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
+When enabled plugins register slash commands, the response also contains a
+`commands` array. Every entry in that array is executable through the
+authenticated endpoint advertised as `endpoints.plugin_command`; gateway-only
+built-ins are omitted because the API server does not own their messaging
+session context. Handler callables are never serialized.
+
+### POST /v1/commands/{name}
+
+Executes a plugin command advertised by `GET /v1/capabilities`. This endpoint
+uses the same bearer authentication as the rest of the API server.
+
+```json
+{"args": "raw command arguments"}
+```
+
+A successful response is stable JSON with a text-or-null result:
+
+```json
+{"command": "/mystatus", "result": "All systems operational"}
+```
+
+Malformed JSON, non-object request bodies, and non-string `args` return 400.
+Commands that are absent or no longer registered return 404. Plugin failures
+return a generic 500 response and are logged server-side without exposing the
+exception to the client.
+
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.

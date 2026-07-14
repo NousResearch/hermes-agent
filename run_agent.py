@@ -4669,6 +4669,7 @@ class AIAgent:
         visible = "\n\n".join(parts).strip()
         if visible:
             visible = self._strip_think_blocks(visible).strip()
+            visible = redact_sensitive_text(visible)
         return visible
 
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:

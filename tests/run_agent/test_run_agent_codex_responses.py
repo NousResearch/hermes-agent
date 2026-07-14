@@ -1986,6 +1986,35 @@ def test_interim_commentary_uses_codex_commentary_items_when_content_is_empty(mo
     }
 
 
+def test_interim_commentary_redacts_secrets_from_codex_commentary_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    observed = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: observed.append(text)
+    )
+    secret = "sk-" + ("A" * 32)
+
+    agent._emit_interim_assistant_message({
+        "role": "assistant",
+        "content": "",
+        "codex_message_items": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [
+                    {"type": "output_text", "text": f"Using credential {secret}."}
+                ],
+            },
+        ],
+    })
+
+    assert len(observed) == 1
+    assert secret not in observed[0]
+    assert "Using credential" in observed[0]
+
+
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):
     agent = _build_agent(monkeypatch)
     observed = []

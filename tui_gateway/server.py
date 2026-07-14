@@ -8265,6 +8265,41 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
                 session["_busy_interrupt_pending"] = False
 
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
+def _rebind_session_transport(
+    session: dict,
+    transport: Any,
+    *,
+    message_id: str | None = None,
+    migrate_dead_queued: bool = False,
+) -> None:
+    """Bind a live client and re-home only queue entries it now owns.
+
+    Callers hold ``history_lock``. An explicit source-ID retry transfers that
+    one queued item to the retrying client. Resume/activate instead migrates
+    dead queue transports only when the session itself was detached, preserving
+    still-live per-item FIFO routing for other clients.
+    """
+    previous_transport = session.get("transport")
+    session["transport"] = transport
+    migrate_dead = migrate_dead_queued and _transport_is_dead(previous_transport)
+
+    queued_items = [session.get("queued_prompt")]
+    pending = session.get("queued_prompts")
+    if isinstance(pending, list):
+        queued_items.extend(pending)
+    for item in queued_items:
+        if not isinstance(item, dict):
+            continue
+        matches_source = (
+            message_id is not None and item.get("message_id") == message_id
+        )
+        if matches_source or (migrate_dead and _transport_is_dead(item.get("transport"))):
+            item["transport"] = transport
+
+    # ``inflight_turn`` has no separate transport slot: rebinding the session
+    # above transfers any matching in-flight turn atomically with its ID check.
+    # Do not manufacture one here; completed-history/DB duplicates also pass
+    # through this helper solely to keep future session events on the live client.
 
 
 def _handle_busy_submit(
@@ -9007,7 +9042,11 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
+            _rebind_session_transport(
+                session,
+                transport,
+                migrate_dead_queued=True,
+            )
         if touch:
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(

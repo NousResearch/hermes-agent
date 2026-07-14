@@ -359,12 +359,17 @@ def _(rid, params: dict) -> dict:
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
-        session["transport"] = t
+    # or fallback moved the session transport to stdio. Any matching queued
+    # source is re-homed atomically with the bind: a reconnect retry must not
+    # leave its queue entry pinned to the disconnected websocket.
+    t = current_transport()
     while True:
         busy_transport = None
         with session["history_lock"]:
+            if t is not None:
+                _rebind_session_transport(
+                    session, t, message_id=explicit_message_id
+                )
             if explicit_message_id is not None and _has_prompt_message_id(
                 session, explicit_message_id
             ):

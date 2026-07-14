@@ -34,7 +34,8 @@ import {
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  mediaStreamUrl
+  mediaStreamUrl,
+  shouldRouteMediaViaGateway
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { tailBoundedRemend } from '@/lib/remend-tail'
@@ -116,9 +117,13 @@ async function mediaSrc(path: string): Promise<string> {
     return mediaStreamUrl(path)
   }
 
-  // Remote gateway: the image lives on the gateway machine, so read it over the
-  // authenticated API rather than this machine's disk.
-  if (window.hermesDesktop && isRemoteGateway()) {
+  // Route through the gateway API when:
+  //   (a) connection.mode === 'remote' (image lives on the gateway), OR
+  //   (b) Windows client + WSL POSIX path in local mode (#63669) — the
+  //       gateway runs on the WSL side, so the file is on its
+  //       filesystem, not Windows'. Electron IPC can't read WSL paths
+  //       from a Windows process.
+  if (window.hermesDesktop && shouldRouteMediaViaGateway(path)) {
     return gatewayMediaDataUrl(path)
   }
 

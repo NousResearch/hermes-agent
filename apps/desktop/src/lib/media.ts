@@ -114,6 +114,34 @@ export function isRemoteGateway(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
+// True when the inline media reader must fetch via the gateway API rather
+// than the Electron IPC (which reads THIS machine's disk).
+//
+// Reasons to route via gateway (#63669):
+//   1. Remote gateway mode: image lives on the gateway machine.
+//   2. Windows client + WSL POSIX path + local mode: connection.mode is
+//      'local' but the gateway runs on the WSL Linux side, so the file
+//      is on the gateway's filesystem, not Windows'. Electron IPC
+//      cannot read WSL paths from a Windows process.
+//
+// Returns false for plain Windows paths in local mode (Electron IPC reads
+// the Windows disk directly) and for POSIX paths on macOS/Linux (same
+// filesystem). Connection state is required to know the mode; if
+// $connection is null (cold start) we don't have enough signal to make
+// a Windows+WSL call and fall back to the existing readFileDataUrl
+// path — same as today.
+export function shouldRouteMediaViaGateway(path: string): boolean {
+  if (isRemoteGateway()) return true
+  // Local mode + connection hasn't hydrated yet: no signal.
+  if (!$connection.get()) return false
+  if (typeof navigator === 'undefined') return false
+  if (!/^Win/i.test(navigator.platform || '')) return false
+  // Windows client. Route through gateway for any POSIX absolute path —
+  // these are WSL filesystem paths that Electron IPC can't read.
+  const file = filePathFromMediaPath(path)
+  return /^(\/home\/|\/tmp\/|\/var\/|\/opt\/|\/srv\/|\/mnt\/|\/root\/)/.test(file)
+}
+
 // Fetch a gateway-local image as a data URL via the authenticated REST bridge.
 // Used in remote mode where readFileDataUrl (which reads THIS machine's disk)
 // can't see files the agent wrote on the gateway. Requires the gateway to

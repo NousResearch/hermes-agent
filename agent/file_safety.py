@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -345,6 +346,78 @@ def raise_if_read_blocked(path: str) -> None:
         return
     if blocked:
         raise ValueError(blocked)
+
+
+# Basenames from get_read_block_error's credential-store denylist, flattened
+# so a bare-filename terminal token (``cat auth.json``) can be recognized
+# without re-deriving the HERMES_HOME-relative paths.
+_SECRET_BASENAME_CANDIDATES: set[str] = _BLOCKED_PROJECT_ENV_BASENAMES | {
+    "auth.json",
+    "auth.lock",
+    ".anthropic_oauth.json",
+    "webhook_subscriptions.json",
+    "google_oauth.json",
+    "bws_cache.json",
+}
+
+
+def get_terminal_secret_access_error(command: str, cwd: Optional[str] = None) -> Optional[str]:
+    """Best-effort defense-in-depth: flag a terminal command that names a
+    known Hermes/project secret file, mirroring :func:`get_read_block_error`'s
+    denylist for the ``terminal`` tool.
+
+    ``read_file`` already refuses these paths, but a model blocked there can
+    trivially reach the same file with ``terminal: cat``/``grep``/``source`` —
+    a bypass the read-file guard's own error message documents. This closes
+    that specific gap for the common case (the path or bare filename appears
+    literally in the command string) without pretending to be a real sandbox:
+    variable expansion, symlinks, or an encoded path will not be caught, and
+    a command that's flagged can still be rewritten to dodge this check.
+
+    Tokenizes ``command`` with ``shlex`` (same approach as the disk-cleanup
+    plugin's path extraction) and resolves each path-like or denylisted-
+    basename token against ``cwd`` (falling back to the process cwd), then
+    defers to ``get_read_block_error`` for the actual verdict so both guards
+    stay in sync.
+    """
+    if not isinstance(command, str) or not command:
+        return None
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+
+    base_dir = Path(cwd).expanduser() if cwd else Path.cwd()
+    for tok in tokens:
+        candidate = tok
+        for prefix in ("<", ">", "2>", "&>"):
+            if candidate.startswith(prefix):
+                candidate = candidate[len(prefix):]
+        if not candidate:
+            continue
+
+        basename = os.path.basename(candidate.rstrip("/"))
+        looks_pathlike = candidate.startswith(("/", "~", "./", "../"))
+        if not looks_pathlike and basename not in _SECRET_BASENAME_CANDIDATES:
+            continue
+
+        try:
+            expanded = Path(candidate).expanduser()
+            resolved = expanded if expanded.is_absolute() else (base_dir / expanded)
+            resolved = resolved.resolve()
+        except Exception:
+            continue
+
+        try:
+            blocked = get_read_block_error(str(resolved))
+        except Exception:
+            continue
+        if blocked:
+            return (
+                f"Blocked: command references {tok!r}, which resolves to a "
+                f"denied secret path. {blocked}"
+            )
+    return None
 
 
 # ---------------------------------------------------------------------------

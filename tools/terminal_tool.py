@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
+from agent.file_safety import get_terminal_secret_access_error
 
 logger = logging.getLogger(__name__)
 
@@ -2078,6 +2079,25 @@ def terminal_tool(
                 "output": "",
                 "exit_code": -1,
                 "error": f"Invalid command: expected string, got {type(command).__name__}",
+                "status": "error",
+            }, ensure_ascii=False)
+
+        # Credential-leakage guard: same denylist read_file enforces, applied
+        # to the literal paths/basenames in the command string. Runs even
+        # when force=True — force only pre-confirms the dangerous-command
+        # check below, it isn't a secret-access override. Defense-in-depth,
+        # not a real boundary — see get_terminal_secret_access_error's
+        # docstring (#57698 follow-up).
+        _secret_block = get_terminal_secret_access_error(command, cwd=workdir)
+        if _secret_block:
+            logger.warning(
+                "Blocked terminal command referencing a denied secret path: %s",
+                _safe_command_preview(command),
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _secret_block,
                 "status": "error",
             }, ensure_ascii=False)
 

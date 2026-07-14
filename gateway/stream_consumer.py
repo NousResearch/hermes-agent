@@ -1726,6 +1726,7 @@ class GatewayStreamConsumer:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
+            self._track_preview_ids_from_result(result)
             # Each fallback chunk is a fresh platform message — notify
             # so any stale tool-progress bubble gets closed off.
             self._notify_new_message()

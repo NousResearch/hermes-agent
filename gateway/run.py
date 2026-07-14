@@ -18841,10 +18841,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         source: SessionSource,
         session_id: str,
+        initial_message_ids: Any = None,
     ) -> None:
         if not event or not source or source.platform != Platform.TELEGRAM:
             return
         recorded_ids: list[str] = []
+        initial_values = (
+            initial_message_ids
+            if isinstance(initial_message_ids, (list, tuple, set))
+            else (initial_message_ids,)
+        )
+        for message_id in initial_values:
+            text = str(message_id or "").strip()
+            if text and text != "__no_edit__" and text not in recorded_ids:
+                recorded_ids.append(text)
 
         def _recorder(result: Any) -> None:
             changed = False
@@ -20859,6 +20869,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
+                        self._attach_telegram_delivery_recorder(
+                            event,
+                            source,
+                            session_entry.session_id,
+                            initial_message_ids=agent_result.get("delivery_message_ids"),
+                        )
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
@@ -22301,6 +22317,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from pathlib import Path
         from urllib.parse import quote as _quote
 
+        def _record_delivery(result: Any) -> None:
+            if not getattr(result, "success", False):
+                return
+            recorder = getattr(event, "_hermes_delivery_recorder", None)
+            if not callable(recorder):
+                return
+            try:
+                recorder(result)
+            except Exception:
+                logger.debug("Post-stream delivery recorder failed", exc_info=True)
+
         try:
             # Capture [[as_document]] before extract_media strips it, so the
             # dispatch partition below can route image-extension files
@@ -22357,11 +22384,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    result = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
+                    _record_delivery(result)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
 
@@ -22369,23 +22397,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    _record_delivery(result)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 

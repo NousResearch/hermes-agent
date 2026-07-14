@@ -327,6 +327,184 @@ class TestBrowserVisionConfig:
         assert result["analysis"] == "Text-mode screenshot analysis"
         mock_llm.assert_called_once()
 
+    def test_browser_vision_tall_screenshot_gets_resized_on_native_path(self, tmp_path):
+        """Tall low-byte screenshot → resize called → native multimodal result with resized data URL."""
+        import base64
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+        from tools.vision_tools import _EMBED_TARGET_BYTES, _EMBED_MAX_DIMENSION
+
+        shots_dir = tmp_path / "browser_screenshots"
+        shots_dir.mkdir()
+        screenshot = shots_dir / "shot.png"
+
+        # Create a minimal valid PNG that appears tall (100×8500) via metadata trick.
+        # We write a stub PNG; the proactive check uses _image_exceeds_dimension which
+        # reads the actual file. Patch _image_exceeds_dimension to report "over dims".
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        # A small valid data URL that fits under both caps
+        tiny_png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8).decode()
+        small_data_url = f"data:image/png;base64,{tiny_png_b64}"
+        assert len(small_data_url) <= _EMBED_TARGET_BYTES
+
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    return_value={"success": True, "data": {"path": str(screenshot)}},
+                ),
+                patch(
+                    "hermes_cli.config.load_config",
+                    return_value={"model": {"supports_vision": True}},
+                ),
+                patch("tools.browser_tool._get_vision_model") as mock_get_vision_model,
+                patch("tools.browser_tool.call_llm") as mock_llm,
+                patch(
+                    "tools.vision_tools._image_exceeds_dimension",
+                    return_value=True,  # simulate tall image
+                ),
+                patch(
+                    "tools.vision_tools._resize_image_for_vision",
+                    return_value=small_data_url,
+                ) as mock_resize,
+            ):
+                result = browser_vision("what is on the page?", task_id="test")
+        finally:
+            clear_runtime_main()
+
+        # Should return native multimodal dict, not a JSON error string
+        assert isinstance(result, dict), f"Expected dict, got: {result!r}"
+        assert result["_multimodal"] is True
+        mock_resize.assert_called_once()
+        # The data URL in the content should be the resized version
+        image_parts = [p for p in result["content"] if p.get("type") == "image_url"]
+        assert image_parts, "No image_url part found in native result"
+        assert image_parts[0]["image_url"]["url"] == small_data_url
+        mock_get_vision_model.assert_not_called()
+        mock_llm.assert_not_called()
+
+    def test_browser_vision_byte_heavy_screenshot_gets_resized_on_native_path(self, tmp_path):
+        """Byte-heavy screenshot → resize called → native multimodal result with resized data URL."""
+        import base64
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+        from tools.vision_tools import _EMBED_TARGET_BYTES, _EMBED_MAX_DIMENSION
+
+        shots_dir = tmp_path / "browser_screenshots"
+        shots_dir.mkdir()
+        screenshot = shots_dir / "shot.png"
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        # A small valid data URL that fits under both caps after "resize"
+        tiny_png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8).decode()
+        small_data_url = f"data:image/png;base64,{tiny_png_b64}"
+
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    return_value={"success": True, "data": {"path": str(screenshot)}},
+                ),
+                patch(
+                    "hermes_cli.config.load_config",
+                    return_value={"model": {"supports_vision": True}},
+                ),
+                patch("tools.browser_tool._get_vision_model") as mock_get_vision_model,
+                patch("tools.browser_tool.call_llm") as mock_llm,
+                patch(
+                    "tools.vision_tools._image_exceeds_dimension",
+                    return_value=False,
+                ),
+                # Simulate a byte-heavy data_url by patching the initial read
+                # so _over_bytes fires: patch _over_bytes check by making data_url huge
+                patch(
+                    "tools.vision_tools._resize_image_for_vision",
+                    return_value=small_data_url,
+                ) as mock_resize,
+            ):
+                # Write a stub PNG but use a side-effect to simulate over-bytes scenario:
+                # We patch the screenshot bytes read so data_url is large enough to trigger resize.
+                # Simplest: write a file whose base64 exceeds _EMBED_TARGET_BYTES.
+                # Since _EMBED_TARGET_BYTES = 4MB, we'd need 3MB+ raw. Instead, patch len() — 
+                # but that's invasive. Instead patch _image_exceeds_dimension=False and
+                # patch the data_url construction by making the file big enough in concept.
+                # We rely on patching _resize_image_for_vision being called when _over_bytes fires.
+                # For this test, we patch the screenshot file read to produce a large payload:
+                large_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * (3 * 1024 * 1024)
+                screenshot.write_bytes(large_bytes)
+                result = browser_vision("what is on the page?", task_id="test")
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict), f"Expected dict, got: {result!r}"
+        assert result["_multimodal"] is True
+        mock_resize.assert_called_once()
+        image_parts = [p for p in result["content"] if p.get("type") == "image_url"]
+        assert image_parts, "No image_url part found in native result"
+        assert image_parts[0]["image_url"]["url"] == small_data_url
+        mock_get_vision_model.assert_not_called()
+        mock_llm.assert_not_called()
+
+    def test_browser_vision_resize_failure_returns_tool_error(self, tmp_path):
+        """When resize cannot satisfy constraints, tool_error is returned (not native result)."""
+        import base64
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+        from tools.vision_tools import _EMBED_TARGET_BYTES
+
+        shots_dir = tmp_path / "browser_screenshots"
+        shots_dir.mkdir()
+        screenshot = shots_dir / "shot.png"
+        # Write a file large enough to trigger _over_bytes
+        large_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * (3 * 1024 * 1024)
+        screenshot.write_bytes(large_bytes)
+
+        # Simulate resize failure: return a data_url that is still over the byte cap
+        oversized_b64 = base64.b64encode(large_bytes).decode()
+        oversized_data_url = f"data:image/png;base64,{oversized_b64}"
+        assert len(oversized_data_url) > _EMBED_TARGET_BYTES
+
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    return_value={"success": True, "data": {"path": str(screenshot)}},
+                ),
+                patch(
+                    "hermes_cli.config.load_config",
+                    return_value={"model": {"supports_vision": True}},
+                ),
+                patch("tools.browser_tool._get_vision_model"),
+                patch("tools.browser_tool.call_llm"),
+                patch(
+                    "tools.vision_tools._image_exceeds_dimension",
+                    return_value=False,
+                ),
+                patch(
+                    "tools.vision_tools._resize_image_for_vision",
+                    return_value=oversized_data_url,  # resize "failed" to shrink it
+                ),
+            ):
+                result = browser_vision("what is on the page?", task_id="test")
+        finally:
+            clear_runtime_main()
+
+        # Should be a JSON error string, not a native dict
+        assert isinstance(result, str), f"Expected JSON string error, got: {type(result)} {result!r}"
+        parsed = json.loads(result)
+        assert parsed["success"] is False
+        assert "embed limits after auto-resize" in parsed.get("error", "")
+
 
 # ── auto-recording config ────────────────────────────────────────────
 

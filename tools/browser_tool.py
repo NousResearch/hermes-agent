@@ -3262,6 +3262,29 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 max_dimension=_EMBED_MAX_DIMENSION,
             )
 
+        # Post-resize validation: check the actual data_url content
+        _post_bytes_ok = len(data_url) <= _EMBED_TARGET_BYTES
+        # Decode the data URL to check pixel dimensions of the resized result
+        _post_dims_ok = True
+        try:
+            from PIL import Image as _PILCheck
+            import io as _io_check
+            _b64_payload = data_url.split(",", 1)[1] if "," in data_url else data_url
+            _img_bytes = base64.b64decode(_b64_payload)
+            with _PILCheck.open(_io_check.BytesIO(_img_bytes)) as _chk:
+                _post_dims_ok = max(_chk.size) <= _EMBED_MAX_DIMENSION
+        except Exception:
+            pass  # Pillow unavailable; byte-only gate still applies
+        if not _post_bytes_ok or not _post_dims_ok:
+            return tool_error(
+                f"Screenshot exceeds embed limits after auto-resize "
+                f"(bytes_ok={_post_bytes_ok}, dims_ok={_post_dims_ok}). "
+                "The screenshot was taken but cannot be safely embedded in "
+                "conversation history. Try a more targeted screenshot or use "
+                "browser_snapshot for text-based inspection.",
+                success=False,
+            )
+
         # Fast path: when native image routing is in effect for the active main
         # model, attach the screenshot directly instead of describing it through
         # an auxiliary vision LLM. The model inspects the pixels on its next

@@ -127,6 +127,10 @@ class TestFindAgentBrowser:
         def mock_which(cmd, path=None):
             if cmd == "agent-browser":
                 return None
+            if cmd == "node":
+                if path and "/opt/homebrew/bin" in path:
+                    return "/opt/homebrew/bin/node"
+                return None
             if cmd == "npx":
                 if path and "/opt/homebrew/bin" in path:
                     return "/opt/homebrew/bin/npx"
@@ -144,6 +148,7 @@ class TestFindAgentBrowser:
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", return_value=True), \
              patch.object(Path, "exists", mock_path_exists), \
+             patch("hermes_cli.dep_ensure.ensure_dependency", return_value=False), \
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],
@@ -155,6 +160,10 @@ class TestFindAgentBrowser:
         """Should find npx when only Termux fallback dirs are available."""
         def mock_which(cmd, path=None):
             if cmd == "agent-browser":
+                return None
+            if cmd == "node":
+                if path and "/data/data/com.termux/files/usr/bin" in path:
+                    return "/data/data/com.termux/files/usr/bin/node"
                 return None
             if cmd == "npx":
                 if path and "/data/data/com.termux/files/usr/bin" in path:
@@ -182,6 +191,7 @@ class TestFindAgentBrowser:
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch.object(Path, "exists", mock_path_exists), \
+             patch("hermes_cli.dep_ensure.ensure_dependency", return_value=False), \
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],

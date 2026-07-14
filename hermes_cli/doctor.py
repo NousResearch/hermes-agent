@@ -13,7 +13,12 @@ from pathlib import Path
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
-from hermes_constants import agent_browser_runnable
+from hermes_constants import (
+    agent_browser_managed_shim_candidates,
+    iter_hermes_node_dirs,
+    resolve_agent_browser_candidate,
+)
+from tools.environments.local import hermes_subprocess_env
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -72,12 +77,45 @@ def _system_package_install_cmd(pkg: str) -> str:
     return f"sudo apt install {pkg}"
 
 
-def _safe_which(cmd: str) -> str | None:
+def _safe_which(cmd: str, path: str | None = None) -> str | None:
     """shutil.which wrapper resilient to platform monkeypatching in tests."""
     try:
-        return shutil.which(cmd)
+        if path is None:
+            return shutil.which(cmd)
+        return shutil.which(cmd, path=path)
     except Exception:
         return None
+
+
+def _resolve_agent_browser_for_doctor(path: str | None) -> str | None:
+    return resolve_agent_browser_candidate(
+        path,
+        env=hermes_subprocess_env(inherit_credentials=False),
+    )
+
+
+def _agent_browser_candidates_for_doctor() -> tuple[str | None, ...]:
+    local_bin_dir = PROJECT_ROOT / "node_modules" / ".bin"
+    local_bin = _safe_which("agent-browser", path=str(local_bin_dir)) or str(
+        local_bin_dir / "agent-browser"
+    )
+    return (
+        _safe_which("agent-browser"),
+        local_bin,
+        *(str(path) for path in agent_browser_managed_shim_candidates(HERMES_HOME)),
+    )
+
+
+def _node_available_for_doctor() -> bool:
+    if _safe_which("node"):
+        return True
+    managed_path = os.pathsep.join(
+        [
+            *(str(path) for path in iter_hermes_node_dirs(HERMES_HOME) if path.is_dir()),
+            os.environ.get("PATH", ""),
+        ]
+    )
+    return bool(_safe_which("node", path=managed_path))
 
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
@@ -1555,84 +1593,23 @@ def run_doctor(args):
             )
 
     # Node.js + agent-browser (for browser automation tools)
-    if _safe_which("node"):
-        check_ok("Node.js")
-        # Check if agent-browser is installed
-        agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
-        agent_browser_ok = False
-        _which_ab = shutil.which("agent-browser")
-        if agent_browser_path.exists():
-            check_ok("agent-browser (Node.js)", "(browser automation)")
-            agent_browser_ok = True
-        elif _which_ab and agent_browser_runnable(_which_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _which_ab:
-            # Found on PATH but won't run — almost always a dangling global
-            # symlink left behind by agent-browser's npm postinstall after a
-            # `hermes update` wiped node_modules (issue #48521).
-            check_warn(
-                "agent-browser found but not runnable",
-                f"(broken symlink at {_which_ab}? run: npm install)",
-            )
-        elif _is_termux():
-            check_info("agent-browser is not installed (expected in the tested Termux path)")
-            check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
-            check_info("Termux browser setup:")
-            for step in _termux_browser_setup_steps(node_installed=True):
-                check_info(step)
-        else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+    node_installed = _node_available_for_doctor()
+    agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+    agent_browser_candidates = _agent_browser_candidates_for_doctor()
+    resolved_agent_browser = next(
+        (
+            resolved
+            for candidate in agent_browser_candidates
+            if (resolved := _resolve_agent_browser_for_doctor(candidate))
+        ),
+        None,
+    )
+    agent_browser_ok = resolved_agent_browser is not None
 
-        # Chromium presence — the browser tools silently fail to register when
-        # agent-browser is found but no Playwright-managed Chromium is on disk
-        # (tools/browser_tool.py::check_browser_requirements filters them out
-        # before the agent ever sees them).  Reuse the exact predicate it uses
-        # so the two checks cannot diverge.  Skip on Termux (not a tested
-        # path).
-        if agent_browser_ok and not _is_termux():
-            try:
-                # Lazy import: browser_tool is a ~150KB module we don't want
-                # to eagerly load in every `hermes doctor` invocation.
-                from tools.browser_tool import (
-                    _chromium_installed,
-                    _is_camofox_mode,
-                    _get_cloud_provider,
-                    _get_cdp_override,
-                    _using_lightpanda_engine,
-                )
-            except Exception:
-                # If browser_tool can't even import, that's a separate bug
-                # surfaced elsewhere; don't crash doctor.
-                pass
-            else:
-                # Only warn about Chromium if the installed engine actually
-                # requires it: Camofox, CDP override, a cloud provider, or
-                # Lightpanda all bypass the local Chromium requirement.
-                skip_chromium_check = (
-                    _is_camofox_mode()
-                    or bool(_get_cdp_override())
-                    or _get_cloud_provider() is not None
-                    or _using_lightpanda_engine()
-                )
-                if not skip_chromium_check:
-                    if _chromium_installed():
-                        check_ok("Playwright Chromium", "(browser engine)")
-                    else:
-                        check_warn(
-                            "Playwright Chromium not installed",
-                            "(browser_* tools will be hidden from the agent)",
-                        )
-                        if sys.platform == "win32":
-                            check_info(
-                                f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install chromium"
-                            )
-                        else:
-                            check_info(
-                                f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install --with-deps chromium"
-                            )
+    if node_installed:
+        check_ok("Node.js")
+    elif agent_browser_ok:
+        check_info("Node.js not found (native agent-browser is available)")
     elif _is_termux():
         check_info("Node.js not found (browser tools are optional in the tested Termux path)")
         check_info("Install Node.js on Termux with: pkg install nodejs")
@@ -1641,6 +1618,80 @@ def run_doctor(args):
             check_info(step)
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
+
+    if agent_browser_ok:
+        check_ok("agent-browser", "(browser automation)")
+    else:
+        broken_agent_browser = next(
+            (
+                candidate
+                for candidate in agent_browser_candidates
+                if candidate and os.path.lexists(candidate)
+            ),
+            None,
+        )
+        if broken_agent_browser or agent_browser_path.exists():
+            check_warn(
+                "agent-browser found but not runnable",
+                f"(broken candidate at {broken_agent_browser or agent_browser_path}? run: npm install)",
+            )
+        elif _is_termux() and node_installed:
+            check_info("agent-browser is not installed (expected in the tested Termux path)")
+            check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
+            check_info("Termux browser setup:")
+            for step in _termux_browser_setup_steps(node_installed=True):
+                check_info(step)
+        elif node_installed:
+            check_warn("agent-browser not installed", "(run: npm install)")
+
+    # Chromium presence — the browser tools silently fail to register when
+    # agent-browser is found but no Playwright-managed Chromium is on disk
+    # (tools/browser_tool.py::check_browser_requirements filters them out
+    # before the agent ever sees them).  Reuse the exact predicate it uses
+    # so the two checks cannot diverge.  Skip on Termux (not a tested path).
+    if agent_browser_ok and not _is_termux():
+        try:
+            # Lazy import: browser_tool is a ~150KB module we don't want
+            # to eagerly load in every `hermes doctor` invocation.
+            from tools.browser_tool import (
+                _chromium_installed,
+                _is_camofox_mode,
+                _get_cloud_provider,
+                _get_cdp_override,
+                _using_lightpanda_engine,
+            )
+        except Exception:
+            # If browser_tool can't even import, that's a separate bug
+            # surfaced elsewhere; don't crash doctor.
+            pass
+        else:
+            # Only warn about Chromium if the installed engine actually
+            # requires it: Camofox, CDP override, a cloud provider, or
+            # Lightpanda all bypass the local Chromium requirement.
+            skip_chromium_check = (
+                _is_camofox_mode()
+                or bool(_get_cdp_override())
+                or _get_cloud_provider() is not None
+                or _using_lightpanda_engine()
+            )
+            if not skip_chromium_check:
+                if _chromium_installed():
+                    check_ok("Playwright Chromium", "(browser engine)")
+                else:
+                    check_warn(
+                        "Playwright Chromium not installed",
+                        "(browser_* tools will be hidden from the agent)",
+                    )
+                    if sys.platform == "win32":
+                        check_info(
+                            f"Install with: cd {PROJECT_ROOT} && "
+                            "npx playwright install chromium"
+                        )
+                    else:
+                        check_info(
+                            f"Install with: cd {PROJECT_ROOT} && "
+                            "npx playwright install --with-deps chromium"
+                        )
     
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")

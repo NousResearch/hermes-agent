@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import platform
 import shutil
 import stat
 import sys
@@ -531,7 +532,98 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     return merged
 
 
-def agent_browser_runnable(path: str | None) -> bool:
+def agent_browser_native_binary_names() -> tuple[str, ...]:
+    """Return published agent-browser native binary names for this host."""
+    machine = platform.machine().lower()
+    arch = {
+        "amd64": "x64",
+        "x64": "x64",
+        "x86_64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }.get(machine)
+    if arch is None:
+        return ()
+    if sys.platform.startswith("linux"):
+        return (
+            f"agent-browser-linux-{arch}",
+            f"agent-browser-linux-musl-{arch}",
+        )
+    if sys.platform == "darwin":
+        return (
+            f"agent-browser-darwin-{arch}",
+            f"agent-browser-macos-{arch}",
+        )
+    if sys.platform.startswith("win"):
+        return (
+            f"agent-browser-win32-{arch}.exe",
+            f"agent-browser-windows-{arch}.exe",
+        )
+    return ()
+
+
+def agent_browser_managed_shim_candidates(
+    home: Path | None = None,
+) -> tuple[Path, ...]:
+    """Return agent-browser shims installed under Hermes-managed storage."""
+    root = home or get_hermes_home()
+    if sys.platform.startswith("win"):
+        return (root / "node" / "agent-browser.cmd",)
+    return (
+        root / "node" / "bin" / "agent-browser",
+        root / "node_modules" / ".bin" / "agent-browser",
+    )
+
+
+def agent_browser_native_sibling_candidates(path: str | None) -> tuple[Path, ...]:
+    """Return native binaries associated with an npm agent-browser shim.
+
+    POSIX npm shims are normally symlinks into the package ``bin`` directory,
+    while Windows global and local installs use ``.cmd`` files beside or under
+    ``node_modules``. Cover both layouts without assuming the shim can run.
+    """
+    if not path:
+        return ()
+    raw = Path(path)
+    try:
+        resolved = raw.resolve(strict=False)
+    except OSError:
+        resolved = raw
+
+    directories = [resolved.parent]
+    if raw.parent.name.lower() == ".bin":
+        directories.append(raw.parent.parent / "agent-browser" / "bin")
+    directories.append(raw.parent / "node_modules" / "agent-browser" / "bin")
+
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for directory in directories:
+        for name in agent_browser_native_binary_names():
+            candidate = directory / name
+            if candidate not in seen:
+                seen.add(candidate)
+                candidates.append(candidate)
+    return tuple(candidates)
+
+
+def prepare_agent_browser_native_candidate(path: Path) -> bool:
+    """Make a regular native candidate executable when its install permits it."""
+    if not path.is_file():
+        return False
+    if os.access(path, os.X_OK):
+        return True
+    try:
+        path.chmod(path.stat().st_mode | 0o111)
+    except OSError:
+        return False
+    return os.access(path, os.X_OK)
+
+
+def agent_browser_runnable(
+    path: str | None,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
     """Return True only when *path* is an agent-browser CLI that actually runs.
 
     A bare presence check (``shutil.which`` / ``Path.exists``) is not enough:
@@ -552,6 +644,10 @@ def agent_browser_runnable(path: str | None) -> bool:
       * The ``"npx agent-browser"`` fallback form (contains a space, not a real
         file) → True; npx resolves and validates the package at run time, so
         there is nothing to stat here.
+
+    ``env`` lets callers probe lower-trust package executables with a
+    credential-scrubbed environment. Hermes-managed Node directories are still
+    prepended to its PATH.
     """
     if not path:
         return False
@@ -571,12 +667,37 @@ def agent_browser_runnable(path: str | None) -> bool:
             [path, "--version"],
             capture_output=True,
             timeout=10,
-            env=with_hermes_node_path(),
+            env=with_hermes_node_path(env),
             creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
     return result.returncode == 0
+
+
+def resolve_agent_browser_candidate(
+    path: str | None,
+    *,
+    env: dict[str, str] | None = None,
+) -> str | None:
+    """Resolve a runnable agent-browser shim or associated native binary."""
+    if path:
+        direct = Path(path)
+        if direct.name in agent_browser_native_binary_names():
+            if prepare_agent_browser_native_candidate(direct) and agent_browser_runnable(
+                path,
+                env=env,
+            ):
+                return path
+        elif agent_browser_runnable(path, env=env):
+            return path
+    for candidate in agent_browser_native_sibling_candidates(path):
+        if not prepare_agent_browser_native_candidate(candidate):
+            continue
+        resolved = str(candidate)
+        if agent_browser_runnable(resolved, env=env):
+            return resolved
+    return None
 
 
 def _legacy_path_has_content(path: Path) -> bool:

@@ -411,14 +411,27 @@ def fetch_bitwarden_secrets(
     try:
         secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
     except RuntimeError as exc:
-        # Live fetch failed (network down, DNS error, transient BWS outage).
-        # If we have a disk cache from any previous successful fetch — even
-        # past TTL — return it with a warning instead of leaving the gateway
-        # running without any secrets.  Without this fallback a fleet of bots
-        # sharing one BWS project all stop working on a single network blip.
-        # `ttl_seconds=inf` bypasses the freshness check in _read_disk_cache.
-        if use_cache:
-            stale = _read_disk_cache(cache_key, float("inf"), home_path)
+        # Live fetch failed. Fall back to a stale disk cache ONLY for
+        # transport-level failures (network down, DNS error, transient BWS
+        # outage / timeout) — never for AUTH_FAILED or a malformed-output
+        # INTERNAL error, where serving old secrets would mask a real
+        # config/credential problem the caller needs to see.  Without this
+        # fallback a fleet of bots sharing one BWS project all stop working
+        # on a single network blip.
+        #
+        # `cache_ttl_seconds <= 0` means the caller opted out of caching
+        # entirely (DiskCache.read/write both short-circuit on it) — honor
+        # that on the fallback path too, so a zero-TTL caller never gets a
+        # secret value that didn't come from a live fetch just now.
+        # `ttl_seconds=inf` on the read call itself bypasses freshness (we
+        # explicitly want a stale hit here); the caller's real TTL is what
+        # gates whether we even attempt the read, via the check above.
+        if (
+            use_cache
+            and cache_ttl_seconds > 0
+            and _classify_bws_error(str(exc)) in (ErrorKind.NETWORK, ErrorKind.TIMEOUT)
+        ):
+            stale = _DISK_CACHE.read(cache_key, float("inf"), home_path)
             if stale is not None:
                 age = max(0.0, time.time() - stale.fetched_at)
                 _CACHE[cache_key] = stale

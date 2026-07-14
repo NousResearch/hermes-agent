@@ -892,12 +892,21 @@ def test_reset_cache_for_tests_deletes_disk_file(tmp_path):
 
 def _seed_stale_disk_cache(home, *, secrets, age_seconds, project_id="proj-1",
                            access_token="0.t", server_url=""):
-    """Populate the disk cache as if a successful fetch happened `age_seconds` ago."""
+    """Populate the disk cache as if a successful fetch happened `age_seconds`
+    ago. Writes the JSON payload directly (same shape the shared DiskCache
+    reads/writes) rather than going through DiskCache.write, since that
+    would honor cache_ttl_seconds and refuse to persist an already-"stale"
+    entry — this needs to land on disk regardless of TTL."""
     cache_key = (
         bw._token_fingerprint(access_token), project_id, server_url,
     )
-    entry = bw._CachedFetch(secrets=secrets, fetched_at=time.time() - age_seconds)
-    bw._write_disk_cache(cache_key, entry, home)
+    cache_path = bw._disk_cache_path(home)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps({
+        "key": bw._cache_key_str(cache_key),
+        "secrets": secrets,
+        "fetched_at": time.time() - age_seconds,
+    }))
 
 
 def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
@@ -941,7 +950,8 @@ def test_stale_fallback_warning_includes_cache_age(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         bw.subprocess, "run",
-        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr="boom"),
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="",
+                                   stderr="Error: connection refused"),
     )
 
     _, warnings = bw.fetch_bitwarden_secrets(
@@ -965,10 +975,10 @@ def test_no_stale_fallback_when_disk_cache_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(
         bw.subprocess, "run",
         lambda *a, **kw: mock.Mock(returncode=1, stdout="",
-                                   stderr="Error: unreachable"),
+                                   stderr="Error: network unreachable"),
     )
 
-    with pytest.raises(RuntimeError, match="unreachable"):
+    with pytest.raises(RuntimeError, match="network unreachable"):
         bw.fetch_bitwarden_secrets(
             access_token="0.t", project_id="proj-1", binary=fake_binary,
             cache_ttl_seconds=300, home_path=home,
@@ -989,10 +999,11 @@ def test_stale_fallback_skipped_when_use_cache_false(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         bw.subprocess, "run",
-        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr="boom"),
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="",
+                                   stderr="Error: connection refused"),
     )
 
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(RuntimeError, match="connection refused"):
         bw.fetch_bitwarden_secrets(
             access_token="0.t", project_id="proj-1", binary=fake_binary,
             cache_ttl_seconds=300, home_path=home, use_cache=False,
@@ -1014,7 +1025,8 @@ def test_stale_fallback_does_not_overwrite_disk_cache(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         bw.subprocess, "run",
-        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr="boom"),
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="",
+                                   stderr="Error: connection refused"),
     )
 
     bw.fetch_bitwarden_secrets(
@@ -1025,3 +1037,79 @@ def test_stale_fallback_does_not_overwrite_disk_cache(monkeypatch, tmp_path):
     # Disk cache should still carry the old fetched_at — the live fetch
     # failed and produced no new secrets to persist.
     assert json.loads(cache_path.read_text())["fetched_at"] == original_fetched_at
+
+
+def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
+    """An AUTH_FAILED bws error must raise, not serve stale secrets — a bad
+    access token indicates a real credential problem the caller needs to
+    see, not a transient outage worth papering over."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="",
+                                   stderr="Error: unauthorized (401)"),
+    )
+
+    with pytest.raises(RuntimeError, match="unauthorized"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=300, home_path=home,
+        )
+
+
+def test_stale_fallback_skipped_on_malformed_output(monkeypatch, tmp_path):
+    """An INTERNAL-classified failure (unparseable bws output) must raise —
+    the fallback is scoped to transport failures only, not "anything went
+    wrong"."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)
+
+    # returncode == 0 but unparseable stdout raises a ValueError-wrapping
+    # RuntimeError from _run_bws_list's JSON parsing — classifies INTERNAL.
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout="not json", stderr=""),
+    )
+
+    with pytest.raises(RuntimeError):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=300, home_path=home,
+        )
+
+
+def test_stale_fallback_skipped_when_cache_ttl_zero(monkeypatch, tmp_path):
+    """cache_ttl_seconds=0 means the caller opted out of caching entirely —
+    the stale fallback must honor that even though it explicitly asks the
+    disk cache for a stale (not-fresh) hit via ttl_seconds=inf internally."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="",
+                                   stderr="Error: connection refused"),
+    )
+
+    with pytest.raises(RuntimeError, match="connection refused"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=0, home_path=home,
+        )

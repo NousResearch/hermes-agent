@@ -13,9 +13,12 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import os
 import signal
+import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -568,6 +571,132 @@ class TestKillPortProcess:
 
 class TestHttpSessionLifecycle:
     """Verify persistent aiohttp.ClientSession is created and cleaned up."""
+
+    @pytest.mark.asyncio
+    async def test_disconnect_reaps_bridge_after_forced_termination(self):
+        """A bridge that ignores SIGTERM must be killed and wait()ed.
+
+        Merely signalling the managed Node child can leave it as a zombie
+        until the gateway exits.  Disconnect must reap both the graceful and
+        forced termination paths within its bounded shutdown budget.
+        """
+        adapter = _make_adapter()
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="node", timeout=1),
+            -getattr(signal, "SIGKILL", signal.SIGTERM),
+        ]
+        adapter._bridge_process = mock_proc
+        adapter._poll_task = None
+        adapter._http_session = None
+        adapter._running = True
+        adapter._session_lock_identity = None
+
+        with patch(
+            "plugins.platforms.whatsapp.adapter._terminate_bridge_process"
+        ) as terminate:
+            await adapter.disconnect()
+
+        assert terminate.call_args_list == [
+            call(mock_proc, force=False),
+            call(mock_proc, force=True),
+        ]
+        assert mock_proc.wait.call_args_list == [
+            call(timeout=1),
+            call(timeout=1),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_forced_disconnect_is_not_reported_as_fatal_by_poll_task(self):
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.returncode = None
+        mock_proc.poll.side_effect = lambda: mock_proc.returncode
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="node", timeout=1),
+            -getattr(signal, "SIGKILL", signal.SIGTERM),
+        ]
+        adapter._bridge_process = mock_proc
+        adapter._http_session = None
+        adapter._running = True
+        adapter._session_lock_identity = None
+        observed_exit = asyncio.Event()
+
+        async def poll_like_loop():
+            while True:
+                await adapter._check_managed_bridge_exit()
+                if mock_proc.returncode is not None:
+                    observed_exit.set()
+                await asyncio.sleep(0)
+
+        async def yielding_to_thread(func, *args, **kwargs):
+            try:
+                result = func(*args, **kwargs)
+            except Exception:
+                await asyncio.sleep(0)
+                raise
+            await asyncio.sleep(0)
+            return result
+
+        def terminate(proc, *, force=False):
+            if force:
+                proc.returncode = -getattr(signal, "SIGKILL", signal.SIGTERM)
+
+        adapter._poll_task = asyncio.create_task(poll_like_loop())
+        with patch(
+            "plugins.platforms.whatsapp.adapter._terminate_bridge_process",
+            side_effect=terminate,
+        ), patch(
+            "plugins.platforms.whatsapp.adapter.asyncio.to_thread",
+            side_effect=yielding_to_thread,
+        ):
+            await adapter.disconnect()
+
+        assert observed_exit.is_set()
+        assert adapter.fatal_error_code is None
+        fatal_handler.assert_not_awaited()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX signal/reap contract")
+    @pytest.mark.asyncio
+    async def test_disconnect_reaps_sigterm_ignoring_bridge_process(self):
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import signal,time; "
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    "print('ready', flush=True); time.sleep(30)"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None
+            assert await asyncio.to_thread(proc.stdout.readline) == "ready\n"
+            adapter = _make_adapter()
+            adapter._bridge_process = proc
+            adapter._poll_task = None
+            adapter._http_session = None
+            adapter._running = True
+            adapter._session_lock_identity = None
+
+            await adapter.disconnect()
+
+            assert proc.returncode == -signal.SIGKILL
+            with pytest.raises(ChildProcessError):
+                os.waitpid(proc.pid, os.WNOHANG)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if proc.stdout is not None:
+                proc.stdout.close()
 
     @pytest.mark.asyncio
     async def test_disconnect_uses_taskkill_tree_on_windows(self):

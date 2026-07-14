@@ -423,6 +423,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # "Fatal whatsapp adapter error" plus dispatch a fatal-error
         # notification before the normal "✓ whatsapp disconnected" fires.
         self._shutting_down: bool = False
+        self._bridge_force_termination_requested: bool = False
 
         # Text debounce batching (mirrors Telegram adapter pattern).
         # WhatsApp often delivers multiple messages in rapid succession
@@ -757,13 +758,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
 
         # Planned shutdown: disconnect() sets _shutting_down before it sends
-        # SIGTERM to the bridge, so a returncode of -15 (SIGTERM), -2 (SIGINT),
-        # or 0 (clean exit) at that point is expected, not a crash. Treat it
-        # as informational and skip the fatal-error path.
+        # SIGTERM to the bridge. Graceful exits and any exit observed after
+        # Hermes requests forced termination are expected, not crashes.
         # getattr-with-default keeps tests that construct the adapter via
         # ``WhatsAppAdapter.__new__`` (bypassing __init__) working without
         # every _make_adapter() helper having to seed the attribute.
-        if getattr(self, "_shutting_down", False) and returncode in {0, -2, -15}:
+        planned_shutdown_exit = returncode in {0, -2, -15} or getattr(
+            self, "_bridge_force_termination_requested", False
+        )
+        if getattr(self, "_shutting_down", False) and planned_shutdown_exit:
             logger.info(
                 "[%s] Bridge exited during shutdown (code %d).",
                 self.name,
@@ -785,18 +788,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # path (which runs from other tasks like send() and the poll loop)
         # doesn't race us and report the intentional termination as fatal.
         self._shutting_down = True
+        self._bridge_force_termination_requested = False
         if self._bridge_process:
             try:
                 try:
                     _terminate_bridge_process(self._bridge_process, force=False)
                 except (ProcessLookupError, PermissionError):
                     self._bridge_process.terminate()
-                await asyncio.sleep(1)
-                if self._bridge_process.poll() is None:
+                try:
+                    await asyncio.to_thread(self._bridge_process.wait, timeout=1)
+                except subprocess.TimeoutExpired:
+                    self._bridge_force_termination_requested = True
                     try:
                         _terminate_bridge_process(self._bridge_process, force=True)
                     except (ProcessLookupError, PermissionError):
                         self._bridge_process.kill()
+                    try:
+                        await asyncio.to_thread(self._bridge_process.wait, timeout=1)
+                    except subprocess.TimeoutExpired:
+                        logger.warning(
+                            "[%s] Bridge process %d did not exit after forced termination",
+                            self.name,
+                            self._bridge_process.pid,
+                        )
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
         else:

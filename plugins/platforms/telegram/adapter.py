@@ -1302,6 +1302,56 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     @staticmethod
+    def _looks_like_flood(error: Exception) -> bool:
+        """Return True only for *structured* flood-control evidence.
+
+        A ``telegram.error.RetryAfter`` exception or an HTTP 429 status means
+        Telegram rejected the request *before processing it* — no message was
+        delivered, so falling back to the legacy MarkdownV2 path is safe and
+        cannot create a duplicate.
+
+        We intentionally do **not** string-match ``"flood"`` in arbitrary
+        error text: an ambiguous transport error that happens to contain
+        the word "flood" may already have been delivered, and resending
+        would risk a duplicate.
+        """
+        # 1. Structured RetryAfter exception (python-telegram-bot)
+        try:
+            from telegram.error import RetryAfter
+            if isinstance(error, RetryAfter):
+                return True
+        except (ImportError, AttributeError):
+            pass
+        # 2. HTTP 429 carried on a PTB BadRequest / NetworkError subclass
+        status = getattr(error, "status_code", None)
+        if status == 429:
+            return True
+        # 3. Check __cause__ / __context__ chain (429 may be wrapped)
+        seen: set[int] = set()
+        stack: list[BaseException] = [error]
+        while stack:
+            cur = stack.pop()
+            ident = id(cur)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            if getattr(cur, "status_code", None) == 429:
+                return True
+            try:
+                from telegram.error import RetryAfter as _RA
+                if isinstance(cur, _RA):
+                    return True
+            except (ImportError, AttributeError):
+                pass
+            cause = getattr(cur, "__cause__", None)
+            context = getattr(cur, "__context__", None)
+            if cause is not None:
+                stack.append(cause)
+            if context is not None:
+                stack.append(context)
+        return False
+
+    @staticmethod
     def _looks_like_pool_timeout(error: Exception) -> bool:
         """Return True when a Telegram TimedOut wraps an httpx pool timeout.
 
@@ -1705,6 +1755,19 @@ class TelegramAdapter(BasePlatformAdapter):
             # Transient / network / unknown: the request may have reached
             # Telegram. Do NOT legacy-resend (duplicate risk); surface a
             # failure with retry semantics mirroring the legacy send() except.
+            #
+            # Exception: flood control (RetryAfter / 429) and connect-timeout
+            # are *pre-delivery* failures — Telegram rejected the request
+            # before processing it, so legacy MarkdownV2 fallback is safe and
+            # cannot create a duplicate.  See ``_looks_like_flood`` for why we
+            # only accept structured evidence (not string-matching).
+            if self._looks_like_flood(exc) or self._looks_like_connect_timeout(exc):
+                logger.debug(
+                    "[%s] sendRichMessage pre-delivery failure (%s) — falling "
+                    "back to legacy MarkdownV2",
+                    self.name, _redact_telegram_error_text(exc),
+                )
+                return None
             err_str = str(exc).lower()
             try:
                 from telegram.error import TimedOut as _TimedOut
@@ -1810,6 +1873,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 return None
             if "not modified" in str(exc).lower():
                 return SendResult(success=True, message_id=message_id)
+            # Pre-delivery failures (flood control / connect-timeout):
+            # Telegram rejected the request before processing it, so falling
+            # back to the legacy MarkdownV2 edit is safe — no duplicate risk.
+            if self._looks_like_flood(exc) or self._looks_like_connect_timeout(exc):
+                logger.debug(
+                    "[%s] rich editMessageText pre-delivery failure (%s) — "
+                    "falling back to legacy MarkdownV2 edit",
+                    self.name, _redact_telegram_error_text(exc),
+                )
+                return None
             err_str = str(exc).lower()
             try:
                 from telegram.error import TimedOut as _TimedOut

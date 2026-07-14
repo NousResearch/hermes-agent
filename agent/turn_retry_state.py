@@ -45,6 +45,7 @@ class TurnRetryState:
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
+    vertex_auth_retry_attempted: bool = False
 
     # ── Format / payload recovery guards ─────────────────────────────────
     thinking_sig_retry_attempted: bool = False
@@ -67,6 +68,11 @@ class TurnRetryState:
     # ── Restart signals (read by the outer loop after the attempt) ───────
     restart_with_compressed_messages: bool = False
     restart_with_length_continuation: bool = False
+    # Set when a content-filter stream stall (e.g. MiniMax "new_sensitive")
+    # has been escalated to the fallback chain: the partial-stream content
+    # was rolled back off ``messages`` and the loop should re-issue the API
+    # call against the newly-activated provider (#32421).
+    restart_with_rebuilt_messages: bool = False
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.

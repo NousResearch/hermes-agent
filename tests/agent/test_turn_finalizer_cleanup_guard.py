@@ -33,6 +33,8 @@ class _StubAgent:
         self.context_compressor = _StubCompressor()
         self.model = "stub/model"
         self.provider = "stub"
+        self.api_mode = "codex_responses"
+        self.reasoning_config = None
         self.base_url = "http://stub"
         self.session_id = "sess-1"
         self.quiet_mode = True
@@ -170,6 +172,13 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     assert result["completed"] is False
     assert "cleanup_errors" not in result
+
+
+def test_turn_result_exposes_effective_reasoning_effort():
+    agent = _StubAgent(raise_in=())
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    result = _run(agent)
+    assert result["reasoning_effort"] == "high"
 
 
 def test_text_response_on_last_allowed_call_is_completed():

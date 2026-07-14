@@ -1489,13 +1489,14 @@ Tool progress requires a gateway adapter that can display progress updates safel
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, effective reasoning effort, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # supported fields: model, context_pct, cwd
+    fields: ["model", "reasoning_effort", "context_pct", "cwd"]
+    # supported fields: model, reasoning_effort, context_pct, cwd
 ```
 
 The `/footer` slash command toggles this at runtime in any session.
@@ -1503,7 +1504,7 @@ The `/footer` slash command toggles this at runtime in any session.
 Example footer appended to a Telegram/Discord/Slack reply:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+gpt-5.6-sol · low · 12% · ~/projects/hermes
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.

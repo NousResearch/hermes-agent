@@ -25,6 +25,63 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.model_metadata import grok_supports_reasoning_effort
+from hermes_constants import VALID_REASONING_EFFORTS
+
+
+def _effective_reasoning_effort(
+    reasoning_config,
+    *,
+    api_mode: str = "",
+    model: str = "",
+    provider: str = "",
+) -> str | None:
+    """Return the user-visible reasoning effort applied to this agent.
+
+    Gateway session overrides and the global ``agent.reasoning_effort`` setting
+    are both resolved before ``AIAgent`` is constructed, so
+    ``agent.reasoning_config`` is the canonical per-turn value here.  Hermes's
+    Codex Responses defaults to ``medium`` when that config is absent.  Other
+    transports may delegate the default to the provider, so return ``None``
+    rather than inventing a level for those routes.
+    """
+    normalized_api_mode = str(api_mode or "").strip().lower()
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_api_mode == "codex_responses" and normalized_provider == "xai-oauth":
+        # The xAI transport omits the effort parameter for models outside its
+        # conservative allowlist, and cannot explicitly disable native Grok
+        # reasoning.  Do not claim an effective level in either case.
+        if not grok_supports_reasoning_effort(model):
+            return None
+        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+            return None
+
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            return "none"
+        raw = reasoning_config.get("effort")
+        if raw is not None:
+            effort = str(raw).strip().lower()
+            if effort not in VALID_REASONING_EFFORTS:
+                effort = ""
+        else:
+            effort = ""
+    else:
+        effort = ""
+
+    if normalized_api_mode == "codex_responses":
+        effort = effort or "medium"
+        if effort == "minimal":
+            effort = "low"
+        if "gpt-5.6" in str(model or "").lower() and effort == "ultra":
+            effort = "max"
+        if normalized_provider == "xai-oauth" and effort in {
+            "xhigh", "max", "ultra",
+        }:
+            effort = "high"
+        return effort
+
+    return effort or None
 
 
 def finalize_turn(
@@ -451,6 +508,12 @@ def finalize_turn(
         "cache_read_tokens": agent.session_cache_read_tokens,
         "cache_write_tokens": agent.session_cache_write_tokens,
         "reasoning_tokens": agent.session_reasoning_tokens,
+        "reasoning_effort": _effective_reasoning_effort(
+            getattr(agent, "reasoning_config", None),
+            api_mode=getattr(agent, "api_mode", ""),
+            model=getattr(agent, "model", ""),
+            provider=getattr(agent, "provider", ""),
+        ),
         "prompt_tokens": agent.session_prompt_tokens,
         "completion_tokens": agent.session_completion_tokens,
         "total_tokens": agent.session_total_tokens,

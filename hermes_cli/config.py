@@ -1917,7 +1917,8 @@ DEFAULT_CONFIG = {
         },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
-        # e.g. `model · 68% · ~/projects/hermes`. Per-platform overrides go under
+        # e.g. `model · 68% · ~/projects/hermes`. Optional fields include
+        # `reasoning_effort`; per-platform overrides go under
         # display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
             "enabled": False,

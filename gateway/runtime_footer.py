@@ -1,6 +1,7 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
+Renders a compact footer showing runtime state (model, reasoning effort,
+context %, cwd) and
 appends it to the FINAL message of an agent turn when enabled.  Off by default
 to keep replies minimal.
 
@@ -9,7 +10,7 @@ Config (``~/.hermes/config.yaml``)::
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [model, reasoning_effort, context_pct, cwd]  # order shown
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -28,8 +29,12 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
+from hermes_constants import VALID_REASONING_EFFORTS
+
+
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+_REASONING_EFFORTS = frozenset((*VALID_REASONING_EFFORTS, "none"))
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -93,6 +98,7 @@ def format_runtime_footer(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    reasoning_effort: Optional[str] = None,
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
@@ -107,6 +113,10 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "reasoning_effort":
+            effort = str(reasoning_effort or "").strip().lower()
+            if effort in _REASONING_EFFORTS:
+                parts.append(effort)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -129,6 +139,7 @@ def build_footer_line(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    reasoning_effort: Optional[str] = None,
     cwd: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
@@ -144,6 +155,7 @@ def build_footer_line(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
+        reasoning_effort=reasoning_effort,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

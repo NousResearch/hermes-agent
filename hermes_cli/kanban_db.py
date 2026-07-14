@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -1087,6 +1087,31 @@ class Event:
     payload: Optional[dict]
     created_at: int
     run_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class NotificationTarget:
+    """A durable notification destination and its delivery ownership."""
+
+    platform: str
+    chat_id: str
+    thread_id: Optional[str] = None
+    user_id: Optional[str] = None
+    notifier_profile: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SubscriptionContext:
+    """Per-create notification intent consumed by :func:`create_task`.
+
+    ``explicit_targets`` and ``no_subscribe`` are caller intent. ``ambient_origin``
+    identifies a messaging source without making dashboard or CLI callers pretend
+    to be one. Parent inheritance is always resolved from persisted task links.
+    """
+
+    explicit_targets: tuple[NotificationTarget | Mapping[str, Any], ...] = ()
+    no_subscribe: bool = False
+    ambient_origin: Optional[NotificationTarget | Mapping[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -2408,6 +2433,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    subscription_context: Optional[SubscriptionContext] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2666,6 +2692,12 @@ def create_task(
                     conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
+                    )
+                if subscription_context is not None:
+                    apply_task_creation_subscriptions(
+                        conn,
+                        task_id=task_id,
+                        context=subscription_context,
                     )
                 _append_event(
                     conn,
@@ -8644,6 +8676,195 @@ def task_age(task: Task) -> dict:
 # ---------------------------------------------------------------------------
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
+
+def _normalized_notification_target(
+    target: NotificationTarget | Mapping[str, Any],
+) -> NotificationTarget:
+    """Validate a target and normalize the identity used by the DB key."""
+    if isinstance(target, NotificationTarget):
+        raw = target
+    elif isinstance(target, Mapping):
+        raw = NotificationTarget(
+            platform=target.get("platform", ""),
+            chat_id=target.get("chat_id", ""),
+            thread_id=target.get("thread_id"),
+            user_id=target.get("user_id"),
+            notifier_profile=target.get("notifier_profile"),
+        )
+    else:
+        raise ValueError("notification targets must be NotificationTarget objects or mappings")
+
+    def required(value: Any, field_name: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"notification target {field_name} must be a non-empty string"
+            )
+        return value.strip()
+
+    def optional(value: Any, field_name: str) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(
+                f"notification target {field_name} must be null or a string"
+            )
+        return value.strip() or None
+
+    platform = required(raw.platform, "platform").casefold()
+    chat_id = required(raw.chat_id, "chat_id")
+    return NotificationTarget(
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=optional(raw.thread_id, "thread_id"),
+        user_id=optional(raw.user_id, "user_id"),
+        notifier_profile=optional(raw.notifier_profile, "notifier_profile"),
+    )
+
+
+def _configured_inheritance_depth(value: Any) -> Optional[int]:
+    """Return a validated ancestor depth; ``None`` means unlimited."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().casefold() == "unlimited":
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("kanban.notify_inherit_depth must be 0, a positive integer, or unlimited")
+    return value
+
+
+def _configured_subscription_policy() -> tuple[bool, list[NotificationTarget], Optional[int]]:
+    """Load and strictly validate the create-time subscription policy."""
+    from hermes_cli.config import load_config
+
+    kanban_config = load_config().get("kanban")
+    if not isinstance(kanban_config, Mapping):
+        raise ValueError("kanban must be a mapping")
+
+    automatic = kanban_config.get("auto_subscribe_on_create", True)
+    if not isinstance(automatic, bool):
+        raise ValueError("kanban.auto_subscribe_on_create must be a bool")
+
+    defaults = kanban_config.get("notify_default_targets", [])
+    if not isinstance(defaults, list):
+        raise ValueError("kanban.notify_default_targets must be a list of target mappings")
+    normalized_defaults: list[NotificationTarget] = []
+    for target in defaults:
+        if not isinstance(target, Mapping):
+            raise ValueError("kanban.notify_default_targets entries must be target mappings")
+        normalized_defaults.append(_normalized_notification_target(target))
+
+    return (
+        automatic,
+        normalized_defaults,
+        _configured_inheritance_depth(kanban_config.get("notify_inherit_depth", 1)),
+    )
+
+
+def _inherited_notification_targets(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    depth: Optional[int],
+) -> list[NotificationTarget]:
+    """Collect subscriptions from the real parent graph, breadth first."""
+    if depth == 0:
+        return []
+    current = parent_ids(conn, task_id)
+    visited: set[str] = set()
+    targets: list[NotificationTarget] = []
+    level = 0
+    while current and (depth is None or level < depth):
+        next_level: list[str] = []
+        for parent_id in current:
+            if parent_id in visited:
+                continue
+            visited.add(parent_id)
+            rows = conn.execute(
+                "SELECT platform, chat_id, thread_id, user_id, notifier_profile "
+                "FROM kanban_notify_subs WHERE task_id = ?",
+                (parent_id,),
+            ).fetchall()
+            targets.extend(
+                NotificationTarget(
+                    platform=row["platform"], chat_id=row["chat_id"],
+                    thread_id=row["thread_id"], user_id=row["user_id"],
+                    notifier_profile=row["notifier_profile"],
+                )
+                for row in rows
+            )
+            if depth is None or level + 1 < depth:
+                next_level.extend(parent_ids(conn, parent_id))
+        current = next_level
+        level += 1
+    return targets
+
+
+def _insert_notification_target(
+    conn: sqlite3.Connection, *, task_id: str, target: NotificationTarget,
+) -> bool:
+    """Persist one already-normalized target without opening a nested transaction."""
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_id, target.platform, target.chat_id, target.thread_id or "",
+            target.user_id, target.notifier_profile, int(time.time()),
+        ),
+    )
+    return cur.rowcount > 0
+
+
+def apply_task_creation_subscriptions(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    context: Optional[SubscriptionContext] = None,
+) -> int:
+    """Resolve and persist create-time subscriptions in the creator transaction.
+
+    Explicit opt-out wins, followed by explicit targets. Automatic sources are
+    considered only while ``kanban.auto_subscribe_on_create`` is true: ambient
+    origin, inherited parent subscriptions, then defaults only when neither
+    earlier automatic source produced a target.
+    """
+    if context is None:
+        return 0
+    if context.no_subscribe:
+        return 0
+
+    if context.explicit_targets:
+        candidates = list(context.explicit_targets)
+    else:
+        automatic, configured_defaults, inheritance_depth = _configured_subscription_policy()
+        if not automatic:
+            return 0
+        candidates: list[NotificationTarget | Mapping[str, Any]] = []
+        if context.ambient_origin is not None:
+            candidates.append(context.ambient_origin)
+        candidates.extend(
+            _inherited_notification_targets(
+                conn,
+                task_id=task_id,
+                depth=inheritance_depth,
+            )
+        )
+        if not candidates:
+            candidates.extend(configured_defaults)
+
+    unique: dict[tuple[str, str, str], NotificationTarget] = {}
+    for candidate in candidates:
+        target = _normalized_notification_target(candidate)
+        unique.setdefault((target.platform, target.chat_id, target.thread_id or ""), target)
+
+    transaction = contextlib.nullcontext(conn) if conn.in_transaction else write_txn(conn)
+    with transaction:
+        return sum(
+            _insert_notification_target(conn, task_id=task_id, target=target)
+            for target in unique.values()
+        )
 
 def add_notify_sub(
     conn: sqlite3.Connection,

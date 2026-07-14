@@ -1485,21 +1485,6 @@ DEFAULT_CONFIG = {
                                       # after live validation.
     },
 
-    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
-    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
-    # implementations. Per-platform notification opt-out is handled by the
-    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
-    "kanban": {
-        # Auto-subscribe the originating gateway/TUI session to task
-        # completion + block events when ``kanban_create`` is called from
-        # inside a session that has a persistent delivery channel. The
-        # agent that dispatched the task will get notified automatically
-        # instead of having to poll. Disable to mirror pre-feature
-        # behaviour — e.g. for a profile that prefers explicit
-        # ``kanban_notify-subscribe`` calls per task.
-        "auto_subscribe_on_create": True,
-    },
-
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
@@ -2746,6 +2731,21 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
+        # The sole global gate for automatic create-time subscriptions.
+        # Explicit targets passed by a task creator continue to work when
+        # this is disabled; ambient origins, inherited targets, and defaults
+        # do not.
+        "auto_subscribe_on_create": True,
+        # Fallback notification destinations used only when automatic
+        # subscriptions are enabled and task creation found no ambient or
+        # inherited destination. Each entry is a mapping with ``platform``
+        # and ``chat_id`` plus optional ``thread_id``, ``user_id``, and
+        # ``notifier_profile`` ownership metadata.
+        "notify_default_targets": [],
+        # Number of parent-graph levels from which automatic subscriptions
+        # are inherited. 0 disables inheritance; a positive integer bounds
+        # it; null or "unlimited" walks every reachable ancestor.
+        "notify_inherit_depth": 1,
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
         # and gateway is the supervisor users already have. Set to false

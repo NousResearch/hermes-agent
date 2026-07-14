@@ -1,94 +1,125 @@
 ---
 name: zcash
-description: Use the published zcash-mcp server for Zcash public chain context, ZAP1 attestation receipts, anchor status, and receipt verification. This is an attestation/proof skill, not a wallet or signer.
+description: Create and verify Zcash attestation receipts.
 version: 1.4.0
-author: Zk-nd3r
+author: Zk-nd3r, Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Zcash, Blockchain, Privacy, ZEC, Shielded, MCP, ZAP1, Attestation, Receipt]
-    related_skills: [base, solana]
+    tags: [Zcash, Blockchain, Privacy, ZEC, MCP, ZAP1, Attestation, Receipt]
+    category: blockchain
+    related_skills: [solana]
 ---
 
 # Zcash Attestation Skill
 
-Use this skill when an agent needs Zcash context or a verifiable ZAP1 receipt for a workflow.
-
-Built on the published `@frontiercompute/zcash-mcp` MCP server.
-
-ZAP1 rule: observe state, bound the claim, hash evidence, issue a receipt, verify later.
-
-This is not a wallet skill. It does not hold keys, scan balances, sign transactions, build shielded spends, broadcast wallet transactions, or replace lightwalletd/Zaino/wallet SDKs.
+Connect Hermes to the published `@frontiercompute/zcash-mcp` server for
+public Zcash context and verifiable ZAP1 receipts. This is an attestation
+skill, not a wallet, signer, balance scanner, or transaction broadcaster.
 
 ## When to Use
 
-- The user asks for Zcash public chain context needed to interpret a receipt or anchor.
-- The user wants to decode a Zcash memo payload.
-- The user wants to create a ZAP1 attestation leaf for an agent/workflow event.
-- The user wants a receipt template for an agent action, agent eval verdict, wallet action, external action, payment, operator event, or policy attestation.
-- The user wants to fetch or verify a ZAP1 proof bundle, Merkle inclusion proof, anchor status, or EVM verifier result.
-- The user wants to convert an external eval/action result into a hash-only receipt request without exposing raw prompts, transcripts, secrets, or payment credentials.
+- Create a bounded receipt for an agent, evaluation, operator, payment, or
+  external-action event.
+- Verify a receipt, Merkle inclusion proof, proof bundle, or receipt chain.
+- Inspect anchor status or public Zcash context needed to interpret a receipt.
+- Decode a public Zcash memo, including a ZAP1 typed memo.
+- Convert external evidence into a hash-only receipt request without exposing
+  the underlying prompt, transcript, secret, or payment credential.
 
-## Setup
+## Prerequisites
 
-Requires Node.js 18+.
+- Node.js 18 or newer with `npx` available.
+- Hermes MCP support enabled through `~/.hermes/config.yaml`.
+- No wallet seed, private key, PCZT, raw prompt, transcript, card data, or
+  credential may be supplied to this MCP server.
 
-```bash
-npm install -g @frontiercompute/zcash-mcp
+Add the server using Hermes' native YAML contract:
+
+```yaml
+mcp_servers:
+  zcash:
+    command: "npx"
+    args: ["-y", "@frontiercompute/zcash-mcp@1.4.0"]
 ```
 
-Or add the stdio MCP server to your MCP config:
+Restart Hermes after changing `config.yaml` so it can discover the MCP tools.
+Review the package version deliberately before changing the pin.
 
-```json
-{
-  "mcpServers": {
-    "zcash": {
-      "command": "npx",
-      "args": ["@frontiercompute/zcash-mcp"]
-    }
-  }
-}
-```
+## How to Run
 
-The package runs as a stdio MCP server. Agents should call tools through their MCP client, not as direct shell subcommands.
+Use the discovered `zcash` MCP tools directly from Hermes. Do not invoke the
+package with invented shell flags; it is a stdio MCP server.
 
-## Core Tools
+Start with `zcash_capability_manifest` to confirm the active boundary. Then
+call only the receipt, proof, anchor, memo, or public-chain tool required for
+the user's request.
 
-| Tool | Use |
-|------|-----|
-| `zcash_capability_manifest` | Check the supported boundary before composing with wallet-layer tools. |
-| `zcash_receipt_template` | Get a customer-ready workflow for a receipt type. |
+## Quick Reference
+
+| Tool | Purpose |
+| --- | --- |
+| `zcash_capability_manifest` | Confirm supported and excluded capabilities. |
+| `zcash_receipt_template` | Select a bounded receipt workflow. |
 | `attest_event` | Create a typed ZAP1 event leaf. |
-| `get_anchor_status` | Check current Merkle root, pending leaves, and anchor state. |
+| `zap1_agent_eval_verdict_request` | Hash-bound an external evaluation result. |
+| `zap1_attest_external_action` | Hash-bound an external action result. |
+| `zap1_wallet_receipt_request` | Receipt a wallet result without taking custody. |
+| `get_anchor_status` | Inspect pending and anchored state. |
 | `get_anchor_history` | Inspect published ZAP1 anchors. |
-| `verify_proof` | Verify Merkle inclusion for a ZAP1 leaf. |
-| `zap1_prove_receipt` | Fetch a proof bundle for a leaf hash. |
-| `zap1_finalize_external_receipt` | Assemble a final receipt packet from a receipt request and proof bundle. |
-| `zap1_verify_external_receipt` | Validate an external-action receipt packet without trusting the external rail. |
-| `zap1_agent_eval_verdict_request` | Convert an external eval verdict into a hash-only receipt request. |
-| `zap1_attest_external_action` | Convert an external rail action into a hash-only receipt request. |
-| `zap1_wallet_receipt_request` | Convert a wallet-layer action result into hashes; wallet custody stays outside ZAP1. |
-| `zap1_extract_proof_artifact` | Extract portable proof fields from a receipt. |
-| `zap1_verify_receipt_chain` | Validate a sequence of receipt packets. |
-| `zap1_compare_receipt_claims` | Compare subject, claim, evidence, type, and anchor context across receipts. |
-| `zap1_audit_event_log` | Replay a small receipt sequence against an expected event policy. |
-| `zap1_verify_evm` | Verify a proof against the deployed EVM verifier. |
-| `decode_memo` | Decode Zcash memo payloads, including ZAP1 typed memos. |
-| `get_block_height` | Read current public Zcash height from Zebra. |
+| `zap1_prove_receipt` | Fetch a portable proof bundle. |
+| `verify_proof` | Verify Merkle inclusion. |
+| `zap1_finalize_external_receipt` | Assemble a final external receipt packet. |
+| `zap1_verify_external_receipt` | Validate an external receipt packet. |
+| `zap1_verify_receipt_chain` | Validate an ordered receipt sequence. |
+| `zap1_compare_receipt_claims` | Compare bounded claims and evidence hashes. |
+| `zap1_audit_event_log` | Replay a small sequence against an event policy. |
+| `zap1_verify_evm` | Verify against the public EVM verifier. |
+| `decode_memo` | Decode a public memo payload. |
+| `get_block_height` | Read public Zebra chain height. |
 | `lookup_transaction` | Read public transaction context by txid. |
 
-## Safety Rules
+## Procedure
 
-- Do not send private keys, seeds, PCZTs, wallet scan state, raw prompts, transcripts, secrets, card data, or credentials to ZAP1.
-- Do not describe an unanchored leaf as final settlement evidence.
-- Do not treat a quote, intent, route, memo, or payment URI as proof by itself.
-- Use wallet-layer tools for balance, signing, sync, and spend construction; use ZAP1 before or after those actions to produce receipts.
-- State the claim narrowly: a receipt proves a bounded event/claim was committed and can be verified; it is not proof that an external system behaved correctly.
+1. **Confirm capability.** Call `zcash_capability_manifest`. Continue only if
+   the requested operation is explicitly supported; otherwise state the
+   boundary and stop.
+2. **Bound the claim.** Use `zcash_receipt_template` and identify the exact
+   subject, event, evidence hashes, and receipt type. Remove raw sensitive
+   material before any MCP call.
+3. **Create the request.** Use `attest_event` or the matching specialized
+   request builder. Check that the returned claim describes only the event
+   actually observed.
+4. **Check anchor state.** Call `get_anchor_status`. Treat pending or unanchored
+   leaves as pending; never describe them as final settlement evidence.
+5. **Prove and verify.** Fetch with `zap1_prove_receipt`, then verify with
+   `verify_proof` or the appropriate receipt verifier. Completion requires a
+   matching leaf hash, root, proof result, and anchor context.
+6. **Report narrowly.** State what was committed and verified, the anchor
+   status, and what the receipt does not prove about external correctness.
 
-## Links
+## Pitfalls
 
-- npm: https://www.npmjs.com/package/@frontiercompute/zcash-mcp
-- GitHub: https://github.com/Frontier-Compute/zcash-mcp
-- ZAP1 proof rail docs: https://github.com/Frontier-Compute/zcash-mcp/blob/main/docs/zap1-proof-rail.md
-- Verify page: https://verify.frontiercompute.cash
-- API health: https://api.frontiercompute.cash/health
+- A receipt proves a bounded commitment and verification result; it does not
+  prove that an external service, evaluator, wallet, or payment rail behaved
+  correctly.
+- An intent, quote, route, memo, payment URI, or unanchored leaf is not final
+  settlement evidence.
+- Public transaction context is not wallet state. Use a wallet-layer tool for
+  balances, synchronization, signing, PCZTs, spends, or broadcasting.
+- Do not send raw prompts, transcripts, secrets, private keys, seeds, wallet
+  scan state, card data, or credentials to ZAP1.
+- Do not replace `mcp_servers` with a generic camel-case JSON key; Hermes reads
+  its MCP configuration from `config.yaml`.
+
+## Verification
+
+1. Confirm `~/.hermes/config.yaml` contains `mcp_servers.zcash` with the pinned
+   `npx` command and package argument shown above.
+2. Restart Hermes and confirm `zcash_capability_manifest` is discoverable.
+3. Call the manifest and verify wallet custody, signing, balance scanning,
+   shielded-spend construction, and broadcasting remain out of scope.
+4. Create a non-sensitive test receipt request, inspect its anchor status, and
+   verify its proof only when a proof bundle is available.
+5. Report pending status honestly if the test leaf is not anchored.

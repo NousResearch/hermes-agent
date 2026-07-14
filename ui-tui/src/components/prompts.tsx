@@ -11,6 +11,7 @@ import { TextInput } from './textInput.js'
 const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
 // tirith warning present → backend downgrades "always" to session scope, so drop it.
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
+const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 
 const approvalLabelKey = (o: 'once' | 'session' | 'always' | 'deny') =>
   `prompt.approval${o.charAt(0).toUpperCase() + o.slice(1)}` as const
@@ -18,6 +19,24 @@ const approvalLabelKey = (o: 'once' | 'session' | 'always' | 'deny') =>
 const CMD_PREVIEW_LINES = 10
 
 type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
+
+export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
+  if (req.choices) {
+    const choices = req.choices.filter((choice): choice is ApprovalChoice =>
+      APPROVAL_OPTS.includes(choice as ApprovalChoice)
+    )
+
+    if (choices.length > 0) {
+      return choices
+    }
+  }
+
+  if (req.smartDenied) {
+    return APPROVAL_OPTS_SMART_DENY
+  }
+
+  return req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+}
 
 type ApprovalKey = {
   downArrow?: boolean
@@ -56,7 +75,9 @@ export function approvalAction(
   }
 
   if (key.return) {
-    return { kind: 'choose', choice: opts[sel]! }
+    const choice = opts[sel]
+
+    return choice ? { kind: 'choose', choice } : { kind: 'noop' }
   }
 
   if (key.upArrow && sel > 0) {
@@ -73,7 +94,7 @@ export function approvalAction(
 export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
   const { t: ti } = useI18n()
-  const opts = req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+  const opts = approvalOptions(req)
 
   useInput((ch, key) => {
     const action = approvalAction(ch, key, sel, opts)

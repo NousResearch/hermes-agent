@@ -244,6 +244,16 @@ export const en: Translations = {
     rename: "Rename session",
     export: "Export session",
     exportJson: "Export session JSON",
+    importSessions: "Import sessions",
+    importSessionsTitle: "Import exported session JSON or JSONL",
+    importComplete: "Import complete: {summary}",
+    importFailed:
+      "Import failed. Check the exported session file and try again.",
+    importFileEmpty: "The selected file is empty",
+    importInvalidFormat: "Expected exported session JSON or JSONL",
+    importCount: "{count} imported",
+    importSkippedCount: "{count} skipped",
+    importDetachedCount: "{count} detached from missing parents",
     titlePlaceholder: "Session title",
     saveTitle: "Save title",
     cancelRename: "Cancel rename",
@@ -740,7 +750,8 @@ export const en: Translations = {
     setupNotDeclared: "no declared setup",
     providerUnavailable:
       "This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it.",
-    finishSetup: "Finish these setup steps before Hermes can activate this provider.",
+    finishSetup:
+      "Finish these setup steps before Hermes can activate this provider.",
     setupCompleted: "Provider dependency setup completed.",
     installingDependencies: "Installing provider dependencies",
     installDependencies: "Install provider dependencies",
@@ -754,9 +765,11 @@ export const en: Translations = {
     requiredEnvHint:
       "Required environment values. Fill the matching fields below, or set them in the Hermes environment.",
     providerSetupFinished: "Provider setup finished",
-    configureProviders: "Configure memory providers and runtime context engine selection.",
+    configureProviders:
+      "Configure memory providers and runtime context engine selection.",
     active: "active",
-    builtinMemoryHint: "Hermes will use the built-in MEMORY.md and USER.md files.",
+    builtinMemoryHint:
+      "Hermes will use the built-in MEMORY.md and USER.md files.",
     missingActiveProvider:
       "Active provider {provider} is no longer installed. Select another provider and save.",
     dependenciesReadyHint:
@@ -774,7 +787,8 @@ export const en: Translations = {
     installFailed: "Install failed",
     rescanFailed: "Rescan failed",
     saveFailed: "Save failed",
-    setupFailedDetails: "Provider setup failed: {names}. See setup results below.",
+    setupFailedDetails:
+      "Provider setup failed: {names}. See setup results below.",
     setupFailed: "Provider setup failed",
     failed: "Failed",
     removed: "{name} removed",
@@ -818,9 +832,11 @@ export const en: Translations = {
     learnDescription:
       "Point Hermes at anything and it will distill a reusable skill — following the house authoring standards. Fill in any combination below; the agent gathers the sources and writes the skill in chat.",
     localPath: "Local file or directory",
-    localPathPlaceholder: "~/projects/some-sdk (read with read_file / search_files)",
+    localPathPlaceholder:
+      "~/projects/some-sdk (read with read_file / search_files)",
     url: "URL",
-    notes: 'Anything else — describe the workflow, paste notes, or say "what we just did"',
+    notes:
+      'Anything else — describe the workflow, paste notes, or say "what we just did"',
     notesPlaceholder: "e.g. how I file an expense report: open the portal, …",
     cancel: "Cancel",
     learnIt: "Learn it",
@@ -839,13 +855,17 @@ export const en: Translations = {
       dismiss: "Dismiss",
       featured: "Featured skills",
       featuredHint: "from the Hermes index — search above for thousands more",
-      landingHint: "Search the hub above to browse installable skills from the connected sources.",
+      landingHint:
+        "Search the hub above to browse installable skills from the connected sources.",
       noMatches: "No matching skills found in the hub.",
       connecting: "Connecting to skill hubs…",
-      sourceFallback: "Results come from the same sources as hermes skills search.",
+      sourceFallback:
+        "Results come from the same sources as hermes skills search.",
       connected: "Connected hubs:",
-      githubRateLimited: "GitHub API rate-limited — set GITHUB_TOKEN to raise the limit",
-      indexUnavailable: "Centralized index unavailable — falling back to live sources",
+      githubRateLimited:
+        "GitHub API rate-limited — set GITHUB_TOKEN to raise the limit",
+      indexUnavailable:
+        "Centralized index unavailable — falling back to live sources",
       rateLimited: "(rate-limited)",
       results: "{count} result(s)",
       durationSeconds: "{seconds}s",
@@ -865,7 +885,8 @@ export const en: Translations = {
       emptySkill: "(SKILL.md is empty)",
       sourceLoadFailed: "Couldn't load the skill source.",
       scanning: "Fetching, quarantining, and scanning…",
-      scanHint: "Run a security scan to inspect this skill for risky patterns before installing.",
+      scanHint:
+        "Run a security scan to inspect this skill for risky patterns before installing.",
       verdict: "Verdict: {verdict}",
       sourceFindings: "{trust} source · {count} finding(s)",
       noRisks: "No risky patterns detected",
@@ -1127,7 +1148,8 @@ export const en: Translations = {
     deleteFolderTitle: "Delete {name}?",
     deleteFileTitle: "Delete {name}?",
     deleteItemTitle: "Delete item?",
-    deleteFolderDescription: "This removes the folder and everything inside it.",
+    deleteFolderDescription:
+      "This removes the folder and everything inside it.",
     deleteFileDescription: "This removes the file.",
   },
 
@@ -1142,7 +1164,8 @@ export const en: Translations = {
     clearPending: "Clear pending",
     revokeAccess: "Revoke access",
     revokeUserDescription: '"{user}" will lose access. This cannot be undone.',
-    revokeGenericDescription: "This user will lose access. This cannot be undone.",
+    revokeGenericDescription:
+      "This user will lose access. This cannot be undone.",
     revoke: "Revoke",
     pendingRequests: "Pending requests ({count})",
     noPending: "No pending pairing requests",
@@ -1183,7 +1206,8 @@ export const en: Translations = {
     adding: "Adding…",
     add: "Add",
     installTitle: "Install {name}",
-    installRequirements: "This MCP requires the following values to be configured.",
+    installRequirements:
+      "This MCP requires the following values to be configured.",
     installing: "Installing…",
     install: "Install",
     yourServers: "Your MCP servers ({count})",
@@ -1198,7 +1222,8 @@ export const en: Translations = {
     testConnection: "Test connection",
     delete: "Delete",
     catalog: "Catalog ({count})",
-    catalogDescription: "Browse Nous-approved MCP servers and install them with one click.",
+    catalogDescription:
+      "Browse Nous-approved MCP servers and install them with one click.",
     noCatalogEntries: "No catalog entries available.",
     authLabel: "auth:",
     source: "source ↗",
@@ -1230,7 +1255,8 @@ export const en: Translations = {
     deleteWebhook: "Delete webhook",
     deleteNamedDescription:
       '"{name}" — this will permanently remove this webhook subscription.',
-    deleteDescription: "This will permanently remove this webhook subscription.",
+    deleteDescription:
+      "This will permanently remove this webhook subscription.",
     createdSecretHint:
       "Subscription created. Copy the secret now — it is only shown once.",
     webhookUrl: "Webhook URL",
@@ -1249,7 +1275,8 @@ export const en: Translations = {
     deliverOnly: "Deliver only",
     deliverOnlyHint: "Skip the agent, deliver payload directly",
     prompt: "Prompt",
-    promptPlaceholder: "Instructions for the agent when this webhook fires (optional)",
+    promptPlaceholder:
+      "Instructions for the agent when this webhook fires (optional)",
     creating: "Creating…",
     create: "Create",
     receiverDisabled: "Webhook receiver disabled",
@@ -1284,7 +1311,8 @@ export const en: Translations = {
     mcpEndpointRequired: "Give the MCP server a URL or a command",
     invalidName: "Invalid profile name (lowercase, digits, - and _)",
     created: 'Profile "{name}" created',
-    createdInstalling: 'Profile "{name}" created — {count} hub skill(s) installing',
+    createdInstalling:
+      'Profile "{name}" created — {count} hub skill(s) installing',
     createFailed: "Create failed: {error}",
     title: "New profile",
     cancel: "Cancel",
@@ -1293,7 +1321,8 @@ export const en: Translations = {
       "Lowercase letters, digits, hyphens and underscores; must start with a letter or digit.",
     descriptionOptional: "Description (optional)",
     descriptionPlaceholder: "What this agent profile is for",
-    modelHint: "Pick the model and provider for this profile. Skip to use the default.",
+    modelHint:
+      "Pick the model and provider for this profile. Skip to use the default.",
     filterModels: "Filter models…",
     loadingModels: "Loading models…",
     useDefault: "Use default (set later)",
@@ -1409,8 +1438,10 @@ export const en: Translations = {
       updateBehind: "Update available — {count} commit(s) behind",
       latestVersion: "You're on the latest version",
       updateCheckFailed: "Update check failed: {error}",
-      updatesManagedExternally: "Hermes updates are managed outside this dashboard.",
-      dashboardUpdateUnavailable: "Updates cannot be applied from this dashboard.",
+      updatesManagedExternally:
+        "Hermes updates are managed outside this dashboard.",
+      dashboardUpdateUnavailable:
+        "Updates cannot be applied from this dashboard.",
       updateStarted: "Update started",
       updateFailed: "Update failed: {error}",
       pruneStarted: "Checkpoint prune started",

@@ -243,6 +243,15 @@ export const zh: TranslationOverlay = {
     rename: "重命名会话",
     export: "导出会话",
     exportJson: "导出会话 JSON",
+    importSessions: "导入会话",
+    importSessionsTitle: "导入已导出的会话 JSON 或 JSONL",
+    importComplete: "导入完成：{summary}",
+    importFailed: "导入失败。请检查导出的会话文件后重试。",
+    importFileEmpty: "所选文件为空",
+    importInvalidFormat: "无法识别导出的会话 JSON 或 JSONL",
+    importCount: "已导入 {count} 个",
+    importSkippedCount: "已跳过 {count} 个",
+    importDetachedCount: "有 {count} 个会话因父会话缺失而转为独立会话",
     titlePlaceholder: "会话标题",
     saveTitle: "保存标题",
     cancelRename: "取消重命名",
@@ -253,7 +262,8 @@ export const zh: TranslationOverlay = {
     invalidPruneDays: "请输入有效的天数",
     pruned: "已清理 {count} 个会话",
     pruneFailed: "清理会话失败",
-    pruneDescription: "永久删除最后活动时间早于指定天数的已归档会话；活动会话不会被清理。",
+    pruneDescription:
+      "永久删除最后活动时间早于指定天数的已归档会话；活动会话不会被清理。",
     olderThanDays: "早于（天）",
     prune: "清理",
     total: "总计",
@@ -576,7 +586,8 @@ export const zh: TranslationOverlay = {
     noToolsets: "没有可用的工具集。",
     skillsOptional: "技能（可选）",
     noSkills: "此多 Agent 配置尚未安装技能。",
-    skillsHint: "所选技能会在提示词执行前加载；定时任务决定何时执行，技能决定如何执行。",
+    skillsHint:
+      "所选技能会在提示词执行前加载；定时任务决定何时执行，技能决定如何执行。",
     executionRequired: "请填写提示词并设置调度时间。",
     noAgentRequiresScript: "no_agent 任务必须指定脚本。",
     savedChanges: "更改已保存 ✓",
@@ -717,7 +728,8 @@ export const zh: TranslationOverlay = {
     setupResults: "设置结果",
     setupAlreadyInstalled: "已安装",
     setupNotDeclared: "未声明设置步骤",
-    providerUnavailable: "该服务商插件已安装但当前不可用。Hermes 激活它之前，可能需要安装本地依赖或手动完成设置。",
+    providerUnavailable:
+      "该服务商插件已安装但当前不可用。Hermes 激活它之前，可能需要安装本地依赖或手动完成设置。",
     finishSetup: "请先完成以下设置步骤，Hermes 才能激活此服务商。",
     setupCompleted: "服务商依赖设置已完成。",
     installingDependencies: "正在安装服务商依赖",
@@ -729,13 +741,16 @@ export const zh: TranslationOverlay = {
     verifyNamed: "验证 {name}",
     verifyDependency: "验证依赖",
     pythonDependencies: "Python 依赖",
-    requiredEnvHint: "必填环境变量。请填写下方对应字段，或在 Hermes 环境中设置。",
+    requiredEnvHint:
+      "必填环境变量。请填写下方对应字段，或在 Hermes 环境中设置。",
     providerSetupFinished: "服务商设置已完成",
     configureProviders: "配置记忆服务商和运行时上下文引擎。",
     active: "活动",
     builtinMemoryHint: "Hermes 将使用内置的 MEMORY.md 和 USER.md 文件。",
-    missingActiveProvider: "当前服务商 {provider} 已不再安装。请选择其他服务商并保存。",
-    dependenciesReadyHint: "服务商依赖已安装。请填写所需凭据或自托管 URL，然后保存服务商。",
+    missingActiveProvider:
+      "当前服务商 {provider} 已不再安装。请选择其他服务商并保存。",
+    dependenciesReadyHint:
+      "服务商依赖已安装。请填写所需凭据或自托管 URL，然后保存服务商。",
     loadingProviderSettings: "正在加载服务商设置…",
     noProviderSettings: "此服务商未提供 Dashboard 设置项。",
     required: "必填",
@@ -790,9 +805,11 @@ export const zh: TranslationOverlay = {
     learnSkill: "学习技能",
     newSkill: "新建技能",
     configure: "配置",
-    learnDescription: "向 Hermes 提供任意资料，它会按照项目的技能编写规范提炼成可复用技能。可填写以下任意内容；Agent 会收集来源并在对话中编写技能。",
+    learnDescription:
+      "向 Hermes 提供任意资料，它会按照项目的技能编写规范提炼成可复用技能。可填写以下任意内容；Agent 会收集来源并在对话中编写技能。",
     localPath: "本地文件或目录",
-    localPathPlaceholder: "~/projects/some-sdk（通过 read_file / search_files 读取）",
+    localPathPlaceholder:
+      "~/projects/some-sdk（通过 read_file / search_files 读取）",
     url: "URL",
     notes: "其他说明——描述工作流、粘贴笔记，或说明“刚才完成的操作”",
     notesPlaceholder: "例如：报销流程是打开门户，然后……",
@@ -830,7 +847,8 @@ export const zh: TranslationOverlay = {
       install: "安装",
       previewFailed: "预览失败：{error}",
       scanFailed: "扫描失败：{error}",
-      previewDescription: "安装前预览 {name} 的 SKILL.md 源文件并运行安全扫描。",
+      previewDescription:
+        "安装前预览 {name} 的 SKILL.md 源文件并运行安全扫描。",
       readSkill: "查看 SKILL.md",
       rescan: "重新扫描",
       securityScan: "安全扫描",
@@ -1046,7 +1064,8 @@ export const zh: TranslationOverlay = {
     contentRequired: "请输入 SKILL.md 内容。",
     editTitle: "编辑技能：{name}",
     newTitle: "新建技能",
-    editDescription: "编辑该技能的 SKILL.md；保存时会校验 frontmatter 中的名称与描述。",
+    editDescription:
+      "编辑该技能的 SKILL.md；保存时会校验 frontmatter 中的名称与描述。",
     newDescription:
       "编写包含 YAML frontmatter 和 Markdown 指令的自定义技能。保存后，Agent 可以使用该技能，也可将其附加到定时任务。",
     name: "名称",
@@ -1227,7 +1246,8 @@ export const zh: TranslationOverlay = {
     restarting: "正在重启…",
     restartGateway: "重启网关",
     subscriptions: "订阅（{count}）",
-    hotReloadHint: "接收器运行后，订阅更改会热加载；已禁用的订阅会拒绝传入事件。",
+    hotReloadHint:
+      "接收器运行后，订阅更改会热加载；已禁用的订阅会拒绝传入事件。",
     noSubscriptions: "尚未创建 Webhook 订阅。",
     disabled: "已禁用",
     allEvents: "（全部）",
@@ -1246,14 +1266,17 @@ export const zh: TranslationOverlay = {
     },
     mcpNameRequired: "请输入 MCP 服务器名称",
     mcpEndpointRequired: "请为 MCP 服务器填写 URL 或命令",
-    invalidName: "多 Agent 配置名称无效，只能使用小写字母、数字、连字符和下划线",
+    invalidName:
+      "多 Agent 配置名称无效，只能使用小写字母、数字、连字符和下划线",
     created: "多 Agent 配置“{name}”已创建",
-    createdInstalling: "多 Agent 配置“{name}”已创建，正在安装 {count} 个技能中心技能",
+    createdInstalling:
+      "多 Agent 配置“{name}”已创建，正在安装 {count} 个技能中心技能",
     createFailed: "创建失败：{error}",
     title: "新建多 Agent 配置",
     cancel: "取消",
     profileName: "多 Agent 配置名称",
-    nameRule: "只能使用小写字母、数字、连字符和下划线，且必须以字母或数字开头。",
+    nameRule:
+      "只能使用小写字母、数字、连字符和下划线，且必须以字母或数字开头。",
     descriptionOptional: "说明（可选）",
     descriptionPlaceholder: "此多 Agent 配置的用途",
     modelHint: "为此多 Agent 配置选择模型和服务商；跳过则使用默认设置。",
@@ -1261,7 +1284,8 @@ export const zh: TranslationOverlay = {
     loadingModels: "正在加载模型…",
     useDefault: "使用默认设置（稍后配置）",
     keepFullSkills: "从完整的默认技能包开始（推荐）",
-    chooseSkillsHint: "选择要保留启用的内置或可选技能；未勾选的技能会在新配置中禁用。",
+    chooseSkillsHint:
+      "选择要保留启用的内置或可选技能；未勾选的技能会在新配置中禁用。",
     filterSkills: "筛选技能…",
     loadingSkills: "正在加载技能…",
     addFromHub: "从技能中心添加",
@@ -1270,7 +1294,8 @@ export const zh: TranslationOverlay = {
     search: "搜索",
     add: "添加",
     removeNamed: "移除 {name}",
-    mcpHint: "为此多 Agent 配置添加 MCP 服务器。HTTP 服务器需要 URL；stdio 服务器需要命令和参数。",
+    mcpHint:
+      "为此多 Agent 配置添加 MCP 服务器。HTTP 服务器需要 URL；stdio 服务器需要命令和参数。",
     serverName: "服务器名称",
     serverUrl: "URL（https://…/mcp）",
     serverCommand: "命令（例如 npx）",
@@ -1316,7 +1341,8 @@ export const zh: TranslationOverlay = {
     enableToolset: "启用工具集",
     enabledForAgent: "已为 Agent 启用",
     disabled: "已禁用",
-    noBackends: "此工具集没有可配置的后端。可在上方直接启用或禁用，无需选择服务商或填写 API 密钥。",
+    noBackends:
+      "此工具集没有可配置的后端。可在上方直接启用或禁用，无需选择服务商或填写 API 密钥。",
     noProviders: "当前安装中没有适用于此工具集的服务商。",
     selected: "已选择",
     select: "选择",
@@ -1324,7 +1350,8 @@ export const zh: TranslationOverlay = {
     savedPlaceholder: "••••••••（已保存；留空可保留原值）",
     getKey: "获取密钥",
     saveKeys: "保存密钥",
-    installHint: "此后端需要执行一次安装（{command}）。安装在当前主机上运行，可能需要几分钟。",
+    installHint:
+      "此后端需要执行一次安装（{command}）。安装在当前主机上运行，可能需要几分钟。",
     installing: "正在安装…",
     runSetup: "运行设置",
     postSetup: "后续设置：{command}",
@@ -1388,13 +1415,17 @@ export const zh: TranslationOverlay = {
         "将运行“hermes update”（{command}），并在更新完成后重启网关。",
       updateNow: "立即更新",
       resetMemoryTitle: "重置记忆",
-      resetMemoryDescription: "此操作会永久清除选中的内置记忆文件，且无法撤销。",
+      resetMemoryDescription:
+        "此操作会永久清除选中的内置记忆文件，且无法撤销。",
       removeCredentialTitle: "移除凭据",
-      removeCredentialDescription: "要移除此共享 API 密钥吗？Agent 将不再轮换使用该密钥。",
+      removeCredentialDescription:
+        "要移除此共享 API 密钥吗？Agent 将不再轮换使用该密钥。",
       pruneTitle: "清理检查点",
-      pruneDescription: "要删除回滚检查点影子存储吗？已有的 /rollback 回滚点将会丢失。",
+      pruneDescription:
+        "要删除回滚检查点影子存储吗？已有的 /rollback 回滚点将会丢失。",
       removeHookTitle: "移除 Shell 钩子",
-      removeHookDescription: "要从配置中移除此钩子并撤销授权吗？下次重启后它将不再触发。",
+      removeHookDescription:
+        "要从配置中移除此钩子并撤销授权吗？下次重启后它将不再触发。",
       restoreTitle: "恢复完整 Hermes 备份？",
       restoreDescription:
         "此操作会使用 {archive} 中的内容覆盖当前 Hermes 配置、技能、会话和数据，且无法撤销。",
@@ -1490,7 +1521,8 @@ export const zh: TranslationOverlay = {
       changeInPlugins: "前往插件页面更改 →",
       providerSetup: "服务商设置：",
       configureInPlugins: "在插件页面中配置",
-      providerMissing: "已配置的服务商不再安装。请改用内置记忆，或在插件页面中配置其他服务商。",
+      providerMissing:
+        "已配置的服务商不再安装。请改用内置记忆，或在插件页面中配置其他服务商。",
       builtInFiles: "内置文件",
       resetMemory: "重置 MEMORY.md",
       resetUser: "重置 USER.md",

@@ -25,12 +25,18 @@ import {
   Play,
   Eraser,
   Download,
+  Upload,
   Pencil,
   Check,
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
+import {
+  importSummary,
+  parseImportSessions,
+  SessionImportParseError,
+} from "@/lib/session-import";
 import type {
   SessionInfo,
   SessionMessage,
@@ -48,7 +54,12 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@nous-research/ui/ui/components/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -204,7 +215,6 @@ function splitCompactionContent(content: string): CompactionSplit | null {
   };
 }
 
-
 function MessageBubble({
   msg,
   highlight,
@@ -286,7 +296,7 @@ function MessageBubble({
   const isCompaction = compactionSplit !== null;
   const style = isCompaction
     ? ROLE_STYLES.compaction
-    : ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
+    : (ROLE_STYLES[msg.role] ?? ROLE_STYLES.system);
   const label = isCompaction
     ? ROLE_STYLES.compaction.label
     : msg.tool_name
@@ -390,7 +400,6 @@ function SessionRow({
   resumeInChatEnabled,
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
@@ -399,15 +408,20 @@ function SessionRow({
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (isExpanded && messages === null && !loading) {
-      setLoading(true);
-      api
-        .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
-        .catch((err) => setError(String(err)))
-        .finally(() => setLoading(false));
-    }
-  }, [isExpanded, session.id, messages, loading]);
+    if (!isExpanded || messages !== null) return;
+    let cancelled = false;
+    api
+      .getSessionMessages(session.id)
+      .then((resp) => {
+        if (!cancelled) setMessages(resp.messages);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExpanded, session.id, messages]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
@@ -461,9 +475,7 @@ function SessionRow({
         onClick={(e) => {
           e.stopPropagation();
           setRenameValue(
-            session.title && session.title !== "Untitled"
-              ? session.title
-              : "",
+            session.title && session.title !== "Untitled" ? session.title : "",
           );
           setRenaming(true);
         }}
@@ -642,7 +654,7 @@ function SessionRow({
 
       {isExpanded && (
         <div className="min-w-0 border-t border-border bg-background/50 p-4">
-          {loading && (
+          {messages === null && !error && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />
             </div>
@@ -728,6 +740,7 @@ export default function SessionsPage() {
   >(null);
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
@@ -760,6 +773,7 @@ export default function SessionsPage() {
   const [pruneOpen, setPruneOpen] = useState(false);
   const [pruneDays, setPruneDays] = useState("90");
   const [pruning, setPruning] = useState(false);
+  const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
   const { format, t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -834,6 +848,52 @@ export default function SessionsPage() {
       .catch(() => {});
   }, []);
 
+  const handleImportSessions = useCallback(
+    async (files: FileList | null) => {
+      const file = files?.[0];
+      if (!file) return;
+      setImportingSessions(true);
+      try {
+        const text = await file.text();
+        const importedSessions = parseImportSessions(text);
+        const result = await api.importSessions(importedSessions);
+        const summary = importSummary(result, {
+          imported: t.sessions.importCount,
+          skipped: t.sessions.importSkippedCount,
+          detached: t.sessions.importDetachedCount,
+        });
+        showToast(
+          t.sessions.importComplete.replace("{summary}", summary),
+          "success",
+        );
+        clearSelection();
+        loadSessions(page, true);
+        loadStats();
+        refreshEmptyCount();
+      } catch (error) {
+        const message =
+          error instanceof SessionImportParseError
+            ? error.code === "empty"
+              ? t.sessions.importFileEmpty
+              : t.sessions.importInvalidFormat
+            : t.sessions.importFailed;
+        showToast(message, "error");
+      } finally {
+        setImportingSessions(false);
+        if (importInputRef.current) importInputRef.current.value = "";
+      }
+    },
+    [
+      clearSelection,
+      loadSessions,
+      loadStats,
+      page,
+      refreshEmptyCount,
+      showToast,
+      t,
+    ],
+  );
+
   useEffect(() => {
     loadStats();
   }, [loadStats]);
@@ -845,11 +905,21 @@ export default function SessionsPage() {
   // baseline without triggering a redundant reload (mount already loads).
   const newestSeenRef = useRef<string | null>(null);
   const pageRef = useRef(page);
-  pageRef.current = page;
 
   useEffect(() => {
-    loadSessions(page);
-    refreshEmptyCount();
+    pageRef.current = page;
+  }, [page]);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      loadSessions(page);
+      refreshEmptyCount();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [loadSessions, page, refreshEmptyCount]);
 
   useEffect(() => {
@@ -905,6 +975,7 @@ export default function SessionsPage() {
   const updateSearch = useCallback(
     (value: string) => {
       setSearch(value);
+      if (value.trim()) setView("list");
       clearSelection();
     },
     [clearSelection],
@@ -922,13 +993,15 @@ export default function SessionsPage() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
     if (!search.trim()) {
-      setSearchResults(null);
-      setSearching(false);
+      debounceRef.current = setTimeout(() => {
+        setSearchResults(null);
+        setSearching(false);
+      }, 0);
       return;
     }
 
-    setSearching(true);
     debounceRef.current = setTimeout(() => {
+      setSearching(true);
       api
         .searchSessions(search.trim())
         .then((resp) => setSearchResults(resp.results))
@@ -1001,8 +1074,7 @@ export default function SessionsPage() {
         // visible list — in those cases fall through to a plain toggle
         // (the click also resets the anchor below).
         if (event.shiftKey && anchor !== null && anchor < visibleList.length) {
-          const [lo, hi] =
-            anchor <= index ? [anchor, index] : [index, anchor];
+          const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
           for (let i = lo; i <= hi; i++) {
             const rowId = visibleList[i]?.id;
             if (!rowId) continue;
@@ -1167,10 +1239,7 @@ export default function SessionsPage() {
     setPruning(true);
     try {
       const resp = await api.pruneSessions(days);
-      showToast(
-        format(t.sessions.pruned, { count: resp.removed }),
-        "success",
-      );
+      showToast(format(t.sessions.pruned, { count: resp.removed }), "success");
       setPruneOpen(false);
       loadSessions(0);
       setPage(0);
@@ -1248,6 +1317,15 @@ export default function SessionsPage() {
     <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json,.jsonl,application/json,application/x-ndjson"
+        className="hidden"
+        onChange={(event) =>
+          void handleImportSessions(event.currentTarget.files)
+        }
+      />
 
       <DeleteConfirmDialog
         open={sessionDelete.isOpen}
@@ -1298,9 +1376,7 @@ export default function SessionsPage() {
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>{t.sessions.pruneOld}</DialogTitle>
-            <DialogDescription>
-              {t.sessions.pruneDescription}
-            </DialogDescription>
+            <DialogDescription>{t.sessions.pruneDescription}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
             <label
@@ -1530,6 +1606,23 @@ export default function SessionsPage() {
               >
                 <span className="font-mondwest normal-case text-xs">
                   {t.sessions.deleteEmpty} ({emptyCount})
+                </span>
+              </Button>
+            )}
+
+            {!isSearching && (
+              <Button
+                outlined
+                size="sm"
+                className="shrink-0"
+                disabled={importingSessions}
+                onClick={() => importInputRef.current?.click()}
+                aria-label={t.sessions.importSessions}
+                title={t.sessions.importSessionsTitle}
+                prefix={importingSessions ? <Spinner /> : <Upload />}
+              >
+                <span className="font-mondwest normal-case text-xs">
+                  {t.sessions.importSessions}
                 </span>
               </Button>
             )}

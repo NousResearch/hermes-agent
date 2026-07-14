@@ -103,6 +103,20 @@ describe("Dashboard i18n framework", () => {
     expect(catalog.theme.fontTitle).toBe("字体");
   });
 
+  it("localizes session import independently in both Chinese language packs", () => {
+    const simplified = resolveTranslations("zh");
+    const traditional = resolveTranslations("zh-hant");
+
+    expect(simplified.sessions.importSessions).toBe("导入会话");
+    expect(traditional.sessions.importSessions).toBe("匯入工作階段");
+    expect(simplified.sessions.importComplete).toContain("{summary}");
+    expect(traditional.sessions.importComplete).toContain("{summary}");
+    expect(simplified.sessions.importFailed).not.toBe(en.sessions.importFailed);
+    expect(traditional.sessions.importFailed).not.toBe(
+      en.sessions.importFailed,
+    );
+  });
+
   it("preserves existing official translations and falls back per missing leaf", () => {
     const catalog = resolveTranslations("de");
 

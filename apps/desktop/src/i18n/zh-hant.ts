@@ -1479,6 +1479,9 @@ export const zhHant = defineLocale({
       newWorktreeTitle: '新增工作樹',
       newWorktreeDesc: '為這個工作樹命名分支。',
       branchPlaceholder: '例如 my-feature',
+      branchOff: () => ({ after: ' 分支', before: '從 ' }),
+      baseBranchPlaceholder: '搜尋分支…',
+      baseBranchNone: '未找到分支',
       startWorkFailed: '無法建立工作樹',
       convertBranch: '轉換分支…',
       convertBranchTitle: '轉換分支',
@@ -1944,6 +1947,16 @@ export const zhHant = defineLocale({
       recentActivity: '最近活動',
       viewAllLogs: '查看全部記錄 →',
       messagingPlatforms: '訊息平台'
+    },
+    approvalMode: {
+      title: '核准模式',
+      ariaLabel: mode => `核准模式：${mode}`,
+      manual: '手動',
+      manualDescription: '執行需要核准的操作前詢問',
+      smart: '智慧',
+      smartDescription: '自動評估操作，並在需要時詢問',
+      off: '關閉',
+      offDescription: '不顯示核准提示，直接執行'
     },
     statusbar: {
       unknown: '未知',

@@ -252,6 +252,15 @@ export interface Translations {
     rename: string;
     export: string;
     exportJson: string;
+    importSessions: string;
+    importSessionsTitle: string;
+    importComplete: string;
+    importFailed: string;
+    importFileEmpty: string;
+    importInvalidFormat: string;
+    importCount: string;
+    importSkippedCount: string;
+    importDetachedCount: string;
     titlePlaceholder: string;
     saveTitle: string;
     cancelRename: string;

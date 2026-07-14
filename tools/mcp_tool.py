@@ -2095,6 +2095,9 @@ class MCPServerTask:
                     "mcp.client.sse.sse_client is not available. "
                     "Upgrade the mcp package to get SSE support."
                 )
+            _sse_headers = dict(headers)
+            if not _user_set_protocol_version:
+                _sse_headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
             # sse_read_timeout governs how long sse_client will wait between
             # events on the SSE stream. Using the tool_timeout (default 60s)
             # here is wrong: SSE servers commonly hold the stream idle for
@@ -2105,7 +2108,7 @@ class MCPServerTask:
             # Supermemory on Cloudflare Workers idle-disconnect at ~60s).
             _sse_kwargs: dict = {
                 "url": url,
-                "headers": headers or None,
+                "headers": _sse_headers or None,
                 "timeout": float(connect_timeout),
                 "sse_read_timeout": 300.0,
             }

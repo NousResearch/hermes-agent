@@ -207,3 +207,55 @@ class TestSSEOAuthForwarding:
             f"sse_client was called with auth= when no OAuth was configured: "
             f"{patch_sse_client!r}"
         )
+
+
+class TestSSEProtocolVersionForwarding:
+    def test_sse_client_receives_default_protocol_header_when_unpinned(self, patch_sse_client):
+        from tools.mcp_tool import MCPServerTask, LATEST_PROTOCOL_VERSION
+
+        server = _build_server_with_sse()
+
+        async def drive():
+            with patch.object(MCPServerTask, "_wait_for_lifecycle_event", new=AsyncMock(return_value="shutdown")), \
+                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()):
+                try:
+                    await asyncio.wait_for(
+                        server._run_http({
+                            "url": "https://example.com/mcp/sse",
+                            "transport": "sse",
+                            "timeout": 60,
+                        }),
+                        timeout=2.0,
+                    )
+                except (asyncio.TimeoutError, StopAsyncIteration, Exception):
+                    pass
+
+        asyncio.run(drive())
+
+        assert patch_sse_client["headers"]["mcp-protocol-version"] == LATEST_PROTOCOL_VERSION
+
+    def test_sse_client_preserves_user_pinned_protocol_header(self, patch_sse_client):
+        from tools.mcp_tool import MCPServerTask
+
+        server = _build_server_with_sse()
+
+        async def drive():
+            with patch.object(MCPServerTask, "_wait_for_lifecycle_event", new=AsyncMock(return_value="shutdown")), \
+                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()):
+                try:
+                    await asyncio.wait_for(
+                        server._run_http({
+                            "url": "https://example.com/mcp/sse",
+                            "transport": "sse",
+                            "timeout": 60,
+                            "headers": {"MCP-Protocol-Version": "custom-version"},
+                        }),
+                        timeout=2.0,
+                    )
+                except (asyncio.TimeoutError, StopAsyncIteration, Exception):
+                    pass
+
+        asyncio.run(drive())
+
+        assert patch_sse_client["headers"]["MCP-Protocol-Version"] == "custom-version"
+        assert "mcp-protocol-version" not in patch_sse_client["headers"]

@@ -1755,14 +1755,15 @@ def _ensure_session_db_row(session: dict) -> None:
     if parent_session_id:
         model_config["_branched_from"] = parent_session_id
     try:
-        db.create_session(
-            key,
+        create_kwargs: dict = dict(
             source=_session_source(session),
-            model=row_model,
             model_config=model_config or None,
             parent_session_id=parent_session_id,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
+        if row_model:
+            create_kwargs["model"] = row_model
+        db.create_session(key, **create_kwargs)
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
     finally:
@@ -2117,7 +2118,7 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    return "anthropic/claude-sonnet-4"
+    return ""
 
 
 def _resolve_session_platform() -> str:

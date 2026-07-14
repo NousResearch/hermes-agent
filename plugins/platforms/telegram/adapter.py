@@ -15,6 +15,7 @@ import logging
 import os
 import html as _html
 import re
+import secrets
 import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
@@ -4531,12 +4532,73 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await self._bot.send_message(**retry_kwargs)
             raise
 
+    def _cron_button_token_path(self):
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "cron" / "button_tokens.json"
+
+    def _load_cron_button_tokens(self) -> Dict[str, Dict[str, Any]]:
+        path = self._cron_button_token_path()
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {
+                        str(token): value
+                        for token, value in data.items()
+                        if isinstance(value, dict)
+                    }
+        except Exception:
+            logger.debug("[%s] failed to load cron button tokens", self.name, exc_info=True)
+        return {}
+
+    def _save_cron_button_tokens(self, tokens: Dict[str, Dict[str, Any]]) -> None:
+        path = self._cron_button_token_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(tokens, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+    def _register_cron_button_token(
+        self,
+        *,
+        job_id: str,
+        job_name: Optional[str],
+        button_index: int,
+        label: str,
+        value: str,
+    ) -> str:
+        """Persist an immutable delivery-time button mapping and return its token."""
+        tokens = self._load_cron_button_tokens()
+        for _ in range(8):
+            token = secrets.token_urlsafe(9)
+            if token not in tokens:
+                break
+        else:
+            token = secrets.token_urlsafe(12)
+        tokens[token] = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "platform": "telegram",
+            "job_id": job_id,
+            "job_name": job_name,
+            "button_index": button_index,
+            "button_text": label,
+            "button_value": value,
+        }
+        # Keep the token store bounded; old buttons remain useful for a long
+        # time, but the file should not grow forever on high-volume gateways.
+        if len(tokens) > 1000:
+            tokens = dict(list(tokens.items())[-1000:])
+        self._save_cron_button_tokens(tokens)
+        return token
+
     def _cron_buttons_reply_markup(self, metadata: Optional[Dict[str, Any]]) -> Optional[Any]:
         """Build Telegram inline keyboard for cron delivery buttons."""
         cron_meta = (metadata or {}).get("cron_buttons") if isinstance(metadata, dict) else None
         if not isinstance(cron_meta, dict):
             return None
         job_id = str(cron_meta.get("job_id") or "").strip()
+        job_name = str(cron_meta.get("job_name") or "").strip() or None
         buttons = cron_meta.get("buttons")
         if not job_id or not isinstance(buttons, list):
             return None
@@ -4546,13 +4608,24 @@ class TelegramAdapter(BasePlatformAdapter):
         for idx, button in enumerate(buttons[:20]):
             if isinstance(button, str):
                 label = button.strip()
+                value = label
             elif isinstance(button, dict):
                 label = str(button.get("text") or button.get("label") or "").strip()
+                value = str(button.get("value") or button.get("data") or label).strip()
             else:
                 continue
             if not label:
                 continue
-            row.append(InlineKeyboardButton(label[:64], callback_data=f"cj:{job_id}:{idx}"))
+            if not value:
+                value = label
+            token = self._register_cron_button_token(
+                job_id=job_id,
+                job_name=job_name,
+                button_index=idx,
+                label=label,
+                value=value,
+            )
+            row.append(InlineKeyboardButton(label[:64], callback_data=f"cj:{token}"))
             if len(row) == 2:
                 rows.append(row)
                 row = []
@@ -4571,16 +4644,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name,
     ) -> None:
         """Record a cron inline-button response in the local cron journal."""
-        parts = data.split(":", 2)
-        if len(parts) != 3:
+        parts = data.split(":", 1)
+        if len(parts) != 2 or not parts[1]:
             await query.answer(text="Invalid cron button data.")
             return
-        job_id, idx_text = parts[1], parts[2]
-        try:
-            idx = int(idx_text)
-        except (TypeError, ValueError):
-            await query.answer(text="Invalid cron button choice.")
-            return
+        token = parts[1]
 
         caller_id = str(getattr(query.from_user, "id", ""))
         if not self._is_callback_user_authorized(
@@ -4593,24 +4661,19 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="⛔ You are not authorized to answer this cron prompt.")
             return
 
-        try:
-            from cron.jobs import get_job
-            job = get_job(job_id)
-        except Exception as exc:
-            logger.warning("[%s] failed to load cron job %s for button callback: %s", self.name, job_id, exc)
-            job = None
-
-        buttons = (job or {}).get("buttons") or []
-        if not isinstance(buttons, list) or idx < 0 or idx >= len(buttons):
+        token_record = self._load_cron_button_tokens().get(token)
+        if not isinstance(token_record, dict):
             await query.answer(text="This cron button is no longer available.")
             return
-        button = buttons[idx]
-        if isinstance(button, dict):
-            label = str(button.get("text") or button.get("label") or button.get("value") or idx + 1)
-            value = str(button.get("value") or label)
-        else:
-            label = str(button)
-            value = label
+
+        job_id = str(token_record.get("job_id") or "")
+        job_name = token_record.get("job_name")
+        try:
+            idx = int(token_record.get("button_index", 0))
+        except (TypeError, ValueError):
+            idx = 0
+        label = str(token_record.get("button_text") or token_record.get("button_value") or idx + 1)
+        value = str(token_record.get("button_value") or label)
 
         user_display = getattr(query.from_user, "first_name", "User")
         try:
@@ -4622,7 +4685,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "platform": "telegram",
                 "job_id": job_id,
-                "job_name": (job or {}).get("name"),
+                "job_name": job_name,
                 "button_index": idx,
                 "button_text": label,
                 "button_value": value,
@@ -5770,7 +5833,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
-        # --- Cron delivery feedback callbacks (cj:job_id:index) ---
+        # --- Cron delivery feedback callbacks (cj:opaque-token) ---
         if data.startswith("cj:"):
             await self._handle_cron_button_callback(
                 query,

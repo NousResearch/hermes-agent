@@ -458,8 +458,6 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
-    profile = _coerce_job_text(normalized.get("profile")).strip()
-    normalized["profile"] = profile or None
     normalized["buttons"] = normalize_buttons(normalized.get("buttons"))
     return normalized
 
@@ -969,30 +967,6 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
-def _normalize_profile(profile: Optional[str]) -> Optional[str]:
-    """Normalize and validate an optional cron job profile name.
-
-    Empty / None disables per-job profile selection. Otherwise the profile name
-    must be syntactically valid and must resolve to an existing profile at
-    create/update time. ``default`` is the built-in root profile and is always
-    valid.
-    """
-    if profile is None:
-        return None
-    raw = str(profile).strip()
-    if not raw:
-        return None
-
-    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
-
-    normalized = normalize_profile_name(raw)
-    # resolve_profile_env validates the canonical name and checks that named
-    # profiles exist. Store only the stable profile id, not the filesystem path,
-    # so profile directories can move with the Hermes root.
-    resolve_profile_env(normalized)
-    return normalized
-
-
 def _resolve_default_model_snapshot() -> Optional[str]:
     """Resolve the global default model the same way the cron ticker does.
 
@@ -1114,7 +1088,6 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
-    profile: Optional[str] = None,
     buttons: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -1160,10 +1133,6 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
-        profile: Optional Hermes profile name. When set, the job runs with
-                that profile's HERMES_HOME so profile-specific config,
-                credentials, state and skills are used consistently. ``default``
-                selects the root profile; empty / None preserves old behavior.
         buttons: Optional inline buttons to attach when the delivery platform
                 supports them. Stored as ``[{"text": ..., "value": ...}]``.
 
@@ -1198,7 +1167,6 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
-    normalized_profile = _normalize_profile(profile)
     normalized_buttons = normalize_buttons(buttons)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -1289,7 +1257,6 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
-        "profile": normalized_profile,
         "buttons": normalized_buttons,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
@@ -1388,15 +1355,6 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = _normalize_workdir(_wd)
 
             previous_inference_axes = _normalized_inference_axes(job)
-
-            # Validate / normalize profile if present in updates.  Empty string or
-            # None both mean "clear the field" (restore old behaviour).
-            if "profile" in updates:
-                _profile = updates["profile"]
-                if _profile is None or _profile == "" or _profile is False:
-                    updates["profile"] = None
-                else:
-                    updates["profile"] = _normalize_profile(_profile)
 
             if "buttons" in updates:
                 updates["buttons"] = normalize_buttons(updates.get("buttons"))

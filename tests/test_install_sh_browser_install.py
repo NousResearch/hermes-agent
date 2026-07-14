@@ -165,8 +165,8 @@ def _run_install_fn(distro: str, version: str, *, native_fails: bool,
     # run_browser_install_with_timeout delegates to run_with_timeout (#39219),
     # so the helper must be pulled in too or the install command never runs.
     fn_names = [
-        "run_with_timeout",
         "run_browser_install_with_timeout",
+        "run_with_timeout",
         "playwright_host_unrecognized",
         "playwright_fallback_platform",
         "run_playwright_install",

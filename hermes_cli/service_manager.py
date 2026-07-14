@@ -982,13 +982,8 @@ class S6ServiceManager:
         # rescan land inside the ~ms seed window). The atomic rename to
         # the dotless live name below is unaffected.
         tmp_dir = svc_dir.with_name("." + svc_dir.name + ".tmp")
-        legacy_tmp_dir = svc_dir.with_name(svc_dir.name + ".tmp")
-        if legacy_tmp_dir.exists():
-            shutil.rmtree(legacy_tmp_dir, ignore_errors=True)
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
-        for stale in self.scandir.glob(f".{svc_dir.name}.tmp-*"):
-            shutil.rmtree(stale, ignore_errors=True)
         tmp_dir.mkdir(parents=True)
 
         try:

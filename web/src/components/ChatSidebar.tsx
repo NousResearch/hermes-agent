@@ -77,6 +77,8 @@ interface ChatSidebarProps {
   className?: string;
   onDashboardNewSessionRequest?: () => void;
   onSessionTitleChange?: (title: string | null) => void;
+  /** Fired when a session.info event reports the active session id. */
+  onSessionIdChange?: (sessionId: string) => void;
 }
 
 /** Build the ``session.create`` params for the sidecar session.
@@ -100,6 +102,7 @@ export function ChatSidebar({
   className,
   onDashboardNewSessionRequest,
   onSessionTitleChange,
+  onSessionIdChange,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
@@ -278,12 +281,15 @@ export function ChatSidebar({
           return;
         }
 
-        const { type, payload } = frame.params;
+        const { type, payload, session_id } = frame.params;
 
         if (type === "session.info") {
           const title = titleFromSessionInfoPayload(payload);
           if (title !== undefined) {
             onSessionTitleChange?.(title);
+          }
+          if (typeof session_id === "string" && session_id) {
+            onSessionIdChange?.(session_id);
           }
         } else if (type === "dashboard.new_session_requested") {
           onDashboardNewSessionRequest?.();
@@ -295,7 +301,7 @@ export function ChatSidebar({
       unmounting = true;
       ws?.close();
     };
-  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
+  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, onSessionIdChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).

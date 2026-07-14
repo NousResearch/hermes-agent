@@ -56,6 +56,139 @@ research gateway start
 That's it — three independent agents, each on its own process, restarting
 automatically on crash and on user login.
 
+## Alternative: one gateway for all profiles (multiplexing)
+
+The model above runs **one process per profile**. That is the default and is
+the right choice for most setups. But on a host with many profiles — or a
+container deployment where one process per profile is operationally heavy — you
+can instead run a **single multiplexing gateway**: the default profile's gateway
+becomes the sole inbound process and serves messages for *every* profile on the
+box.
+
+This is **opt-in** and **off by default**. When it's off, nothing on this page
+changes — every behavior below is inert.
+
+### When to prefer multiplexing
+
+- A container/VPS deployment where N supervisor units, N ports, and N PID files
+  are a burden.
+- Many low-traffic profiles that don't each justify a full process.
+- You want a single thing to start, monitor, and restart.
+
+Stick with one-process-per-profile when you want hard process-level isolation
+between profiles (separate memory footprints, independent crash domains, the
+ability to restart one profile without touching the others).
+
+### How to opt in
+
+Set the flag on the **default profile** (it owns the multiplexer) and restart
+its gateway:
+
+```bash
+hermes config set gateway.multiplex_profiles true
+hermes gateway restart
+```
+
+Equivalently, in the default profile's `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  multiplex_profiles: true
+```
+
+(The flag is also accepted as a top-level `multiplex_profiles: true` for
+convenience.) On the next start the default gateway enumerates every profile,
+brings up each profile's enabled platforms under that profile's own
+credentials, and routes each inbound message to the profile it belongs to. Each
+turn resolves the routed profile's config, skills, memory, SOUL, **and provider
+keys** — credentials are never shared across profiles.
+
+You do **not** run `hermes gateway start` for the secondary profiles — the
+default gateway serves them. See the contract changes below.
+
+### What changes when multiplexing is on
+
+Enabling the flag changes how a few things behave. All of these revert the
+moment the flag is off.
+
+#### 1. Secondary profiles must not start their own gateway
+
+With a multiplexer running, a named-profile `hermes gateway start` / `run` is a
+**hard error**, pointing you back at the multiplexer:
+
+```
+The default gateway is running as a profile multiplexer and already serves
+profile 'coder'. ...
+```
+
+The multiplexer is the single inbound process; a second profile gateway would
+double-bind that profile's platforms. Pass `--force` only if you deliberately
+want a separate process for that profile (not recommended while the multiplexer
+is running). The cross-profile lifecycle wrapper script earlier on this page is
+therefore **not** used in multiplex mode — you only manage the default gateway.
+
+#### 2. HTTP-inbound platforms are reached via a `/p/<profile>/` URL prefix
+
+Webhook (and other HTTP-inbound) traffic for a secondary profile arrives on the
+default listener under a profile prefix, **not** a second port:
+
+```
+# default profile
+POST http://host:8644/webhooks/<route>
+# the "coder" profile, same listener
+POST http://host:8644/p/coder/webhooks/<route>
+```
+
+An unknown or unconfigured profile in the prefix returns `404`. Because the one
+shared listener already serves every profile this way, a **secondary profile
+must not enable a port-binding platform itself** — doing so is a config error
+and the gateway refuses to start, naming the profile and platform:
+
+```
+Profile 'coder' enables the port-binding platform 'webhook', but
+gateway.multiplex_profiles is on. ... Remove platforms.webhook from profile
+'coder's config.yaml (configure it only on the default profile).
+```
+
+Port-binding platforms covered by this rule: `webhook`, `api_server`,
+`msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`. Configure
+any of these **only on the default profile**; every profile is reachable through
+its `/p/<profile>/` prefix.
+
+#### 3. Per-credential platforms still need their own token per profile
+
+Polling/connection platforms (Telegram, Discord, Slack, Matrix, Signal, …) work
+fine multiplexed, but each profile that enables one must supply its **own** bot
+token — the same token cannot be polled by two profiles at once. If two profiles
+configure the same `(platform, token)`, startup fails fast naming both profiles
+(see [Token-conflict safety](#token-conflict-safety) — the rule is unchanged,
+it's just enforced inside the one process now).
+
+#### 4. Session keys are namespaced by profile
+
+Each profile's sessions live under an `agent:<profile>:…` namespace so two
+profiles on the same platform/chat never collide in the shared session store.
+The **default** profile keeps the historical `agent:main:…` namespace
+byte-for-byte, so existing default-profile sessions are unaffected — no
+migration, no orphaned history.
+
+#### 5. One PID/lock and one status surface
+
+There is a single process-level PID and lock (the multiplexer, under the default
+home). `hermes status` reports the multiplexer and the profiles it serves;
+`hermes status -p <name>` slices to one profile. Each profile still writes its
+own `runtime_status.json` under its own home, so existing per-profile readers
+keep working.
+
+#### What does **not** change
+
+Per-profile `.env` credential isolation is preserved and, if anything,
+stricter: a profile's keys are resolved from its own scope and are never unioned
+into a shared environment (this also means subprocesses like MCP servers and
+Kanban workers only ever see their own profile's secrets). Kanban,
+profile-scoped skills/memory/SOUL, and model routing all behave per-profile
+exactly as they do with separate gateways.
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every
@@ -170,8 +303,8 @@ tail -f ~/.hermes/logs/gateway.log ~/.hermes/profiles/*/logs/gateway.log
 The CLI also has a structured log viewer:
 
 ```bash
-hermes logs --tail              # follow default profile
-hermes -p coder logs --tail     # follow one profile
+hermes logs -f                  # follow default profile
+hermes -p coder logs -f         # follow one profile
 hermes logs --help              # filters, levels, JSON output
 ```
 

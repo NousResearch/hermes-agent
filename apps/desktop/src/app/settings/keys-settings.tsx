@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import type { EnvVarInfo } from '@/types/hermes'
 
 import { CredentialKeyCard, credentialPlaceholder, credentialRowLabel } from './credential-key-ui'
@@ -27,6 +28,7 @@ const VIEW_CATEGORIES: Record<KeysView, readonly string[]> = {
 }
 
 export function KeysSettings({ view }: KeysSettingsProps) {
+  const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [openKey, setOpenKey] = useState<null | string>(null)
 
@@ -51,7 +53,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   }, [vars])
 
   if (!vars) {
-    return <LoadingState label="Loading API keys and credentials..." />
+    return <LoadingState label={t.settings.keys.loading} />
   }
 
   const visible = groups.filter(g => g.category === view)
@@ -82,7 +84,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
 
       {visible.length === 0 && (
         <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-          Nothing configured in this category yet.
+          {t.settings.keys.empty}
         </div>
       )}
     </SettingsContent>

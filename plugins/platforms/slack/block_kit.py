@@ -227,7 +227,11 @@ def _list_block(items: List[Tuple[int, bool, str]]) -> Block:
             }
             elements.append(cur)
             cur_key = key
-        assert cur is not None
+        if cur is None:
+            # Defensive: should never happen (first iteration always enters
+            # the ``if key != cur_key`` block above), but guard explicitly
+            # so ``python -O`` doesn't silently drop the check.
+            continue
         cur["elements"].append(
             {"type": "rich_text_section", "elements": _nonempty_elements(_inline_elements(text))}
         )

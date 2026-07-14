@@ -27,18 +27,14 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Protocol, Union, runtime_checkable
+from typing import TYPE_CHECKING, Any, Optional, Protocol, Union, cast, runtime_checkable
 
 
 @runtime_checkable
-class _RestartableRunner(Protocol):
-    """Structural type for the gateway runner's restart capability.
+class _CodeSkewModelSwitchRunner(Protocol):
+    """Runner capability used to defer a switch until a safe reload boundary."""
 
-    Avoids a hard import dependency on ``GatewayRunner`` (which would create a
-    cycle) while letting the skew guard trigger a graceful restart.
-    """
-
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool: ...
+    def defer_code_skew_model_switch(self, intent: PendingModelSwitch) -> bool: ...
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
@@ -59,6 +55,9 @@ from utils import (
 
 logger = logging.getLogger("gateway.run")
 
+if TYPE_CHECKING:
+    from gateway.code_skew import PendingModelSwitch
+
 # Upper bound on the off-loop agent-resource cleanup during a /new or /reset
 # (see _handle_reset_command). A stuck teardown must not block the event loop;
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
@@ -66,22 +65,20 @@ logger = logging.getLogger("gateway.run")
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
 
-def _model_switch_skew_guard(runner: Optional[_RestartableRunner] = None) -> Optional[str]:
-    """Refuse a model switch when the gateway is running stale code.
+def _model_switch_skew_guard(
+    runner: Optional[_CodeSkewModelSwitchRunner] = None,
+    continuation: Optional[PendingModelSwitch] = None,
+) -> Optional[str]:
+    """Refuse stale-process switching but preserve the requested selection.
 
     A long-lived gateway holds its modules in memory from boot. If the checkout
-    changed underneath it (e.g. a manual ``git pull``), switching models can hit
-    a first-time lazy import on a new code path and crash on a stale cached
-    dependency — the cryptic ``cannot import name 'env_float' from 'utils'``.
-
-    When ``runner`` is provided and drift is detected, trigger a graceful
-    restart via ``runner.request_restart()`` so the gateway reloads the new code
-    automatically — the user no longer needs to restart manually from a
-    separate shell (which is hard inside the gateway process itself).
+    changed underneath it, model switching can hit a first-time lazy import on a
+    new code path and crash on a stale cached dependency. The stale process must
+    not switch models. When a runner accepts a typed continuation, it persists
+    that request and reloads only once unrelated active work reaches a safe
+    boundary.
 
     Intentionally scoped to model switching — the known, highest-risk trigger.
-    Any first-time lazy import on a stale process is technically exposed; we
-    don't guard every import site, only this one.
     """
     from gateway.code_skew import detect_code_skew
 
@@ -89,33 +86,36 @@ def _model_switch_skew_guard(runner: Optional[_RestartableRunner] = None) -> Opt
     if not skew:
         return None
     boot_rev, disk_rev = skew
-
-    # Trigger a graceful restart so the gateway reloads the new code
-    # automatically. The user can re-run /model after restart completes.
-    # Mirror the environment-detection logic from _handle_restart_command
-    # so the restart uses the same path (service-managed vs detached) the
-    # /restart command would pick — the defaults (detached=False,
-    # via_service=False) match neither path and can leave the gateway
-    # stopped instead of restarted.
-    if runner is not None:
-        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
-            "XPC_SERVICE_NAME", "0"
-        ) not in ("", "0")
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        restarted = runner.request_restart(
-            detached=not (_under_service or _in_container),
-            via_service=_under_service or _in_container,
+    # A replay retains its original durable record until this handler commits.
+    # If the checkout drifts again before that point, do not enqueue a second
+    # copy: refuse the stale execution and let the outer replay retry the same
+    # intent after the next fresh process starts.
+    if continuation is not None and continuation.replay:
+        return t(
+            "gateway.model.error_prefix",
+            error=(
+                f"This gateway is running code from {boot_rev} but the checkout on "
+                f"disk is now {disk_rev}. The deferred model switch remains queued "
+                "for the next safe reload."
+            ),
         )
-        if restarted:
-            return t(
-                "gateway.model.error_prefix",
-                error=(
-                    f"Gateway is running code from {boot_rev} but the checkout "
-                    f"on disk is now {disk_rev}. Restarting to load the new code "
-                    f"— re-run /model after restart to switch."
-                ),
-            )
-
+    if runner is not None and continuation is not None:
+        try:
+            restarting = runner.defer_code_skew_model_switch(continuation)
+        except Exception:
+            logger.warning("Failed to defer code-skew model switch", exc_info=True)
+        else:
+            if restarting:
+                detail = (
+                    "The requested model switch was safely queued and the gateway is "
+                    "restarting to load the new code. It will be retried after the reload."
+                )
+            else:
+                detail = (
+                    "The requested model switch was safely queued and will be retried after "
+                    "active work completes and the gateway reloads."
+                )
+            return t("gateway.model.error_prefix", error=detail)
     return t(
         "gateway.model.error_prefix",
         error=(
@@ -1563,7 +1563,17 @@ class GatewaySlashCommandsMixin:
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
-                        skew_error = _model_switch_skew_guard(runner=_self)
+                        from gateway.code_skew import PendingModelSwitch
+
+                        skew_error = _model_switch_skew_guard(
+                            runner=cast(_CodeSkewModelSwitchRunner, _self),
+                            continuation=PendingModelSwitch(
+                                source=source.to_dict(),
+                                model_input=model_id,
+                                provider=provider_slug,
+                                persist_global=persist_global,
+                            ),
+                        )
                         if skew_error:
                             return skew_error
                         # Offload the switch off the event loop — switch_model()
@@ -1806,7 +1816,18 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
 
         # Perform the switch
-        skew_error = _model_switch_skew_guard(runner=self)
+        from gateway.code_skew import PendingModelSwitch
+
+        skew_error = _model_switch_skew_guard(
+            runner=cast(_CodeSkewModelSwitchRunner, self),
+            continuation=PendingModelSwitch(
+                source=source.to_dict(),
+                model_input=model_input,
+                provider=explicit_provider,
+                persist_global=persist_global,
+                replay=bool(getattr(event, "_code_skew_model_replay", False)),
+            ),
+        )
         if skew_error:
             return skew_error
         # Offload the switch off the event loop — switch_model() can fall

@@ -4415,6 +4415,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _status_action_gerund(self) -> str:
         return "restarting" if self._restart_requested else "shutting down"
 
+    def _new_turn_drain_message(self) -> str | None:
+        """Return the admission refusal if a shutdown/restart drain is latched."""
+        if not self._draining:
+            return None
+        return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+
+    async def _topic_root_lobby_or_drain(
+        self, source: SessionSource
+    ) -> tuple[bool, str | None]:
+        """Run the final pre-claim await and re-check the normal drain gate.
+
+        The thread worker can yield long enough for an unrelated final agent
+        release to start a code-skew restart.  The returned drain message must
+        be handled before the caller claims a new agent slot.
+        """
+        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
+            if self._should_send_telegram_lobby_reminder(source):
+                return True, self._telegram_topic_root_lobby_message()
+            return True, None
+        return False, self._new_turn_drain_message()
+
     def _queue_during_drain_enabled(self) -> bool:
         # Both "queue" and "steer" modes imply the user doesn't want messages
         # to be lost during restart — queue them for the newly-spawned gateway
@@ -6504,6 +6525,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.debug("Failed to launch systemd planned-restart helper: %s", e)
 
+    def _request_code_skew_restart(self) -> bool:
+        """Restart through the same managed-service path as ``/restart``."""
+        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
+            "XPC_SERVICE_NAME", "0"
+        ) not in ("", "0")
+        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        return self.request_restart(
+            detached=not (_under_service or _in_container),
+            via_service=_under_service or _in_container,
+        )
+
+    def defer_code_skew_model_switch(self, intent: Any) -> bool:
+        """Queue a stale-process model switch and reload only when idle.
+
+        The continuation is persisted before any restart is requested.  A code
+        skew is global, but an immediate global restart must not cut off an
+        unrelated Telegram topic merely because a second topic selected a
+        model.
+        """
+        from gateway.code_skew import enqueue_pending_model_switch
+
+        enqueue_pending_model_switch(intent)
+        self._code_skew_restart_when_idle = True
+        return self._start_deferred_code_skew_restart_if_idle()
+
+    def _start_deferred_code_skew_restart_if_idle(self) -> bool:
+        if not getattr(self, "_code_skew_restart_when_idle", False):
+            return False
+        if self._running_agent_count() or getattr(self, "_restart_requested", False):
+            return False
+        # Latch the normal new-turn gate in the same synchronous turn as the
+        # zero-agent observation.  request_restart() yields before stop() sets
+        # this flag, and admitting a fresh agent in that window would make the
+        # ensuing global restart interrupt unrelated work.
+        self._draining = True
+        self._code_skew_restart_when_idle = False
+        started = self._request_code_skew_restart()
+        if not started:
+            self._draining = False
+            self._code_skew_restart_when_idle = True
+        return started
+
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
@@ -6632,6 +6695,115 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_in_progress = False
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
+
+    async def _replay_pending_code_skew_model_switches(self) -> None:
+        """Serialize durable-model replay across startup and reconnect events."""
+        lock = getattr(self, "_pending_model_switch_replay_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._pending_model_switch_replay_lock = lock
+        async with lock:
+            await self._replay_pending_code_skew_model_switches_once()
+
+    def _pending_model_switch_applied(self, intent, source: SessionSource) -> bool:
+        """Verify the direct `/model` handler committed the requested override.
+
+        A reply can be delivered for both a success and a validation/error path,
+        so adapter task completion is not evidence that a switch occurred. The
+        handler commits this runtime override only after the model resolution
+        and agent/session update succeeded.
+        """
+        session_key = self._session_key_for_source(source)
+        overrides = getattr(self, "_session_model_overrides", {})
+        override = overrides.get(session_key) if isinstance(overrides, dict) else None
+        if not isinstance(override, dict):
+            return False
+        if intent.model_input and override.get("model") != intent.model_input:
+            return False
+        if intent.provider and override.get("provider") != intent.provider:
+            return False
+        return True
+
+    async def _replay_pending_code_skew_model_switches_once(self) -> None:
+        """Replay one durable stale-checkout model request at a time.
+
+        The record remains durable until the direct `/model` handler commits
+        the requested session override. This avoids treating adapter delivery,
+        a queued busy follow-up, or a swallowed handler exception as success.
+        """
+        from gateway.code_skew import ack_pending_model_switch, peek_pending_model_switch
+
+        while (intent := peek_pending_model_switch()) is not None:
+            try:
+                source = SessionSource.from_dict(intent.source)
+                adapter = self._adapter_for_source(source)
+                if adapter is None:
+                    logger.warning(
+                        "Retaining deferred code-skew /model switch: no adapter for %s",
+                        source.platform.value,
+                    )
+                    return
+                source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
+                args: list[str] = []
+                if intent.model_input:
+                    args.append(shlex.quote(intent.model_input))
+                if intent.provider:
+                    args.extend(("--provider", shlex.quote(intent.provider)))
+                args.append("--global" if intent.persist_global else "--session")
+                event = MessageEvent(
+                    text=f"/model {' '.join(args)}",
+                    message_type=MessageType.COMMAND,
+                    source=source,
+                    message_id=source.message_id,
+                    internal=True,
+                )
+                event._code_skew_model_replay = True
+                response = await self._handle_model_command(event)
+                if not self._pending_model_switch_applied(intent, source):
+                    logger.warning(
+                        "Deferred code-skew /model switch %s did not commit; retaining request",
+                        intent.intent_id,
+                    )
+                    if response:
+                        try:
+                            reply_anchor = self._reply_anchor_for_event(event)
+                            await adapter._send_with_retry(
+                                chat_id=source.chat_id,
+                                content=str(response),
+                                reply_to=reply_anchor,
+                                metadata=self._thread_metadata_for_source(source, reply_anchor),
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Failed to deliver deferred code-skew /model error",
+                                exc_info=True,
+                            )
+                    return
+                ack_pending_model_switch(intent.intent_id)
+                logger.info(
+                    "Completed deferred code-skew /model switch %s for %s:%s:%s",
+                    intent.intent_id,
+                    source.platform.value,
+                    source.chat_id,
+                    source.thread_id or "",
+                )
+                if response:
+                    try:
+                        reply_anchor = self._reply_anchor_for_event(event)
+                        await adapter._send_with_retry(
+                            chat_id=source.chat_id,
+                            content=str(response),
+                            reply_to=reply_anchor,
+                            metadata=self._thread_metadata_for_source(source, reply_anchor),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to deliver deferred code-skew /model confirmation",
+                            exc_info=True,
+                        )
+            except Exception:
+                logger.exception("Deferred code-skew /model replay failed; retaining request")
+                return
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
@@ -7412,6 +7584,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # visible for manual recovery on the next user message.
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
+        await self._replay_pending_code_skew_model_switches()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
@@ -8035,6 +8208,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
+                        # A stale-checkout model request whose source adapter
+                        # was unavailable during startup remains durable. Retry
+                        # it now that an adapter reconnect has completed.
+                        try:
+                            task = asyncio.create_task(
+                                self._replay_pending_code_skew_model_switches()
+                            )
+                            self._background_tasks.add(task)
+                            task.add_done_callback(self._background_tasks.discard)
+                        except Exception:
+                            logger.debug(
+                                "deferred code-skew /model replay after %s reconnect failed",
                                 platform.value,
                                 exc_info=True,
                             )
@@ -10089,8 +10277,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
-        if self._draining:
-            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+        if drain_message := self._new_turn_drain_message():
+            return drain_message
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -10322,12 +10510,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
-        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-            # Debounce the lobby reminder so a user who forgets about
-            # topic mode and fires ten prompts doesn't get ten copies.
-            if self._should_send_telegram_lobby_reminder(source):
-                return self._telegram_topic_root_lobby_message()
-            return None
+        topic_root_handled, post_yield_drain_message = await self._topic_root_lobby_or_drain(source)
+        if topic_root_handled:
+            return post_yield_drain_message
 
         # ── External-drain new-turn gate (Phase 2) ────────────────────
         # When NAS has engaged an external drain (.drain_request.json present,
@@ -10349,6 +10534,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "accepting new turns right now. It'll be back in a moment — "
                 "please resend shortly."
             )
+
+        if post_yield_drain_message:
+            return post_yield_drain_message
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -16245,6 +16433,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # between lifecycle transitions.  Preserves gateway_state (see
         # _persist_active_agents).
         self._persist_active_agents()
+        # A code-skew model change is intentionally deferred while another
+        # session is working. The final release is the safe point where a
+        # global reload can be requested without interrupting that work.
+        if not self._running_agents:
+            self._start_deferred_code_skew_restart_if_idle()
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:

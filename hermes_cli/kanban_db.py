@@ -6415,7 +6415,14 @@ def enforce_max_runtime(
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed},
+                event_payload_extra={
+                    "pid": pid,
+                    "elapsed_seconds": int(elapsed),
+                    "limit_seconds": int(row["max_runtime_seconds"]),
+                    "sigkill": killed,
+                },
+                lifecycle_hook="kanban_task_timed_out",
+                lifecycle_run_id=run_id,
             )
     return timed_out
 
@@ -6638,6 +6645,49 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+def _fire_kanban_failure_hook(
+    event: str,
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    outcome: str,
+    error: str,
+    failure_limit: int,
+    run_id: Optional[int],
+    trigger_outcome: Optional[str] = None,
+    event_payload_extra: Optional[dict] = None,
+) -> None:
+    """Fire a dispatcher-observed failure hook from durable task state."""
+    try:
+        task = get_task(conn, task_id)
+        board = get_current_board()
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("could not build kanban failure hook %s: %s", event, exc)
+        return
+    if task is None:
+        return
+    workspace = None
+    if task.workspace_path:
+        workspace = f"{task.workspace_kind}:{task.workspace_path}"
+    fields = {
+        "board": board,
+        "assignee": task.assignee,
+        "run_id": run_id,
+        "outcome": outcome,
+        "error": error[:500],
+        "error_fingerprint": _error_fingerprint(error),
+        "consecutive_failures": task.consecutive_failures,
+        "failure_limit": failure_limit,
+        "workspace": workspace,
+        "status": task.status,
+    }
+    if trigger_outcome is not None:
+        fields["trigger_outcome"] = trigger_outcome
+    if event_payload_extra:
+        fields.update(event_payload_extra)
+    _fire_kanban_lifecycle_hook(event, task_id, **fields)
+
+
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
@@ -6674,8 +6724,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # clean-exit-but-still-running case, which is accounted against its
     # own bounded violation streak instead of the unified failure
     # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    crash_details: list[tuple[str, int, str, bool, str, Optional[int]]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text, run_id)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
@@ -6812,7 +6862,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text, run_id)
                     )
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
@@ -6834,10 +6884,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _ in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for (
+            tid, pid, claimer, protocol_violation, error_text, run_id
+        ) in crash_details:
             if protocol_violation:
                 streak = _protocol_violation_streak(conn, tid)
                 trow = conn.execute(
@@ -6860,6 +6912,21 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     # below-budget violation must not consume the unified
                     # failure budget, just as other failure kinds don't
                     # consume this one.
+                    _fire_kanban_failure_hook(
+                        "kanban_task_crashed",
+                        conn,
+                        tid,
+                        outcome="protocol_violation",
+                        error=error_text,
+                        failure_limit=violation_limit,
+                        run_id=run_id,
+                        event_payload_extra={
+                            "pid": pid,
+                            "claimer": claimer,
+                            "protocol_violations": streak,
+                            "protocol_violation_limit": violation_limit,
+                        },
+                    )
                     continue
                 # Streak reached the bound: trip the breaker. ``force_trip``
                 # skips the threshold resolution inside
@@ -6880,6 +6947,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         "protocol_violations": streak,
                         "protocol_violation_limit": violation_limit,
                     },
+                    lifecycle_hook="kanban_task_crashed",
+                    lifecycle_outcome="protocol_violation",
+                    lifecycle_run_id=run_id,
                 )
                 if tripped:
                     auto_blocked.append(tid)
@@ -6894,6 +6964,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
+                lifecycle_hook="kanban_task_crashed",
+                lifecycle_outcome=(
+                    "protocol_violation" if protocol_violation else "crashed"
+                ),
+                lifecycle_run_id=run_id,
             )
             if tripped:
                 auto_blocked.append(tid)
@@ -6919,6 +6994,9 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    lifecycle_hook: Optional[str] = None,
+    lifecycle_outcome: Optional[str] = None,
+    lifecycle_run_id: Optional[int] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -6968,13 +7046,17 @@ def _record_task_failure(
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries "
+            "SELECT consecutive_failures, max_retries, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
         failures = int(row["consecutive_failures"]) + 1
-        cur_status = row["status"]
+        run_id = (
+            lifecycle_run_id
+            if lifecycle_run_id is not None
+            else row["current_run_id"]
+        )
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -7009,7 +7091,6 @@ def _record_task_failure(
                     "WHERE id = ? AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
                 )
-            run_id = None
             if end_run:
                 # Only the spawn path has an open run to close.
                 run_id = _end_run(
@@ -7069,6 +7150,30 @@ def _record_task_failure(
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+    hook_outcome = lifecycle_outcome or outcome
+    if lifecycle_hook is not None:
+        _fire_kanban_failure_hook(
+            lifecycle_hook,
+            conn,
+            task_id,
+            outcome=hook_outcome,
+            error=error,
+            failure_limit=effective_limit,
+            run_id=run_id,
+            event_payload_extra=event_payload_extra,
+        )
+    if blocked:
+        _fire_kanban_failure_hook(
+            "kanban_task_auto_blocked",
+            conn,
+            task_id,
+            outcome="gave_up",
+            error=error,
+            failure_limit=effective_limit,
+            run_id=run_id,
+            trigger_outcome=hook_outcome,
+            event_payload_extra=event_payload_extra,
+        )
     return blocked
 
 

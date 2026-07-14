@@ -1637,6 +1637,35 @@ class TestAuxiliaryPoolAwareness:
         # resolves.
         assert mock_resolve.call_count == 2
 
+    def test_cache_miss_uses_resolved_model_after_auto_drops_bad_override(self):
+        import agent.auxiliary_client as aux
+
+        fake_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fake_client, "glm-4.5-flash"),
+        ) as mock_resolve:
+            aux.shutdown_cached_clients()
+            try:
+                client, model = aux._get_cached_client(
+                    "auto",
+                    "google/gemini-3-flash-preview",
+                )
+            finally:
+                aux.shutdown_cached_clients()
+
+        assert client is fake_client
+        assert model == "glm-4.5-flash"
+        mock_resolve.assert_called_once()
+        args, kwargs = mock_resolve.call_args
+        assert args == ("auto", "google/gemini-3-flash-preview", False)
+        assert kwargs["explicit_base_url"] is None
+        assert kwargs["explicit_api_key"] is None
+        assert kwargs["api_mode"] is None
+        assert kwargs["is_vision"] is False
+        assert kwargs["task"] is None
+
 
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
 

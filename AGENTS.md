@@ -1289,7 +1289,14 @@ scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+
+For a fresh uv-managed checkout where dev dependencies are not yet installed,
+you can also run pytest directly through uv:
+
+```bash
+uv run --extra dev python -m pytest tests/ -q
 ```
+
 
 ### Subprocess-per-test-file isolation
 

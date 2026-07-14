@@ -332,7 +332,7 @@ export function ChatBar({
     // blank lines (common when selecting from terminals, code blocks, web pages)
     // doesn't dump multiline padding into the composer. Internal newlines are
     // preserved — only the edges are cleaned up.
-    const pastedText = event.clipboardData.getData('text').trim()
+    const pastedText = event.clipboardData.getData('text').trim().replace(/\t/g, ' ')
 
     if (!pastedText) {
       event.preventDefault()

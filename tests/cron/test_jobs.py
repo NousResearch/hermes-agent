@@ -445,6 +445,104 @@ class TestPauseResumeJob:
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
 
+    def test_resume_preserves_future_next_run_at(self, tmp_cron_dir, monkeypatch):
+        """Future next_run_at must survive pause/resume so cadence is not shifted."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        future_next = (now + timedelta(minutes=30)).isoformat()
+        job = {
+            "id": "test-resume-preserve",
+            "name": "test-resume-preserve",
+            "prompt": "Preserve next",
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 1h"},
+            "repeat": {"times": 0, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": now.isoformat(),
+            "paused_reason": "test",
+            "next_run_at": future_next,
+            "last_run_at": (now - timedelta(minutes=30)).isoformat(),
+            "last_status": "ok",
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(hours=2)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+        resumed = resume_job("test-resume-preserve")
+        assert resumed is not None
+        assert resumed["enabled"] is True
+        assert resumed["next_run_at"] == future_next
+
+    def test_resume_stale_next_run_falls_back_to_last_run_anchor(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """Stale next_run_at must recompute from last_run_at, not from now.
+
+        Without the fix, resume always used now+interval and shifted cadence
+        by the full pause duration even when last_run_at is a better anchor.
+        """
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        last_run = now - timedelta(minutes=90)
+        stale_next = (now - timedelta(minutes=30)).isoformat()
+        job = {
+            "id": "test-resume-stale",
+            "name": "test-resume-stale",
+            "prompt": "Stale next",
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 1h"},
+            "repeat": {"times": 0, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": now.isoformat(),
+            "paused_reason": "test",
+            "next_run_at": stale_next,
+            "last_run_at": last_run.isoformat(),
+            "last_status": "ok",
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(hours=3)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+        resumed = resume_job("test-resume-stale")
+        assert resumed is not None
+        expected = (last_run + timedelta(minutes=60)).isoformat()
+        assert resumed["next_run_at"] == expected
+        # Must NOT be now+interval (the old bug).
+        assert resumed["next_run_at"] != (now + timedelta(minutes=60)).isoformat()
+
+    def test_resume_malformed_next_run_falls_back_without_raising(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """Corrupt next_run_at must be treated as absent, not raise from resume."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        last_run = now - timedelta(minutes=20)
+        job = {
+            "id": "test-resume-bad-next",
+            "name": "test-resume-bad-next",
+            "prompt": "Bad next",
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 1h"},
+            "repeat": {"times": 0, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": now.isoformat(),
+            "paused_reason": "test",
+            "next_run_at": "not-a-valid-iso-timestamp",
+            "last_run_at": last_run.isoformat(),
+            "last_status": "ok",
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(hours=1)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+        resumed = resume_job("test-resume-bad-next")
+        assert resumed is not None
+        expected = (last_run + timedelta(minutes=60)).isoformat()
+        assert resumed["next_run_at"] == expected
+
     def test_resume_rejects_past_oneshot(self, tmp_cron_dir, monkeypatch):
         """Resuming a paused one-shot whose time is now in the past must raise
         ValueError — the revived job would silently never fire."""

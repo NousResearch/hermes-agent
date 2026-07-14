@@ -1407,12 +1407,42 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job and compute the next future run from now. Accepts a job ID or name."""
+    """Resume a paused job while preserving its original schedule cadence.
+
+    If the job already has a future ``next_run_at`` (from before it was paused),
+    that value is preserved rather than recomputed from ``now``, which would
+    shift the cadence by the entire pause duration.  If ``next_run_at`` is in
+    the past, absent, or malformed, the next run is computed from
+    ``last_run_at`` so the interval anchor is maintained.
+
+    Malformed stored ``next_run_at`` values are treated as absent (same repair
+    policy as the due-scan path) so resume never raises on corrupt job state.
+
+    Accepts a job ID or name.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return None
 
-    next_run_at = compute_next_run(job["schedule"])
+    now = _hermes_now()
+    existing_next = job.get("next_run_at")
+    next_run_at = None
+
+    # Preserve a future next_run_at so pause/resume doesn't shift cadence.
+    if isinstance(existing_next, str) and existing_next:
+        try:
+            next_dt = _ensure_aware(datetime.fromisoformat(existing_next))
+            if next_dt > now:
+                next_run_at = existing_next
+        except Exception:
+            # Corrupt ISO / non-parseable value — fall through to recompute.
+            next_run_at = None
+
+    if next_run_at is None:
+        next_run_at = compute_next_run(
+            job["schedule"], last_run_at=job.get("last_run_at")
+        )
+
     if next_run_at is None and job["schedule"].get("kind") == "once":
         run_at = job["schedule"].get("run_at", "unknown")
         raise ValueError(

@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from functools import wraps
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -58,6 +59,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent import run_trace as run_trace_mod
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -520,6 +522,49 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
+def _finish_unfinalized_run_trace(agent, result: Any) -> None:
+    """Finish traces for direct-return and exception paths outside the finalizer."""
+
+    trace = getattr(agent, "_current_run_trace", None)
+    if trace is None or trace.ended_at_ms is not None:
+        return
+    payload = result if isinstance(result, dict) else {}
+    status = (
+        "interrupted" if payload.get("interrupted") else
+        "failed" if payload.get("failed") or result is None else
+        "completed" if payload.get("completed") else
+        "partial"
+    )
+    run_trace_mod.finish_trace_for_turn(
+        trace,
+        status=status,
+        exit_reason=payload.get("turn_exit_reason") or "unknown",
+        api_call_count=int(payload.get("api_calls") or 0),
+    )
+
+
+def _trace_direct_returns(func):
+    """Ensure every traced turn is closed even when the loop returns early."""
+
+    @wraps(func)
+    def wrapped(agent, *args, **kwargs):
+        agent._current_run_trace = None
+        result = None
+        try:
+            result = func(agent, *args, **kwargs)
+            return result
+        finally:
+            try:
+                _finish_unfinalized_run_trace(agent, result)
+            except Exception:
+                logger.debug("run_trace direct-return finish failed", exc_info=True)
+            finally:
+                agent._current_run_trace = None
+
+    return wrapped
+
+
+@_trace_direct_returns
 def run_conversation(
     agent,
     user_message: Any,
@@ -618,6 +663,7 @@ def run_conversation(
     # user-facing result available; it must not be confused with error or
     # recovery text produced by unrelated exit paths.
     _pending_verification_response = None
+    _run_trace = None
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
@@ -639,6 +685,13 @@ def run_conversation(
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+
+    _run_trace = run_trace_mod.start_trace_for_turn(
+        agent,
+        turn_id=turn_id,
+        task_id=effective_task_id,
+    )
+    agent._current_run_trace = _run_trace
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -4776,6 +4829,11 @@ def run_conversation(
                     except Exception:
                         pass
 
+                run_trace_mod.record_tool_batch(
+                    _run_trace,
+                    assistant_message.tool_calls,
+                    status="requested",
+                )
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                 if agent._tool_guardrail_halt_decision is not None:
@@ -5444,7 +5502,7 @@ def run_conversation(
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
     from agent.turn_finalizer import finalize_turn
-    return finalize_turn(
+    _result = finalize_turn(
         agent,
         final_response=final_response,
         api_call_count=api_call_count,
@@ -5459,7 +5517,9 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
+        _run_trace=_run_trace,
     )
+    return _result
 
 
 

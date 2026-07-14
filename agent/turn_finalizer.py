@@ -43,6 +43,7 @@ def finalize_turn(
     _should_review_memory,
     _turn_exit_reason,
     _pending_verification_response=None,
+    _run_trace=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -542,5 +543,23 @@ def finalize_turn(
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
+
+    # Run traces belong to the finalization seam so they observe the same
+    # post-loop state returned to callers, including cleanup failures and
+    # max-iteration fallback results. Trace persistence is best-effort and
+    # never stores response text.
+    from agent import run_trace as _run_trace_mod
+    _trace_status = (
+        "interrupted" if result.get("interrupted") else
+        "failed" if result.get("failed") or result.get("cleanup_errors") else
+        "completed" if result.get("completed") else
+        "partial"
+    )
+    _run_trace_mod.finish_trace_for_turn(
+        _run_trace,
+        status=_trace_status,
+        exit_reason=result.get("turn_exit_reason") or _turn_exit_reason,
+        api_call_count=int(result.get("api_calls") or api_call_count or 0),
+    )
 
     return result

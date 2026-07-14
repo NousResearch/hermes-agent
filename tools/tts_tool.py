@@ -1999,7 +1999,8 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         "--device", device,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                            **({"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}))
     if result.returncode != 0:
         stderr = result.stderr.strip()
         # Filter out the "OK:" line from stderr
@@ -2083,6 +2084,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
              "--download-dir", str(download_dir)],
             capture_output=True, text=True, timeout=300,
             stdin=subprocess.DEVNULL,
+            **({"creationflags": windows_hide_flags()} if _sys.platform == "win32" else {}),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(

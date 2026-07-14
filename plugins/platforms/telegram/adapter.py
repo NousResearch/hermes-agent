@@ -457,6 +457,14 @@ class TelegramAdapter(BasePlatformAdapter):
     # edit and the final edit, skipping the plain-text → MarkdownV2 conversion.
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
+    # Retrying a turn-final edit consumes more of the same Telegram flood
+    # budget while the completed answer remains undelivered. Move directly to
+    # the final fallback path instead.
+    FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True
+    # A failed final edit can leave Telegram clients with only a partial or
+    # non-durable preview. Commit empty-tail fallbacks as a fresh final message
+    # instead of trusting the preview as completed delivery.
+    RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True
 
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
@@ -1175,12 +1183,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _looks_like_network_error(error: Exception) -> bool:
-        """Return True for transient network errors that warrant a reconnect attempt."""
+        """Return True for transient transport failures that warrant reconnect."""
         name = error.__class__.__name__.lower()
+        if name in {"badrequest", "invalidtoken", "forbidden", "retryafter"}:
+            return False
         if name in {"networkerror", "timedout", "connectionerror"}:
             return True
         try:
-            from telegram.error import NetworkError, TimedOut
+            from telegram.error import (
+                BadRequest,
+                Forbidden,
+                InvalidToken,
+                NetworkError,
+                RetryAfter,
+                TimedOut,
+            )
+            if isinstance(error, (BadRequest, InvalidToken, Forbidden, RetryAfter)):
+                return False
             if isinstance(error, (NetworkError, TimedOut)):
                 return True
         except ImportError:
@@ -2204,17 +2223,11 @@ class TelegramAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:
-                logger.warning(
-                    "[%s] Polling heartbeat probe failed (%s); triggering reconnect",
-                    self.name, probe_err,
-                )
-                if self._polling_error_task and not self._polling_error_task.done():
-                    continue   # reconnect already in progress
-                loop = asyncio.get_running_loop()
-                self._polling_error_task = loop.create_task(
-                    self._handle_polling_network_error(probe_err)
-                )
-            except Exception:
+                self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+            except Exception as probe_err:
+                if self._looks_like_network_error(probe_err):
+                    self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+                    continue
                 # Non-connectivity errors (e.g. TelegramError 401) are not
                 # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
                 pass
@@ -3192,10 +3205,6 @@ class TelegramAdapter(BasePlatformAdapter):
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
             # fallback-IP chain can't block startup indefinitely.
-            try:
-                from telegram.error import NetworkError, TimedOut
-            except ImportError:
-                NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
             _max_connect = 8
             _init_timeout = _env_float("HERMES_TELEGRAM_INIT_TIMEOUT", 30.0)
             for _attempt in range(_max_connect):
@@ -3230,7 +3239,19 @@ class TelegramAdapter(BasePlatformAdapter):
                             f"({_init_timeout:.0f}s each). Check network connectivity to api.telegram.org "
                             f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT to a lower value."
                         )
-                except (NetworkError, TimedOut, OSError) as init_err:
+                except OSError as init_err:
+                    if _attempt < _max_connect - 1:
+                        wait = min(2 ** _attempt, 15)
+                        logger.warning(
+                            "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
+                            self.name, _attempt + 1, _max_connect, init_err, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
+                except Exception as init_err:
+                    if not self._looks_like_network_error(init_err):
+                        raise
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(
@@ -4054,7 +4075,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, wait,
                 )
                 if wait > 5.0:
-                    return SendResult(success=False, error=f"flood_control:{wait}")
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{wait}",
+                        retry_after=float(wait),
+                    )
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(
@@ -4543,6 +4568,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
@@ -4559,6 +4586,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )
+            if smart_denied:
+                text += "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
@@ -4571,16 +4600,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._approval_counter = itertools.count(1)
             approval_id = next(self._approval_counter)
 
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
-                ],
-                [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
-                ],
-            ])
+            buttons = [
+                InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")
+            ]
+            if not smart_denied:
+                buttons.append(
+                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}")
+                )
+                if allow_permanent:
+                    buttons.append(
+                        InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
+                    )
+            buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
+            keyboard = InlineKeyboardMarkup([buttons])
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),

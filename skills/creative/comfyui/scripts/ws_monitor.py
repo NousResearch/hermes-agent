@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
                 parsed = parse_binary_frame(msg)
                 if parsed is None:
                     continue
-                if parsed["kind"] in ("preview", "preview_with_metadata") and preview_dir:
+                if parsed["kind"] in {"preview", "preview_with_metadata"} and preview_dir:
                     img_bytes = parsed.get("image_bytes", b"")
                     if img_bytes:
                         ext = parsed.get("ext", "png")

@@ -202,6 +202,14 @@ def test_well_formed_schema_unchanged():
     out = sanitize_tool_schemas(tools)
     assert out[0]["function"]["parameters"] == schema
 
+def test_sanitize_invalid_type_string():
+    tools = [{"function": {"name": "t", "parameters": {
+        "type": "object",
+        "properties": {"mode": {"type": "custom", "description": "test"}}
+    }}}]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["properties"]["mode"]["type"] == "object"
+
 
 def test_additional_properties_bool_preserved():
     tools = [_tool("t", {

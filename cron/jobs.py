@@ -1036,6 +1036,33 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def _normalize_progress(progress: Any) -> Optional[Dict[str, Any]]:
+    """Normalize optional per-job cron progress overrides."""
+    if progress is None:
+        return None
+    if isinstance(progress, bool):
+        return {"enabled": progress}
+    if isinstance(progress, str):
+        value = progress.strip()
+        return {"enabled": value} if value else None
+    if not isinstance(progress, dict):
+        raise ValueError("Cron progress override must be a bool, string, or object")
+
+    allowed = {
+        "enabled",
+        "initial_delay_seconds",
+        "interval_seconds",
+        "edit_in_place",
+        "state_path",
+    }
+    normalized = {
+        key: value
+        for key, value in progress.items()
+        if key in allowed and value is not None
+    }
+    return normalized or None
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1054,6 +1081,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    progress: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1098,6 +1126,9 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        progress: Optional per-job progress-heartbeat override. A bool/string
+                controls ``enabled``; an object may override timing, editing,
+                and the displayed state path. None inherits ``cron.progress``.
 
     Returns:
         The created job dict
@@ -1130,6 +1161,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_progress = _normalize_progress(progress)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1225,6 +1257,8 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    if normalized_progress is not None:
+        job["progress"] = normalized_progress
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1314,6 +1348,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "progress" in updates:
+                updates["progress"] = _normalize_progress(updates["progress"])
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

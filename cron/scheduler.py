@@ -14,6 +14,7 @@ import concurrent.futures
 import contextvars
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -1402,6 +1403,67 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _resolve_live_cron_route(
+    job: dict,
+    *,
+    platform: Any,
+    runtime_adapter: Any,
+    chat_id: Any,
+    thread_id: Any,
+    loop: Any,
+) -> tuple[Any, dict, Optional[dict]]:
+    """Build the router target/metadata for one live cron delivery.
+
+    Telegram positive-chat numeric topic IDs are ambiguous: they can be a
+    forum-style ``message_thread_id`` or a channel Direct-Messages topic. Keep
+    that probe and metadata policy in one place so final responses and progress
+    updates cannot route the same cron target into different lanes.
+    """
+    from gateway.config import Platform
+    from gateway.delivery import (
+        DeliveryTarget,
+        _looks_like_int,
+        looks_like_telegram_private_chat_id,
+    )
+
+    is_ambiguous_telegram_topic = (
+        platform == Platform.TELEGRAM
+        and thread_id is not None
+        and looks_like_telegram_private_chat_id(str(chat_id))
+        and _looks_like_int(str(thread_id))
+    )
+    route_via_dm_topic = is_ambiguous_telegram_topic and _is_channel_dm_topic(
+        runtime_adapter,
+        chat_id,
+        loop,
+        str(job.get("id") or "?"),
+    )
+
+    if route_via_dm_topic:
+        route_thread_id = None
+        route_metadata = {
+            "direct_messages_topic_id": str(thread_id),
+            "job_id": job["id"],
+        }
+        media_metadata: Optional[dict] = {
+            "direct_messages_topic_id": str(thread_id),
+        }
+    else:
+        route_thread_id = str(thread_id) if thread_id is not None else None
+        route_metadata = {"job_id": job["id"]}
+        if route_thread_id:
+            route_metadata["thread_id"] = route_thread_id
+        media_metadata = {"thread_id": thread_id} if thread_id else None
+
+    route_target = DeliveryTarget(
+        platform=platform,
+        chat_id=str(chat_id),
+        thread_id=route_thread_id,
+        is_explicit=True,
+    )
+    return route_target, route_metadata, media_metadata
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1635,47 +1697,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # anchorless cron send bypasses the DeliveryRouter's private-chat
             # reply-anchor requirement. Compute the routed metadata ONCE so both
             # the text send (via DeliveryRouter) and the media send agree.
-            from gateway.delivery import (
-                DeliveryRouter,
-                DeliveryTarget,
-                _looks_like_int,
-                looks_like_telegram_private_chat_id,
-            )
+            from gateway.delivery import DeliveryRouter
 
-            is_ambiguous_telegram_topic = (
-                platform == Platform.TELEGRAM
-                and thread_id is not None
-                and looks_like_telegram_private_chat_id(str(chat_id))
-                and _looks_like_int(str(thread_id))
+            route_target, route_metadata, media_metadata = _resolve_live_cron_route(
+                job,
+                platform=platform,
+                runtime_adapter=runtime_adapter,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                loop=loop,
             )
-            route_via_dm_topic = is_ambiguous_telegram_topic and _is_channel_dm_topic(
-                runtime_adapter, chat_id, loop, job["id"],
-            )
-            if route_via_dm_topic:
-                # Genuine Bot API channel Direct-Messages topic (#22773 mode 2):
-                # routed via direct_messages_topic_id, no bare thread_id.
-                route_thread_id = None
-                route_metadata = {
-                    "direct_messages_topic_id": str(thread_id),
-                    "job_id": job["id"],
-                }
-                # Media metadata mirrors the text routing so attachments land in
-                # the same DM topic instead of the General lane (#22773).
-                media_metadata = {"direct_messages_topic_id": str(thread_id)}
-            else:
-                # Forum-style topic (private chat / supergroup) or non-topic
-                # target: route via message_thread_id (#52060).  Put thread_id in
-                # *route_metadata* (not just the DeliveryTarget) deliberately —
-                # the DeliveryRouter's private-chat topic detection
-                # (gateway/delivery.py) demands a reply anchor when thread_id is
-                # absent from metadata; cron deliveries have no inbound reply
-                # anchor, so the metadata key bypasses that check and lets the
-                # adapter route via a plain message_thread_id.
-                route_thread_id = str(thread_id) if thread_id is not None else None
-                route_metadata = {"job_id": job["id"]}
-                if route_thread_id:
-                    route_metadata["thread_id"] = route_thread_id
-                media_metadata = {"thread_id": thread_id} if thread_id else None
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
@@ -1691,13 +1722,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
-                    router = DeliveryRouter(config, adapters)
-                    route_target = DeliveryTarget(
-                        platform=platform,
-                        chat_id=str(chat_id),
-                        thread_id=route_thread_id,
-                        is_explicit=True,
-                    )
+                    router = DeliveryRouter(config, adapters or {})
                     # Pass thread routing via the target (not a bare metadata
                     # "thread_id"): the router only applies its Telegram DM-topic
                     # detection when "thread_id"/"message_thread_id" are absent
@@ -1973,6 +1998,436 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
+_DEFAULT_CRON_PROGRESS_INITIAL_DELAY = 90.0
+_DEFAULT_CRON_PROGRESS_INTERVAL = 120.0
+_CRON_PROGRESS_AUTO_SKILL_MARKERS = frozenset({
+    "github-ci-repair",
+    "github-code-review",
+    "github-operations",
+    "github-pr-workflow",
+    "requesting-code-review",
+    "systematic-debugging",
+    "test-driven-development",
+    "webapp-playwright-testing",
+})
+_CRON_PROGRESS_AUTO_TEXT_MARKERS = frozenset({
+    "cron-ready",
+    "implement",
+    "implementation",
+    "long-running",
+    "code change",
+    "pull request",
+    "github pr",
+    "focused checks",
+    "pytest",
+    "git diff",
+    "git status",
+})
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce common config bool spellings without raising."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disabled"}:
+        return False
+    return default
+
+
+def _positive_float(value: Any, default: float, *, minimum: float = 0.0) -> float:
+    """Parse a finite timing value and fall back safely."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed) or parsed < minimum:
+        return default
+    return parsed
+
+
+def _job_progress_override(job: dict) -> dict:
+    raw = job.get("progress")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _cron_progress_auto_enabled(job: dict) -> bool:
+    """Enable auto progress only for likely-long agent jobs."""
+    if job.get("no_agent"):
+        return False
+    if str(job.get("workdir") or "").strip():
+        return True
+
+    skills = {str(skill).strip().lower() for skill in (job.get("skills") or [])}
+    legacy_skill = str(job.get("skill") or "").strip().lower()
+    if legacy_skill:
+        skills.add(legacy_skill)
+    if skills & _CRON_PROGRESS_AUTO_SKILL_MARKERS:
+        return True
+
+    haystack = "\n".join(
+        str(part or "").lower()
+        for part in (
+            job.get("name"),
+            job.get("prompt"),
+            " ".join(str(skill) for skill in (job.get("skills") or [])),
+        )
+    )
+    return any(marker in haystack for marker in _CRON_PROGRESS_AUTO_TEXT_MARKERS)
+
+
+def _resolve_cron_progress_enabled(value: Any, job: dict) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value if value is not None else "auto").strip().lower() or "auto"
+    if text in {"1", "true", "yes", "y", "on", "enabled", "all", "always"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disabled", "never"}:
+        return False
+    return _cron_progress_auto_enabled(job)
+
+
+def _extract_cron_progress_state_path(job: dict, workdir: Optional[str] = None) -> str:
+    """Find a concise state/plan reference for development-job updates."""
+    override = _job_progress_override(job).get("state_path")
+    if override:
+        return str(override)
+
+    prompt = str(job.get("prompt") or "")
+    match = re.search(
+        r"(?P<path>(?:[\w./~:-]+)?(?:state|progress|handoff)\.json)",
+        prompt,
+    )
+    if match:
+        return match.group("path")
+    match = re.search(
+        r"(?P<path>(?:[\w./~:-]+)?\.hermes/plans/[\w./~:-]+\.md)",
+        prompt,
+    )
+    if match:
+        return match.group("path")
+    return str(workdir or job.get("workdir") or "")
+
+
+def _resolve_cron_progress_config(job: dict, cfg: Any) -> dict:
+    """Resolve ``cron.progress`` plus the per-job override."""
+    job_progress = _job_progress_override(job)
+    cron_cfg = (cfg or {}).get("cron", {}) if isinstance(cfg, dict) else {}
+    raw_cfg = cron_cfg.get("progress", {}) if isinstance(cron_cfg, dict) else {}
+    if isinstance(raw_cfg, bool):
+        progress_cfg: dict = {"enabled": raw_cfg}
+    elif isinstance(raw_cfg, dict):
+        progress_cfg = dict(raw_cfg)
+    else:
+        progress_cfg = {}
+
+    enabled_value = job_progress.get(
+        "enabled",
+        progress_cfg.get("enabled", "auto"),
+    )
+    if isinstance(job.get("progress"), bool):
+        enabled_value = job["progress"]
+
+    return {
+        "enabled": _resolve_cron_progress_enabled(enabled_value, job),
+        "initial_delay_seconds": _positive_float(
+            job_progress.get(
+                "initial_delay_seconds",
+                progress_cfg.get("initial_delay_seconds"),
+            ),
+            _DEFAULT_CRON_PROGRESS_INITIAL_DELAY,
+        ),
+        "interval_seconds": _positive_float(
+            job_progress.get(
+                "interval_seconds",
+                progress_cfg.get("interval_seconds"),
+            ),
+            _DEFAULT_CRON_PROGRESS_INTERVAL,
+            minimum=1.0,
+        ),
+        "edit_in_place": _coerce_bool(
+            job_progress.get(
+                "edit_in_place",
+                progress_cfg.get("edit_in_place"),
+            ),
+            True,
+        ),
+        "state_path": str(job_progress.get("state_path") or ""),
+    }
+
+
+def _format_cron_progress_message(
+    job: dict,
+    activity: dict,
+    *,
+    elapsed_seconds: float,
+    state_path: str = "",
+) -> str:
+    """Render a compact owner-facing progress update."""
+    job_name = str(job.get("name") or job.get("id") or "cron job")
+    elapsed_mins = max(0, int(elapsed_seconds // 60))
+    api_call_count = activity.get("api_call_count", 0)
+    max_iterations = activity.get("max_iterations", 0)
+    action = activity.get("current_tool") or activity.get("last_activity_desc") or "working"
+    idle = activity.get("seconds_since_activity")
+
+    lines = [f"⏳ {job_name}", f"{elapsed_mins} min elapsed"]
+    if max_iterations:
+        lines[1] += f" — iteration {api_call_count}/{max_iterations}"
+    if action:
+        action_text = str(action)
+        if idle is not None:
+            action_text += f" ({float(idle):.0f}s since last activity)"
+        lines.append(f"Activity: {action_text}")
+    if state_path:
+        lines.append(f"State: {state_path}")
+    return "\n".join(lines)
+
+
+def _target_progress_key(target: dict) -> str:
+    return (
+        f"{target.get('platform', '').lower()}:"
+        f"{target.get('chat_id')}:{target.get('thread_id') or ''}"
+    )
+
+
+def _result_success(result: Any) -> bool:
+    if isinstance(result, dict):
+        return result.get("success") is True
+    return _confirm_adapter_delivery(result)
+
+
+def _result_message_id(result: Any) -> Optional[str]:
+    value = result.get("message_id") if isinstance(result, dict) else getattr(result, "message_id", None)
+    return str(value) if value else None
+
+
+def _deliver_cron_progress_update(
+    job: dict,
+    content: str,
+    progress_state: dict,
+    *,
+    adapters=None,
+    loop=None,
+    edit_in_place: bool = True,
+) -> Optional[str]:
+    """Best-effort progress delivery using the final-delivery route contract."""
+    targets = _resolve_delivery_targets(job)
+    if not targets:
+        return None
+
+    try:
+        from gateway.config import Platform, load_gateway_config
+        from tools.send_message_tool import _send_to_platform
+
+        config = load_gateway_config()
+    except Exception as exc:
+        return f"failed to load delivery config for cron progress: {exc}"
+
+    message_ids = progress_state.setdefault("message_ids", {})
+    delivery_errors: list[str] = []
+
+    for target in targets:
+        platform_name = str(target["platform"]).lower()
+        chat_id = target["chat_id"]
+        thread_id = target.get("thread_id")
+        key = _target_progress_key(target)
+
+        try:
+            platform = Platform(platform_name)
+        except (ValueError, KeyError):
+            delivery_errors.append(f"unknown platform '{platform_name}'")
+            continue
+
+        pconfig = config.platforms.get(platform)
+        if not pconfig or not pconfig.enabled:
+            delivery_errors.append(f"platform '{platform_name}' not configured/enabled")
+            continue
+
+        runtime_adapter = (adapters or {}).get(platform)
+        delivered = False
+        live_router_available = (
+            runtime_adapter is not None
+            and loop is not None
+            and getattr(loop, "is_running", lambda: False)()
+        )
+        if live_router_available and runtime_adapter is not None:
+            try:
+                from agent.async_utils import safe_schedule_threadsafe
+                from gateway.delivery import DeliveryRouter
+
+                message_id = message_ids.get(key)
+                if edit_in_place and message_id and hasattr(runtime_adapter, "edit_message"):
+                    edit_future = safe_schedule_threadsafe(
+                        runtime_adapter.edit_message(chat_id, message_id, content),
+                        loop,
+                    )
+                    if edit_future is not None:
+                        try:
+                            delivered = _result_success(edit_future.result(timeout=15))
+                        except TimeoutError:
+                            edit_future.cancel()
+                            logger.debug(
+                                "Job '%s': cron progress edit timed out",
+                                job.get("id", "?"),
+                            )
+
+                if not delivered:
+                    route_target, route_metadata, _ = _resolve_live_cron_route(
+                        job,
+                        platform=platform,
+                        runtime_adapter=runtime_adapter,
+                        chat_id=chat_id,
+                        thread_id=thread_id,
+                        loop=loop,
+                    )
+                    router = DeliveryRouter(config, adapters or {})
+                    send_future = safe_schedule_threadsafe(
+                        router._deliver_to_platform(
+                            route_target,
+                            content,
+                            route_metadata,
+                        ),
+                        loop,
+                    )
+                    if send_future is not None:
+                        try:
+                            send_result = send_future.result(timeout=15)
+                        except TimeoutError:
+                            # Avoid a duplicate fallback when the coroutine is
+                            # already executing on the gateway loop.
+                            delivered = not send_future.cancel()
+                        else:
+                            delivered = _result_success(send_result)
+                            new_message_id = _result_message_id(send_result)
+                            if delivered and new_message_id:
+                                message_ids[key] = new_message_id
+            except Exception as exc:
+                logger.debug(
+                    "Job '%s': live cron progress delivery to %s:%s failed: %s",
+                    job.get("id", "?"),
+                    platform_name,
+                    chat_id,
+                    exc,
+                )
+
+        if delivered:
+            continue
+        if live_router_available:
+            delivery_errors.append(
+                f"live routed progress delivery to {platform_name}:{chat_id} failed"
+            )
+            continue
+
+        # Without a live gateway adapter there is no router probe. Match the
+        # existing final-delivery standalone fallback and preserve thread_id.
+        try:
+            result: Any
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                content,
+                thread_id=thread_id,
+            )
+            try:
+                result = asyncio.run(coro)
+            except RuntimeError:
+                coro.close()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_to_platform(
+                            platform,
+                            pconfig,
+                            chat_id,
+                            content,
+                            thread_id=thread_id,
+                        ),
+                    )
+                    result = future.result(timeout=15)
+            if isinstance(result, dict) and result.get("error"):
+                delivery_errors.append(f"progress delivery error: {result['error']}")
+            else:
+                new_message_id = _result_message_id(result)
+                if new_message_id:
+                    message_ids[key] = new_message_id
+        except Exception as exc:
+            delivery_errors.append(
+                f"progress delivery to {platform_name}:{chat_id} failed: {exc}"
+            )
+
+    return "; ".join(delivery_errors) if delivery_errors else None
+
+
+def _maybe_send_cron_progress(
+    job: dict,
+    agent: Any,
+    progress_cfg: dict,
+    progress_state: dict,
+    *,
+    adapters=None,
+    loop=None,
+    workdir: Optional[str] = None,
+    activity_override: Optional[dict] = None,
+) -> None:
+    """Send one rate-limited progress update without affecting the cron run."""
+    if not progress_cfg.get("enabled"):
+        return
+    now = time.monotonic()
+    started_at = float(progress_state.setdefault("started_at", now))
+    last_sent_at = float(progress_state.get("last_sent_at") or 0.0)
+    elapsed = now - started_at
+    if elapsed < float(progress_cfg["initial_delay_seconds"]):
+        return
+    if last_sent_at and now - last_sent_at < float(progress_cfg["interval_seconds"]):
+        return
+
+    activity = activity_override or {}
+    if not activity and hasattr(agent, "get_activity_summary"):
+        try:
+            activity = agent.get_activity_summary() or {}
+        except Exception:
+            activity = {}
+    state_path = str(progress_cfg.get("state_path") or "") or _extract_cron_progress_state_path(
+        job,
+        workdir,
+    )
+    message = _format_cron_progress_message(
+        job,
+        activity,
+        elapsed_seconds=elapsed,
+        state_path=state_path,
+    )
+    # Throttle failed routes too: progress must never become a retry storm.
+    progress_state["last_sent_at"] = now
+    try:
+        error = _deliver_cron_progress_update(
+            job,
+            message,
+            progress_state,
+            adapters=adapters,
+            loop=loop,
+            edit_in_place=bool(progress_cfg.get("edit_in_place", True)),
+        )
+        if error:
+            logger.debug(
+                "Job '%s': cron progress delivery issue: %s",
+                job.get("id", "?"),
+                error,
+            )
+    except Exception:
+        logger.debug(
+            "Job '%s': cron progress update failed",
+            job.get("id", "?"),
+            exc_info=True,
+        )
+
+
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
@@ -2199,6 +2654,51 @@ def _run_job_script_with_claim_heartbeat(
         # Event.wait() wakes immediately.  Keep completion bounded if the
         # heartbeat is already waiting on another process's jobs-file lock.
         heartbeat_thread.join(timeout=1.0)
+
+
+def _run_job_script_with_progress(
+    job: dict,
+    script_path: str,
+    progress_cfg: dict,
+    progress_state: dict,
+    *,
+    adapters=None,
+    loop=None,
+    workdir: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Run a script while preserving claim and human progress heartbeats."""
+    if not progress_cfg.get("enabled"):
+        return _run_job_script_with_claim_heartbeat(job, script_path)
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    script_context = contextvars.copy_context()
+    future = pool.submit(
+        script_context.run,
+        _run_job_script_with_claim_heartbeat,
+        job,
+        script_path,
+    )
+    try:
+        while True:
+            done, _ = concurrent.futures.wait({future}, timeout=5.0)
+            if done:
+                return future.result()
+            _maybe_send_cron_progress(
+                job,
+                None,
+                progress_cfg,
+                progress_state,
+                adapters=adapters,
+                loop=loop,
+                workdir=workdir,
+                activity_override={
+                    "last_activity_desc": f"running script: {script_path}",
+                    "current_tool": "script",
+                    "seconds_since_activity": 0.0,
+                },
+            )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -2549,7 +3049,11 @@ def _guard_job_credential_exfil(job: dict) -> None:
 
 
 def run_job(
-    job: dict, *, defer_agent_teardown: Optional[list] = None
+    job: dict,
+    *,
+    defer_agent_teardown: Optional[list] = None,
+    adapters=None,
+    loop=None,
 ) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2563,6 +3067,10 @@ def run_job(
     torn-down async client (defense-in-depth alongside the interpreter-shutdown
     guard). When ``None`` (the default) teardown happens inline as before, so
     every existing caller is unchanged.
+
+    ``adapters`` and ``loop`` carry the live gateway delivery context used for
+    in-run progress updates. They remain keyword-only so adding visibility does
+    not change the historical positional call contract.
 
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
@@ -2608,7 +3116,28 @@ def run_job(
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
+            try:
+                _script_progress_source = load_config() or {}
+            except Exception:
+                _script_progress_source = {}
+            _script_progress_cfg = _resolve_cron_progress_config(
+                job,
+                _script_progress_source,
+            )
+            _script_progress_state = {
+                "started_at": time.monotonic(),
+                "last_sent_at": 0.0,
+                "message_ids": {},
+            }
+            ok, output = _run_job_script_with_progress(
+                job,
+                script_path,
+                _script_progress_cfg,
+                _script_progress_state,
+                adapters=adapters,
+                loop=loop,
+                workdir=_job_workdir,
+            )
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2712,7 +3241,6 @@ def run_job(
                 )
         if _session_db_timeout is None:
             try:
-                from hermes_cli.config import load_config
                 _cfg = load_config() or {}
                 _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
                 _configured = _cron_cfg.get("session_db_timeout_seconds")
@@ -2755,7 +3283,27 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path)
+        try:
+            _script_progress_source = load_config() or {}
+        except Exception:
+            _script_progress_source = {}
+        _script_progress_cfg = _resolve_cron_progress_config(
+            job,
+            _script_progress_source,
+        )
+        _script_progress_state = {
+            "started_at": time.monotonic(),
+            "last_sent_at": 0.0,
+            "message_ids": {},
+        }
+        prerun_script = _run_job_script_with_progress(
+            job,
+            script_path,
+            _script_progress_cfg,
+            _script_progress_state,
+            adapters=adapters,
+            loop=loop,
+        )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -3222,6 +3770,12 @@ def run_job(
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        _progress_cfg = _resolve_cron_progress_config(job, _cfg)
+        _progress_state = {
+            "started_at": time.monotonic(),
+            "last_sent_at": 0.0,
+            "message_ids": {},
+        }
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
         # the claim TTL is a dead-owner detector, but without a heartbeat a
@@ -3265,8 +3819,9 @@ def run_job(
         try:
             if _cron_inactivity_limit is None:
                 # Unlimited — no inactivity watchdog, but a one-shot still
-                # needs its run_claim heartbeat, so poll instead of blocking.
-                if _is_oneshot:
+                # needs its run_claim heartbeat and progress-enabled jobs still
+                # need visibility, so poll instead of blocking.
+                if _is_oneshot or _progress_cfg.get("enabled"):
                     result = None
                     while True:
                         done, _ = concurrent.futures.wait(
@@ -3276,6 +3831,15 @@ def run_job(
                             result = _cron_future.result()
                             break
                         _heartbeat_run_claim_if_due()
+                        _maybe_send_cron_progress(
+                            job,
+                            agent,
+                            _progress_cfg,
+                            _progress_state,
+                            adapters=adapters,
+                            loop=loop,
+                            workdir=_job_workdir,
+                        )
                 else:
                     result = _cron_future.result()
             else:
@@ -3288,6 +3852,15 @@ def run_job(
                         result = _cron_future.result()
                         break
                     _heartbeat_run_claim_if_due()
+                    _maybe_send_cron_progress(
+                        job,
+                        agent,
+                        _progress_cfg,
+                        _progress_state,
+                        adapters=adapters,
+                        loop=loop,
+                        workdir=_job_workdir,
+                    )
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
@@ -3573,8 +4146,16 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
         try:
+            _run_job_kwargs: dict[str, Any] = {
+                "defer_agent_teardown": _deferred_agents,
+            }
+            if adapters is not None:
+                _run_job_kwargs["adapters"] = adapters
+            if loop is not None:
+                _run_job_kwargs["loop"] = loop
             success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents
+                job,
+                **_run_job_kwargs,
             )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear

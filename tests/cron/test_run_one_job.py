@@ -205,6 +205,43 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
     assert order == ["run_job", "deliver", "agent.close", "cleanup_stale"], order
 
 
+def test_run_one_job_threads_progress_context_without_dropping_teardown(monkeypatch):
+    """Live adapter context is keyword-only and always accompanies the holder."""
+    adapters = object()
+    loop = object()
+    observed = {}
+
+    def fake_run_job(
+        job,
+        *,
+        defer_agent_teardown=None,
+        adapters=None,
+        loop=None,
+    ):
+        observed.update(
+            holder=defer_agent_teardown,
+            adapters=adapters,
+            loop=loop,
+        )
+        return (True, "out", "final response", None)
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *args, **kwargs: None)
+
+    ok = s.run_one_job(
+        {"id": "j-progress", "name": "t"},
+        adapters=adapters,
+        loop=loop,
+    )
+
+    assert ok is True
+    assert isinstance(observed["holder"], list)
+    assert observed["adapters"] is adapters
+    assert observed["loop"] is loop
+
+
 def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch):
     """Even if _deliver_result raises, the deferred agent is still torn down
     (no fd/client leak — #10200). Teardown lives in a finally around delivery.

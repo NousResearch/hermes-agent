@@ -2728,6 +2728,15 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Human-readable progress updates for long-running cron jobs.
+        # "auto" enables likely-long agent jobs; true enables every run,
+        # including no_agent scripts. Per-job ``progress`` overrides these.
+        "progress": {
+            "enabled": "auto",
+            "initial_delay_seconds": 90,
+            "interval_seconds": 120,
+            "edit_in_place": True,
+        },
         # Timeout (seconds) for SessionDB() init inside cron jobs.
         # SessionDB opens/migrates state.db synchronously and has no timeout
         # of its own against a wedged sqlite3.connect. An unbounded hang here

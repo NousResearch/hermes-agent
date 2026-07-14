@@ -33,6 +33,7 @@ export type DesktopActionId =
   | 'browser'
   | 'handoff'
   | 'hatch'
+  | 'footer'
   | 'help'
   | 'journey'
   | 'new'
@@ -119,6 +120,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/title', description: 'Rename the current session', surface: action('title') },
   { name: '/help', description: 'Show desktop slash commands', aliases: ['/commands'], surface: action('help') },
   {
+    name: '/footer',
+    description: 'Toggle the runtime footer on replies (model · context · cwd) [on|off|status]',
+    surface: action('footer'),
+    args: true
+  },
+  {
     name: '/reasoning',
     description: 'Show or set reasoning effort (none|minimal|low|medium|high|xhigh|show|hide)',
     aliases: ['/effort'],
@@ -200,7 +207,6 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
     '/cron',
     '/details',
     '/exit',
-    '/footer',
     '/gateway',
     '/history',
     '/image',

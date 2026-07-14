@@ -183,6 +183,13 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/verbose')).toContain('terminal interface')
   })
 
+  it('routes /footer to a desktop action with arg options', () => {
+    expect(resolveDesktopCommand('/footer')?.surface).toEqual({ kind: 'action', action: 'footer' })
+    expect(resolveDesktopCommand('/footer')?.args).toBe(true)
+    expect(isDesktopSlashSuggestion('/footer')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/footer')).toBeNull()
+  })
+
   it('routes /reasoning (and /effort) to the reasoning action with arg options', () => {
     expect(resolveDesktopCommand('/reasoning')?.surface).toEqual({ kind: 'action', action: 'reasoning' })
     expect(resolveDesktopCommand('/effort')?.surface).toEqual({ kind: 'action', action: 'reasoning' })

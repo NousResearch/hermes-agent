@@ -329,6 +329,42 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             notifyError(err, copy.setProfileFailed)
           }
         },
+        // /footer toggles the runtime-metadata footer appended to the final
+        // message of each turn (display.runtime_footer.enabled) via the
+        // gateway's config.get/set — same persistence as CLI /footer.
+        footer: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render, sessionId } = resolved
+          const arg = ctx.arg.trim().toLowerCase()
+
+          try {
+            if (arg === 'status') {
+              const current = await requestGateway<{ value?: string }>('config.get', {
+                key: 'footer',
+                session_id: sessionId
+              })
+
+              render(copy.footer.status(current.value === 'on'))
+
+              return
+            }
+
+            const applied = await requestGateway<{ value?: string }>('config.set', {
+              key: 'footer',
+              session_id: sessionId,
+              value: arg
+            })
+
+            render(copy.footer.set(applied.value === 'on'))
+          } catch (err) {
+            render(`${copy.footer.failed}: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
         // /reasoning shows or sets the session's reasoning effort / thinking
         // display via the gateway's session-scoped `config.get/set reasoning`
         // (the same RPC the model-edit submenu uses). Levels update the

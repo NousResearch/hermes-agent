@@ -3904,6 +3904,42 @@ def _sync_session_key_after_compress(
             pass
 
 
+def _turn_runtime_footer(agent, session: dict | None) -> str:
+    """Build the runtime footer line for a completed desktop turn.
+
+    Mirrors gateway/run.py's final-message footer: off unless
+    display.runtime_footer.enabled (or the display.platforms.desktop
+    override) is set. Empty string on any failure — the footer is
+    decoration, never worth breaking a turn over.
+    """
+    try:
+        from gateway.runtime_footer import build_footer_line
+
+        comp = getattr(agent, "context_compressor", None)
+        context_tokens = max(0, getattr(comp, "last_prompt_tokens", 0) or 0)
+        context_length = getattr(comp, "context_length", 0) or None
+        reasoning_config = getattr(agent, "reasoning_config", None)
+        reasoning = None
+        if isinstance(reasoning_config, dict):
+            reasoning = (
+                "none"
+                if reasoning_config.get("enabled") is False
+                else str(reasoning_config.get("effort", "") or "") or None
+            )
+        return build_footer_line(
+            user_config=_load_cfg(),
+            platform_key="desktop",
+            model=getattr(agent, "model", None),
+            provider=getattr(agent, "provider", None),
+            context_tokens=context_tokens,
+            context_length=context_length,
+            cwd=_display_session_cwd(session) if session else "",
+            reasoning=reasoning,
+        )
+    except Exception:
+        return ""
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -10215,6 +10251,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 raw = str(result)
                 status = "complete"
 
+            # Runtime-metadata footer (display.runtime_footer / /footer) — the
+            # desktop parity of the gateway's final-message footer. Appended to
+            # the display text only (history already holds the raw response),
+            # and only on a clean completion.
+            if raw and status == "complete":
+                footer = _turn_runtime_footer(agent, session)
+                if footer:
+                    raw = f"{raw}\n\n{footer}"
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
@@ -11357,6 +11401,26 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5001, str(e))
 
+    if key == "footer":
+        nv = str(value or "").strip().lower()
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        rf = display.get("runtime_footer") if isinstance(display.get("runtime_footer"), dict) else {}
+        current = bool(rf.get("enabled", False))
+        if nv in {"on", "enable", "true", "1"}:
+            enabled = True
+        elif nv in {"off", "disable", "false", "0"}:
+            enabled = False
+        elif nv in {"", "toggle"}:
+            enabled = not current
+        else:
+            return _err(rid, 4002, f"unknown footer value: {value}")
+        rf["enabled"] = enabled
+        display["runtime_footer"] = rf
+        cfg["display"] = display
+        _save_cfg(cfg)
+        return _ok(rid, {"key": key, "value": "on" if enabled else "off"})
+
     if key == "fast":
         raw = str(value or "").strip().lower()
         agent = session.get("agent") if session else None
@@ -12351,6 +12415,14 @@ def _(rid, params: dict) -> dict:
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})
+    if key == "footer":
+        # Resolve through the same merge (global + desktop platform override)
+        # the footer builder uses, so /footer status never disagrees with
+        # what turns actually render (Greptile P2 on #333).
+        from gateway.runtime_footer import resolve_footer_config
+
+        resolved = resolve_footer_config(_load_cfg(), platform_key="desktop")
+        return _ok(rid, {"value": "on" if resolved.get("enabled") else "off"})
     if key == "fast":
         return _ok(
             rid,

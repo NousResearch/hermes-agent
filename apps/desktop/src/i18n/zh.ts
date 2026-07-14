@@ -2578,6 +2578,11 @@ export const zh: Translations = {
     yoloSystem: active => `此会话 YOLO ${active ? '已开启' : '已关闭'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: '无法切换 YOLO',
+    footer: {
+      status: on => `运行时页脚: ${on ? '开' : '关'}。使用 /footer on|off 更改。`,
+      set: on => `运行时页脚已${on ? '开启 — 回复末尾将显示 model · context · cwd' : '关闭'}`,
+      failed: '无法更新页脚设置'
+    },
     reasoning: {
       status: (level, display) => `推理强度: ${level} · 显示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|show|hide> 更改。`,
       effortSet: level => `本会话的推理强度已设为 ${level}`,

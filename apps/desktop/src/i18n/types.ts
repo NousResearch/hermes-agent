@@ -2020,6 +2020,11 @@ export interface Translations {
     yoloSystem: (active: boolean) => string
     yoloTitle: string
     yoloToggleFailed: string
+    footer: {
+      status: (on: boolean) => string
+      set: (on: boolean) => string
+      failed: string
+    }
     reasoning: {
       status: (level: string, display: string) => string
       effortSet: (level: string) => string

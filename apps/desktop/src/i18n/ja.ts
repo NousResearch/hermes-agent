@@ -2388,6 +2388,11 @@ export const ja = defineLocale({
     yoloSystem: active => `このセッションの YOLO ${active ? 'オン' : 'オフ'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'YOLO を切り替えられませんでした',
+    footer: {
+      status: on => `ランタイムフッター: ${on ? 'ON' : 'OFF'}。/footer on|off で変更できます。`,
+      set: on => `ランタイムフッターを${on ? 'ON にしました — 返信の末尾に model · context · cwd が表示されます' : 'OFF にしました'}`,
+      failed: 'フッター設定を更新できませんでした'
+    },
     reasoning: {
       status: (level, display) => `推論エフォート: ${level} · 表示: ${display}。/reasoning <none|minimal|low|medium|high|xhigh|show|hide> で変更できます。`,
       effortSet: level => `このセッションの推論エフォートを ${level} に設定しました`,

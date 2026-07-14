@@ -2296,6 +2296,11 @@ export const zhHant = defineLocale({
     yoloSystem: active => `此工作階段 YOLO ${active ? '已開啟' : '已關閉'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: '無法切換 YOLO',
+    footer: {
+      status: on => `執行時頁尾: ${on ? '開' : '關'}。使用 /footer on|off 變更。`,
+      set: on => `執行時頁尾已${on ? '開啟 — 回覆末尾將顯示 model · context · cwd' : '關閉'}`,
+      failed: '無法更新頁尾設定'
+    },
     reasoning: {
       status: (level, display) => `推理強度: ${level} · 顯示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|show|hide> 變更。`,
       effortSet: level => `本工作階段的推理強度已設為 ${level}`,

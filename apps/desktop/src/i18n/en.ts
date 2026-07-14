@@ -2428,6 +2428,11 @@ export const en: Translations = {
     yoloSystem: active => `YOLO ${active ? 'on' : 'off'} for this session`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'Could not toggle YOLO',
+    footer: {
+      status: on => `Runtime footer: ${on ? 'ON' : 'OFF'}. Use /footer on|off.`,
+      set: on => `Runtime footer ${on ? 'ON — replies now end with model · context · cwd' : 'OFF'}`,
+      failed: 'Could not update footer'
+    },
     reasoning: {
       status: (level, display) => `Reasoning effort: ${level} · display: ${display}. Use /reasoning <none|minimal|low|medium|high|xhigh|show|hide>.`,
       effortSet: level => `Reasoning effort set to ${level} for this session`,

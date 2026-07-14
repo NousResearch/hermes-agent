@@ -1,99 +1,97 @@
 ---
 name: agent-learning-loop
-description: "Use when turning agent traces into reviewed memory/skill proposals and SFT/DPO datasets without mutating global Hermes state."
+description: "Curate agent traces into reviewed learning artifacts."
 version: 1.0.0
 author: lamenting-hawthorn
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [agent-learning, self-improvement, trace-curation, memory, skills, sft, dpo, evaluation]
-    related_skills: [fine-tuning-with-trl, axolotl, subagent-driven-development, requesting-code-review]
+    tags: [agent-learning, trace-curation, memory, skills, sft, dpo, evaluation]
+    related_skills: [fine-tuning-with-trl, axolotl, requesting-code-review]
 ---
 
-# Agent Learning Loop
+# Agent Learning Loop Skill
 
-## Overview
-
-Use this skill to build or operate a review-first learning loop for agents: ingest completed traces, evaluate them, distill candidate memory and skill updates, review those proposals, and export supervised fine-tuning (SFT) or preference (DPO) datasets.
-
-The core rule is separation: the learning loop should be a sidecar/export layer, not an automatic self-mutating runtime. It may read Hermes traces and produce proposals, but it should not silently write into a user's live memory, bundled skills, config, or credentials.
+Build or operate a review-first sidecar that turns completed agent traces into
+evaluations, proposals, and training records. The sidecar may read Hermes
+trajectories, but it must not silently mutate live Hermes state.
 
 ## When to Use
 
 Use this skill when:
 
-- The user wants an agent to "learn from itself" or improve from completed work
-- You need to curate Hermes sessions or other agent traces into training data
-- You want memory/skill candidates but need human review before applying them
-- You are designing a local self-improvement pipeline around SFT, DPO, or evals
-- You need a clean export path that stays separate from an existing Hermes install
+- curating Hermes sessions or other agent traces into training data
+- proposing durable memory or reusable skill updates from completed work
+- designing a local SFT, DPO, or evaluation pipeline
+- adding explicit review between generated proposals and live state
 
-Do not use this skill for:
+Do not use it to import unreviewed output, retain credentials, or treat every
+successful session as training data.
 
-- Directly editing live `~/.hermes/memories` or `~/.hermes/skills` without review
-- Storing API keys, cookies, tokens, or private credentials in training records
-- Treating every successful session as training data; curation is required
-- Replacing Hermes memory or skill tools; this is a sidecar workflow
+## Prerequisites
 
-## Architecture
+- Completed trajectories; Hermes can save ShareGPT-compatible JSONL.
+- A project-local sidecar directory outside live Hermes state.
+- An explicit reviewer for memory, skill, and dataset proposals.
+- Access to `$HERMES_HOME` when locating profile-scoped Hermes state. Never
+  assume the default home directory; custom homes and named profiles keep
+  separate state.
 
-The recommended pipeline is:
+Use native Hermes tools such as `read_file`, `search_files`, `patch`, and
+`terminal` to inspect traces and build the sidecar. If an independent verifier
+is available, reserve it for the final readiness gate unless the user requests
+earlier review.
 
-```text
-agent session / trace
-  -> ingestion adapter
-  -> normalized trace schema
-  -> local store
-  -> evaluation
-  -> distillation
-  -> review queue
-  -> approved exports
-  -> SFT / DPO JSONL
-```
+## How to Run
 
-Keep each boundary explicit:
+This skill specifies an architecture, not a bundled executable. Implement the
+pipeline in the user's sidecar project, then run that project's documented
+commands with `terminal`. Do not copy command names from this document: no
+sidecar scripts are shipped by this skill.
 
-| Stage | Input | Output | Notes |
-|---|---|---|---|
-| Ingest | Hermes/session JSON, JSONL, logs | normalized trace | Preserve source metadata |
-| Evaluate | normalized trace | score, tags, notes | Prefer deterministic checks first |
-| Distill | trace + eval | memory/skill proposals | Proposal only, no mutation |
-| Review | proposals | approved/rejected state | Human or independent verifier gate |
-| Apply/export | approved proposals | markdown/JSONL artifacts | Write to project-local output |
-| Train | JSONL datasets | model artifacts | Run outside Hermes core |
-
-See `references/skillloop-architecture.md` for a more detailed reference design.
-
-## Clean Export Boundary
-
-For a local sidecar project, use a project root such as `./agent-learning/` and keep generated state underneath it:
+Keep generated state under the selected project root, for example:
 
 ```text
 .agent-learning/
   learning.db
+  proposals/
   approved/
-    memory/*.md
-    skill/*.md
 exports/
   sft.jsonl
   dpo.jsonl
 ```
 
-Do not write directly into:
+Importing an approved artifact into `$HERMES_HOME/memories` or
+`$HERMES_HOME/skills` is a separate, explicit operation.
 
-```text
-~/.hermes/memories
-~/.hermes/skills
-~/.hermes/config.yaml
-~/.hermes/.env
-```
+## Quick Reference
 
-If the user later wants to import approved outputs into Hermes, make that a separate explicit step with a final review.
+| Stage | Input | Output | Required boundary |
+|---|---|---|---|
+| Ingest | trajectory JSON/JSONL | normalized trace | preserve provenance |
+| Evaluate | normalized trace | score, tags, notes | deterministic checks first |
+| Distill | trace and evaluation | proposals | no live-state writes |
+| Review | pending proposals | decisions | explicit approval |
+| Export | approved records | Markdown/JSONL | redact and validate |
+| Import/train | approved exports | live artifact/model | separate workflow |
 
-## Normalized Trace Shape
+See `references/skillloop-architecture.md` for the detailed reference design.
 
-Use a small schema that can represent multiple runtimes:
+## Procedure
+
+### 1. Select and isolate inputs
+
+Locate the requested Hermes profile through `$HERMES_HOME`, or accept traces
+exported by the user. Copy or stream the selected completed traces into the
+sidecar boundary; do not edit the originals.
+
+Record source, timestamp, model, completion state, and available tool metadata.
+Add a stable trace ID so every proposal and export can be traced back.
+
+### 2. Normalize traces
+
+Map each runtime into a small internal shape:
 
 ```json
 {
@@ -109,180 +107,102 @@ Use a small schema that can represent multiple runtimes:
 }
 ```
 
-Keep tool calls and tool results if they are needed for evaluation, but redact secrets before writing shared datasets.
+Retain tool calls and results only when evaluation needs them. Redact secrets
+before persistence or export, not after publication.
 
-## Evaluation Signals
+### 3. Evaluate
 
-Start with deterministic signals before adding LLM judges:
+Run deterministic checks before adding an LLM judge.
 
-Positive signals:
+Positive evidence includes a final answer, passing tests, successful tool
+output, user confirmation, and recovery from earlier failures. Negative
+evidence includes incomplete traces, unresolved exceptions, user corrections,
+unsupported success claims, and unsafe credential handling.
 
-- final answer exists
-- task was verified with real commands or tool output
-- tests passed
-- user confirmed success
-- no unresolved tool failures
-
-Negative signals:
-
-- traceback or exception
-- failed command without recovery
-- user correction such as "wrong", "no", "actually", "don't do that"
-- fabricated or unverified output
-- unsafe credential handling
-
-Example evaluation record:
+Store the evidence, not only a score:
 
 ```json
 {
   "trace_id": "abc123",
   "score": 82,
-  "tags": ["has_final_answer", "verified", "success_signal"],
-  "notes": ["Tests passed and user accepted result."]
+  "tags": ["completed", "verified"],
+  "notes": ["Tests passed and the final answer cites the result."]
 }
 ```
 
-## Distilling Memory Proposals
+### 4. Distill proposals
 
-Only propose memory for durable facts that will remain useful across sessions:
+Propose memory only for durable facts such as stable preferences, recurring
+project conventions, or hard-to-rediscover environment constraints. Exclude
+temporary progress, raw logs, credentials, commit IDs, and soon-stale facts.
 
-Good memory candidates:
+Use declarative wording, for example: `User prefers final verification at the
+pre-push gate.` Do not turn a personal preference into a global imperative.
 
-- stable user preferences
-- project conventions
-- environment facts that are hard to rediscover
-- recurring workflow constraints
+Propose a skill only when a trace contains a reusable procedure. Include its
+trigger, sequence, pitfalls, verification, and safety boundaries. Keep every
+proposal pending until review.
 
-Bad memory candidates:
+### 5. Review
 
-- temporary task progress
-- PR numbers, commit SHAs, issue IDs
-- raw logs
-- credentials or tokens
-- facts that will be stale within a week
+Present pending proposals with their source evidence. The reviewer must be able
+to approve, reject, or edit each item. Record the decision and reviewer without
+overwriting the original proposal.
 
-Use declarative wording:
+Approval authorizes export only. It does not authorize an automatic write to
+`$HERMES_HOME`, bundled skills, configuration, or credentials.
 
-```text
-User prefers final verifier agents only at pre-push/readiness gates.
-```
+### 6. Export
 
-Avoid imperative wording:
-
-```text
-Always use verifier agents only at the end.
-```
-
-## Distilling Skill Proposals
-
-Create skill proposals when a trace contains a reusable procedure, especially after an error was solved.
-
-A useful skill proposal includes:
-
-- trigger conditions
-- exact steps or commands
-- pitfalls encountered
-- verification checklist
-- boundaries and safety rules
-
-Keep generated skills as proposals until reviewed.
-
-## Dataset Export
-
-### SFT
-
-Export high-quality instruction-following conversations:
+For SFT, export only curated, high-quality instruction-following records:
 
 ```json
 {"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
 ```
 
-Skip traces with unresolved failures unless they are intentionally used as negative examples elsewhere.
-
-### DPO
-
-Export preference pairs only when there is a clear chosen/rejected contrast:
+For DPO, require a real chosen/rejected contrast:
 
 ```json
 {"prompt": "...", "chosen": "...", "rejected": "..."}
 ```
 
-Examples of valid DPO sources:
+Valid contrasts include an answer rejected by the user and its accepted fix,
+or two responses reviewed against the same rubric. Never invent a rejected
+response. Validate every JSONL line and retain provenance separately.
 
-- user rejected an answer and accepted a corrected one
-- reviewer identified a flawed output and a fixed output exists
-- two candidate agent responses were judged against a rubric
+### 7. Verify before import or training
 
-Do not invent rejected responses.
+Scan approved output for credentials and PII. Review memory and skill content
+manually. If available, use an independent verifier at this final gate.
 
-## Review Gate
+Any later import must target the intended profile's `$HERMES_HOME`, use normal
+Hermes memory or skill mechanisms, and preserve a rollback path.
 
-Before exporting or applying learning artifacts:
+## Pitfalls
 
-1. Run deterministic checks.
-2. Scan for credentials and PII.
-3. Use an independent verifier for final readiness if available.
-4. Review memory and skill proposals manually.
-5. Export only approved artifacts.
+1. **Assuming the default home.** Resolve the selected profile through
+   `$HERMES_HOME`; named profiles and custom homes are isolated.
+2. **Self-mutation by default.** Generate proposals and require explicit
+   review before any live-state change.
+3. **Training on unresolved failures.** Use failed traces only when they are
+   clearly labeled for evaluation or genuine preference pairs.
+4. **Secret leakage.** Tool results can expose tokens, cookies, URLs, paths,
+   or environment values. Redact before storage and again before export.
+5. **Weak provenance.** Preserve enough source metadata to locate and remove
+   a bad record later.
+6. **Overfitting.** Keep user-specific memory separate from general skills and
+   public datasets.
 
-For Hermes coding work, use the user's verifier preference if known: reserve verifier subagents for the final pre-push/export gate unless explicitly requested earlier.
+## Verification
 
-## Example Local Workflow
-
-```bash
-# 1. Export or collect traces into ./traces
-mkdir -p traces exports
-
-# 2. Ingest traces into a sidecar DB or normalized JSONL
-python scripts/ingest_traces.py traces/*.jsonl --out .agent-learning/learning.db
-
-# 3. Evaluate and distill proposals
-python scripts/evaluate_traces.py --db .agent-learning/learning.db
-python scripts/distill_proposals.py --db .agent-learning/learning.db
-
-# 4. Review proposals
-python scripts/review_queue.py list --db .agent-learning/learning.db
-python scripts/review_queue.py approve <proposal-id>
-
-# 5. Export datasets
-python scripts/export_sft.py --db .agent-learning/learning.db --out exports/sft.jsonl
-python scripts/export_dpo.py --db .agent-learning/learning.db --out exports/dpo.jsonl
-```
-
-The script names are placeholders for your sidecar implementation. Keep the workflow shape even if the implementation differs.
-
-## Privacy and Safety Checklist
-
-Before sharing, training, or publishing any dataset:
-
-- [ ] No `.env`, API keys, tokens, cookies, SSH material, or auth JSON included
-- [ ] No private third-party messages included without consent
-- [ ] No sensitive local file paths unless necessary and sanitized
-- [ ] Generated state is ignored by git
-- [ ] Memory proposals are durable and non-stale
-- [ ] Skill proposals are reviewed before import
-- [ ] SFT records come from successful or intentionally curated traces
-- [ ] DPO records have real chosen/rejected pairs
-
-## Common Pitfalls
-
-1. **Making the loop self-mutating too early.** Start with proposals and explicit review. Automatic memory/skill writes should be opt-in and heavily tested.
-
-2. **Training on failures as if they were successes.** Failed traces are useful for evals and DPO only when clearly labeled.
-
-3. **Leaking secrets through traces.** Tool outputs may contain tokens, URLs, cookies, or env values. Redact before persistence or export.
-
-4. **Overfitting to one user's preferences.** Keep user-specific memory separate from general skills and public datasets.
-
-5. **Skipping provenance.** Preserve source, timestamp, model, and evaluation metadata so bad records can be traced and removed later.
-
-6. **Adding a core Hermes dependency for an experimental workflow.** Prefer an optional skill, plugin, or sidecar until the interface stabilizes.
-
-## Verification Checklist
-
-- [ ] Sidecar writes only inside its selected project root
-- [ ] Sample trace can be ingested, evaluated, distilled, reviewed, and exported
-- [ ] Generated outputs are gitignored by default
-- [ ] Tests cover ingestion, evaluation, review/apply, and export
-- [ ] SFT/DPO JSONL validates with a line-by-line JSON parser
-- [ ] Final output is backed by real tool/test results, not synthetic claims
+- [ ] The sidecar writes only inside its selected project root.
+- [ ] Live state is referenced through `$HERMES_HOME`, not a fixed home path.
+- [ ] The pipeline can normalize, evaluate, propose, review, and export a
+      sample trace.
+- [ ] Generated state is ignored by version control.
+- [ ] Tests cover the sidecar implementation's ingestion, evaluation, review,
+      and export behavior.
+- [ ] Every SFT/DPO JSONL line parses independently.
+- [ ] Credential and PII scans pass.
+- [ ] Only approved artifacts proceed to import or training.
+- [ ] Final claims are backed by real command or test output.

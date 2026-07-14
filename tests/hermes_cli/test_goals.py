@@ -371,6 +371,377 @@ class TestGoalManager:
         assert d2["verdict"] == "inactive"
         assert d2["should_continue"] is False
 
+    def test_goal_judge_hook_can_supply_verdict(self, hermes_home):
+        """A valid plugin verdict replaces the built-in judge result."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="plugin-judge-handled")
+        mgr.set("ship it")
+        hook_result = {"verdict": "done", "reason": "external verifier passed"}
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[hook_result]) as hook,
+            patch.object(goals, "judge_goal") as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn("feature shipped")
+
+        hook.assert_called_once()
+        assert hook.call_args.args == ("goal_judge",)
+        assert hook.call_args.kwargs["session_id"] == "plugin-judge-handled"
+        assert hook.call_args.kwargs["goal"] == "ship it"
+        assert hook.call_args.kwargs["last_response"] == "feature shipped"
+        builtin_judge.assert_not_called()
+        assert decision["verdict"] == "done"
+        assert decision["should_continue"] is False
+        assert mgr.state.status == "done"
+        assert mgr.state.turns_used == 1
+
+    def test_goal_judge_hook_real_plugin_registration(self, hermes_home, monkeypatch):
+        """A callback registered through PluginContext reaches GoalManager."""
+        from hermes_cli import goals, plugins
+        from hermes_cli.goals import GoalContract, GoalManager
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        manager = PluginManager()
+        context = PluginContext(PluginManifest(name="external-verifier"), manager)
+        calls = []
+
+        def verify(**kwargs):
+            calls.append(kwargs)
+            kwargs["contract"]["verification"] = "plugin tried to mutate state"
+            return {"verdict": "done", "reason": "registered verifier passed"}
+
+        context.register_hook("goal_judge", verify)
+        monkeypatch.setattr(plugins, "_plugin_manager", manager)
+
+        mgr = GoalManager(session_id="plugin-judge-real-registration")
+        mgr.set("ship it", contract=GoalContract(verification="original check"))
+        with patch.object(goals, "judge_goal") as builtin_judge:
+            decision = mgr.evaluate_after_turn("feature shipped")
+
+        builtin_judge.assert_not_called()
+        assert len(calls) == 1
+        assert calls[0]["session_id"] == "plugin-judge-real-registration"
+        assert calls[0]["goal"] == "ship it"
+        assert calls[0]["contract"]["verification"] == "plugin tried to mutate state"
+        assert decision["verdict"] == "done"
+        state = mgr.state
+        assert state is not None
+        assert state.status == "done"
+        assert state.contract.verification == "original check"
+
+    @pytest.mark.parametrize(
+        "hook_results",
+        [
+            [],
+            [None],
+            [{"verdict": "maybe", "reason": "unclear"}],
+            [{"verdict": "wait", "reason": "bad target", "wait_on_session": ["not", "an", "id"]}],
+        ],
+    )
+    def test_goal_judge_hook_falls_back_to_builtin(self, hermes_home, hook_results):
+        """No usable plugin verdict preserves the existing built-in judge path."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="plugin-judge-fallback")
+        mgr.set("ship it")
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=hook_results),
+            patch.object(
+                goals,
+                "judge_goal",
+                return_value=("continue", "builtin result", False, None),
+            ) as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn("still working")
+
+        builtin_judge.assert_called_once()
+        assert decision["verdict"] == "continue"
+        assert decision["reason"] == "builtin result"
+
+    def test_goal_judge_hook_background_snapshot_preserves_fallback(self, hermes_home):
+        """An observing plugin cannot mutate the built-in judge's process input."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        background_processes = [{"session_id": "build-1", "status": "running"}]
+
+        def observe_then_fall_back(_hook_name, **kwargs):
+            kwargs["background_processes"][0]["status"] = "exited"
+            return [None]
+
+        mgr = GoalManager(session_id="plugin-judge-background-snapshot")
+        mgr.set("ship it")
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=observe_then_fall_back),
+            patch.object(
+                goals,
+                "judge_goal",
+                return_value=("continue", "builtin result", False, None),
+            ) as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn(
+                "still working", background_processes=background_processes
+            )
+
+        builtin_judge.assert_called_once()
+        assert builtin_judge.call_args.kwargs["background_processes"] == [
+            {"session_id": "build-1", "status": "running"}
+        ]
+        assert background_processes[0]["status"] == "running"
+        assert decision["verdict"] == "continue"
+
+    @pytest.mark.parametrize(
+        ("hook_results", "expected"),
+        [
+            (
+                [{"verdict": "wait", "reason": "build", "wait_on_pid": 4242}],
+                ("wait", "build", False, {"pid": 4242}),
+            ),
+            (
+                [{"verdict": "wait", "reason": "backoff", "wait_for_seconds": 30}],
+                ("wait", "backoff", False, {"seconds": 30}),
+            ),
+            (
+                [
+                    {
+                        "verdict": "wait",
+                        "reason": "ambiguous",
+                        "wait_on_pid": 4242,
+                        "wait_for_seconds": 30,
+                    },
+                    {"verdict": "continue", "reason": "second valid result"},
+                ],
+                ("continue", "second valid result", False, None),
+            ),
+            (
+                [
+                    {
+                        "verdict": "wait",
+                        "reason": "unbounded delay",
+                        "wait_for_seconds": 10**10000,
+                    },
+                    {"verdict": "continue", "reason": "bounded fallback"},
+                ],
+                ("continue", "bounded fallback", False, None),
+            ),
+            (
+                [
+                    {
+                        "verdict": "wait",
+                        "reason": "unbounded pid",
+                        "wait_on_pid": 10**10000,
+                    },
+                    {"verdict": "continue", "reason": "bounded fallback"},
+                ],
+                ("continue", "bounded fallback", False, None),
+            ),
+        ],
+    )
+    def test_goal_judge_hook_wait_contract_and_first_valid_result(
+        self, hermes_home, hook_results, expected
+    ):
+        """All wait forms are bounded and invalid results do not block later ones."""
+        from hermes_cli.goals import _plugin_goal_judge
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
+            result = _plugin_goal_judge(session_id="contract-test")
+
+        assert result == expected
+
+    def test_goal_judge_hook_malformed_result_falls_back(self, hermes_home):
+        """A plugin result that raises during parsing cannot break the Goal loop."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        class BadString:
+            def __str__(self):
+                raise RuntimeError("malformed plugin value")
+
+        mgr = GoalManager(session_id="plugin-judge-malformed")
+        mgr.set("ship it")
+
+        with (
+            patch(
+                "hermes_cli.plugins.invoke_hook",
+                return_value=[{"verdict": BadString(), "reason": "bad"}],
+            ),
+            patch.object(
+                goals,
+                "judge_goal",
+                return_value=("continue", "builtin result", False, None),
+            ) as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn("still working")
+
+        builtin_judge.assert_called_once()
+        assert decision["verdict"] == "continue"
+        assert decision["reason"] == "builtin result"
+
+    def test_goal_judge_hook_mapping_error_falls_back(self, hermes_home):
+        """A dict subclass that raises during access cannot break the Goal loop."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        class BadMapping(dict):
+            def get(self, key, default=None):
+                raise RuntimeError("malformed plugin mapping")
+
+        mgr = GoalManager(session_id="plugin-judge-bad-mapping")
+        mgr.set("ship it")
+
+        with (
+            patch(
+                "hermes_cli.plugins.invoke_hook",
+                return_value=[BadMapping(), {"verdict": "done", "reason": "second verifier"}],
+            ),
+            patch.object(goals, "judge_goal") as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn("still working")
+
+        builtin_judge.assert_not_called()
+        assert decision["verdict"] == "done"
+        assert decision["reason"] == "second verifier"
+
+    def test_goal_judge_hook_result_iteration_error_falls_back(self, hermes_home):
+        """A dispatcher iterable that raises cannot break the Goal loop."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        class BadResults:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise RuntimeError("broken dispatcher iterable")
+
+        mgr = GoalManager(session_id="plugin-judge-iteration-error")
+        mgr.set("ship it")
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=BadResults()),
+            patch.object(
+                goals,
+                "judge_goal",
+                return_value=("continue", "builtin result", False, None),
+            ) as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn("still working")
+
+        builtin_judge.assert_called_once()
+        assert decision["verdict"] == "continue"
+        assert decision["reason"] == "builtin result"
+
+    def test_goal_judge_hook_cannot_bypass_turn_budget(self, hermes_home):
+        """Core still owns budget enforcement after accepting a plugin verdict."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="plugin-judge-budget", default_max_turns=1)
+        mgr.set("hard goal")
+
+        with (
+            patch(
+                "hermes_cli.plugins.invoke_hook",
+                return_value=[{"verdict": "continue", "reason": "more work"}],
+            ),
+            patch.object(goals, "judge_goal") as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn("step one")
+
+        builtin_judge.assert_not_called()
+        assert decision["should_continue"] is False
+        assert mgr.state.status == "paused"
+        assert mgr.state.turns_used == 1
+        assert "budget" in (mgr.state.paused_reason or "").lower()
+
+    def test_goal_judge_hook_wait_cannot_bypass_turn_budget(self, hermes_home):
+        """Core enforces the turn budget before accepting a plugin wait."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="plugin-judge-wait-budget", default_max_turns=1)
+        mgr.set("watch CI")
+        hook_result = {
+            "verdict": "wait",
+            "reason": "CI still running",
+            "wait_for_seconds": 30,
+        }
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[hook_result]),
+            patch.object(goals, "judge_goal") as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn("CI has started")
+
+        builtin_judge.assert_not_called()
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is False
+        state = mgr.state
+        assert state is not None
+        assert state.status == "paused"
+        assert state.last_verdict == "continue"
+        assert state.waiting_until == 0.0
+        assert state.turns_used == 1
+        assert "budget" in (state.paused_reason or "").lower()
+
+    def test_builtin_goal_judge_wait_keeps_existing_budget_order(self, hermes_home):
+        """The new plugin bound does not change built-in judge wait behavior."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="builtin-judge-wait-budget", default_max_turns=1)
+        mgr.set("watch CI")
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch.object(
+                goals,
+                "judge_goal",
+                return_value=("wait", "CI still running", False, {"seconds": 30}),
+            ),
+        ):
+            decision = mgr.evaluate_after_turn("CI has started")
+
+        assert decision["verdict"] == "wait"
+        state = mgr.state
+        assert state is not None
+        assert state.status == "active"
+        assert state.waiting_until > 0.0
+        assert state.turns_used == 1
+
+    def test_goal_judge_hook_wait_uses_core_barrier(self, hermes_home):
+        """A plugin wait verdict is persisted through the core wait API."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="plugin-judge-wait")
+        mgr.set("watch CI")
+        hook_result = {
+            "verdict": "wait",
+            "reason": "CI still running",
+            "wait_on_session": "process-session-1",
+        }
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[hook_result]),
+            patch.object(goals, "judge_goal") as builtin_judge,
+        ):
+            decision = mgr.evaluate_after_turn("CI has started")
+
+        builtin_judge.assert_not_called()
+        assert decision["verdict"] == "wait"
+        assert decision["should_continue"] is False
+        state = mgr.state
+        assert state is not None
+        assert state.waiting_on_session == "process-session-1"
+        assert state.waiting_reason == "CI still running"
+        assert state.turns_used == 1
+
     def test_continuation_prompt_shape(self, hermes_home):
         """The continuation prompt must include the goal text verbatim —
         and must be safe to inject as a user-role message (prompt-cache

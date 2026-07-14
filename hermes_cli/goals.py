@@ -33,11 +33,80 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field, asdict
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _plugin_goal_judge(**kwargs: Any) -> Optional[Tuple[str, str, bool, Optional[Dict[str, Any]]]]:
+    """Return the first valid plugin goal verdict, or ``None`` for fallback.
+
+    Plugins may replace only the judge verdict. Goal state transitions, turn
+    budgets, wait barriers, persistence, and continuation prompts stay owned
+    by :class:`GoalManager`.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+
+        results = invoke_hook("goal_judge", **kwargs)
+    except Exception as exc:
+        logger.warning("Goal judge hook dispatch failed: %s", exc)
+        return None
+
+    try:
+        iterator = iter(results)
+    except Exception as exc:
+        logger.warning("Goal judge hook results were not iterable: %s", exc)
+        return None
+
+    while True:
+        try:
+            result = next(iterator)
+        except StopIteration:
+            break
+        except Exception as exc:
+            logger.warning("Goal judge hook result iteration failed: %s", exc)
+            return None
+        try:
+            if not isinstance(result, dict):
+                continue
+            verdict_value = result.get("verdict")
+            reason_value = result.get("reason", "")
+            if not isinstance(verdict_value, str) or not isinstance(reason_value, str):
+                continue
+            verdict = verdict_value.strip().lower()
+            reason = reason_value.strip()
+            if verdict in {"done", "continue"}:
+                return verdict, reason, False, None
+            if verdict != "wait":
+                continue
+
+            targets = []
+            session_id = result.get("wait_on_session")
+            pid = result.get("wait_on_pid")
+            seconds = result.get("wait_for_seconds")
+            if isinstance(session_id, str) and session_id.strip():
+                targets.append({"session_id": session_id.strip()})
+            if (
+                isinstance(pid, int)
+                and not isinstance(pid, bool)
+                and 0 < pid <= MAX_PLUGIN_WAIT_INTEGER
+            ):
+                targets.append({"pid": pid})
+            if (
+                isinstance(seconds, int)
+                and not isinstance(seconds, bool)
+                and 0 < seconds <= MAX_PLUGIN_WAIT_INTEGER
+            ):
+                targets.append({"seconds": seconds})
+            if len(targets) == 1:
+                return "wait", reason, False, targets[0]
+        except Exception as exc:
+            logger.warning("Invalid goal judge hook result skipped: %s", exc)
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -46,6 +115,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
+# Plugin wait directives cross a trust boundary. Keep numeric targets within
+# the portable signed 32-bit range used by process IDs and time APIs so a
+# malformed plugin cannot trigger overflow while the core applies the wait.
+MAX_PLUGIN_WAIT_INTEGER = 2_147_483_647
 # Judge output budget. The freeform judge returns a one-line JSON verdict, but
 # reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning
 # before emitting the visible JSON — and the first /goal turn's prompt is
@@ -1441,13 +1514,31 @@ class GoalManager:
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason, parse_failed, wait_directive = judge_goal(
-            state.goal,
-            last_response,
-            subgoals=state.subgoals or None,
-            background_processes=background_processes,
-            contract=state.contract if state.has_contract() else None,
+        contract = state.contract if state.has_contract() else None
+        contract_snapshot = contract.to_dict() if contract is not None else None
+        plugin_verdict = _plugin_goal_judge(
+            session_id=self.session_id,
+            goal=state.goal,
+            last_response=last_response,
+            user_initiated=user_initiated,
+            background_processes=deepcopy(background_processes),
+            subgoals=list(state.subgoals),
+            contract=contract_snapshot,
         )
+        plugin_handled = plugin_verdict is not None
+        if plugin_handled:
+            verdict, reason, parse_failed, wait_directive = plugin_verdict
+        else:
+            verdict, reason, parse_failed, wait_directive = judge_goal(
+                state.goal,
+                last_response,
+                subgoals=state.subgoals or None,
+                background_processes=background_processes,
+                contract=contract,
+            )
+        if plugin_handled and verdict == "wait" and state.turns_used >= state.max_turns:
+            verdict = "continue"
+            wait_directive = None
         state.last_verdict = verdict
         state.last_reason = reason
 
@@ -1459,12 +1550,8 @@ class GoalManager:
         else:
             state.consecutive_parse_failures = 0
 
-        # WAIT verdict: the judge decided the agent is blocked on async work
-        # and re-poking now would be busy-work. Set the barrier and park —
-        # the turn we just counted stands (the judge call happened), but no
-        # continuation fires. The loop resumes automatically when the pid
-        # exits or the deadline passes (next evaluate_after_turn falls through
-        # the is_waiting() short-circuit once the barrier clears).
+        # Preserve the built-in judge's established wait ordering. Plugin
+        # waits that would exceed the budget were normalized to continue above.
         if verdict == "wait" and wait_directive:
             if wait_directive.get("session_id"):
                 self.wait_on_session(str(wait_directive["session_id"]), reason=reason)

@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from agent.auxiliary_client import call_llm
+from agent.message_content import flatten_message_text
 from agent.transports import get_transport
 
 logger = logging.getLogger(__name__)
@@ -470,13 +471,52 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for msg in messages:
         role = msg.get("role")
         content = msg.get("content")
-        text = content if isinstance(content, str) else ""
+        # Flatten structured content (lists of parts) to visible text. Content
+        # arrives as a list — not a string — in two common cases:
+        #   1. Anthropic prompt-cache decoration: conversation_loop runs
+        #      apply_anthropic_cache_control BEFORE the MoA facade, converting
+        #      string content to [{"type": "text", "text": ..., "cache_control":
+        #      ...}]. A str-only read here flattened the user's ENTIRE prompt to
+        #      "" — Claude references then 400'd ("messages: at least one
+        #      message is required") while tolerant models answered "no user
+        #      request is present".
+        #   2. Multimodal turns (pasted image → text + image_url parts) and
+        #      multimodal tool results (screenshots).
+        # flatten_message_text extracts the text parts and skips image parts,
+        # and returns strings unchanged — so a decorated and an undecorated
+        # transcript produce a byte-identical advisory view (which keeps the
+        # advisory prefix stable across iterations for advisor prompt caching).
+        text = flatten_message_text(content)
 
         if role == "system":
             continue
         if role == "user":
-            if text.strip():
-                last_user_content = text
+            if not text.strip() and isinstance(content, list) and content:
+                # Structured content with no extractable text (e.g. an
+                # image-only turn). Emitting an empty user message would be
+                # dropped/rejected by strict providers (Anthropic 400s on
+                # empty text blocks — the original "closed" preset failure
+                # mode), and silently skipping the turn would break
+                # user/assistant alternation in the advisory view. Substitute
+                # a placeholder so the reference knows a non-text turn
+                # happened. Only structured content qualifies — an empty or
+                # whitespace-only STRING turn carries nothing and is dropped
+                # below instead.
+                text = "[user sent non-text content (e.g. an image attachment)]"
+            if not text.strip():
+                # Genuinely empty user turn (content="" / None). It carries
+                # nothing advisory, and strict providers (Kimi/Moonshot, ZAI,
+                # and others that enforce non-empty user content) reject it
+                # with 400 "message ... with role 'user' must not be empty" —
+                # the same way the assistant branch below drops turns with no
+                # parts. Lenient providers (DeepSeek) accept the empty turn,
+                # which is why a MoA fan-out would fail on one reference and
+                # pass on another for the identical rendered view. The
+                # advisory view is already not strictly alternating (adjacent
+                # assistant turns occur in every tool loop), so dropping a
+                # contentless turn is safe.
+                continue
+            last_user_content = text
             rendered.append({"role": "user", "content": text})
         elif role == "assistant":
             parts: list[str] = []
@@ -517,8 +557,10 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if last_user_content is not None:
             return [{"role": "user", "content": last_user_content}]
         for msg in reversed(messages):
-            if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                return [{"role": "user", "content": msg["content"]}]
+            if msg.get("role") == "user":
+                fallback_text = flatten_message_text(msg.get("content"))
+                if fallback_text.strip():
+                    return [{"role": "user", "content": fallback_text}]
     return rendered
 
 
@@ -671,13 +713,28 @@ def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str
     Appending at the very end keeps the ``[system][task][tool-history]`` prefix
     stable and cache-reusable (only the new block re-prefills), and gives the
     aggregator the references with recency. Merge into the last message only when
-    it is already a trailing string ``user`` turn (plain chat — still at the end).
+    it is already a trailing ``user`` turn (plain chat — still at the end).
+
+    A trailing user turn's content may be a STRING or a LIST of content parts —
+    Anthropic prompt-cache decoration (which runs before the MoA facade)
+    converts string content to ``[{"type": "text", ..., "cache_control": ...}]``,
+    and multimodal turns are lists natively. Both shapes are merged in place:
+    appending a new text part AFTER the cache_control-marked part keeps the
+    cached prefix byte-stable (the marker still terminates it) while the
+    turn-varying guidance rides outside the cached span. Appending a SEPARATE
+    user message here instead would produce two consecutive user turns —
+    strict providers reject that.
     """
     last = agg_messages[-1] if agg_messages else None
-    if last is not None and last.get("role") == "user" and isinstance(last.get("content"), str):
-        last["content"] = last["content"] + "\n\n" + guidance
-    else:
-        agg_messages.append({"role": "user", "content": guidance})
+    if last is not None and last.get("role") == "user":
+        last_content = last.get("content")
+        if isinstance(last_content, str):
+            last["content"] = last_content + "\n\n" + guidance
+            return
+        if isinstance(last_content, list):
+            last["content"] = [*last_content, {"type": "text", "text": "\n\n" + guidance}]
+            return
+    agg_messages.append({"role": "user", "content": guidance})
 
 
 class MoAChatCompletions:

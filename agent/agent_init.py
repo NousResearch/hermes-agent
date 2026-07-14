@@ -443,18 +443,6 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
-    if credential_pool is not None:
-        try:
-            from agent.credential_pool import credential_pool_matches_provider
-
-            if not credential_pool_matches_provider(
-                credential_pool,
-                agent.provider,
-                base_url=agent.base_url,
-            ):
-                credential_pool = None
-        except Exception:
-            credential_pool = None
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -490,6 +478,24 @@ def init_agent(
         agent.api_mode = "bedrock_converse"
     else:
         agent.api_mode = "chat_completions"
+
+    # Credential-pool validation runs AFTER provider auto-detection so
+    # a pool scoped to e.g. "anthropic" is not rejected when the agent
+    # was constructed with provider=None and an anthropic.com URL.
+    # Regression from #63048 which placed this check before the
+    # URL-based auto-detection block above (fixed #63425).
+    if credential_pool is not None:
+        try:
+            from agent.credential_pool import credential_pool_matches_provider
+
+            if not credential_pool_matches_provider(
+                credential_pool,
+                agent.provider,
+                base_url=agent.base_url,
+            ):
+                agent._credential_pool = None
+        except Exception:
+            agent._credential_pool = None
 
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
@@ -1320,6 +1326,14 @@ def init_agent(
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
     agent._parent_session_id = parent_session_id
+    # A close flush and the worker's turn-start flush can overlap. The durable
+    # marker is attached to each in-memory message dict, so its test-and-append
+    # sequence must be serialized per agent rather than relying on SQLite alone.
+    agent._session_persist_lock = threading.RLock()
+    # CLI retains its just-accepted user dict until turn setup can reuse it.
+    # This preserves the message-local durable marker if close persistence wins
+    # the race before the agent's normal early turn flush.
+    agent._pending_cli_user_message = None
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
     # Most agents own their session row and should finalize it on close().

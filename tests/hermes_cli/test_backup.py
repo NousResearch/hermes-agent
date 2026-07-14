@@ -3,6 +3,8 @@
 import json
 import os
 import sqlite3
+import stat
+import sys
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -191,6 +193,18 @@ class TestShouldExclude:
 # ---------------------------------------------------------------------------
 
 class TestBackup:
+    def test_secure_writer_without_fchmod_remains_portable(self, tmp_path, monkeypatch):
+        """Windows lacks os.fchmod; backup creation must still succeed."""
+        from hermes_cli.backup import _secure_zip_writer
+
+        monkeypatch.delattr(os, "fchmod", raising=False)
+        out_zip = tmp_path / "portable.zip"
+        with _secure_zip_writer(out_zip) as zf:
+            zf.writestr("probe.txt", "ok")
+
+        with zipfile.ZipFile(out_zip) as zf:
+            assert zf.read("probe.txt") == b"ok"
+
     def test_creates_zip(self, tmp_path, monkeypatch):
         """Backup creates a valid zip containing expected files."""
         hermes_home = tmp_path / ".hermes"
@@ -224,6 +238,9 @@ class TestBackup:
             assert "logs/agent.log" in names
             # Skins
             assert "skins/cyber.yaml" in names
+
+        if not sys.platform.startswith("win"):
+            assert stat.S_IMODE(out_zip.stat().st_mode) == 0o600
 
     def test_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
         """SQLite staging temp files must be created on the output zip's
@@ -1883,6 +1900,9 @@ class TestPreUpdateBackup:
         assert out.parent == hermes_home / "backups"
         assert out.name.startswith("pre-update-")
         assert out.suffix == ".zip"
+        if not sys.platform.startswith("win"):
+            assert stat.S_IMODE(out.parent.stat().st_mode) == 0o700
+            assert stat.S_IMODE(out.stat().st_mode) == 0o600
 
     def test_backup_contents_match_full_backup(self, hermes_home):
         """Pre-update backup should include the same user data that

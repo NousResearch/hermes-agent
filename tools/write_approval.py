@@ -111,6 +111,17 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _pending_store_modes() -> tuple[int, int]:
+    """Preserve an explicitly group-writable HERMES_HOME sharing contract."""
+    if os.name != "nt":
+        try:
+            if get_hermes_home().stat().st_mode & 0o020:
+                return 0o2770, 0o660
+        except OSError:
+            pass
+    return 0o700, 0o600
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -141,11 +152,27 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     }
     try:
         d = _pending_dir(subsystem)
-        d.mkdir(parents=True, exist_ok=True)
+        dir_mode, file_mode = _pending_store_modes()
+        d.mkdir(parents=True, exist_ok=True, mode=dir_mode)
+        # Pending records can contain prompts, source code, and memory entries.
+        # Keep stock installs owner-only, while preserving an explicit
+        # group-writable HERMES_HOME used by managed CLI/gateway deployments.
+        os.chmod(d.parent, dir_mode)
+        os.chmod(d, dir_mode)
         path = d / f"{pid}.json"
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        data = json.dumps(record, ensure_ascii=False, indent=2)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, file_mode)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            os.chmod(path, file_mode)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
     return record

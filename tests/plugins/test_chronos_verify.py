@@ -152,6 +152,7 @@ def test_empty_token_refused(rsa_keys):
 
 def test_jwks_url_path_resolves_key(rsa_keys, monkeypatch):
     """The JWKS-URL branch resolves the signing key via PyJWKClient."""
+    from plugins.cron_providers.chronos import verify as verify_mod
     from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, pub = rsa_keys
@@ -168,12 +169,64 @@ def test_jwks_url_path_resolves_key(rsa_keys, monkeypatch):
             return FakeKey()
 
     monkeypatch.setattr("jwt.PyJWKClient", FakeJWKClient)
+    # Isolate from the process-wide client cache (other tests may have populated it).
+    monkeypatch.setattr(verify_mod, "_JWK_CLIENTS", {})
     claims = verify_nas_fire_token(
         token=token, expected_audience=AUD,
         jwks_or_key="https://portal.nousresearch.com/.well-known/jwks.json",
         issuer=ISS,
     )
     assert claims is not None and claims["purpose"] == "cron_fire"
+
+
+def test_jwks_client_is_cached_across_calls(rsa_keys, monkeypatch):
+    """Regression (Chronos relay 403/401 + 504 storm): the JWKS client must be
+    constructed ONCE per URL and reused across fires, NOT rebuilt per call.
+
+    A fresh PyJWKClient per fire discards its key cache and forces a synchronous
+    JWKS HTTP GET on every fire; a burst of concurrent fires then fans out into N
+    simultaneous fetches that the portal rate-limits (403 → agent 401) or that
+    block the event loop past the relay's 30s timeout (504). Reusing one cached
+    client keeps the steady state at zero fetches per fire. This test fails
+    against the pre-fix code (construct_count == N) and passes with the cache
+    (construct_count == 1).
+    """
+    from plugins.cron_providers.chronos import verify as verify_mod
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
+
+    priv, pub = rsa_keys
+    url = "https://portal.nousresearch.com/.well-known/jwks.json"
+
+    counters = {"construct": 0, "fetch": 0}
+
+    class FakeKey:
+        key = pub
+
+    class CountingJWKClient:
+        def __init__(self, u):
+            counters["construct"] += 1
+
+        def get_signing_key_from_jwt(self, tok):
+            counters["fetch"] += 1
+            return FakeKey()
+
+    monkeypatch.setattr("jwt.PyJWKClient", CountingJWKClient)
+    # Start from an empty cache so this test's count is deterministic.
+    monkeypatch.setattr(verify_mod, "_JWK_CLIENTS", {})
+
+    for _ in range(5):
+        token = _mint(priv, _base_claims())
+        claims = verify_nas_fire_token(
+            token=token, expected_audience=AUD, jwks_or_key=url, issuer=ISS,
+        )
+        assert claims is not None
+
+    # The client is built once and reused; only the fetch (served from the
+    # client's own cache in production) is per-call.
+    assert counters["construct"] == 1, (
+        f"expected 1 PyJWKClient construction, got {counters['construct']} "
+        "(a fresh client per fire is the bug this guards against)"
+    )
 
 
 def test_get_fire_verifier_returns_nas_verifier():

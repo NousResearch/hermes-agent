@@ -3320,7 +3320,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -6063,6 +6063,32 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "  ✓ Removed deprecated delegation.max_async_children — "
                     "delegation.max_concurrent_children now caps background "
                     "delegations too."
+                )
+
+    # ── Version 33 → 34: remove the baked-in 600s delegation timeout ──
+    # v29 changed the schema default from 600 seconds to disabled, but did not
+    # bump the config version or migrate installs where the old default had
+    # already been materialised. That stale literal continued to override the
+    # new no-timeout default indefinitely and killed active subagents at exactly
+    # ten minutes. Remove that one legacy sentinel once. Other positive caps are
+    # deliberate and remain untouched; a user can set 600 again after v34.
+    if current_ver < 34:
+        config = read_raw_config()
+        raw_deleg = config.get("delegation")
+        if (
+            isinstance(raw_deleg, dict)
+            and raw_deleg.get("child_timeout_seconds") == 600
+        ):
+            raw_deleg.pop("child_timeout_seconds")
+            config["delegation"] = raw_deleg
+            _persist_migration(config)
+            results["config_added"].append(
+                "removed legacy delegation.child_timeout_seconds=600 default"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Removed the legacy 600-second delegation timeout — "
+                    "subagents now use the no-timeout default."
                 )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──

@@ -1784,6 +1784,59 @@ class TestDelegationCapUnificationMigration:
         assert "max_async_children" not in DEFAULT_CONFIG["delegation"]
 
 
+class TestLegacyDelegationTimeoutMigration:
+    """v33 → v34: remove the persisted legacy 600-second default cap."""
+
+    def test_stale_600_second_default_is_removed(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "_config_version: 33\ndelegation:\n  child_timeout_seconds: 600\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            loaded = load_config()
+            from tools.delegate_tool import _get_child_timeout
+
+            effective_timeout = _get_child_timeout()
+
+        assert "child_timeout_seconds" not in raw.get("delegation", {})
+        assert loaded["delegation"]["child_timeout_seconds"] == 0
+        assert effective_timeout is None
+        assert raw["_config_version"] == 34
+
+    @pytest.mark.parametrize("cap", [30, 599, 900, 3600])
+    def test_other_pre_v34_positive_caps_are_preserved(self, tmp_path, cap):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            f"_config_version: 33\ndelegation:\n  child_timeout_seconds: {cap}\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["delegation"]["child_timeout_seconds"] == cap
+        assert raw["_config_version"] == 34
+
+    def test_post_v34_explicit_600_second_cap_is_preserved(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "_config_version: 34\ndelegation:\n  child_timeout_seconds: 600\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["delegation"]["child_timeout_seconds"] == 600
+        assert raw["_config_version"] == 34
+
+
 class TestConfigNormalizationDoesNotOverwriteUserValues:
     """Regression tests for #27354."""
 

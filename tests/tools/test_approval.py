@@ -1,6 +1,7 @@
 """Tests for the dangerous command approval module."""
 
 import ast
+import json
 import os
 import threading
 import time
@@ -2200,6 +2201,145 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestCheckSensitiveFileWriteGuardGateway:
+    """#45563 / #45692 sweeper follow-up: check_sensitive_file_write_guard routes
+    through the shared ``_run_approval_gate`` core. The existing file_tools
+    tests only exercise the CLI-callback path and the no-approval-surface
+    block; these cover the gateway notify round trip the shared core adds —
+    approve, deny, and the no-notify-callback pending fallback — so the
+    consolidation didn't silently drop that surface (the affected route in
+    #45563, wired via ``tui_gateway/server.py``'s ``_enable_gateway_prompts``)."""
+
+    SESSION_KEY = "test-config-write-gateway-session"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_YOLO_MODE", "HERMES_SESSION_KEY",
+                      "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_gateway_notify_approve_allows(self):
+        from tools import approval as mod
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result_holder = {}
+        def _check():
+            result_holder["r"] = mod.check_sensitive_file_write_guard(
+                "write_file", "/home/user/.hermes/config.yaml",
+            )
+        t = threading.Thread(target=_check)
+        t.start()
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+        mod.resolve_gateway_approval(self.SESSION_KEY, "once")
+        t.join(timeout=5)
+
+        assert "r" in result_holder, "approval wait did not return after approve"
+        assert result_holder["r"]["approved"] is True
+        assert len(notified) == 1
+        assert "Hermes config" in notified[0]["description"]
+
+    def test_gateway_notify_deny_blocks(self):
+        from tools import approval as mod
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result_holder = {}
+        def _check():
+            result_holder["r"] = mod.check_sensitive_file_write_guard(
+                "patch", "/home/user/.hermes/config.yaml",
+            )
+        t = threading.Thread(target=_check)
+        t.start()
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        t.join(timeout=5)
+
+        assert "r" in result_holder, "approval wait did not return after deny"
+        r = result_holder["r"]
+        assert r["approved"] is False
+        assert r.get("user_consent") is False
+        assert "NOT consented" in r["message"]
+
+    def test_gateway_no_notify_callback_returns_pending(self):
+        """No notify callback registered (e.g. API server with no attached
+        chat) — the caller must see a pending status, not a silent allow."""
+        from tools import approval as mod
+
+        result = mod.check_sensitive_file_write_guard(
+            "write_file", "/home/user/.hermes/config.yaml",
+        )
+        assert result["approved"] is False
+        assert result.get("status") == "approval_required"
+        assert result["pattern_key"] == "modify Hermes config file"
+
+    def test_gateway_deny_blocks_write_file_tool_end_to_end(self, tmp_path, monkeypatch):
+        """The gateway deny path must actually stop the write — not just
+        return approved=False in isolation (#45563's original hard-block bug
+        was in this exact join between the approval decision and the file
+        tool acting on it)."""
+        from tools import approval as mod
+
+        fake_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._get_file_approval_callback", lambda: None)
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        from tools.file_tools import write_file_tool
+        result_holder = {}
+        def _write():
+            result_holder["r"] = write_file_tool(str(fake_config), "approvals:\n  mode: off\n")
+        t = threading.Thread(target=_write)
+        t.start()
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        t.join(timeout=5)
+
+        assert "r" in result_holder, "write_file_tool did not return after deny"
+        raw = json.loads(result_holder["r"])
+        assert "error" in raw
+        assert "denied" in raw["error"].lower() or "NOT consented" in raw["error"]
+        assert not fake_config.exists(), "config file must not be written on a denied approval"
 
 
 class TestTirithImportErrorFailOpenPolicy:

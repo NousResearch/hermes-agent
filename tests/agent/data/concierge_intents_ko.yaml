@@ -1,551 +1,446 @@
-# Korean intent corpus for the concierge control-plane classifier (Phase 2).
-# Schema: id, text, expected_intent, expected_recommendation, notes
-#
-# Verified against agent.control_plane.classify / agent.concierge_policy.classify_request.
-# Every row's expected_intent / expected_recommendation was confirmed by running
-# the classifier directly.  For NEW_TASK_WORKER rows, classify() is called with
-# concierge_mode_active=True.  All other rows use concierge_mode_active=False
-# (or True when noted) — the recommendation column reflects the effective output.
-#
-# DUPLICATE: classifier does not detect duplicates (no history). Two placeholder
-# rows are included tagged with expected_intent: NEW_TASK_MAIN and a note
-# explaining the surface handles deduplication, not the classifier.
-
-# --------------------------------------------------------------------------
-# STOP  (10 rows)
-# --------------------------------------------------------------------------
 - id: 1
-  text: "그만"
+  text: 그만
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "whole-body Korean stop token"
-
+  notes: whole-body Korean stop token
 - id: 2
-  text: "그만해"
+  text: 그만해
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "whole-body Korean stop token (extended form)"
-
+  notes: whole-body Korean stop token (extended form)
 - id: 3
-  text: "중단"
+  text: 중단
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "whole-body Korean stop token"
-
+  notes: whole-body Korean stop token
 - id: 4
-  text: "취소"
+  text: 취소
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "whole-body Korean stop token (cancel)"
-
+  notes: whole-body Korean stop token (cancel)
 - id: 5
-  text: "됐어"
+  text: 됐어
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "whole-body Korean stop token (dismissive)"
-
+  notes: whole-body Korean stop token (dismissive)
 - id: 6
-  text: "멈춰"
+  text: 멈춰
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "whole-body Korean stop token (halt)"
-
+  notes: whole-body Korean stop token (halt)
 - id: 7
-  text: "잠깐만"
+  text: 잠깐만
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "soft pause folded into STOP-graceful per design review §8.2"
-
+  notes: soft pause folded into STOP-graceful per design review §8.2
 - id: 8
-  text: "잠깐"
+  text: 잠깐
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "short pause folded into STOP-graceful"
-
+  notes: short pause folded into STOP-graceful
 - id: 9
-  text: "기다려"
+  text: 기다려
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "wait command folded into STOP-graceful"
-
+  notes: wait command folded into STOP-graceful
 - id: 10
-  text: "그만둬"
+  text: 그만둬
   expected_intent: STOP
   expected_recommendation: CONTROL
-  notes: "whole-body Korean stop token (quit form)"
-
-# --------------------------------------------------------------------------
-# ACK  (10 rows)
-# --------------------------------------------------------------------------
+  notes: whole-body Korean stop token (quit form)
 - id: 11
-  text: "고마워"
+  text: 고마워
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "whole-body Korean ack token"
-
+  notes: whole-body Korean ack token
 - id: 12
-  text: "고맙습니다"
+  text: 고맙습니다
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "formal whole-body Korean ack"
-
+  notes: formal whole-body Korean ack
 - id: 13
-  text: "감사"
+  text: 감사
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "whole-body Korean ack (short form)"
-
+  notes: whole-body Korean ack (short form)
 - id: 14
-  text: "감사합니다"
+  text: 감사합니다
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "formal whole-body Korean ack"
-
+  notes: formal whole-body Korean ack
 - id: 15
-  text: "수고"
+  text: 수고
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "whole-body Korean ack (good work)"
-
+  notes: whole-body Korean ack (good work)
 - id: 16
-  text: "수고했어"
+  text: 수고했어
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "whole-body Korean ack (you worked hard)"
-
+  notes: whole-body Korean ack (you worked hard)
 - id: 17
-  text: "고마워 ㅎㅎ"
+  text: 고마워 ㅎㅎ
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "ack with Korean smiley suffix — stripped by _strip_trailing_noise"
-
+  notes: ack with Korean smiley suffix — stripped by _strip_trailing_noise
 - id: 18
-  text: "감사합니다!"
+  text: 감사합니다!
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "ack with trailing punctuation — stripped by whole-body match"
-
+  notes: ack with trailing punctuation — stripped by whole-body match
 - id: 19
-  text: "수고했어."
+  text: 수고했어.
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "ack with trailing period — stripped"
-
+  notes: ack with trailing period — stripped
 - id: 20
-  text: "고마워ㅋㅋ"
+  text: 고마워ㅋㅋ
   expected_intent: ACK
   expected_recommendation: CONTROL
-  notes: "ack with Korean laughter suffix ㅋㅋ — stripped"
-
-# --------------------------------------------------------------------------
-# STATUS  (10 rows)
-# --------------------------------------------------------------------------
+  notes: ack with Korean laughter suffix ㅋㅋ — stripped
 - id: 21
-  text: "지금 뭐 해?"
+  text: 지금 뭐 해?
   expected_intent: STATUS
   expected_recommendation: MAIN
-  notes: "status anchor: 뭐 해"
-
+  notes: 'status anchor: 뭐 해'
 - id: 22
-  text: "뭐 했어?"
-  expected_intent: STATUS
+  text: 뭐 했어?
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 뭐 했어"
-
+  notes: 'status anchor: 뭐 했어'
 - id: 23
-  text: "어디까지 갔어?"
-  expected_intent: STATUS
+  text: 어디까지 갔어?
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 어디까지"
-
+  notes: 'status anchor: 어디까지'
 - id: 24
-  text: "진행 상황은?"
-  expected_intent: STATUS
+  text: 진행 상황은?
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 진행"
-
+  notes: 'status anchor: 진행'
 - id: 25
-  text: "상태 알려줘"
-  expected_intent: STATUS
+  text: 상태 알려줘
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 상태"
-
+  notes: 'status anchor: 상태'
 - id: 26
-  text: "뭐해?"
+  text: 뭐해?
   expected_intent: STATUS
   expected_recommendation: MAIN
-  notes: "status anchor: 뭐해 (compact form)"
-
+  notes: 'status anchor: 뭐해 (compact form)'
 - id: 27
-  text: "지금 뭐 하는 중이야?"
-  expected_intent: STATUS
+  text: 지금 뭐 하는 중이야?
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 지금 뭐"
-
+  notes: 'status anchor: 지금 뭐'
 - id: 28
-  text: "어떤 워커 돌고 있어?"
-  expected_intent: STATUS
+  text: 어떤 워커 돌고 있어?
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 어떤 워커"
-
+  notes: 'status anchor: 어떤 워커'
 - id: 29
-  text: "진행 중인 작업 알려줘"
-  expected_intent: STATUS
+  text: 진행 중인 작업 알려줘
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 진행"
-
+  notes: 'status anchor: 진행'
 - id: 30
-  text: "어떤 lane 쓰고 있어?"
-  expected_intent: STATUS
+  text: 어떤 lane 쓰고 있어?
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 어떤 lane"
-
-# --------------------------------------------------------------------------
-# NEW_TASK_MAIN  (10 rows — classify with concierge_mode_active=False)
-# --------------------------------------------------------------------------
+  notes: 'status anchor: 어떤 lane'
 - id: 31
-  text: "이 파일 읽어줘"
+  text: 이 파일 읽어줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "simple foreground request, no worker anchors"
-
+  notes: simple foreground request, no worker anchors
 - id: 32
-  text: "방금 결과 설명해줘"
+  text: 방금 결과 설명해줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "explanation request stays on main"
-
+  notes: explanation request stays on main
 - id: 33
-  text: "이게 뭔지 알려줘"
+  text: 이게 뭔지 알려줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "question stays on main"
-
+  notes: question stays on main
 - id: 34
-  text: "직접 해"
+  text: 직접 해
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "explicit main override (직접 해)"
-
+  notes: explicit main override (직접 해)
 - id: 35
-  text: "직접해"
+  text: 직접해
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "explicit main override (compact form)"
-
+  notes: explicit main override (compact form)
 - id: 36
-  text: "지금 보여줘"
+  text: 지금 보여줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "explicit main override (지금 보여줘)"
-
+  notes: explicit main override (지금 보여줘)
 - id: 37
-  text: "메인에서 해줘"
+  text: 메인에서 해줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "explicit main override (메인에서)"
-
+  notes: explicit main override (메인에서)
 - id: 38
-  text: "바로 해"
+  text: 바로 해
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "explicit main override (바로 해)"
-
+  notes: explicit main override (바로 해)
 - id: 39
-  text: "지금해"
+  text: 지금해
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "explicit main override (지금해 compact)"
-
+  notes: explicit main override (지금해 compact)
 - id: 40
-  text: "여기서 해줘"
+  text: 여기서 해줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "explicit main override (여기서 해)"
-
-# --------------------------------------------------------------------------
-# NEW_TASK_WORKER  (10 rows — classify with concierge_mode_active=True)
-# --------------------------------------------------------------------------
+  notes: explicit main override (여기서 해)
 - id: 41
-  text: "조사해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "research anchor (조사해); concierge_mode_active=True required"
-
+  text: 조사해줘
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
+  notes: 'research anchor (조사해); concierge_mode_active=True required [updated: no
+    keyword worker routing]'
 - id: 42
-  text: "보고서 써줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "artifact anchor (보고서); concierge_mode_active=True"
-
+  text: 보고서 써줘
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
+  notes: 'artifact anchor (보고서); concierge_mode_active=True [updated: no keyword worker
+    routing]'
 - id: 43
-  text: "리포트 작성해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "artifact anchor (리포트 + 작성해줘); concierge_mode_active=True"
-
+  text: 리포트 작성해줘
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
+  notes: 'artifact anchor (리포트 + 작성해줘); concierge_mode_active=True [updated: no keyword
+    worker routing]'
 - id: 44
-  text: "수정해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "code_edit anchor (수정해줘); concierge_mode_active=True"
-
+  text: 수정해줘
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
+  notes: 'code_edit anchor (수정해줘); concierge_mode_active=True [updated: no keyword
+    worker routing]'
 - id: 45
-  text: "구현해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "code_edit anchor (구현해줘); concierge_mode_active=True"
-
+  text: 구현해줘
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
+  notes: 'code_edit anchor (구현해줘); concierge_mode_active=True [updated: no keyword
+    worker routing]'
 - id: 46
-  text: "크롤링해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "research anchor (크롤링); concierge_mode_active=True"
-
+  text: 크롤링해줘
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
+  notes: 'research anchor (크롤링); concierge_mode_active=True [updated: no keyword worker
+    routing]'
 - id: 47
-  text: "백그라운드로 돌려"
+  text: 백그라운드로 돌려
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "explicit worker override (백그라운드); concierge_mode_active=True"
-
+  notes: explicit worker override (백그라운드); concierge_mode_active=True
 - id: 48
-  text: "워커에 맡겨"
+  text: 워커에 맡겨
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "explicit worker override (워커에 맡겨); concierge_mode_active=True"
-
+  notes: explicit worker override (워커에 맡겨); concierge_mode_active=True
 - id: 49
-  text: "초안 잡아줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "artifact anchor (초안); concierge_mode_active=True"
-
+  text: 초안 잡아줘
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
+  notes: 'artifact anchor (초안); concierge_mode_active=True [updated: no keyword worker
+    routing]'
 - id: 50
-  text: "분석해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "research anchor (분석해); concierge_mode_active=True"
-
-# --------------------------------------------------------------------------
-# STEER  (12 rows)
-# --------------------------------------------------------------------------
+  text: 분석해줘
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
+  notes: 'research anchor (분석해); concierge_mode_active=True [updated: no keyword worker
+    routing]'
 - id: 51
-  text: "근데 이거도 봐줘"
+  text: 근데 이거도 봐줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "steer prefix 근데 (direct)"
-
+  notes: steer prefix 근데 (direct)
 - id: 52
-  text: "그리고 저것도 확인해줘"
+  text: 그리고 저것도 확인해줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "steer prefix 그리고 (direct)"
-
+  notes: steer prefix 그리고 (direct)
 - id: 53
-  text: "추가로 이 파일도 봐줘"
+  text: 추가로 이 파일도 봐줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "steer prefix 추가로 (direct)"
-
+  notes: steer prefix 추가로 (direct)
 - id: 54
-  text: "참, 이것도 포함해줘"
+  text: 참, 이것도 포함해줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "steer prefix 참, (direct)"
-
+  notes: steer prefix 참, (direct)
 - id: 55
-  text: "아 그리고 이것도 해줘"
+  text: 아 그리고 이것도 해줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "steer prefix 아 그리고 (direct)"
-
+  notes: steer prefix 아 그리고 (direct)
 - id: 56
-  text: "그만, 근데 이거 봐줘"
+  text: 그만, 근데 이거 봐줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "stop-leading-but-steer: post-comma steer prefix, no worker anchors"
-
+  notes: 'stop-leading-but-steer: post-comma steer prefix, no worker anchors'
 - id: 57
-  text: "고마워, 근데 zanu도 같이 봐줘"
+  text: 고마워, 근데 zanu도 같이 봐줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "ack-leading-but-steer: post-comma 근데, no worker anchors"
-
+  notes: 'ack-leading-but-steer: post-comma 근데, no worker anchors'
 - id: 58
-  text: "됐어, 근데 이 부분도 체크해줘"
+  text: 됐어, 근데 이 부분도 체크해줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "stop-leading-but-steer: post-comma 근데, no worker anchors"
-
+  notes: 'stop-leading-but-steer: post-comma 근데, no worker anchors'
 - id: 59
-  text: "참 이거도 넣어줘"
+  text: 참 이거도 넣어줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "steer prefix 참 (no comma variant)"
-
+  notes: steer prefix 참 (no comma variant)
 - id: 60
-  text: "아, 그리고 결과도 로그에 남겨줘"
+  text: 아, 그리고 결과도 로그에 남겨줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "steer prefix 아, 그리고 (direct)"
-
+  notes: steer prefix 아, 그리고 (direct)
 - id: 61
-  text: "수고, 근데 마지막 파일 경로도 알려줘"
+  text: 수고, 근데 마지막 파일 경로도 알려줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "ack-leading-but-steer: post-comma 근데, no worker anchors"
-
+  notes: 'ack-leading-but-steer: post-comma 근데, no worker anchors'
 - id: 62
-  text: "중단, 근데 그 에러 메시지 다시 보여줘"
+  text: 중단, 근데 그 에러 메시지 다시 보여줘
   expected_intent: STEER
   expected_recommendation: STEER
-  notes: "stop-leading-but-steer: post-comma 근데, no worker anchors"
-
-# --------------------------------------------------------------------------
-# ACK-leading-but-actually-STEER edge cases (10+ rows)
-# These yield STEER or WORKER_LANE depending on whether a worker anchor fires.
-# --------------------------------------------------------------------------
+  notes: 'stop-leading-but-steer: post-comma 근데, no worker anchors'
 - id: 63
-  text: "고마워, 근데 보고서도 작성해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+artifact: classifier yields WORKER_LANE (mode=True); concierge_mode_active=True"
-
+  text: 고마워, 근데 보고서도 작성해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'ack-leading-but-steer+artifact: classifier yields WORKER_LANE (mode=True);
+    concierge_mode_active=True [updated: no keyword worker routing]'
 - id: 64
-  text: "감사합니다, 그리고 조사해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
-
+  text: 감사합니다, 그리고 조사해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 65
-  text: "수고했어, 추가로 리팩터해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True"
-
+  text: 수고했어, 추가로 리팩터해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 66
-  text: "고맙습니다, 근데 이것도 고쳐줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True"
-
+  text: 고맙습니다, 근데 이것도 고쳐줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 67
-  text: "감사, 추가로 분석해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
-
+  text: 감사, 추가로 분석해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 68
-  text: "감사합니다, 추가로 초안 잡아줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True"
-
+  text: 감사합니다, 추가로 초안 잡아줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'ack-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 69
-  text: "수고, 근데 구현해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True"
-
+  text: 수고, 근데 구현해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 70
-  text: "고마워, 그리고 탐색해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
-
+  text: 고마워, 그리고 탐색해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 71
-  text: "고마워, 근데 네가 직접 해줘"
+  text: 고마워, 근데 네가 직접 해줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "ack-leading-but-steer+explicit_main: MAIN wins; concierge_mode_active=False"
-
+  notes: 'ack-leading-but-steer+explicit_main: MAIN wins; concierge_mode_active=False'
 - id: 72
-  text: "고마워, 근데 이건 백그라운드로 해줘"
+  text: 고마워, 근데 이건 백그라운드로 해줘
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+explicit_worker: WORKER_LANE; concierge_mode_active=True"
-
-# --------------------------------------------------------------------------
-# STOP-leading-but-actually-STEER edge cases (5+ rows)
-# --------------------------------------------------------------------------
+  notes: 'ack-leading-but-steer+explicit_worker: WORKER_LANE; concierge_mode_active=True'
 - id: 73
-  text: "중단, 추가로 조사해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
-
+  text: 중단, 추가로 조사해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'stop-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 74
-  text: "취소, 근데 그리고 보고서 써줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True"
-
+  text: 취소, 근데 그리고 보고서 써줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'stop-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 75
-  text: "됐어, 근데 이건 고쳐줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True"
-
+  text: 됐어, 근데 이건 고쳐줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'stop-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 76
-  text: "잠깐, 추가로 리포트 작성해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True"
-
+  text: 잠깐, 추가로 리포트 작성해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'stop-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 77
-  text: "그만, 근데 크롤링도 해줘"
-  expected_intent: NEW_TASK_WORKER
-  expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
-
-# --------------------------------------------------------------------------
-# NOISE  (5 rows)
-# NOTE: The classifier only emits NOISE/CONTROL for empty-after-strip input.
-# Non-empty Hangul text always produces NEW_TASK_MAIN at minimum.
-# These rows use the actual classifier output (ground truth = classifier).
-# The test suite marks these as NOISE-category rows with xfail where noted.
-# --------------------------------------------------------------------------
+  text: 그만, 근데 크롤링도 해줘
+  expected_intent: STEER
+  expected_recommendation: STEER
+  notes: 'stop-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True
+    [updated: no keyword worker routing]'
 - id: 78
-  text: "한글있어야해서넣음"
+  text: 한글있어야해서넣음
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "unclassifiable Korean prose — classifier returns MAIN (default conservative); noise-category intent but classifier ground truth is NEW_TASK_MAIN"
-
+  notes: unclassifiable Korean prose — classifier returns MAIN (default conservative);
+    noise-category intent but classifier ground truth is NEW_TASK_MAIN
 - id: 79
-  text: "ㅎ"
+  text: ㅎ
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "single Hangul jamo — classifier strips to non-empty body, returns MAIN; noise-category but classifier ground truth is NEW_TASK_MAIN"
-
+  notes: single Hangul jamo — classifier strips to non-empty body, returns MAIN; noise-category
+    but classifier ground truth is NEW_TASK_MAIN
 - id: 80
-  text: "ㅋ"
+  text: ㅋ
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "single Hangul jamo laughter — classifier returns MAIN; noise-category row"
-
+  notes: single Hangul jamo laughter — classifier returns MAIN; noise-category row
 - id: 81
-  text: "가"
+  text: 가
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "single Hangul syllable — no matching token, falls to MAIN:default; noise-category row"
-
+  notes: single Hangul syllable — no matching token, falls to MAIN:default; noise-category
+    row
 - id: 82
-  text: "ㄱ"
+  text: ㄱ
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "single Hangul consonant — classifier returns MAIN; noise-category row"
-
-# --------------------------------------------------------------------------
-# DUPLICATE placeholder rows (2 rows, as specified)
-# --------------------------------------------------------------------------
+  notes: single Hangul consonant — classifier returns MAIN; noise-category row
 - id: 83
-  text: "조사해줘"
+  text: 조사해줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "DUPLICATE handled by surface, classifier yields MAIN (concierge_mode_active=False); deduplication is a surface-layer concern, not classifier"
-
+  notes: DUPLICATE handled by surface, classifier yields MAIN (concierge_mode_active=False);
+    deduplication is a surface-layer concern, not classifier
 - id: 84
-  text: "보고서 작성해줘"
+  text: 보고서 작성해줘
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "DUPLICATE handled by surface, classifier yields MAIN (concierge_mode_active=False); deduplication is a surface-layer concern"
+  notes: DUPLICATE handled by surface, classifier yields MAIN (concierge_mode_active=False);
+    deduplication is a surface-layer concern

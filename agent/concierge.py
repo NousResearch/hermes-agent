@@ -244,11 +244,10 @@ def handle_concierge(
     decision = classify(text, concierge_mode_active=True)
     intent = decision.intent
 
-    # Imperative "go do this" must never be swallowed as status.
-    # (Classifier also tightened; this is a second belt for false positives.)
-    _action_imperative = any(
-        x in text for x in ("진행해", "진행 해", "해줘", "해 줘", "해주세요", "진행시켜")
-    )
+    # Contract: no Ctrl+F interception of free text.
+    # Only whole-body STOP / whole-body STATUS are consumed locally.
+    # Everything else (including "진행해", long instructions, GitHub URLs)
+    # falls through to the main model to *understand* then act.
 
     if intent is Intent.STOP:
         reclaimed = []
@@ -269,80 +268,11 @@ def handle_concierge(
         )
 
     if intent is Intent.STATUS:
-        if _action_imperative:
-            return None  # fall through to main agent
-        # Second belt: never answer STATUS for long/meta messages.
-        if len(text.strip()) > 48:
-            return None
         try:
             msg = _format_kanban_status(board=board)
         except Exception as exc:
             msg = f"Status unavailable: {exc}"
         return ConciergeResult(action="status", message=msg, intent=intent.value)
-
-    if intent is Intent.STEER or (
-        main_in_flight
-        and intent is Intent.NEW_TASK_MAIN
-        and len(text.strip()) < 200
-        and not decision.should_delegate
-    ):
-        if main_in_flight and steer_callback is not None and intent is Intent.STEER:
-            try:
-                ok = steer_callback(text)
-                if ok:
-                    return ConciergeResult(
-                        action="steered",
-                        message="Steered into the active main run.",
-                        intent=Intent.STEER.value,
-                    )
-            except Exception:
-                pass
-
-        tid = active_task_id or _find_active_task_id(board=board, session_id=session_key)
-        if tid:
-            try:
-                _append_kanban_comment(tid, text, board=board, author=session_key or "user")
-                return ConciergeResult(
-                    action="append",
-                    message=f"Appended follow-up to active task `{tid}`.",
-                    task_id=tid,
-                    intent=intent.value,
-                )
-            except Exception as exc:
-                return ConciergeResult(
-                    action="append",
-                    message=f"Could not append to task: {exc}",
-                    task_id=tid,
-                    intent=intent.value,
-                )
-        if intent is not Intent.STEER:
-            return None
-
-    if intent is Intent.NEW_TASK_WORKER or decision.should_delegate:
-        title = text.strip().splitlines()[0][:120]
-        try:
-            task_id = _create_kanban_task(
-                title=title,
-                body=text.strip(),
-                board=board,
-                assignee=assignee,
-                session_id=session_key,
-            )
-        except Exception as exc:
-            return ConciergeResult(
-                action="new_task",
-                message=f"Failed to create Kanban task: {exc}",
-                intent=intent.value,
-            )
-        return ConciergeResult(
-            action="new_task",
-            message=(
-                f"Queued as Kanban task `{task_id}`.\n"
-                f"Dispatcher will pick it up; ask “지금 뭐 하고 있어?” for status."
-            ),
-            task_id=task_id,
-            intent=intent.value,
-        )
 
     if intent in {Intent.ACK, Intent.NOISE, Intent.DUPLICATE}:
         return ConciergeResult(
@@ -351,6 +281,7 @@ def handle_concierge(
             intent=intent.value,
         )
 
+    # MAIN / STEER / NEW_TASK_* → main agent understands and proceeds.
     return None
 
 

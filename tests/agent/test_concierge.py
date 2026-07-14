@@ -1,4 +1,4 @@
-"""Unit tests for Concierge mode → Kanban mapping."""
+"""Unit tests for Concierge mode — whole-body control only, no Ctrl+F."""
 
 from __future__ import annotations
 
@@ -37,8 +37,7 @@ def test_stop_consumed_when_enabled():
     assert "not queued" in r.message.lower() or "Stopped" in r.message
 
 
-
-def test_status_no_model_when_enabled():
+def test_status_whole_body_only():
     from agent.concierge import handle_concierge
 
     session = {"concierge_live_enabled": True}
@@ -46,28 +45,17 @@ def test_status_no_model_when_enabled():
     assert r is not None
     assert r.action == "status"
     assert "Kanban" in r.message or "No active" in r.message
-    assert "concierge" in r.message.lower() or "Kanban" in r.message
 
 
-def test_worker_creates_kanban_task():
+def test_keyword_worker_not_auto_queued():
+    """Substring anchors must not create Kanban tasks — main model handles it."""
     from agent.concierge import handle_concierge
-    from hermes_cli import kanban_db
 
     session = {"concierge_live_enabled": True}
-    r = handle_concierge(
+    assert handle_concierge(
         "워커 레인에 배당해서 이 회귀를 조사해줘",
         session=session,
-    )
-    assert r is not None
-    assert r.action == "new_task"
-    assert r.task_id
-    conn = kanban_db.connect()
-    try:
-        tasks = kanban_db.list_tasks(conn, limit=10)
-    finally:
-        conn.close()
-    ids = {t.id for t in tasks}
-    assert r.task_id in ids
+    ) is None
 
 
 def test_plain_question_falls_through_to_main():
@@ -77,8 +65,7 @@ def test_plain_question_falls_through_to_main():
     assert handle_concierge("서울 파니니 맛집 추천해줘", session=session) is None
 
 
-def test_github_url_not_swallowed_as_worker_or_status():
-    """NousResearch contains substring 'research' — must not force WORKER."""
+def test_github_url_not_swallowed():
     from agent.concierge import handle_concierge
     from agent.control_plane import Intent, classify
 
@@ -88,20 +75,18 @@ def test_github_url_not_swallowed_as_worker_or_status():
     )
     d = classify(url, concierge_mode_active=True)
     assert d.intent is not Intent.STATUS
-    assert d.intent is not Intent.NEW_TASK_WORKER
     session = {"concierge_live_enabled": True}
     assert handle_concierge(url, session=session) is None
 
 
-def test_imperative_go_not_status():
+def test_imperative_go_falls_through():
     from agent.concierge import handle_concierge
 
     session = {"concierge_live_enabled": True}
     assert handle_concierge("이거 진행해", session=session) is None
 
 
-def test_long_meta_complaint_not_status():
-    """Complaining about STATUS false positives must not itself become STATUS."""
+def test_long_meta_complaint_falls_through():
     from agent.concierge import handle_concierge
     from agent.control_plane import Intent, classify
 
@@ -117,16 +102,19 @@ def test_long_meta_complaint_not_status():
     assert handle_concierge(text, session=session) is None
 
 
-def test_short_status_still_works():
+def test_status_substring_inside_sentence_not_status():
+    from agent.control_plane import Intent, classify
+
+    d = classify(
+        "진행 상황을 알려 주는 그 버그를 고쳐줘",
+        concierge_mode_active=True,
+    )
+    assert d.intent is not Intent.STATUS
+
+
+def test_short_exact_status_still_works():
     from agent.concierge import handle_concierge
 
     session = {"concierge_live_enabled": True}
     r = handle_concierge("진행상황", session=session)
     assert r is not None and r.action == "status"
-
-
-def test_shim_still_imports():
-    from agent.concierge import handle_concierge, concierge_enabled
-
-    assert concierge_enabled(session={"concierge_live_enabled": True}) is True
-    assert handle_concierge("멈춰", session={"concierge_live_enabled": True}) is not None

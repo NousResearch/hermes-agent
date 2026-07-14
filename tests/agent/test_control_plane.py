@@ -54,24 +54,25 @@ class TestIntentMapping:
         assert d.intent is Intent.NEW_TASK_MAIN
         assert d.recommendation is Recommendation.MAIN
 
-    def test_worker_lane_mode_off_downgrade_note_present(self):
+    def test_keyword_no_longer_produces_worker_downgrade_note(self):
         d = classify("draft a report.md", concierge_mode_active=False)
-        assert any("downgraded" in n for n in d.notes)
+        assert d.recommendation is Recommendation.MAIN
+        assert not any("downgraded" in n for n in d.notes)
 
     def test_worker_lane_policy_mode_on_stays_worker(self):
         d = classify("investigate the regression", concierge_mode_active=True)
-        assert d.intent is Intent.NEW_TASK_WORKER
-        assert d.recommendation is Recommendation.WORKER_LANE
+        assert d.intent is Intent.NEW_TASK_MAIN
+        assert d.recommendation is Recommendation.MAIN
 
     def test_worker_lane_artifact_mode_on(self):
         d = classify("draft a report.md", concierge_mode_active=True)
-        assert d.intent is Intent.NEW_TASK_WORKER
-        assert d.recommendation is Recommendation.WORKER_LANE
+        assert d.intent is Intent.NEW_TASK_MAIN
+        assert d.recommendation is Recommendation.MAIN
 
     def test_worker_lane_code_edit_mode_on(self):
         d = classify("refactor the module", concierge_mode_active=True)
-        assert d.intent is Intent.NEW_TASK_WORKER
-        assert d.recommendation is Recommendation.WORKER_LANE
+        assert d.intent is Intent.NEW_TASK_MAIN
+        assert d.recommendation is Recommendation.MAIN
 
     # CONTROL + STOP signal
     def test_control_stop_mode_off(self):
@@ -169,21 +170,20 @@ class TestIntentMapping:
 # Transcript-render visibility invariant (INV-2)
 # ---------------------------------------------------------------------------
 class TestTranscriptRenderVisibility:
-    """STOP, NEW_TASK_WORKER, STEER, ACK, DUPLICATE, NOISE → transcript_render=True.
+    """STOP / ACK / NOISE → transcript_render=True.
     STATUS: True only when concierge_mode_active=True.
     NEW_TASK_MAIN → transcript_render=False.
     """
-
     def test_stop_transcript_render_true(self):
         assert classify("그만", concierge_mode_active=False).transcript_render is True
 
     def test_stop_transcript_render_true_mode_on(self):
         assert classify("stop", concierge_mode_active=True).transcript_render is True
 
-    def test_new_task_worker_transcript_render_true(self):
+    def test_new_task_main_transcript_render_false_by_default(self):
         d = classify("investigate the regression", concierge_mode_active=True)
-        assert d.intent is Intent.NEW_TASK_WORKER
-        assert d.transcript_render is True
+        assert d.intent is Intent.NEW_TASK_MAIN
+        assert d.transcript_render is False
 
     def test_steer_transcript_render_false_when_mode_off(self):
         d = classify("근데 이거도 봐줘", concierge_mode_active=False)

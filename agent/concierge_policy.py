@@ -176,35 +176,38 @@ ACK_TOKENS_KO: tuple[str, ...] = (
     "수고했어",
 )
 
-# Status query anchors.  These are *substring* matches — a status fragment is
-# usually short and contains one of these tokens whole-cloth.
-_STATUS_ANCHORS_EN: tuple[str, ...] = (
+# Status — WHOLE-BODY equality only (same contract as STOP).
+# Never substring-search free text: that is Ctrl+F routing and kills real instructions.
+_STATUS_EXACT_EN: tuple[str, ...] = (
     "status",
+    "status?",
     "what are you doing",
+    "what are you doing?",
     "what's running",
-    "show me",
-    "list",
+    "whats running",
+    "/status",
     "/tasks",
-    "/agents",
-    "/mode",
 )
 
-_STATUS_ANCHORS_KO: tuple[str, ...] = (
+_STATUS_EXACT_KO: tuple[str, ...] = (
     "상태",
-    "어디까지",
-    "뭐 했어",
-    "뭐해",
-    "뭐 해",
-    # Bare "진행" is NOT a status query — "이거 진행해" / "작업을 진행해" mean GO.
-    # Only status-shaped collocations:
+    "상태?",
     "진행상황",
     "진행 상황",
-    "진행 중",
     "진행중",
-    "어디까지 진행",
-    "어떤 lane",
-    "어떤 워커",
-    "지금 뭐",
+    "진행 중",
+    "지금 뭐 해",
+    "지금 뭐 해?",
+    "지금 뭐해",
+    "지금 뭐해?",
+    "지금 뭐 하고 있어",
+    "지금 뭐 하고 있어?",
+    "뭐 해",
+    "뭐 해?",
+    "뭐해",
+    "뭐해?",
+    "어디까지",
+    "어디까지야",
 )
 
 # Artifact-creation anchors.  Single-anchor → strong WORKER recommendation
@@ -610,17 +613,17 @@ def _has_code_edit_anchor(low_body: str, body: str) -> bool:
 
 
 def _is_status_query(body: str, low_body: str) -> bool:
-    """True only for *short, dedicated* status pings — never long instructions.
+    """STATUS only on *entire message* equality — never Ctrl+F inside a sentence."""
+    if _is_whole_body_match(low_body, _STATUS_EXACT_EN) or _is_whole_body_match(
+        body, _STATUS_EXACT_KO
+    ):
+        return True
+    if body.strip() in {"?", "？"}:
+        return True
+    return False
 
-    Meta-discussion that *mentions* status words (e.g. complaining that
-    ``진행 상황`` was wrongly triggered) must NOT classify as STATUS.
-    """
-    # Hard length gate: real status pings are short ("지금 뭐 해?", "진행상황").
-    # Anything longer is MAIN (model understands intent). Ctrl+F on long text
-    # is exactly the failure mode users hit.
-    if len(body) > 48:
-        return False
-    if _contains_any(low_body, _STATUS_ANCHORS_EN) or _contains_any(body, _STATUS_ANCHORS_KO):
+
+    if _contains_any(low_body, _STATUS_EXACT_EN) or _contains_any(body, _STATUS_EXACT_KO):
         return True
     # Only a pure "?" is a status ping.
     if body.strip() in {"?", "？"}:
@@ -802,30 +805,7 @@ def classify_request(
             raw_text=raw,
         )
 
-    # ------------------------------------------------------------------
-    # 7. STEER — prefix-only candidate; surface verifies in-flight.
-    # ------------------------------------------------------------------
-    steer_candidate = _looks_like_steer(low_body, body)
-    if steer_candidate:
-        signals.add(ConciergeSignal.STEER)
-
-    # ------------------------------------------------------------------
-    # 8. Worker-candidate signals.
-    # ------------------------------------------------------------------
-    if _has_artifact_anchor(low_body, body):
-        signals.add(ConciergeSignal.ARTIFACT)
-    if _has_research_anchor(low_body, body):
-        signals.add(ConciergeSignal.RESEARCH)
-    if _has_code_edit_anchor(low_body, body):
-        signals.add(ConciergeSignal.CODE_EDIT)
-    if _looks_long(body, low_body):
-        signals.add(ConciergeSignal.LONG)
-    if _looks_many_tools(low_body, body):
-        signals.add(ConciergeSignal.MANY_TOOLS)
-
-    # ------------------------------------------------------------------
-    # 9. Tie-breakers (PRD §8.3).
-    # ------------------------------------------------------------------
+    # Explicit main/worker only (intentional overrides — not substring anchors).
     if ConciergeSignal.EXPLICIT_MAIN_REQ in signals:
         return ConciergePolicyDecision(
             recommendation=ConciergeRecommendation.MAIN,
@@ -834,7 +814,6 @@ def classify_request(
             debug_label="main:explicit",
             raw_text=raw,
         )
-
     if ConciergeSignal.EXPLICIT_WORKER_REQ in signals:
         return ConciergePolicyDecision(
             recommendation=ConciergeRecommendation.WORKER_LANE,
@@ -844,47 +823,20 @@ def classify_request(
             raw_text=raw,
         )
 
-    # ------------------------------------------------------------------
-    # 10. Strong worker signals (artifact / research / code_edit).
-    #     PRD §8.1 final paragraph: single anchor is enough.
-    # ------------------------------------------------------------------
-    strong = signals & {
-        ConciergeSignal.ARTIFACT,
-        ConciergeSignal.RESEARCH,
-        ConciergeSignal.CODE_EDIT,
-    }
-    if strong:
-        # Multiple strong anchors -> HIGH; one strong anchor -> MEDIUM unless
-        # accompanied by a shape-based anchor (LONG / MANY_TOOLS) which pushes
-        # to HIGH (the audit transcript's report-writing case fires LONG too).
-        has_shape = bool(signals & {ConciergeSignal.LONG, ConciergeSignal.MANY_TOOLS})
-        if len(strong) >= 2 or has_shape:
-            conf = ConciergeConfidence.HIGH
-        else:
-            conf = ConciergeConfidence.MEDIUM
-        label = "worker:" + "+".join(sorted(s.value for s in strong))
-        return ConciergePolicyDecision(
-            recommendation=ConciergeRecommendation.WORKER_LANE,
-            signals=frozenset(signals),
-            confidence=conf,
-            debug_label=label,
-            raw_text=raw,
-        )
 
     # ------------------------------------------------------------------
-    # 11. Weak worker shape only (LONG + MANY_TOOLS together).
+    # 7. STEER — prefix-only candidate; surface verifies in-flight.
     # ------------------------------------------------------------------
-    if (
-        ConciergeSignal.LONG in signals
-        and ConciergeSignal.MANY_TOOLS in signals
-    ):
-        return ConciergePolicyDecision(
-            recommendation=ConciergeRecommendation.WORKER_LANE,
-            signals=frozenset(signals),
-            confidence=ConciergeConfidence.MEDIUM,
-            debug_label="worker:shape",
-            raw_text=raw,
-        )
+    steer_candidate = _looks_like_steer(low_body, body)
+    if steer_candidate:
+        signals.add(ConciergeSignal.STEER)
+
+    # ------------------------------------------------------------------
+    # 8–11. Keyword worker anchors DISABLED.
+    # User contract: do not Ctrl+F words (research/report/진행/…) inside free
+    # text. Understanding + action is the main model. Only EXPLICIT worker
+    # override (whole intentional request) may queue a lane.
+    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # 12. STEER candidate without strong worker signal → STEER recommendation.

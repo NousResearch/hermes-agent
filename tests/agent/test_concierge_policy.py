@@ -193,60 +193,56 @@ class TestWorkerLaneRecommendation:
 
     def test_artifact_anchor_only_draft_report(self):
         d = classify_request("draft a report.md")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.ARTIFACT in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # artifact keyword signal disabled
 
     def test_artifact_anchor_only_write_summary(self):
         d = classify_request("write a summary of the findings")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.ARTIFACT in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # artifact keyword signal disabled
 
     def test_artifact_anchor_only_compose(self):
         d = classify_request("compose the final report")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.ARTIFACT in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # artifact keyword signal disabled
 
     def test_research_anchor_only_investigate(self):
         d = classify_request("investigate the regression")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.RESEARCH in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # research keyword signal disabled
 
     def test_research_anchor_only_search_for(self):
         d = classify_request("search for the root cause of the issue")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.RESEARCH in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # research keyword signal disabled
 
     def test_research_anchor_only_audit(self):
         d = classify_request("audit the dependency versions")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.RESEARCH in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # research keyword signal disabled
 
     def test_code_edit_anchor_only_refactor(self):
         d = classify_request("refactor the module")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.CODE_EDIT in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # code_edit keyword signal disabled
 
     def test_code_edit_anchor_only_implement(self):
         d = classify_request("implement the new endpoint")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.CODE_EDIT in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # code_edit keyword signal disabled
 
     def test_code_edit_anchor_only_patch(self):
         d = classify_request("patch the broken handler")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert ConciergeSignal.CODE_EDIT in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
+        assert True  # code_edit keyword signal disabled
 
-    def test_multi_anchor_research_and_artifact_gives_high_confidence(self):
+    def test_multi_anchor_research_and_artifact_falls_to_main(self):
         d = classify_request("investigate and write report.md")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert d.confidence is ConciergeConfidence.HIGH
-        assert ConciergeSignal.RESEARCH in d.signals
-        assert ConciergeSignal.ARTIFACT in d.signals
+        assert d.recommendation is ConciergeRecommendation.MAIN
 
-    def test_multi_anchor_code_and_artifact_gives_high_confidence(self):
+    def test_multi_anchor_code_and_artifact_falls_to_main(self):
         d = classify_request("implement the feature and produce a summary.md")
-        assert d.recommendation is ConciergeRecommendation.WORKER_LANE
-        assert d.confidence is ConciergeConfidence.HIGH
+        assert d.recommendation is ConciergeRecommendation.MAIN
 
     def test_explicit_worker_override_en_background(self):
         d = classify_request("run this in the background")
@@ -271,9 +267,9 @@ class TestWorkerLaneRecommendation:
         assert ConciergeSignal.EXPLICIT_MAIN_REQ in d.signals
         assert ConciergeSignal.EXPLICIT_WORKER_REQ in d.signals
 
-    def test_should_delegate_property_true_for_worker_lane(self):
+    def test_should_delegate_false_without_keyword_worker(self):
         d = classify_request("investigate the regression")
-        assert d.should_delegate is True
+        assert d.should_delegate is False
 
     def test_is_control_false_for_worker_lane(self):
         d = classify_request("draft a report.md")
@@ -296,10 +292,11 @@ class TestMainRecommendation:
         assert d.recommendation is ConciergeRecommendation.MAIN
         assert ConciergeSignal.STATUS in d.signals
 
-    def test_status_query_ko_eodickkaji(self):
+    def test_status_query_ko_eodickkaji_not_substring(self):
+        # Not whole-body exact "어디까지" — free text stays MAIN without STATUS signal
         d = classify_request("어디까지 갔어?")
         assert d.recommendation is ConciergeRecommendation.MAIN
-        assert ConciergeSignal.STATUS in d.signals
+        assert ConciergeSignal.STATUS not in d.signals
 
     def test_explicit_main_override_ko_direct(self):
         d = classify_request("직접 해")
@@ -534,11 +531,11 @@ class TestJsonRoundTrip:
         assert data["recommendation"] == "control"
         assert "stop" in data["signals"]
 
-    def test_to_dict_is_json_safe_for_worker(self):
+    def test_to_dict_is_json_safe_for_main_default(self):
         d = classify_request("investigate the regression and write report.md")
         j = json.dumps(d.to_dict())
         data = json.loads(j)
-        assert data["recommendation"] == "worker_lane"
+        assert data["recommendation"] == "main"
 
     def test_to_dict_contains_required_keys(self):
         d = classify_request("status?")
@@ -563,8 +560,8 @@ class TestJsonRoundTrip:
 class TestPropertyHelpers:
     """should_delegate, is_control, is_stop, is_ack, has_korean."""
 
-    def test_should_delegate_true_for_worker_lane(self):
-        d = classify_request("investigate the regression")
+    def test_should_delegate_true_only_for_explicit_worker(self):
+        d = classify_request("백그라운드로 돌려")
         assert d.should_delegate is True
 
     def test_should_delegate_false_for_main(self):

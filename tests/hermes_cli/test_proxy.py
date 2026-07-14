@@ -655,10 +655,22 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
         await resp.write_eof()
         return resp
 
+    async def broken_sse(request):
+        resp = web.StreamResponse(
+            status=200, headers={"Content-Type": "text/event-stream"},
+        )
+        await resp.prepare(request)
+        await resp.write(b"data: partial\n\n")
+        transport = request.transport
+        if transport is not None:
+            transport.close()
+        return resp
+
     app = web.Application()
     app.router.add_route("*", "/v1/chat/completions", echo)
     app.router.add_route("*", "/v1/embeddings", echo)
     app.router.add_route("*", "/v1/sse", sse)
+    app.router.add_route("*", "/v1/broken-sse", broken_sse)
     return app
 
 
@@ -739,6 +751,33 @@ def test_server_retries_once_with_adapter_retry_credential_on_401():
                 "Bearer jwt-bearer",
                 "Bearer legacy-bearer",
             ]
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_aborts_downstream_when_upstream_stream_breaks():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="real-portal-key",
+            allowed=["/broken-sse"],
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/broken-sse",
+                    json={"model": "Hermes-4-70B", "stream": True},
+                ) as resp:
+                    assert resp.status == 200
+                    with pytest.raises(aiohttp.ClientPayloadError):
+                        await resp.text()
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()

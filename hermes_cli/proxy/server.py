@@ -223,15 +223,25 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         )
         await resp.prepare(request)
 
+        stream_failed = False
         try:
             async for chunk in upstream_resp.content.iter_any():
                 if chunk:
                     await resp.write(chunk)
-        except (aiohttp.ClientError, asyncio.CancelledError) as exc:
+        except asyncio.CancelledError:
+            raise
+        except aiohttp.ClientError as exc:
+            stream_failed = True
             logger.warning("proxy: streaming interrupted: %s", exc)
         finally:
             upstream_resp.release()
             await session.close()
+
+        if stream_failed:
+            transport = request.transport
+            if transport is not None:
+                transport.close()
+            return resp
 
         await resp.write_eof()
         return resp

@@ -366,8 +366,10 @@ def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
     DB with half-written btree pages → ``btreeInitPage error 11``.
 
     WAL mode's durability guarantee assumes the OS honors fsync barriers;
-    macOS does not unless we explicitly set ``synchronous=FULL`` (which
-    issues ``fsync()`` *and* ``F_FULLFSYNC`` via checkpoint_fullfsync=1).
+    macOS does not unless we explicitly set ``synchronous=FULL``, which issues
+    a real ``fsync()`` on every transaction commit.  The ``F_FULLFSYNC``
+    barrier at checkpoint boundaries is handled separately by
+    :func:`_apply_macos_checkpoint_barrier`.
 
     This function is called after any successful WAL activation (either
     from ``apply_wal_with_fallback()`` setting a fresh WAL or when probing

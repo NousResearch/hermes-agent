@@ -40,6 +40,14 @@ const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
 const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
+const {
+  parseRegistry,
+  stringifyRegistry,
+  upsertEntry,
+  removePids,
+  reapablePids,
+  backendCommandMatches
+} = require('./backend-registry.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
@@ -2075,6 +2083,143 @@ function isShimLocked(shimPath) {
       }
     }
   }
+}
+
+// ── Desktop-spawned backend registry ────────────────────────────────────────
+// A non-graceful quit (force-quit ⌘Q, crash, wake-from-sleep) skips the
+// before-quit SIGTERM, so the backend child keeps running. The single-instance
+// lock then lets the NEXT launch spawn ANOTHER backend on top of it — stacking
+// `hermes serve` / `hermes dashboard` processes that all write the same session,
+// which is what produced #64304 (duplicate sidebar sessions, message loss,
+// role confusion). We record every backend PID we spawn to a small JSON file
+// and reap any survivors at the next startup, BEFORE spawning fresh. We only
+// ever kill PIDs WE recorded (and re-verify each is still a Hermes backend), so
+// a user's own `hermes dashboard` in a terminal is never touched.
+let _backendRegistryPath = null
+function backendRegistryPath() {
+  if (!_backendRegistryPath) {
+    _backendRegistryPath = path.join(app.getPath('userData'), 'backend-registry.json')
+  }
+  return _backendRegistryPath
+}
+
+function readBackendRegistry() {
+  try {
+    return parseRegistry(fs.readFileSync(backendRegistryPath(), 'utf8'))
+  } catch {
+    // Missing file (first run) or unreadable — treat as empty.
+    return []
+  }
+}
+
+// Synchronous read-modify-write. Electron's main process is single-threaded and
+// these writers never await between read and write, so each call is atomic with
+// respect to the event loop — no lock needed despite primary + pool + exit
+// handlers all touching the same file.
+function writeBackendRegistry(entries) {
+  try {
+    fs.mkdirSync(path.dirname(backendRegistryPath()), { recursive: true })
+    fs.writeFileSync(backendRegistryPath(), stringifyRegistry(entries))
+  } catch (error) {
+    rememberLog(`[backends] failed to persist backend registry: ${error.message}`)
+  }
+}
+
+function recordBackendPid(pid, command) {
+  if (!Number.isInteger(pid) || pid <= 0) return
+  writeBackendRegistry(
+    upsertEntry(readBackendRegistry(), { pid, command: String(command || ''), startedAt: Date.now() })
+  )
+}
+
+function forgetBackendPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return
+  writeBackendRegistry(removePids(readBackendRegistry(), [pid]))
+}
+
+// Re-verify a recorded PID is STILL a live Hermes backend before killing it.
+// PIDs recycle: after an orphan dies on its own the OS can reassign its number
+// to an unrelated process, and we must never kill that. `ps` / `wmic` exit
+// non-zero (→ caught → false) when the PID is gone.
+function pidIsHermesBackend(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    if (IS_WINDOWS) {
+      const out = execFileSync(
+        'wmic',
+        ['process', 'where', `processid=${pid}`, 'get', 'commandline'],
+        hiddenWindowsChildOptions({
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 10000,
+          encoding: 'utf8'
+        })
+      )
+      return backendCommandMatches(String(out || ''))
+    }
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 10000,
+      encoding: 'utf8'
+    })
+    return backendCommandMatches(String(out || ''))
+  } catch {
+    return false
+  }
+}
+
+// Reap orphaned backends from a prior (non-gracefully quit) instance. Runs at
+// most once per process — the promise is cached — and MUST complete before we
+// spawn/record any backend this session (callers await it first), so clearing
+// the registry at the end never drops one of our own live children.
+let _orphanReapPromise = null
+function reapOrphanedBackendsOnce() {
+  if (!_orphanReapPromise) {
+    _orphanReapPromise = _reapOrphanedBackends().catch(error => {
+      rememberLog(`[backends] orphan reap failed: ${error.message}`)
+    })
+  }
+  return _orphanReapPromise
+}
+
+async function _reapOrphanedBackends() {
+  const pids = reapablePids(readBackendRegistry(), process.pid)
+  if (!pids.length) return
+
+  const reaped = []
+  for (const pid of pids) {
+    // Skip anything that isn't (still) our backend — dead PID or a recycled
+    // number now owned by an unrelated process.
+    if (!pidIsHermesBackend(pid)) continue
+    rememberLog(`[backends] reaping orphaned backend PID ${pid} left by a prior session`)
+    try {
+      if (IS_WINDOWS) {
+        forceKillProcessTree(pid)
+      } else {
+        process.kill(pid, 'SIGTERM')
+      }
+      reaped.push(pid)
+    } catch (error) {
+      rememberLog(`[backends] failed to reap PID ${pid}: ${error.message}`)
+    }
+  }
+
+  // POSIX: give SIGTERM a beat to let uvicorn close its socket, then SIGKILL
+  // any that are still both alive AND ours. (Windows taskkill /F is immediate.)
+  if (!IS_WINDOWS && reaped.length) {
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    for (const pid of reaped) {
+      if (!pidIsHermesBackend(pid)) continue
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        void 0
+      }
+    }
+  }
+
+  // Every recorded PID has now been handled (reaped, already dead, or recycled
+  // away). Clear the registry; this session's backends re-record after us.
+  writeBackendRegistry([])
 }
 
 // Force-kill the entire process TREE rooted at each PID. Node's child.kill()
@@ -5276,6 +5421,11 @@ async function spawnPoolBackend(profile, entry) {
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
+  // Reap prior-session orphans before spawning (idempotent; see the primary
+  // backend path). Pool spawns normally follow the primary, but awaiting the
+  // cached promise here keeps us correct even if one races ahead (#64304).
+  await reapOrphanedBackendsOnce()
+
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
   const child = spawn(
@@ -5305,6 +5455,10 @@ async function spawnPoolBackend(profile, entry) {
   entry.process = child
   entry.token = token
 
+  // Record this PID so a future launch can reap it if we quit non-gracefully.
+  const spawnedPid = child.pid
+  recordBackendPid(spawnedPid, `${backend.command} ${backend.args.join(' ')}`)
+
   child.stdout.on('data', rememberLog)
   child.stderr.on('data', rememberLog)
 
@@ -5316,11 +5470,13 @@ async function spawnPoolBackend(profile, entry) {
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
     backendPool.delete(profile)
+    forgetBackendPid(spawnedPid)
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
     backendPool.delete(profile)
+    forgetBackendPid(spawnedPid)
     if (!ready) {
       rejectStart?.(
         new Error(`Hermes backend for profile "${profile}" exited before it became ready (${signal || code}).`)
@@ -5505,6 +5661,10 @@ async function startHermes() {
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
+    // Reap any backend orphaned by a prior non-graceful quit BEFORE spawning
+    // ours, so we don't stack duplicate backends over the same sessions (#64304).
+    await reapOrphanedBackendsOnce()
+
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
@@ -5538,6 +5698,10 @@ async function startHermes() {
       })
     )
 
+    // Record this PID so a future launch can reap it if we quit non-gracefully.
+    const spawnedPid = hermesProcess.pid
+    recordBackendPid(spawnedPid, `${backend.command} ${backend.args.join(' ')}`)
+
     hermesProcess.stdout.on('data', rememberLog)
     hermesProcess.stderr.on('data', rememberLog)
     let backendReady = false
@@ -5558,6 +5722,7 @@ async function startHermes() {
       )
       hermesProcess = null
       connectionPromise = null
+      forgetBackendPid(spawnedPid)
       sendBackendExit({ code: null, signal: null, error: error.message })
       rejectBackendStart?.(error)
     })
@@ -5565,6 +5730,7 @@ async function startHermes() {
       rememberLog(`Hermes backend exited (${signal || code})`)
       hermesProcess = null
       connectionPromise = null
+      forgetBackendPid(spawnedPid)
       sendBackendExit({ code, signal })
       if (!backendReady) {
         const message = `Hermes backend exited before it became ready (${signal || code}).`

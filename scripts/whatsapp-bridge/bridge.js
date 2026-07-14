@@ -108,6 +108,25 @@ const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n──────────
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+
+// Optional sweep mode: connect briefly, process pending messages, then close.
+// Between sweeps there is no active companion, allowing native phone push.
+// Disabled by default so existing always-connected behavior is unchanged.
+const SWEEP_INTERVAL_MS = parseInt(getArg('sweep-interval', process.env.WHATSAPP_SWEEP_INTERVAL_MS || '0'), 10);
+const SWEEP_WINDOW_MS = parseInt(process.env.WHATSAPP_SWEEP_WINDOW_MS || '5000', 10);
+let sweepTimer = null;
+let sweepMessagesSeen = false;
+// A locally initiated sweep close can use the interval; a remote 428 must
+// retain the normal quick reconnect despite sharing the same status code.
+let intentionalSweepDisconnect = false;
+
+function clearSweepTimer() {
+  if (sweepTimer) {
+    clearTimeout(sweepTimer);
+    sweepTimer = null;
+  }
+}
+
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
@@ -424,7 +443,10 @@ async function startSocket() {
 
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      const wasIntentionalSweepDisconnect = intentionalSweepDisconnect;
+      intentionalSweepDisconnect = false;
       connectionState = 'disconnected';
+      clearSweepTimer();
 
       if (reason === DisconnectReason.loggedOut) {
         emitPairEvent({ event: 'error', error: 'logged_out', reason });
@@ -432,8 +454,17 @@ async function startSocket() {
           console.log('❌ Logged out. Delete session and restart to re-authenticate.');
         }
         process.exit(1);
+      } else if (wasIntentionalSweepDisconnect) {
+        emitPairEvent({ event: 'disconnected', reason, sweep: true });
+        if (!PAIR_JSON) {
+          console.log(`↻ Sweep complete. Reconnecting in ${SWEEP_INTERVAL_MS}ms...`);
+        }
+        setTimeout(startSocket, SWEEP_INTERVAL_MS);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect.
+        // Remote 428/network closes retain fast recovery; they share 428 with
+        // the intentionally closed sweep socket, so status code alone is not
+        // sufficient to identify a sweep close.
         emitPairEvent({ event: 'disconnected', reason });
         if (!PAIR_JSON) {
           if (reason === 515) {
@@ -446,6 +477,7 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      sweepMessagesSeen = false;
       const connectedUser = sock?.user
         ? {
             id: sock.user.id || null,
@@ -455,6 +487,18 @@ async function startSocket() {
       emitPairEvent({ event: 'connected', user: connectedUser });
       if (!PAIR_JSON) {
         console.log('✅ WhatsApp connected!');
+      }
+      if (SWEEP_INTERVAL_MS > 0 && !PAIR_ONLY) {
+        clearSweepTimer();
+        sweepTimer = setTimeout(() => {
+          if (!sweepMessagesSeen && !PAIR_JSON) {
+            console.log('↻ Sweep window complete. Disconnecting.');
+          }
+          if (sock && connectionState === 'connected') {
+            intentionalSweepDisconnect = true;
+            sock.end(new Boom('Sweep window complete', { statusCode: 428 }));
+          }
+        }, SWEEP_WINDOW_MS);
       }
       if (PAIR_ONLY) {
         if (!PAIR_JSON) {
@@ -521,6 +565,18 @@ async function startSocket() {
     // In self-chat mode, your own messages commonly arrive as 'append' rather
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
+
+    // Do not close mid-burst: each inbound batch gets a fresh drain window.
+    if (SWEEP_INTERVAL_MS > 0 && messages.some(message => message.message && !message.key.fromMe)) {
+      sweepMessagesSeen = true;
+      clearSweepTimer();
+      sweepTimer = setTimeout(() => {
+        if (sock && connectionState === 'connected') {
+          intentionalSweepDisconnect = true;
+          sock.end(new Boom('Sweep window complete', { statusCode: 428 }));
+        }
+      }, SWEEP_WINDOW_MS);
+    }
 
     const botIds = Array.from(new Set([
       normalizeWhatsAppId(sock.user?.id),

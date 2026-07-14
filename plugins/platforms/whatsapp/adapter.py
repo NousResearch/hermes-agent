@@ -626,6 +626,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env = with_hermes_node_path()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            # Optional bounded-latency sweep mode. Values live in the WhatsApp
+            # platform's `extra` config and are omitted when disabled.
+            sweep_interval_ms = self.config.extra.get("sweep_interval_ms")
+            if sweep_interval_ms is not None:
+                bridge_env["WHATSAPP_SWEEP_INTERVAL_MS"] = str(sweep_interval_ms)
+            sweep_window_ms = self.config.extra.get("sweep_window_ms")
+            if sweep_window_ms is not None:
+                bridge_env["WHATSAPP_SWEEP_WINDOW_MS"] = str(sweep_window_ms)
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges

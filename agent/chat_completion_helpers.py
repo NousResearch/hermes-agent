@@ -1946,6 +1946,35 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 
+def _normalize_stream_delta_content(raw_content: Any) -> str:
+    """Normalise a streaming ``delta.content`` value to a plain string.
+
+    Most OpenAI-compatible providers send ``delta.content`` as a string.
+    A few — observed on Mistral ``mistral-small-latest`` and NVIDIA custom
+    endpoints serving ``mistralai/mistral-large-3`` — return
+    ``delta.content`` as a *list of content-block dicts* on the streaming
+    request that follows a completed tool call. Passing that list
+    verbatim to ``agent._fire_stream_delta`` /
+    ``agent._record_streamed_assistant_text`` raises
+    ``AttributeError: 'list' object has no attribute 'strip'`` and
+    fails the whole streaming request. See issue #63734.
+
+    Recognised shapes:
+      - ``str`` → returned unchanged
+      - ``list`` → blocks joined by their ``text`` field (``str(block)``
+        fallback for non-dict items); missing ``text`` → empty string
+      - anything else → ``str(raw_content)`` (defensive)
+    """
+    if isinstance(raw_content, str):
+        return raw_content
+    if isinstance(raw_content, list):
+        return "".join(
+            (block.get("text", "") if isinstance(block, dict) else str(block))
+            for block in raw_content
+        )
+    return str(raw_content)
+
+
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 
@@ -2360,10 +2389,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
-                content_parts.append(delta.content)
+                # Normalise delta.content to a string. Mistral and NVIDIA
+                # custom providers can return ``delta.content`` as a list of
+                # content-block dicts on the streaming request that follows
+                # a completed tool call.  The downstream API
+                # (``_fire_stream_delta``, ``_record_streamed_assistant_text``)
+                # expects a plain string and crashes with
+                # ``AttributeError: 'list' object has no attribute 'strip'``.
+                # See issue #63734.
+                _delta_text = _normalize_stream_delta_content(delta.content)
+                content_parts.append(_delta_text)
                 if not tool_calls_acc:
                     _fire_first_delta()
-                    agent._fire_stream_delta(delta.content)
+                    agent._fire_stream_delta(_delta_text)
                     deltas_were_sent["yes"] = True
                 # Tool calls suppress regular content streaming (avoids
                 # displaying chatty "I'll use the tool..." text alongside
@@ -2378,8 +2416,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        agent.stream_delta_callback(_delta_text)
+                        agent._record_streamed_assistant_text(_delta_text)
                     except Exception:
                         pass
 

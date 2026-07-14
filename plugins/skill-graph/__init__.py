@@ -998,6 +998,126 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
             pass
 
 
+
+def _read_config_path() -> Path | None:
+    """Read config.yaml path from HERMES_HOME."""
+    hermes_home = os.environ.get("HERMES_HOME", "")
+    if hermes_home:
+        cfg = Path(hermes_home) / "config.yaml"
+        if cfg.exists():
+            return cfg
+    cfg = Path.home() / ".hermes" / "config.yaml"
+    return cfg if cfg.exists() else None
+
+def _show_graph_config() -> str:
+    """Return current graph config (slash command 'config' default action)."""
+    try:
+        conn = _ensure_graph()
+        db_path = _db_path()
+        scanned = _find_all_skills_dirs()
+        cfg_dirs = _read_source_dirs_from_config()
+        skill_count = conn.execute("SELECT COUNT(*) FROM skill_nodes").fetchone()[0]
+        db_size = db_path.stat().st_size if db_path.exists() else 0
+        lines = [
+            "Skill Graph configuration",
+            f"  DB path:     {db_path}",
+            f"  DB size:     {db_size / 1024:.1f} KB",
+            f"  Skills:      {skill_count}",
+            f"  Source dirs (config): {cfg_dirs}" if cfg_dirs else "  Source dirs (config): (none)",
+            "  Scanned dirs:",
+        ]
+        for d in scanned:
+            cnt = len(list(d.rglob("SKILL.md"))) if d.exists() else 0
+            lines.append(f"    {d}  ({cnt} SKILL.md)")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Config failed: {e}"
+
+def _handle_source_dir_config(action: str, path_str: str) -> str:
+    """Add or remove a source_dir at runtime and persist to config.yaml."""
+    if not path_str:
+        return f"Usage: /sg config {action} <path>"
+    target = os.path.abspath(os.path.expanduser(path_str))
+    if not os.path.isdir(target):
+        return f"Not a directory: {target}"
+    try:
+        cfg_path = _read_config_path()
+        if not cfg_path:
+            return "❌ Cannot find config.yaml"
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        sg_cfg = cfg.setdefault("skills", {}).setdefault("config", {}).setdefault("skill-graph", {})
+        source_dirs = sg_cfg.get("source_dirs", [])
+        resolved = [os.path.abspath(os.path.expanduser(str(d))) for d in source_dirs]
+        if action == "add":
+            if target in resolved:
+                return f"Already in source_dirs: {target}"
+            source_dirs.append(path_str)
+        elif action == "remove":
+            if target not in resolved:
+                return f"Not in source_dirs: {target}"
+            source_dirs = [d for d in source_dirs if os.path.abspath(os.path.expanduser(str(d))) != target]
+        else:
+            return f"Unknown action: {action}"
+        sg_cfg["source_dirs"] = source_dirs
+        with open(cfg_path, "w") as f:
+            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+        try:
+            conn = _ensure_graph()
+            with _graph_lock:
+                count = _full_rebuild(conn)
+            return f"✅ {action}ed {target}\n   Graph rebuilt: {count} skills indexed."
+        except Exception as e:
+            return f"✅ Config updated but graph rebuild failed: {e}"
+    except Exception as e:
+        return f"Config {action} failed: {e}"
+
+
+def _handle_skill_graph_config(args: dict | None = None, **kw) -> str:
+    """Handle skill_graph_config tool — add/remove/list source_dirs."""
+    if not isinstance(args, dict):
+        return json.dumps({"success": False, "error": "args must be dict"})
+    action = args.get("action", "")
+    path_str = args.get("path", "")
+    persist = args.get("persist", True)
+    try:
+        if action == "list_dirs":
+            cfg_dirs = _read_source_dirs_from_config()
+            return json.dumps({"success": True, "source_dirs": [str(d) for d in cfg_dirs],
+                               "scanned_dirs": [str(d) for d in _find_all_skills_dirs() if d.exists()],
+                               "persisted": persist}, default=str)
+        if action in ("add_dir", "remove_dir"):
+            if not path_str:
+                return json.dumps({"success": False, "error": "path required"})
+            target = os.path.abspath(os.path.expanduser(path_str))
+            if not os.path.isdir(target):
+                return json.dumps({"success": False, "error": f"Not a directory: {target}"})
+            if persist:
+                cfg_path = _read_config_path()
+                if not cfg_path:
+                    return json.dumps({"success": False, "error": "Cannot find config.yaml"})
+                with open(cfg_path) as f:
+                    cfg = yaml.safe_load(f) or {}
+                sg_cfg = cfg.setdefault("skills", {}).setdefault("config", {}).setdefault("skill-graph", {})
+                source_dirs = sg_cfg.get("source_dirs", [])
+                resolved = [os.path.abspath(os.path.expanduser(str(d))) for d in source_dirs]
+                if action == "add_dir":
+                    if target in resolved:
+                        return json.dumps({"success": True, "action": "add_dir", "path": target, "note": "already present"})
+                    source_dirs.append(path_str)
+                else:
+                    source_dirs = [d for d in source_dirs if os.path.abspath(os.path.expanduser(str(d))) != target]
+                sg_cfg["source_dirs"] = source_dirs
+                with open(cfg_path, "w") as f:
+                    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            conn = _ensure_graph()
+            with _graph_lock:
+                count = _full_rebuild(conn)
+            return json.dumps({"success": True, "action": action, "path": target, "skills_indexed": count, "persisted": persist})
+        return json.dumps({"success": False, "error": f"Unknown action: {action}. Use add_dir, remove_dir, or list_dirs."})
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
 # ── Slash command handler ───────────────────────────────────────────────────
 
 
@@ -1240,27 +1360,12 @@ def _handle_slash_command(args: str) -> str | None:
             return f"List failed: {e}"
 
     elif subcmd == "config":
-        try:
-            conn = _ensure_graph()
-            db_path = _db_path()
-            scanned = _find_all_skills_dirs()
-            cfg_dirs = _read_source_dirs_from_config()
-            skill_count = conn.execute("SELECT COUNT(*) FROM skill_nodes").fetchone()[0]
-            db_size = db_path.stat().st_size if db_path.exists() else 0
-            lines = [
-                "Skill Graph configuration",
-                f"  DB path:     {db_path}",
-                f"  DB size:     {db_size / 1024:.1f} KB",
-                f"  Skills:      {skill_count}",
-                f"  Source dirs (config): {cfg_dirs}" if cfg_dirs else "  Source dirs (config): (none)",
-                "  Scanned dirs:",
-            ]
-            for d in scanned:
-                cnt = len(list(d.rglob("SKILL.md"))) if d.exists() else 0
-                lines.append(f"    {d}  ({cnt} SKILL.md)")
-            return "\n".join(lines)
-        except Exception as e:
-            return f"Config failed: {e}"
+        rest_parts = rest.strip().split(None, 1) if rest.strip() else []
+        config_action = rest_parts[0].lower() if rest_parts else "show"
+        config_arg = rest_parts[1] if len(rest_parts) > 1 else ""
+        if config_action in ("add", "remove"):
+            return _handle_source_dir_config(config_action, config_arg)
+        return _show_graph_config()
 
     elif subcmd in ("score", "explain"):
         """Show detailed scoring breakdown for a search query."""
@@ -1570,12 +1675,51 @@ def register(ctx):
         check_fn=None,
     )
 
+
+    # ── Tool: skill_graph_config ──
+    ctx.register_tool(
+        name="skill_graph_config",
+        toolset="skills",
+        schema={
+            "name": "skill_graph_config",
+            "description": (
+                "Manage skill-graph source directories at runtime without restarting Hermes. "
+                "Add or remove directories for skill discovery, or list current configuration. "
+                "Changes persist to config.yaml when persist=true (default). "
+                "The graph is automatically rebuilt after add/remove."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "add_dir, remove_dir, or list_dirs",
+                        "enum": ["add_dir", "remove_dir", "list_dirs"],
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory path (required for add_dir/remove_dir)",
+                    },
+                    "persist": {
+                        "type": "boolean",
+                        "description": "Save to config.yaml (default: true). Set false for ephemeral changes.",
+                        "default": True,
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+        handler=_handle_skill_graph_config,
+        description="Manage skill-graph source directories at runtime",
+        check_fn=None,
+    )
+
     # ── Slash command: /skill-graph ──
     ctx.register_command(
         name="skill-graph",
         handler=_handle_slash_command,
         description="Skill knowledge graph: rebuild, status, help",
-        args_hint="rebuild|status",
+        args_hint="rebuild|status|config [add|remove] <path>",
     )
 
     # ── Alias: /sg → same handler as /skill-graph ──
@@ -1583,7 +1727,7 @@ def register(ctx):
         name="sg",
         handler=_handle_slash_command,
         description="Alias for /skill-graph",
-        args_hint="rebuild|status",
+        args_hint="rebuild|status|config [add|remove] <path>",
     )
 
     # ── Hook: pre_tool_call — block find/read_file/recall if graph not searched ──
@@ -1765,6 +1909,6 @@ def register(ctx):
     ctx.register_hook("post_tool_call", _on_post_tool_call)
 
     logger.info(
-        "skill-graph plugin registered: tools=skill_graph_search+skill_load, "
+        "skill-graph plugin registered: tools=skill_graph_search+skill_load+skill_graph_config, "
         "cmd=/skill-graph, hooks=on_session_start+post_tool_call+pre_tool_call"
     )

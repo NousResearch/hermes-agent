@@ -11,8 +11,10 @@ Windows runner.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -1139,3 +1141,199 @@ class TestWindowlessGatewayRestartSpec:
         assert cwd == "C:/hermes"
         assert env["VIRTUAL_ENV"] == str(Path("C:/venv"))
         assert "PYTHONPATH" in env
+
+
+# ---------------------------------------------------------------------------
+# gateway/run.py :: GatewayRunner._launch_detached_restart_command
+# outer watcher Popen breakaway-denied fallback (PR #42993)
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayRunRestartWatcherOuterPopenFallback:
+    """The Windows ``/restart`` watcher in ``gateway.run`` spawns an outer
+    detached ``python -c <watcher>`` process with
+    ``windows_detach_popen_kwargs()`` (which carries
+    ``CREATE_BREAKAWAY_FROM_JOB``).  A restrictive parent job object rejects
+    the breakaway bit with ``ERROR_ACCESS_DENIED`` (surfaced as ``OSError``);
+    the launcher must retry once without breakaway, preserving argv and the
+    scrubbed environment, and only warn — never crash, never leak secrets —
+    if the retry also fails.
+
+    Behavioral: drives the real coroutine with a mocked ``subprocess.Popen``
+    rather than asserting on source text.  Runs on Linux CI via a
+    ``sys.platform`` patch; the breakaway-bit assertions are gated on the
+    real host being Windows because ``_subprocess_compat`` caches
+    ``IS_WINDOWS`` at import time.
+    """
+
+    @staticmethod
+    def _fake_self():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            _detached_restart_helper_started=False,
+            _restart_drain_timeout=0.0,
+        )
+
+    @classmethod
+    def _drive(cls, gr):
+        asyncio.run(
+            gr.GatewayRunner._launch_detached_restart_command(cls._fake_self())
+        )
+
+    def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
+        import gateway.run as gr
+        from hermes_cli._subprocess_compat import (
+            IS_WINDOWS,
+            windows_detach_flags_without_breakaway,
+            windows_detach_popen_kwargs,
+        )
+
+        monkeypatch.setattr(gr.sys, "platform", "win32")
+        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
+
+        calls = []
+
+        def fake_popen(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if len(calls) == 1:
+                raise OSError(5, "Access is denied")  # ERROR_ACCESS_DENIED
+            return MagicMock()
+
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+        self._drive(gr)
+
+        assert len(calls) == 2, "outer watcher must retry exactly once on OSError"
+        (argv1, kw1), (argv2, kw2) = calls
+
+        # argv is identical across primary and fallback, and every current
+        # watcher parameter survives:
+        #   [watcher_python, "-c", <script>, str(pid), str(restart_after_s), *cmd_argv]
+        assert argv1 == argv2
+        assert argv1[1] == "-c"
+        assert argv1[3] == str(os.getpid())
+        assert float(argv1[4]) >= 5.0  # restart deadline preserved
+        assert argv1[-2:] == ["gateway", "restart"]
+
+        # Scrubbed env preserved and identical on both calls.
+        assert kw1["env"] is kw2["env"]
+        assert "_HERMES_GATEWAY" not in kw1["env"]
+
+        # Stable, non-flag spawn configuration preserved across both attempts.
+        assert kw1["stdout"] is subprocess.DEVNULL
+        assert kw1["stderr"] is subprocess.DEVNULL
+        assert kw2["stdout"] is subprocess.DEVNULL
+        assert kw2["stderr"] is subprocess.DEVNULL
+
+        # Primary spreads the full detach helper.  Assert every returned helper
+        # kwarg is present on the call — meaningful on Linux CI too, where the
+        # helper returns {"start_new_session": True} (no creationflags entry):
+        # dropping the spread entirely would fail here, not just on Windows.
+        # The fallback uses the explicit no-breakaway creationflags.
+        expected_primary = windows_detach_popen_kwargs()
+        for key, value in expected_primary.items():
+            assert kw1[key] == value
+        assert kw2["creationflags"] == windows_detach_flags_without_breakaway()
+        assert "start_new_session" not in kw2
+
+        if IS_WINDOWS:
+            _BREAKAWAY = 0x01000000
+            assert kw1["creationflags"] & _BREAKAWAY, (
+                "primary spawn must request CREATE_BREAKAWAY_FROM_JOB"
+            )
+            assert not (kw2["creationflags"] & _BREAKAWAY), (
+                "fallback spawn must drop CREATE_BREAKAWAY_FROM_JOB"
+            )
+
+    def test_outer_watcher_inline_respawn_stays_no_breakaway(self, monkeypatch):
+        """The embedded respawn script (argv[2]) must keep calling
+        ``windows_detach_flags_without_breakaway()`` — current main
+        intentionally respawns the gateway without the breakaway bit, and this
+        port must not reintroduce a breakaway-first inline shape."""
+        import gateway.run as gr
+
+        monkeypatch.setattr(gr.sys, "platform", "win32")
+        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
+
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            return MagicMock()
+
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
+        self._drive(gr)
+
+        watcher_script = captured["argv"][2]
+        assert "windows_detach_flags_without_breakaway()" in watcher_script
+        assert "CREATE_BREAKAWAY_FROM_JOB" not in watcher_script
+
+    def test_outer_watcher_happy_path_spawns_once(self, monkeypatch):
+        import gateway.run as gr
+
+        monkeypatch.setattr(gr.sys, "platform", "win32")
+        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
+
+        calls = []
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda argv, **kwargs: calls.append((argv, kwargs)) or MagicMock(),
+        )
+        warn = MagicMock()
+        monkeypatch.setattr(gr.logger, "warning", warn)
+
+        self._drive(gr)
+
+        assert len(calls) == 1, "no retry when the primary spawn succeeds"
+        warn.assert_not_called()
+
+    def test_outer_watcher_dual_failure_warns_without_leaking_secrets(
+        self, monkeypatch
+    ):
+        import gateway.run as gr
+
+        monkeypatch.setattr(gr.sys, "platform", "win32")
+        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
+
+        calls = []
+
+        def always_fail(argv, **kwargs):
+            calls.append((argv, kwargs))
+            raise OSError(5, "Access is denied")
+
+        monkeypatch.setattr("subprocess.Popen", always_fail)
+        warn = MagicMock()
+        monkeypatch.setattr(gr.logger, "warning", warn)
+
+        # Deterministic sentinel in the environment the watcher inherits
+        # (watcher_env = os.environ.copy()); the warning must never echo it.
+        secret = "maxwell-do-not-log-this-secret-42993"
+        monkeypatch.setenv("HERMES_TEST_SECRET", secret)
+
+        # Dual failure must NOT propagate — the user's CLI still exits cleanly.
+        self._drive(gr)
+
+        assert len(calls) == 2, "both primary and fallback attempted"
+        warn.assert_called_once()
+
+        # Secret-safe logging: only (interpreter basename, error field, error
+        # code) are logged — never the exception object (str(exc) can carry a
+        # path), the argv (watcher source + interpreter path), or env contents.
+        argv_used, kwargs_used = calls[0]
+        fmt, *log_args = warn.call_args.args
+        assert len(log_args) == 3, "warning should log only (basename, field, code)"
+        basename_arg, error_field, error_code = log_args
+        assert basename_arg == os.path.basename(argv_used[0])
+        assert error_field in ("winerror", "errno")
+        assert isinstance(error_code, int)
+        for arg in log_args:
+            assert not isinstance(arg, (OSError, list, dict))
+
+        # The watcher's env carried the sentinel; the rendered warning must not.
+        assert secret in (kwargs_used.get("env") or {}).get("HERMES_TEST_SECRET", "")
+        rendered = fmt % tuple(log_args)
+        assert secret not in rendered
+        assert argv_used[2] not in rendered  # watcher script body
+        assert "argv" not in fmt.lower()
+        assert "env=" not in fmt.lower()

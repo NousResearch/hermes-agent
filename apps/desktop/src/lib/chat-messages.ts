@@ -785,6 +785,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       parts.push(message.role === 'assistant' ? assistantTextPart(displayContent) : textPart(displayContent))
     }
 
+    // assistant-ui's MessagePrimitive.Parts expects a text node when
+    // tool-call parts are present. Pad with a space for tool-call-only
+    // assistant messages (empty content + tool_calls set).
+    if (!displayContent && message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+      parts.push(assistantTextPart(' '))
+    }
+
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
       parts.push(...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex)))
     }

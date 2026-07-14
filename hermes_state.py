@@ -3646,7 +3646,7 @@ class SessionDB:
                     s.started_at
                 ) AS last_active
             FROM sessions s
-            WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
+            WHERE s.source = 'cron' AND s.ended_at IS NOT NULL AND s.id >= ? AND s.id < ?
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """

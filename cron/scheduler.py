@@ -2826,6 +2826,10 @@ def run_job(
     # statement raises.  A leaked writer would deadlock the whole scheduler
     # (every future job blocks on acquire_*); a leaked reader blocks all
     # future writers.  Acquire itself can't leak (it either blocks or returns).
+    # PR #43233: cron session ID translation — initialize the local capture
+    # variables used at the message.complete emit sites below.
+    _cron_emit = None
+    _cron_emit_stored = ""
     try:
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
@@ -3133,6 +3137,28 @@ def run_job(
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+
+        # ── Attach TUI gateway callbacks for live WebSocket streaming ──
+        try:
+            from tui_gateway.server import _emit, _on_tool_start, _on_tool_complete, _on_tool_progress, _status_update, _cron_runtime_id_map
+            _cron_stored_id = _cron_session_id
+
+            def _resolve_sid():
+                return _cron_runtime_id_map.get(_cron_stored_id, _cron_stored_id)
+
+            agent.tool_start_callback = lambda tc_id, name, args: _on_tool_start(_resolve_sid(), tc_id, name, args)
+            agent.tool_complete_callback = lambda tc_id, name, args, result: _on_tool_complete(_resolve_sid(), tc_id, name, args, result)
+            agent.tool_progress_callback = lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(_resolve_sid(), event_type, name, preview, args, **kwargs)
+            agent.tool_gen_callback = lambda name: _emit("tool.generating", _resolve_sid(), {"name": name})
+            agent.stream_delta_callback = lambda text: _emit("message.delta", _resolve_sid(), {"text": text})
+            agent.thinking_callback = lambda text: _emit("thinking.delta", _resolve_sid(), {"text": text})
+            agent.reasoning_callback = lambda text: _emit("reasoning.delta", _resolve_sid(), {"text": text})
+            agent.status_callback = lambda kind, text=None: _status_update(_resolve_sid(), str(kind), None if text is None else str(text))
+            agent.notice_callback = lambda n: _emit("notification.show", _resolve_sid(), {"text": n.text, "level": n.level, "kind": n.kind, "ttl_ms": n.ttl_ms, "key": n.key, "id": n.id})
+            agent.notice_clear_callback = lambda key: _emit("notification.clear", _resolve_sid(), {"key": key})
+        except ImportError:
+            logger.debug("Cron agent: tui_gateway.server not available — events not streamed")
+
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -3234,10 +3260,10 @@ def run_job(
                         _inactivity_timeout = True
                         break
         except Exception:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
+            _cron_pool.shutdown(wait=True, cancel_futures=True)
             raise
         finally:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
+            _cron_pool.shutdown(wait=True, cancel_futures=True)
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
@@ -3348,10 +3374,14 @@ def run_job(
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        if _cron_emit:
+            _cron_emit("message.complete", _cron_emit_map.get(_cron_emit_stored, _cron_emit_stored))
         return True, output, final_response, None
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
+        if _cron_emit:
+            _cron_emit("message.complete", _cron_emit_map.get(_cron_emit_stored, _cron_emit_stored))
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
         output = f"""# Cron Job: {job_name} (FAILED)
@@ -3406,6 +3436,13 @@ def run_job(
                 logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
+                # Clear the runtime-ID mapping for this cron session so a subsequent
+                # session.resume from a different cron job doesn't find a stale entry
+                # left over from this job's agent callbacks.
+                try:
+                    _cron_runtime_id_map.pop(_cron_stored_id, None)
+                except (NameError, AttributeError):
+                    pass
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
             try:

@@ -1007,7 +1007,12 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     for p in profiles:
         if p.name == "default":
             continue
-        h = f"{HOST}.{p.name}"
+        # Use the same resolver as the runtime (profile_host_key) so the
+        # display looks up the correct block. The runtime derives host keys
+        # with an underscore separator and sanitization (e.g. "hermes_kristi"),
+        # not a dot ("hermes.kristi"), so a naive f"{HOST}.{p.name}" misses
+        # the real block and falsely shows "(not set)" / the raw host key.
+        h = profile_host_key(p.name)
         results.append((p.name, h, hosts.get(h, {})))
 
     return results

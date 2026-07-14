@@ -95,7 +95,11 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
-        "description": "Web research and content extraction tools",
+        "description": "Web research, content extraction, and generic HTTP API call tools",
+        # http_request joins this toolset via its registry registration
+        # (tools/http_request_tool.py) rather than this static list, so the
+        # platform composites' static subset inference is unaffected — the
+        # same path plugin/overlay tools use (see issue #49622).
         "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
     },

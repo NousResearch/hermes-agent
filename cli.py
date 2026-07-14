@@ -8762,9 +8762,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     old_generation,
                     new_generation,
                 )
-                agent = getattr(self, "agent", None)
-                if hasattr(agent, "_invalidate_system_prompt"):
-                    agent._invalidate_system_prompt()
             print(
                 f"  Reloaded .env ({count} var(s) updated; "
                 f"config {old_generation} -> {new_generation})"

@@ -111,6 +111,26 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_anthropic_prefers_explicit_runtime_key_over_resolver(monkeypatch):
+    client = _RecordingClient(
+        {
+            "five_hour": {"utilization": 0.25},
+        }
+    )
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=15.0: client)
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token",
+        lambda: "rotated-pool-token",
+    )
+
+    snapshot = fetch_account_usage("anthropic", api_key="runtime-token")
+
+    assert snapshot is not None
+    assert snapshot.provider == "anthropic"
+    assert client.requests[0][1]["Authorization"] == "Bearer runtime-token"
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

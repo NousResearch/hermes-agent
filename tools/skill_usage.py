@@ -421,10 +421,16 @@ def is_agent_created(skill_name: str) -> bool:
     off_limits = _read_bundled_manifest_names() | _read_hub_installed_names()
     if skill_name in off_limits:
         return False
-    return not (
-        _find_skill_dir(skill_name) is None
-        and _find_external_skill_dir(skill_name) is not None
-    )
+    if _find_skill_dir(skill_name) is None:
+        ext_dir = _find_external_skill_dir(skill_name)
+        if ext_dir is not None:
+            # External skills are not agent-created — EXCEPT in-scope
+            # shared-tree skills when curator.include_shared_dirs is on
+            # (single chokepoint: is_shared_curatable_path).
+            from agent.skill_utils import is_shared_curatable_path
+
+            return is_shared_curatable_path(ext_dir)
+    return True
 
 
 def is_hub_installed(skill_name: str) -> bool:
@@ -448,14 +454,24 @@ def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> 
     """Whether the curator may track/archive *skill_name*.
 
     Agent-created skills are always eligible. Bundled built-ins become eligible
-    only when ``curator.prune_builtins`` is enabled. Hub-installed and external
-    skill-dir skills are NEVER eligible — they have an external upstream owner.
+    only when ``curator.prune_builtins`` is enabled. Hub-installed skills are
+    NEVER eligible — they have an external upstream owner. External skill-dir
+    skills are ineligible EXCEPT in-scope shared-tree skills when
+    ``curator.include_shared_dirs`` is on (single chokepoint:
+    ``agent.skill_utils.is_shared_curatable_path`` — which itself hard-rejects
+    hub and bundled dirs regardless of any allowlist).
     Protected built-ins (``PROTECTED_BUILTIN_SKILLS``) are NEVER eligible
     regardless of any flag — they back load-bearing UX and must never be
     archived or consolidated.
     """
+    from agent.skill_utils import is_shared_curatable_path
+
     if skill_path is not None and is_external_skill_path(skill_path):
-        return False
+        if not is_shared_curatable_path(skill_path):
+            return False
+        if is_protected_builtin(skill_name) or is_hub_installed(skill_name):
+            return False
+        return True
     if is_protected_builtin(skill_name):
         return False
     if is_hub_installed(skill_name):
@@ -465,8 +481,9 @@ def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> 
     local_dir = _find_skill_dir(skill_name)
     if local_dir is not None:
         return not is_external_skill_path(local_dir)
-    if _find_external_skill_dir(skill_name) is not None:
-        return False
+    ext_dir = _find_external_skill_dir(skill_name)
+    if ext_dir is not None:
+        return is_shared_curatable_path(ext_dir)
     return True
 
 
@@ -700,10 +717,28 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     built-ins are only archivable when ``curator.prune_builtins`` is enabled;
     when one is archived, its name is added to the suppression list so the
     update-time re-seeder leaves it archived instead of restoring it.
+
+    In-scope SHARED skills (``curator.include_shared_dirs``) archive IN-TREE
+    to ``skills-shared/<group>/.archive/<name>/`` via
+    ``agent.curator_shared.archive_shared_skill`` — never to the local
+    archive (other agents sharing the tree would lose the skill).
     """
     local_skill_dir = _find_skill_dir(skill_name)
-    if local_skill_dir is None and _find_external_skill_dir(skill_name) is not None:
-        return False, _external_read_only_message(skill_name)
+    if local_skill_dir is None:
+        ext_dir = _find_external_skill_dir(skill_name)
+        if ext_dir is not None:
+            from agent.skill_utils import is_shared_curatable_path
+
+            if not is_shared_curatable_path(ext_dir):
+                return False, _external_read_only_message(skill_name)
+            if not is_curation_eligible(skill_name, ext_dir):
+                return False, _external_read_only_message(skill_name)
+            from agent.curator_shared import archive_shared_skill
+
+            ok, msg, _touched = archive_shared_skill(ext_dir)
+            if ok:
+                set_state(skill_name, STATE_ARCHIVED)
+            return ok, msg
 
     if not is_curation_eligible(skill_name, local_skill_dir):
         if is_protected_builtin(skill_name):

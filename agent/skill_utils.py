@@ -635,6 +635,163 @@ def is_external_skill_path(path) -> bool:
     return False
 
 
+# ── Shared-tree curator scope (curator.include_shared_dirs) ───────────────
+
+
+def get_shared_skills_root() -> Path:
+    """The git-backed shared-skills tree root (``<root>/skills-shared``).
+
+    Mirrors ``tools.skill_manager_tool._shared_skills_root()``'s profile rule:
+    the shared tree lives at the ROOT Hermes home and is shared by every
+    profile. When ``HERMES_HOME`` points at ``<root>/profiles/<name>``, the
+    root is the grandparent. Fail-open to the HERMES_HOME-relative path.
+    """
+    from hermes_constants import get_hermes_home
+
+    try:
+        home = get_hermes_home()
+        if home.parent.name == "profiles":
+            return home.parent.parent / "skills-shared"
+        return home / "skills-shared"
+    except Exception:
+        return get_hermes_home() / "skills-shared"
+
+
+def get_curator_include_shared_dirs() -> bool:
+    """Read ``curator.include_shared_dirs`` (bool, default False).
+
+    Master opt-in for bringing skills-shared/ external-dir skills into
+    curator scope. Default-off: a fresh install must never start rewriting
+    the shared tree silently.
+    """
+    parsed = _load_raw_config()
+    cur = parsed.get("curator")
+    if not isinstance(cur, dict):
+        return False
+    return bool(cur.get("include_shared_dirs", False))
+
+
+def get_curator_shared_dirs() -> List[str]:
+    """Read ``curator.shared_dirs`` (list of group names/paths, default []).
+
+    Companion allowlist to ``include_shared_dirs``: empty list means ALL
+    shared groups are eligible; a non-empty list narrows scope to the named
+    group dirs (or absolute path prefixes). A bare string is coerced to a
+    single-element list; any other malformed value coerces to [] (never
+    raises).
+    """
+    parsed = _load_raw_config()
+    cur = parsed.get("curator")
+    if not isinstance(cur, dict):
+        return []
+    raw = cur.get("shared_dirs")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(e).strip() for e in raw if str(e).strip()]
+
+
+def _shared_group_for(candidate: Path, shared_root: Path) -> Optional[str]:
+    """Return the group-dir name for *candidate* under *shared_root*, or None."""
+    try:
+        rel = candidate.relative_to(shared_root)
+    except ValueError:
+        return None
+    if not rel.parts:
+        return None
+    return rel.parts[0]
+
+
+def is_shared_curatable_path(
+    path,
+    *,
+    include_shared_dirs: Optional[bool] = None,
+    shared_dirs: Optional[List[str]] = None,
+) -> bool:
+    """Single chokepoint: may the curator mutate this external-dir path?
+
+    True only when ALL hold:
+      1. the path is under a configured ``skills.external_dirs`` entry
+      2. the skill root is NOT hub-installed (no ``.hub-meta.json``) and the
+         path does not resolve into the local skills tree (bundled skills
+         live there and stay NEVER-touchable)
+      3. the real (symlink-resolved) path is UNDER the shared root
+         (``skills-shared/``)
+      4. ``curator.include_shared_dirs`` is true
+      5. if ``curator.shared_dirs`` is non-empty, the skill's group dir (or
+         an absolute-path prefix) is in the allowlist
+
+    ``include_shared_dirs``/``shared_dirs`` may be injected for tests; by
+    default they are read from config. Bundled and hub-installed skills are
+    rejected REGARDLESS of any flag or allowlist entry.
+    """
+    if include_shared_dirs is None:
+        include_shared_dirs = get_curator_include_shared_dirs()
+    if not include_shared_dirs:
+        return False
+
+    if not is_external_skill_path(path):
+        return False
+
+    candidate = _resolve_for_skill_ownership(path)
+
+    # Symlink escape: is_external_skill_path may match on the unresolved
+    # containment while the real target lives in the bundled/local tree.
+    try:
+        local_skills = get_skills_dir().resolve()
+        candidate.relative_to(local_skills)
+        return False  # resolves into the local tree — bundled/local wins
+    except ValueError:
+        pass
+    except Exception:
+        return False
+
+    shared_root = _resolve_for_skill_ownership(get_shared_skills_root())
+    try:
+        candidate.relative_to(shared_root)
+    except ValueError:
+        return False
+
+    # Hub-installed marker anywhere up to the shared root → never touchable.
+    probe = candidate if candidate.is_dir() else candidate.parent
+    try:
+        while True:
+            if (probe / ".hub-meta.json").exists():
+                return False
+            if probe == shared_root or probe == probe.parent:
+                break
+            probe = probe.parent
+    except OSError:
+        return False
+
+    if shared_dirs is None:
+        shared_dirs = get_curator_shared_dirs()
+    if not shared_dirs:
+        return True
+
+    group = _shared_group_for(candidate, shared_root)
+    for entry in shared_dirs:
+        if os.path.isabs(os.path.expanduser(os.path.expandvars(entry))):
+            allow = _resolve_for_skill_ownership(entry)
+            # An allowlist path must itself sit under the shared root —
+            # ../../ traversal cannot widen scope beyond skills-shared/.
+            try:
+                allow.relative_to(shared_root)
+            except ValueError:
+                continue
+            try:
+                candidate.relative_to(allow)
+                return True
+            except ValueError:
+                continue
+        elif group is not None and entry == group:
+            return True
+    return False
+
+
 # ── Condition extraction ──────────────────────────────────────────────────
 
 

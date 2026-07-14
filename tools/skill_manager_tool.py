@@ -335,8 +335,8 @@ def _background_review_write_guard(
         logger.debug("pinned skill guard lookup failed for %s", name, exc_info=True)
 
     try:
-        from agent.skill_utils import is_external_skill_path
-        if is_external_skill_path(skill_dir):
+        from agent.skill_utils import is_external_skill_path, is_shared_curatable_path
+        if is_external_skill_path(skill_dir) and not is_shared_curatable_path(skill_dir):
             return {
                 "success": False,
                 "error": (

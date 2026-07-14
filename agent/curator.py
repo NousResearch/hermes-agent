@@ -203,6 +203,56 @@ def get_consolidate() -> bool:
     return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
 
 
+def get_include_shared_dirs() -> bool:
+    """Whether skills-shared/ external-dir skills are in curator scope.
+
+    OFF by default — a fresh install must never start rewriting the
+    git-backed shared tree silently. When on, shared skills (and only
+    shared: bundled and hub-installed skills remain NEVER-touchable) join
+    the candidate list and become write-eligible under the shared-tree git
+    safety contract (lock + snapshot + clean-tree precheck + explicit
+    pathspec commits). See ``agent.skill_utils.is_shared_curatable_path``.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("include_shared_dirs", False))
+
+
+def get_shared_dirs() -> List[str]:
+    """Optional allowlist narrowing ``include_shared_dirs`` scope.
+
+    Empty (the default) means ALL shared group dirs are eligible; a
+    non-empty list of group names (or absolute paths under skills-shared/)
+    restricts scope to those. Malformed values coerce (string → one-element
+    list; anything else → []) — never raises.
+    """
+    cfg = _load_config()
+    raw = cfg.get("shared_dirs")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(e).strip() for e in raw if str(e).strip()]
+
+
+def get_split_over_kb() -> int:
+    """Oversized-skill split threshold in KB. 0 (default) disables the split.
+
+    When > 0, any in-scope SKILL.md larger than this is deterministically
+    split into references/*.md + a lean pointer SKILL.md (content-preserving
+    and reversible — see ``agent.skill_split``). Runs on both agent-tree and
+    in-scope shared skills, BEFORE and INDEPENDENTLY of the LLM
+    consolidation gate (``curator.consolidate`` may stay false).
+    """
+    cfg = _load_config()
+    try:
+        v = int(cfg.get("split_over_kb", 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(v, 0)
+
+
 # ---------------------------------------------------------------------------
 # Idle / interval check
 # ---------------------------------------------------------------------------
@@ -1452,8 +1502,244 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shared-tree scope + deterministic split pass
+# ---------------------------------------------------------------------------
+
+def _shared_scope_enabled() -> bool:
+    return get_include_shared_dirs()
+
+
+def _iter_shared_candidate_dirs() -> List[Path]:
+    """In-scope shared skill dirs (skills-shared/<group>/<skill>/SKILL.md).
+
+    Every dir returned has already passed ``is_shared_curatable_path`` —
+    bundled/hub/out-of-allowlist dirs never appear.
+    """
+    from agent.skill_utils import (
+        get_shared_skills_root,
+        is_excluded_skill_path,
+        is_shared_curatable_path,
+    )
+
+    root = get_shared_skills_root()
+    if not root.is_dir():
+        return []
+    include = get_include_shared_dirs()
+    allow = get_shared_dirs()
+    dirs: List[Path] = []
+    for skill_md in root.rglob("SKILL.md"):
+        if is_excluded_skill_path(skill_md):
+            continue
+        if is_shared_curatable_path(
+            skill_md, include_shared_dirs=include, shared_dirs=allow,
+        ):
+            dirs.append(skill_md.parent)
+    return sorted(set(dirs))
+
+
+def _shared_group_of(skill_dir: Path) -> str:
+    from agent.skill_utils import get_shared_skills_root
+
+    try:
+        rel = Path(skill_dir).resolve().relative_to(
+            get_shared_skills_root().resolve()
+        )
+        return rel.parts[0] if rel.parts else ""
+    except (ValueError, OSError):
+        return ""
+
+
+def _split_agent_tree(threshold_kb: int, dry_run: bool) -> Dict[str, Any]:
+    """Split oversized agent-tree skills. Returns {split, skipped, errors}."""
+    from agent import skill_split
+    from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
+
+    result: Dict[str, Any] = {"split": [], "unsplittable": [], "errors": []}
+    base = get_hermes_home() / "skills"
+    if not base.is_dir() or threshold_kb <= 0:
+        return result
+    for skill_md in base.rglob("SKILL.md"):
+        if is_excluded_skill_path(skill_md) or is_external_skill_path(skill_md):
+            continue
+        skill_dir = skill_md.parent
+        try:
+            plan = skill_split.plan_split(skill_dir, threshold_kb)
+        except Exception as e:
+            result["errors"].append(f"{skill_dir.name}: plan failed ({e})")
+            continue
+        if plan["action"] == "unsplittable":
+            result["unsplittable"].append(
+                f"{skill_dir.name}: {plan.get('reason', '?')}"
+            )
+        elif plan["action"] == "split":
+            if dry_run:
+                result["split"].append(f"{skill_dir.name} (dry-run, no write)")
+                continue
+            try:
+                skill_split.execute_split(skill_dir, plan)
+                result["split"].append(skill_dir.name)
+            except Exception as e:
+                result["errors"].append(f"{skill_dir.name}: split failed ({e})")
+    return result
+
+
+def _run_shared_pass(dry_run: bool, threshold_kb: int) -> Dict[str, Any]:
+    """The shared-tree deterministic pass: split under the full git contract.
+
+    HARD-GATED (Invariant 3): lock contention, snapshot failure, or a dirty
+    git precheck skips the pass and reports the reason — no shared mutation
+    without all three. Dry-run is CODE-gated here: zero writes, zero
+    commits, regardless of what any prompt says.
+
+    The fcntl lock serializes curator-vs-curator only; the protection
+    against a non-cooperating concurrent writer is the explicit-pathspec
+    commit + pre-commit drift-abort in ``curator_shared.commit_shared``.
+    """
+    from agent import curator_shared, skill_split
+
+    report: Dict[str, Any] = {
+        "enabled": True, "skipped": None, "split": [], "unsplittable": [],
+        "errors": [], "commit": None, "recovery": None,
+    }
+    candidates = _iter_shared_candidate_dirs()
+    report["candidates"] = [d.name for d in candidates]
+    if not candidates:
+        report["skipped"] = "no in-scope shared skills"
+        return report
+    if dry_run:
+        # Code-gated: report what WOULD split, write nothing, commit nothing.
+        for d in candidates:
+            try:
+                plan = skill_split.plan_split(d, threshold_kb)
+            except Exception as e:
+                report["errors"].append(f"{d.name}: plan failed ({e})")
+                continue
+            if plan["action"] == "split":
+                report["split"].append(f"{d.name} (dry-run, no write)")
+            elif plan["action"] == "unsplittable":
+                report["unsplittable"].append(
+                    f"{d.name}: {plan.get('reason', '?')}"
+                )
+        report["skipped"] = "dry-run (no mutations)"
+        return report
+
+    with curator_shared.shared_pass_lock() as acquired:
+        if not acquired:
+            report["skipped"] = "lock contention (another curator holds the shared lock)"
+            return report
+
+        ok, reason, dirty = curator_shared.git_precheck_shared()
+        if not ok and reason == "dirty working tree":
+            # Crash recovery: a cleanly-acquired lock over a dirty tree is
+            # the staleness signal (fcntl auto-releases on holder death).
+            recovered, why = curator_shared.attempt_crash_recovery()
+            report["recovery"] = why
+            if recovered:
+                ok, reason, dirty = curator_shared.git_precheck_shared()
+        if not ok:
+            report["skipped"] = f"precheck failed ({reason})"
+            return report
+
+        if threshold_kb <= 0:
+            report["skipped"] = "split disabled (split_over_kb=0)"
+            return report
+
+        # Plan first so the snapshot manifest can record the intended-write
+        # set BEFORE any mutation (crash recovery keys on it).
+        plans: List[Any] = []
+        for d in candidates:
+            try:
+                plan = skill_split.plan_split(d, threshold_kb)
+            except Exception as e:
+                report["errors"].append(f"{d.name}: plan failed ({e})")
+                continue
+            if plan["action"] == "split":
+                plans.append((d, plan))
+            elif plan["action"] == "unsplittable":
+                report["unsplittable"].append(
+                    f"{d.name}: {plan.get('reason', '?')}"
+                )
+        if not plans:
+            report["skipped"] = "nothing over threshold"
+            return report
+
+        from agent.skill_utils import get_shared_skills_root
+
+        shared_root = get_shared_skills_root()
+        repo = curator_shared._git_toplevel(shared_root)
+        intended: List[str] = []
+        touched_dirs = [d for d, _ in plans]
+        if repo is not None:
+            for d, plan in plans:
+                for carve in plan["carves"]:
+                    intended.append(str(
+                        (d / carve["file"]).resolve().relative_to(repo.resolve())
+                    ))
+                intended.append(str(
+                    (d / "SKILL.md").resolve().relative_to(repo.resolve())
+                ))
+                intended.append(str(
+                    (d / "references" / skill_split.MANIFEST_NAME)
+                    .resolve().relative_to(repo.resolve())
+                ))
+
+        snap = curator_shared.snapshot_shared(touched_dirs, intended)
+        if snap is None:
+            report["skipped"] = "shared snapshot failed (hard gate)"
+            return report
+        report["snapshot"] = str(snap)
+
+        written: List[Path] = []
+        for d, plan in plans:
+            try:
+                written.extend(skill_split.execute_split(d, plan))
+                report["split"].append(d.name)
+            except Exception as e:
+                report["errors"].append(f"{d.name}: split failed ({e})")
+
+        if written:
+            ok, msg = curator_shared.commit_shared(
+                f"split {len(report['split'])} oversized shared skill(s): "
+                + ", ".join(report["split"]),
+                written,
+            )
+            report["commit"] = msg if ok else None
+            if not ok:
+                report["errors"].append(f"commit failed: {msg}")
+    return report
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator — spawn a forked AIAgent for the LLM review pass
 # ---------------------------------------------------------------------------
+
+def _render_shared_candidate_list() -> str:
+    """Rows for in-scope shared skills (source=shared, group=<dir>)."""
+    dirs = _iter_shared_candidate_dirs()
+    if not dirs:
+        return ""
+    lines = [f"\nShared (skills-shared/) skills in curator scope ({len(dirs)}):\n"]
+    for d in dirs:
+        try:
+            size = (d / "SKILL.md").stat().st_size
+        except OSError:
+            size = 0
+        lines.append(
+            f"- {d.name}  source=shared  group={_shared_group_of(d)}  "
+            f"skill_md_bytes={size}"
+        )
+    return "\n".join(lines)
+
+
+SHARED_SCOPE_NOTE = (
+    "\n\nSHARED-SCOPE MODE IS ON: skills flagged source=shared in the "
+    "candidate list live in the git-backed skills-shared/ tree and ARE "
+    "curatable this pass, overriding hard rule #1 for SHARED external-dir "
+    "skills ONLY. Bundled and hub-installed skills remain strictly "
+    "read-only. Every shared mutation is snapshotted and committed with "
+    "curator provenance; archiving a shared skill moves it to "
+    "skills-shared/<group>/.archive/<name>/ (never the local archive)."
+)
 
 def _render_candidate_list() -> str:
     """Human/agent-readable list of agent-created skills with usage stats."""
@@ -1544,6 +1830,46 @@ def run_curator_review(
             logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
         counts = apply_automatic_transitions(now=start)
 
+    # Deterministic oversized-skill SPLIT pass. Placed HERE — before and
+    # independently of the _llm_pass `if not consolidate:` early-return —
+    # so split fires even in the default consolidate:false config (the
+    # motivating oversized shared skills would otherwise never split).
+    # Dry-run is CODE-gated inside both passes: zero writes, zero commits.
+    split_threshold = get_split_over_kb()
+    split_summary_parts: List[str] = []
+    if split_threshold > 0:
+        try:
+            agent_split = _split_agent_tree(split_threshold, dry_run)
+            if agent_split["split"] or agent_split["errors"]:
+                split_summary_parts.append(
+                    f"split {len(agent_split['split'])} local"
+                    + (f", {len(agent_split['errors'])} errors"
+                       if agent_split["errors"] else "")
+                )
+        except Exception as e:
+            logger.debug("Curator agent-tree split failed: %s", e, exc_info=True)
+
+    # Shared-tree pass (curator.include_shared_dirs). Hard-gated on
+    # lock + snapshot + clean git precheck inside _run_shared_pass.
+    shared_report: Optional[Dict[str, Any]] = None
+    if _shared_scope_enabled():
+        try:
+            shared_report = _run_shared_pass(dry_run, split_threshold)
+            if shared_report.get("skipped"):
+                split_summary_parts.append(
+                    f"shared: skipped ({shared_report['skipped']})"
+                )
+            else:
+                n = len(shared_report.get("split") or [])
+                commit = shared_report.get("commit")
+                split_summary_parts.append(
+                    f"shared: {n} split"
+                    + (f", commit {commit}" if commit else "")
+                )
+        except Exception as e:
+            logger.debug("Curator shared pass failed: %s", e, exc_info=True)
+            split_summary_parts.append(f"shared: error ({e})")
+
     auto_summary_parts = []
     if counts["marked_stale"]:
         auto_summary_parts.append(f"{counts['marked_stale']} marked stale")
@@ -1552,6 +1878,8 @@ def run_curator_review(
     if counts["reactivated"]:
         auto_summary_parts.append(f"{counts['reactivated']} reactivated")
     auto_summary = ", ".join(auto_summary_parts) if auto_summary_parts else "no changes"
+    if split_summary_parts:
+        auto_summary = f"{auto_summary}; " + "; ".join(split_summary_parts)
 
     # Persist state before the LLM pass so a crash mid-review still records
     # the run and doesn't immediately re-trigger. In dry-run we do NOT bump
@@ -1625,7 +1953,15 @@ def run_curator_review(
         llm_meta: Dict[str, Any] = {}
         try:
             candidate_list = _render_candidate_list()
-            if "No agent-created skills" in candidate_list:
+            shared_list = ""
+            if _shared_scope_enabled():
+                try:
+                    shared_list = _render_shared_candidate_list()
+                except Exception as e:
+                    logger.debug("Shared candidate render failed: %s", e)
+            if shared_list:
+                candidate_list = f"{candidate_list}\n{shared_list}"
+            if "No agent-created skills" in candidate_list and not shared_list:
                 final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {
                     "final": "",
@@ -1652,6 +1988,8 @@ def run_curator_review(
                         "delete). It will be restored on `hermes update` only if "
                         "the user explicitly restores it."
                     )
+                if shared_list:
+                    builtins_note = builtins_note + SHARED_SCOPE_NOTE
                 if dry_run:
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"

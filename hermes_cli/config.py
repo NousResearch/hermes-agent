@@ -2476,6 +2476,28 @@ DEFAULT_CONFIG = {
         # genuine non-use (never a mass-prune on the first run). Set to false
         # to keep all bundled built-ins permanently.
         "prune_builtins": True,
+        # Bring the git-backed shared skills tree (skills-shared/, registered
+        # via skills.external_dirs) into curator scope. OFF by default — a
+        # fresh install must never start rewriting the shared tree silently.
+        # When on, shared skills join the candidate list and become
+        # write-eligible under a hard git safety contract: an fcntl
+        # .curator.lock for the whole shared pass, a pre-mutation snapshot,
+        # a clean `git status` precheck, and one explicit-pathspec commit
+        # per run tagged `curator:` (revertable). Bundled and hub-installed
+        # skills remain NEVER-touchable regardless of this flag.
+        "include_shared_dirs": False,
+        # Optional allowlist narrowing include_shared_dirs. Empty = every
+        # skills-shared/<group>/ is eligible; a non-empty list of group
+        # names (e.g. [smart-home, devops]) restricts scope to those.
+        "shared_dirs": [],
+        # Oversized-skill split threshold (KB). 0 disables. When > 0, any
+        # in-scope SKILL.md larger than this is deterministically split into
+        # references/*.md + a lean pointer SKILL.md — content-preserving,
+        # reversible (references/.split-manifest.json records the carve
+        # map), and independent of `consolidate` (fires even when the LLM
+        # pass is off). Set to 100 to keep SKILL.md under the 100 KB
+        # skill_manage patch cap.
+        "split_over_kb": 0,
         # Pre-run backup: before every real curator pass (dry-run is
         # skipped), snapshot ~/.hermes/skills/ into
         # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the

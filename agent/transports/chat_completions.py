@@ -10,6 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 from typing import Any, Dict
+import json
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -650,6 +651,68 @@ class ChatCompletionsTransport(ProviderTransport):
 
         return api_kwargs
 
+    @staticmethod
+    def _get_tool_call_value(obj: Any, key: str, default: Any = None) -> Any:
+        """Read *key* from *obj*, supporting both attribute and dict access."""
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    @staticmethod
+    def _normalize_tool_call_arguments(arguments: Any) -> str:
+        """Normalize tool call arguments to a JSON string.
+
+        ``ToolCall.arguments`` is documented as ``str  # JSON string`` and
+        all downstream consumers expect it.  Provider / gateway responses
+        may arrive with dict, list, empty, or non-string arguments.
+        """
+        if not arguments or (isinstance(arguments, str) and not arguments.strip()):
+            return "{}"
+        if isinstance(arguments, (dict, list)):
+            return json.dumps(arguments, ensure_ascii=False)
+        if isinstance(arguments, str):
+            return arguments
+        return str(arguments)
+
+    @staticmethod
+    def _normalize_chat_completion_tool_call(tc: Any) -> ToolCall:
+        """Normalize a single tool call to the internal ``ToolCall`` shape.
+
+        Supports SDK object (attribute access) and OpenAI-compatible
+        gateway / provider dict responses.  ``extra_content`` (Gemini
+        thought_signature) is preserved in ``provider_data``.
+        """
+        _get = ChatCompletionsTransport._get_tool_call_value
+        _norm = ChatCompletionsTransport._normalize_tool_call_arguments
+
+        tc_id = _get(tc, "id") or _get(tc, "call_id")
+        fn = _get(tc, "function", {})
+        name = _get(fn, "name", "")
+        arguments = _norm(_get(fn, "arguments"))
+
+        # Preserve provider-specific extras on the tool call.
+        # Gemini 3 thinking models attach extra_content with
+        # thought_signature — without replay on the next turn the API
+        # rejects the request with 400.
+        tc_provider_data: dict[str, Any] = {}
+        extra = _get(tc, "extra_content", None)
+        if extra is None and hasattr(tc, "model_extra"):
+            extra = (tc.model_extra if isinstance(tc.model_extra, dict) else {}).get("extra_content")
+        if extra is not None:
+            if hasattr(extra, "model_dump"):
+                try:
+                    extra = extra.model_dump()
+                except Exception:
+                    pass
+            tc_provider_data["extra_content"] = extra
+
+        return ToolCall(
+            id=tc_id,
+            name=name,
+            arguments=arguments,
+            provider_data=tc_provider_data or None,
+        )
+
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize OpenAI ChatCompletion to NormalizedResponse.
 
@@ -669,31 +732,10 @@ class ChatCompletionsTransport(ProviderTransport):
 
         tool_calls = None
         if msg.tool_calls:
-            tool_calls = []
-            for tc in msg.tool_calls:
-                # Preserve provider-specific extras on the tool call.
-                # Gemini 3 thinking models attach extra_content with
-                # thought_signature — without replay on the next turn the API
-                # rejects the request with 400.
-                tc_provider_data: dict[str, Any] = {}
-                extra = getattr(tc, "extra_content", None)
-                if extra is None and hasattr(tc, "model_extra"):
-                    extra = (tc.model_extra if isinstance(tc.model_extra, dict) else {}).get("extra_content")
-                if extra is not None:
-                    if hasattr(extra, "model_dump"):
-                        try:
-                            extra = extra.model_dump()
-                        except Exception:
-                            pass
-                    tc_provider_data["extra_content"] = extra
-                tool_calls.append(
-                    ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=tc.function.arguments,
-                        provider_data=tc_provider_data or None,
-                    )
-                )
+            tool_calls = [
+                self._normalize_chat_completion_tool_call(tc)
+                for tc in msg.tool_calls
+            ]
 
         usage = None
         if hasattr(response, "usage") and response.usage:

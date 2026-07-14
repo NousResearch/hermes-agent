@@ -1099,6 +1099,128 @@ class TestChatCompletionsNormalize:
         assert nr.provider_data == {"refusal": "cannot continue"}
 
 
+class TestChatCompletionsToolCallNormalization:
+    """Tool call shape normalization: dict-shaped tool calls, dict/list/empty
+    arguments, and regression coverage for SDK object shape."""
+
+    @staticmethod
+    def _response_with_tool_calls(tool_calls, finish_reason="tool_calls"):
+        """Build a minimal chat-completions-style response from raw dicts."""
+        return type(
+            "_FakeResponse",
+            (),
+            {
+                "choices": [
+                    type(
+                        "_FakeChoice",
+                        (),
+                        {
+                            "message": type(
+                                "_FakeMessage",
+                                (),
+                                {
+                                    "content": None,
+                                    "tool_calls": tool_calls,
+                                    "reasoning_content": None,
+                                },
+                            )(),
+                            "finish_reason": finish_reason,
+                        },
+                    )()
+                ],
+                "usage": None,
+            },
+        )()
+
+    def test_dict_shaped_tool_call_accepted(self, transport):
+        """A dict-shaped tool call (not an SDK object) must be normalized."""
+        r = self._response_with_tool_calls([
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "arguments": {"cmd": "pwd"},
+                },
+            },
+        ])
+        nr = transport.normalize_response(r)
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].id == "call_1"
+        assert nr.tool_calls[0].name == "terminal"
+        import json
+        assert json.loads(nr.tool_calls[0].arguments) == {"cmd": "pwd"}
+
+    def test_dict_function_list_arguments_becomes_json_string(self, transport):
+        """list arguments must serialize to JSON string, not Python repr."""
+        r = self._response_with_tool_calls([
+            {
+                "id": "call_2",
+                "type": "function",
+                "function": {
+                    "name": "batch",
+                    "arguments": ["a", "b"],
+                },
+            },
+        ])
+        nr = transport.normalize_response(r)
+        import json
+        assert json.loads(nr.tool_calls[0].arguments) == ["a", "b"]
+
+    def test_sdk_object_shape_no_regression(self, transport):
+        """Existing SDK object-shape responses must still normalize."""
+        from types import SimpleNamespace
+        tc = SimpleNamespace(
+            id="call_3",
+            function=SimpleNamespace(
+                name="read_file",
+                arguments='{"path": "README.md"}',
+            ),
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc], reasoning_content=None),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls[0].id == "call_3"
+        assert nr.tool_calls[0].name == "read_file"
+        assert nr.tool_calls[0].arguments == '{"path": "README.md"}'
+
+    def test_dict_tool_call_extra_content_preserved(self, transport):
+        """extra_content on dict-shaped tool calls must survive normalization."""
+        r = self._response_with_tool_calls([
+            {
+                "id": "call_4",
+                "type": "function",
+                "function": {"name": "search", "arguments": "{}"},
+                "extra_content": {"google": {"thought_signature": "SIG_123"}},
+            },
+        ])
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls[0].provider_data == {
+            "extra_content": {"google": {"thought_signature": "SIG_123"}}
+        }
+
+    def test_empty_arguments_normalized_to_empty_object(self, transport):
+        """None / empty arguments must normalize to '{}'."""
+        for empty_val in (None, "   "):
+            r = self._response_with_tool_calls([
+                {
+                    "id": "call_5",
+                    "type": "function",
+                    "function": {
+                        "name": "noop",
+                        "arguments": empty_val,
+                    },
+                },
+            ])
+            nr = transport.normalize_response(r)
+            assert nr.tool_calls[0].arguments == "{}", f"empty_val={empty_val!r}"
+
+
 class TestChatCompletionsCacheStats:
 
     def test_no_usage(self, transport):

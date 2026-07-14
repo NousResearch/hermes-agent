@@ -67,6 +67,7 @@ import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
 import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { findGitBash as _findGitBash } from './find-git-bash'
 import { scanGitRepos } from './git-repo-scan'
 import {
   fileDiffVsHead,
@@ -1739,48 +1740,16 @@ function findSystemPython() {
   return null
 }
 
-// findGitBash — locate bash.exe on Windows. Hermes' terminal tool requires
-// bash (POSIX shell), and on Windows that's almost always Git for Windows'
-// bundled Git Bash. We check the same set of locations tools/environments/
-// local.py:_find_bash() checks at runtime, so a positive result here means
-// the agent will be able to start a terminal too.
-//
-// On non-Windows hosts bash is part of the OS and this just returns the
-// first bash on PATH.
+// findGitBash — locate bash.exe on Windows. Resolves HERMES_GIT_BASH_PATH
+// first (mirrors tools/environments/local.py:_find_bash), then PortableGit,
+// standard install locations, and finally PATH.
 function findGitBash() {
-  if (!IS_WINDOWS) {
-    return findOnPath('bash')
-  }
-
-  // install.ps1 drops PortableGit at %LOCALAPPDATA%\hermes\git\... — checked
-  // first so users who installed via install.ps1 are detected before we
-  // start probing system-wide locations.
-  const localAppData = process.env.LOCALAPPDATA || ''
-  const candidates = []
-
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'bash.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'usr', 'bin', 'bash.exe'))
-  }
-
-  // Standard Git for Windows install locations.
-  candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'))
-  candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'))
-
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
-  }
-
-  for (const candidate of candidates) {
-    if (fileExists(candidate)) {
-      return candidate
-    }
-  }
-
-  // Last resort — bash on PATH (covers WSL bash, MSYS2, custom installs).
-  // On WSL hosts findOnPath itself filters out Windows-binary paths via
-  // isWindowsBinaryPathInWsl, so we won't hand back a wsl.exe shim either.
-  return findOnPath('bash')
+  return _findGitBash({
+    isWindows: IS_WINDOWS,
+    env: process.env,
+    fileExists,
+    findOnPath
+  })
 }
 
 function getVenvPython(venvRoot) {

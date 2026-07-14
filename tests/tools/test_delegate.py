@@ -76,6 +76,11 @@ class TestDelegateRequirements(unittest.TestCase):
         # capability-selection surface the model should not control.
         self.assertNotIn("toolsets", props)
         self.assertNotIn("toolsets", props["tasks"]["items"]["properties"])
+        self.assertIn("model", props)
+        self.assertIn("provider", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertIn("provider", task_props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -1099,6 +1104,46 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
 
 
+    def test_model_override_beats_config_model(self):
+        """Per-call model override should beat delegation.model while inheriting credentials."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "configured-model", "provider": ""}
+        creds = _resolve_delegation_credentials(
+            cfg,
+            parent,
+            model_override="per-call-model",
+        )
+        self.assertEqual(creds["model"], "per-call-model")
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_override_beats_config_provider(self, mock_resolve):
+        """Per-call provider/model override should route through runtime provider resolution."""
+        mock_resolve.return_value = {
+            "model": "fast-model-mini",
+            "provider": "fast-provider",
+            "base_url": "https://fast-provider.example.com/v1",
+            "api_key": "fast-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "configured-model", "provider": "openrouter"}
+        creds = _resolve_delegation_credentials(
+            cfg,
+            parent,
+            model_override="fast-model-mini",
+            provider_override="fast-provider",
+        )
+        mock_resolve.assert_called_once_with(
+            requested="fast-provider", target_model="fast-model-mini"
+        )
+        self.assertEqual(creds["model"], "fast-model-mini")
+        self.assertEqual(creds["provider"], "fast-provider")
+        self.assertEqual(creds["base_url"], "https://fast-provider.example.com/v1")
+        self.assertEqual(creds["api_key"], "fast-key")
+
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
         cfg = {
@@ -1402,6 +1447,133 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
+
+            mock_creds.assert_called_once_with(
+                mock_cfg.return_value,
+                parent,
+                model_override=None,
+                provider_override=None,
+            )
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_call_model_provider_reach_child_agent(self, mock_creds, mock_cfg):
+        """Top-level model/provider overrides should be resolved and passed to AIAgent."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.return_value = {
+            "model": "fast-model-mini",
+            "provider": "fast-provider",
+            "base_url": "https://fast-provider.example.com/v1",
+            "api_key": "fast-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Route child to a faster model",
+                model="fast-model-mini",
+                provider="fast-provider",
+                parent_agent=parent,
+            )
+
+            mock_creds.assert_called_once_with(
+                mock_cfg.return_value,
+                parent,
+                model_override="fast-model-mini",
+                provider_override="fast-provider",
+            )
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "fast-model-mini")
+            self.assertEqual(kwargs["provider"], "fast-provider")
+            self.assertEqual(kwargs["base_url"], "https://fast-provider.example.com/v1")
+            self.assertEqual(kwargs["api_key"], "fast-key")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_model_provider_override_top_level(self, mock_creds, mock_cfg):
+        """Batch tasks can override top-level model/provider independently."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.side_effect = [
+            {
+                "model": "top-model",
+                "provider": "top-provider",
+                "base_url": "https://top.example/v1",
+                "api_key": "top-key",
+                "api_mode": "chat_completions",
+            },
+            {
+                "model": "task-model",
+                "provider": "task-provider",
+                "base_url": "https://task.example/v1",
+                "api_key": "task-key",
+                "api_mode": "chat_completions",
+            },
+        ]
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child_a = MagicMock()
+            child_a.run_conversation.return_value = {"final_response": "a", "completed": True, "api_calls": 1}
+            child_b = MagicMock()
+            child_b.run_conversation.return_value = {"final_response": "b", "completed": True, "api_calls": 1}
+            MockAgent.side_effect = [child_a, child_b]
+
+            delegate_task(
+                tasks=[
+                    {"goal": "top route task"},
+                    {"goal": "task route task", "model": "task-model", "provider": "task-provider"},
+                ],
+                model="top-model",
+                provider="top-provider",
+                parent_agent=parent,
+            )
+
+            self.assertEqual(mock_creds.call_args_list[0].kwargs["model_override"], "top-model")
+            self.assertEqual(mock_creds.call_args_list[0].kwargs["provider_override"], "top-provider")
+            self.assertEqual(mock_creds.call_args_list[1].kwargs["model_override"], "task-model")
+            self.assertEqual(mock_creds.call_args_list[1].kwargs["provider_override"], "task-provider")
+            first_kwargs = MockAgent.call_args_list[0].kwargs
+            second_kwargs = MockAgent.call_args_list[1].kwargs
+            self.assertEqual(first_kwargs["model"], "top-model")
+            self.assertEqual(first_kwargs["provider"], "top-provider")
+            self.assertEqual(second_kwargs["model"], "task-model")
+            self.assertEqual(second_kwargs["provider"], "task-provider")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_credential_failure_builds_no_children(self, mock_creds, mock_cfg):
+        """A bad override in any task must fail the call before any child is built."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.side_effect = [
+            {
+                "model": "fast-model-mini",
+                "provider": "fast-provider",
+                "base_url": "https://fast-provider.example.com/v1",
+                "api_key": "fast-key",
+                "api_mode": "chat_completions",
+            },
+            ValueError("Cannot resolve delegation provider 'bogus-provider'"),
+        ]
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            result = delegate_task(
+                tasks=[
+                    {"goal": "good route", "model": "fast-model-mini", "provider": "fast-provider"},
+                    {"goal": "bad route", "provider": "bogus-provider"},
+                ],
+                parent_agent=parent,
+            )
+
+            self.assertIn("bogus-provider", result)
+            MockAgent.assert_not_called()
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -2323,6 +2495,30 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
+
+    @patch("tools.delegate_tool.delegate_task")
+    def test_model_provider_forwarded_by_dispatch_helper(self, mock_delegate):
+        """Agent tool dispatch must forward schema-exposed model/provider args."""
+        mock_delegate.return_value = '{"results": []}'
+        parent = _make_mock_parent(depth=0)
+        from run_agent import AIAgent
+
+        # Avoid constructing a full AIAgent; _dispatch_delegate_task only needs self.
+        AIAgent._dispatch_delegate_task(
+            parent,
+            {
+                "goal": "test",
+                "model": "fast-model-mini",
+                "provider": "fast-provider",
+                "toolsets": [],
+            },
+        )
+        mock_delegate.assert_called_once()
+        kwargs = mock_delegate.call_args.kwargs
+        self.assertEqual(kwargs["model"], "fast-model-mini")
+        self.assertEqual(kwargs["provider"], "fast-provider")
+        self.assertIs(kwargs["parent_agent"], parent)
+
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""

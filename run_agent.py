@@ -5761,6 +5761,8 @@ class AIAgent:
             context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"),
+            model=function_args.get("model"),
+            provider=function_args.get("provider"),
             role=function_args.get("role"),
             background=(not _is_subagent),
             parent_agent=self,

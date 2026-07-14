@@ -186,6 +186,78 @@ class LongPreviewAgent:
         }
 
 
+class DelegateModelProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb(
+            "tool.started",
+            "delegate_task",
+            "Independent adversarial re-review of the proposed patch",
+            {
+                "goal": "Independent adversarial re-review of the proposed patch",
+                "model": "fast-model-mini",
+                "provider": "fast-provider",
+                "toolsets": [],
+            },
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class DelegateDefaultModelProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb(
+            "tool.started",
+            "delegate_task",
+            "Use the configured default delegation route",
+            {
+                "goal": "Use the configured default delegation route",
+                "toolsets": [],
+            },
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class DelegateBatchDefaultModelProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb(
+            "tool.started",
+            "delegate_task",
+            "two delegated checks",
+            {
+                "tasks": [
+                    {"goal": "Use default route", "toolsets": []},
+                    {
+                        "goal": "Use explicit route",
+                        "provider": "fast-provider",
+                        "model": "fast-model-mini",
+                        "toolsets": [],
+                    },
+                ],
+            },
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class DelayedProgressAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -315,6 +387,81 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     ]
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+
+
+async def _run_delegate_progress_case(monkeypatch, tmp_path, agent_cls):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = agent_cls
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.delegate_tool  # noqa: F401 - register delegate_task emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-delegate-route",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    return adapter.sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_delegate_task_progress_shows_model_route(monkeypatch, tmp_path):
+    content = await _run_delegate_progress_case(monkeypatch, tmp_path, DelegateModelProgressAgent)
+    assert "delegate_task [fast-provider/fast-model-mini]" in content
+    assert "Independent adversarial" in content
+
+
+@pytest.mark.asyncio
+async def test_delegate_task_progress_resolves_default_model_route(monkeypatch, tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "delegation:\n  provider: cheap-provider\n  model: cheap-model-mini\n",
+        encoding="utf-8",
+    )
+    content = await _run_delegate_progress_case(
+        monkeypatch,
+        tmp_path,
+        DelegateDefaultModelProgressAgent,
+    )
+    assert "delegate_task [cheap-provider/cheap-model-mini]" in content
+    assert "Use the configured default delegation" in content
+
+
+@pytest.mark.asyncio
+async def test_delegate_task_progress_shows_mixed_batch_routes(monkeypatch, tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "delegation:\n  provider: cheap-provider\n  model: cheap-model-mini\n",
+        encoding="utf-8",
+    )
+    content = await _run_delegate_progress_case(
+        monkeypatch,
+        tmp_path,
+        DelegateBatchDefaultModelProgressAgent,
+    )
+    assert "delegate_task [2 models]" in content
+    assert "two delegated checks" in content
 
 
 @pytest.mark.asyncio

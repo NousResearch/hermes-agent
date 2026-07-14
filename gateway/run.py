@@ -17582,6 +17582,87 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cmd_short = _cmd_short + " ..."
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
+            def _delegate_route_suffix(_tool_name: str, _args: dict | None) -> str:
+                if _tool_name != "delegate_task" or not isinstance(_args, dict):
+                    return ""
+
+                _delegation_cfg = user_config.get("delegation") or {}
+                if not isinstance(_delegation_cfg, dict):
+                    _delegation_cfg = {}
+
+                _default_model = str(_delegation_cfg.get("model") or "").strip() or None
+                _default_provider = str(_delegation_cfg.get("provider") or "").strip() or None
+
+                def _resolve_provider_default_model(
+                    _provider: str | None,
+                    _model: str | None,
+                ) -> tuple[str | None, str | None]:
+                    if not _provider or _model:
+                        return _provider, _model
+                    try:
+                        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                        _runtime = resolve_runtime_provider(
+                            requested=_provider,
+                            target_model=None,
+                        )
+                        _runtime_model = str(_runtime.get("model") or "").strip() or None
+                        # Preserve configured provider slugs for named custom
+                        # providers (same convention as delegate_tool routing),
+                        # but still use the resolver to fill in provider defaults.
+                        return _provider, _runtime_model
+                    except Exception:
+                        return _provider, _model
+
+                def _format_route(_provider: str | None, _model: str | None) -> str | None:
+                    _provider, _model = _resolve_provider_default_model(_provider, _model)
+                    if _model and _provider:
+                        return f"{_provider}/{_model}"
+                    if _model:
+                        return _model
+                    if _provider:
+                        return _provider
+                    return None
+
+                def _route_from_values(
+                    _model_value: object | None,
+                    _provider_value: object | None,
+                ) -> str | None:
+                    _model = str(_model_value or "").strip() or None
+                    _provider = str(_provider_value or "").strip() or None
+                    if _model is not None or _provider is not None:
+                        return _format_route(_provider or _default_provider, _model)
+                    return _format_route(_default_provider, _default_model)
+
+                def _route_for_task(task: dict) -> str | None:
+                    _model_value = task.get("model") if "model" in task else _args.get("model")
+                    _provider_value = task.get("provider") if "provider" in task else _args.get("provider")
+                    return _route_from_values(_model_value, _provider_value)
+
+                # Batch mode can carry per-task routes. Resolve each task's
+                # effective route (per-task > top-level > delegation config)
+                # so mixed routed batches show as "N models" while default
+                # delegation routes are still visible.
+                tasks = _args.get("tasks")
+                if isinstance(tasks, list):
+                    routes = {
+                        r for task in tasks if isinstance(task, dict) and (r := _route_for_task(task))
+                    }
+                    if len(routes) == 1:
+                        return f" [{next(iter(routes))}]"
+                    if len(routes) > 1:
+                        return f" [{len(routes)} models]"
+                    return ""
+
+                # Top-level route is the common single-task case. Resolve
+                # default delegation config too, not just explicit args.
+                route = _route_from_values(_args.get("model"), _args.get("provider"))
+                if route:
+                    return f" [{route}]"
+                return ""
+
+            display_tool_name = f"{tool_name}{_delegate_route_suffix(tool_name, args)}"
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if _code_block_full is not None:
@@ -17598,11 +17679,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # detail.  Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                    msg = f"{emoji} {display_tool_name}({list(args.keys())})\n{args_str}"
                 elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                    msg = f"{emoji} {display_tool_name}: \"{preview}\""
                 else:
-                    msg = f"{emoji} {tool_name}..."
+                    msg = f"{emoji} {display_tool_name}..."
                 progress_queue.put(msg)
                 return
             
@@ -17630,17 +17711,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # onto the preview the callback already computed (so the
                 # command/url/query is preserved).  Custom/plugin/MCP tools
                 # have no verb and fall back to the raw "tool_name: ..." form.
-                _verb = get_tool_verb(tool_name)
+                # Delegate route suffixes must stay visible even under
+                # friendly labels — the route is the payload, not decoration.
+                _verb = None if display_tool_name != tool_name else get_tool_verb(tool_name)
                 if _verb:
                     if verb_drops_preview(tool_name):
                         msg = f"{emoji} {_verb}"
                     else:
                         msg = f"{emoji} {_verb}{tool_verb_connector(tool_name)}{preview}"
                 else:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                    msg = f"{emoji} {display_tool_name}: \"{preview}\""
                 last_was_terminal_block[0] = False
             else:
-                msg = f"{emoji} {tool_name}..."
+                msg = f"{emoji} {display_tool_name}..."
                 last_was_terminal_block[0] = False
             
             # Dedup: collapse consecutive identical progress messages.

@@ -10030,6 +10030,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "background":
             return await self._handle_background_command(event)
 
+        if canonical == "queue":
+            # No active agent — /queue should behave like the CLI/TUI and
+            # rewrite into a normal prompt instead of leaking the slash
+            # command text to the model.
+            queue_payload = event.get_command_args().strip()
+            if not queue_payload:
+                return "Usage: /queue <prompt>"
+            try:
+                event.text = queue_payload
+            except Exception:
+                pass
+            # Do NOT return — fall through to _handle_message_with_agent
+            # at the end of this function so the rewritten text is sent
+            # to the agent as a regular user turn.
+
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
             # Strip the prefix so downstream treats it as a normal user

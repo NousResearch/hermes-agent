@@ -187,5 +187,30 @@ async def test_steer_rejected_payload_returns_rejection_message():
     assert "rejected" in result.lower() or "empty" in result.lower()
 
 
+@pytest.mark.asyncio
+async def test_queue_without_active_agent_strips_prefix_and_runs_as_normal_turn():
+    runner, _adapter = _make_runner(_session_entry())
+    runner._handle_message_with_agent = AsyncMock(return_value="ok")
+
+    result = await runner._handle_message(_make_event("/queue tell me about queues"))
+
+    assert result == "ok"
+    runner._handle_message_with_agent.assert_awaited_once()
+    queued_event = runner._handle_message_with_agent.await_args.args[0]
+    assert queued_event.text == "tell me about queues"
+
+
+@pytest.mark.asyncio
+async def test_queue_without_active_agent_and_without_payload_returns_usage():
+    runner, _adapter = _make_runner(_session_entry())
+    runner._handle_message_with_agent = AsyncMock()
+
+    result = await runner._handle_message(_make_event("/queue"))
+
+    assert result is not None
+    assert "Usage" in result or "usage" in result
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

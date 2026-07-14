@@ -2091,6 +2091,7 @@ export interface Translations {
     boundaryTitle: string
     boundaryDesc: string
     reloadWindow: string
+    resetAndRecover: string
     openLogs: string
   }
 

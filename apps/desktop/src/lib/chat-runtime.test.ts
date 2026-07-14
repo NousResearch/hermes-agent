@@ -4,11 +4,14 @@ import type { ComposerAttachment } from '@/store/composer'
 
 import {
   attachmentDisplayText,
+  coalesceToolOnlyAssistants,
   coerceThinkingText,
+  createToolMergeCache,
   optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand
 } from './chat-runtime'
+import type { ChatMessage } from './chat-messages'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -148,5 +151,65 @@ describe('parseSlashCommand', () => {
 
   it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
     expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
+  })
+})
+
+describe('coalesceToolOnlyAssistants — duplicate toolCallId render-key crash guard', () => {
+  const toolMsg = (id: string, parts: { toolCallId: string; toolName: string; result?: unknown }[]): ChatMessage => ({
+    id,
+    role: 'assistant',
+    parts: parts.map(p => ({
+      type: 'tool-call' as const,
+      toolCallId: p.toolCallId,
+      toolName: p.toolName,
+      args: {} as never,
+      argsText: '{}',
+      ...(p.result !== undefined ? { result: p.result } : {})
+    })),
+    timestamp: 1
+  })
+
+  // Reproduces the live "Duplicate key toolCallId-… in tapResources" crash: two
+  // tool-only assistant messages that each carry a part with the SAME toolCallId
+  // get merged into ONE message; assistant-ui's tapResources keys tool parts by
+  // toolCallId and HARD-THROWS on a duplicate, crashing the whole renderer.
+  it('does not emit two tool parts sharing a toolCallId when merging tool-only assistants', () => {
+    const messages: ChatMessage[] = [
+      toolMsg('m1', [{ toolCallId: 'toolu_DUP', toolName: 'tapResources' }]),
+      // a re-delivery / persisted duplicate landing as a SEPARATE tool-only assistant
+      toolMsg('m2', [{ toolCallId: 'toolu_DUP', toolName: 'tapResources', result: { ok: true } }])
+    ]
+
+    const coalesced = coalesceToolOnlyAssistants(messages, createToolMergeCache())
+
+    // Must merge to a single message...
+    expect(coalesced).toHaveLength(1)
+    const parts = coalesced[0].parts.filter(
+      (p): p is Extract<ChatMessage['parts'][number], { type: 'tool-call' }> => p.type === 'tool-call'
+    )
+    // ...whose tool parts have NO duplicate toolCallId (the tapResources invariant).
+    const ids = parts.map(p => p.toolCallId)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids).toEqual(['toolu_DUP'])
+    // The later duplicate's fields merged onto the surviving row, not dropped.
+    expect(parts[0].result).toMatchObject({ ok: true })
+  })
+
+  it('preserves distinct tool calls and their order when merging', () => {
+    const messages: ChatMessage[] = [
+      toolMsg('m1', [{ toolCallId: 'a', toolName: 'read_file' }]),
+      toolMsg('m2', [
+        { toolCallId: 'b', toolName: 'tapResources' },
+        { toolCallId: 'c', toolName: 'web_search' }
+      ])
+    ]
+
+    const coalesced = coalesceToolOnlyAssistants(messages, createToolMergeCache())
+
+    expect(coalesced).toHaveLength(1)
+    const ids = coalesced[0].parts
+      .filter((p): p is Extract<ChatMessage['parts'][number], { type: 'tool-call' }> => p.type === 'tool-call')
+      .map(p => p.toolCallId)
+    expect(ids).toEqual(['a', 'b', 'c'])
   })
 })

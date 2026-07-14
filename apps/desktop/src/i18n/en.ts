@@ -2501,6 +2501,7 @@ export const en: Translations = {
     boundaryTitle: 'Something broke in the interface',
     boundaryDesc: 'The view hit an unexpected error. Your chats and settings are safe.',
     reloadWindow: 'Reload window',
+    resetAndRecover: 'Reset & recover',
     openLogs: 'Open logs'
   },
 

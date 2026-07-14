@@ -868,6 +868,11 @@ class Task:
     # (Pre-rename column: ``spawn_failures``.)
     consecutive_failures: int = 0
     worker_pid: Optional[int] = None
+    # OS process-group id of the spawned worker (== worker_pid at spawn
+    # under ``start_new_session=True``). Used to signal the worker's whole
+    # process group so forked grandchildren die with it. None = unknown /
+    # legacy; kill paths fall back to worker_pid.
+    worker_pgid: Optional[int] = None
     # Short excerpt of the last failure's error text (any outcome, not
     # just spawn). Pre-rename column: ``last_spawn_error``.
     last_failure_error: Optional[str] = None
@@ -957,6 +962,7 @@ class Task:
                 else (row["spawn_failures"] if "spawn_failures" in keys else 0)
             ),
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
+            worker_pgid=row["worker_pgid"] if "worker_pgid" in keys else None,
             last_failure_error=(
                 row["last_failure_error"] if "last_failure_error" in keys
                 # Same belt-and-suspenders fallback as consecutive_failures above.
@@ -1021,6 +1027,7 @@ class Run:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     worker_pid: Optional[int]
+    worker_pgid: Optional[int]
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
     started_at: int
@@ -1045,6 +1052,9 @@ class Run:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             worker_pid=row["worker_pid"],
+            worker_pgid=(
+                row["worker_pgid"] if "worker_pgid" in row.keys() else None
+            ),
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
             started_at=int(row["started_at"]),
@@ -1123,6 +1133,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
+    -- OS process-group id of the spawned worker. Workers are launched
+    -- with ``start_new_session=True`` so at spawn ``pgid == worker_pid``
+    -- (the worker is its own session/group leader). Persisted so the
+    -- dispatcher can signal the WHOLE group (``os.killpg``) on
+    -- timeout/reclaim — a bare ``os.kill(worker_pid)`` leaves any
+    -- grandchild the worker forked alive, which then races a respawn
+    -- (dual execution). NULL on legacy rows / pre-migration workers;
+    -- kill paths fall back to the single pid when NULL.
+    worker_pgid          INTEGER,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
@@ -1219,6 +1238,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    -- Process-group id of this run's worker (mirror of tasks.worker_pgid;
+    -- see that column's comment). Kept on the run row so historical runs
+    -- retain the group they were signalled against.
+    worker_pgid         INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -1904,6 +1927,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+    if "worker_pgid" not in cols:
+        # Process-group id for group-scoped worker termination. NULL on
+        # legacy rows is fine — kill paths fall back to the single
+        # worker_pid when the pgid is unknown.
+        _add_column_if_missing(conn, "tasks", "worker_pgid", "worker_pgid INTEGER")
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -2015,6 +2043,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_events_run "
         "ON task_events(run_id, id)"
     )
+
+    # task_runs gained ``worker_pgid`` alongside tasks.worker_pgid so a
+    # historical run keeps the process group it was signalled against.
+    # Idempotent + guarded by table existence (task_runs is a post-v1 table).
+    runs_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if runs_table_exists:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "worker_pgid" not in run_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "worker_pgid", "worker_pgid INTEGER"
+            )
 
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
@@ -2137,7 +2180,7 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " worker_pid INTEGER, worker_pgid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
@@ -2537,6 +2580,15 @@ def create_task(
             )
         skills_list = cleaned
 
+    # Fail LOUD at authoring time (HARNESS-FF2): when both assignee and skills
+    # are known, refuse to create a card whose force-loaded skills the assignee
+    # profile cannot load. Dispatch-time preflight remains the safety net for
+    # legacy rows and for cards created with assignee deferred.
+    if skills_list and assignee:
+        _raise_if_skills_unknown_for_assignee(
+            skills_list, assignee, context="create",
+        )
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -2779,11 +2831,17 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
+
+    When the task already carries force-loaded ``skills`` and the new
+    ``profile`` cannot load one or more of them, raises ``ValueError`` so
+    a bad reassignment fails LOUD at authoring time (HARNESS-FF2) rather
+    than waiting for the next dispatcher skill-preflight block.
     """
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, skills FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if not row:
             return False
@@ -2792,6 +2850,12 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        if profile:
+            existing_skills = _row_skills_list(row)
+            if existing_skills:
+                _raise_if_skills_unknown_for_assignee(
+                    existing_skills, profile, context="assign",
+                )
         if row["assignee"] != profile:
             # The retry guard is scoped to the task/profile combination. A
             # human reassigning the task is an explicit recovery action, so the
@@ -3567,6 +3631,161 @@ def claim_review_task(
         return get_task(conn, task_id)
 
 
+_REVIEW_ACTOR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_REVIEW_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
+_REVIEW_PR_RE = re.compile(r"^(?:PR\s*#)?[1-9][0-9]*$", re.IGNORECASE)
+
+
+def request_task_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    maker: str,
+    checker: str,
+    pr: str,
+    head: str,
+    summary: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+    signal_fn=None,
+) -> bool:
+    """Move one claimed maker run to ``review`` through the native API.
+
+    This is the supported transition used by host-local executor supervisors.
+    It closes the maker run, releases its claim, records an exact-head review
+    manifest, and reassigns the same card to the checker. Callers never need to
+    open the board database themselves.
+
+    Termination is group-scoped exactly like :func:`reclaim_task`: the worker's
+    ``worker_pgid`` is signalled via ``os.killpg`` (through
+    :func:`_terminate_reclaimed_worker`) so a grandchild the worker forked dies
+    with the leader. If that group is STILL alive after SIGTERM+SIGKILL the
+    review transition is DEFERRED (claim held ``running`` via
+    :func:`_defer_reclaim_for_live_worker`, a ``reclaim_deferred`` event
+    emitted) instead of releasing the slot beside a live member — releasing
+    there would let the next dispatch tick spawn a checker/duplicate beside
+    the orphan (hazard-1/5 family; native-review residual HARNESS-FF1).
+    Legacy rows with a NULL ``worker_pgid`` fall back to a pid-only kill.
+    ``signal_fn`` is a test hook forwarded to the group killer.
+
+    Returns True if the review transition landed; False if the task isn't in a
+    reviewable state (not running / wrong run fence) OR the transition was
+    deferred because our own host-local worker group survived termination.
+    """
+    maker = str(maker or "").strip().lower()
+    checker = str(checker or "").strip().lower()
+    pr = str(pr or "").strip()
+    head = str(head or "").strip().lower()
+    if not _REVIEW_ACTOR_RE.fullmatch(maker):
+        raise ValueError("maker must be a profile-style actor id")
+    if not _REVIEW_ACTOR_RE.fullmatch(checker):
+        raise ValueError("checker must be a profile-style actor id")
+    if maker == checker:
+        raise ValueError("maker and checker must differ")
+    if not _REVIEW_PR_RE.fullmatch(pr):
+        raise ValueError("pr must be PR #N or N")
+    if not _REVIEW_HEAD_RE.fullmatch(head):
+        raise ValueError("head must be exactly 40 lowercase hexadecimal characters")
+    now = int(time.time())
+    manifest = {
+        "maker": maker,
+        "checker": checker,
+        "pr": pr,
+        "head": head,
+        "summary": str(summary or "").strip(),
+        "requested_at": now,
+    }
+
+    # Read claim + process identity OUTSIDE the write txn so we can
+    # group-kill before releasing the slot (mirrors reclaim_task).
+    row = conn.execute(
+        "SELECT status, assignee, current_run_id, claim_lock, "
+        "worker_pid, worker_pgid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["status"] != "running":
+        return False
+    if expected_run_id is not None and (
+        row["current_run_id"] is None
+        or int(row["current_run_id"]) != int(expected_run_id)
+    ):
+        return False
+    if str(row["assignee"] or "").strip().lower() != maker:
+        raise ValueError("maker does not match the running task assignee")
+
+    prev_lock = row["claim_lock"]
+    pgid = row["worker_pgid"] if "worker_pgid" in row.keys() else None
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, pgid=pgid, signal_fn=signal_fn,
+    )
+    # Never free the slot beside a live process: if our own host-local
+    # worker group survived SIGTERM+SIGKILL, DEFER — hold the claim
+    # ``running`` and let the next tick retry — instead of transitioning
+    # to ``review`` and letting a checker spawn beside the orphan.
+    if _worker_survived_termination(termination):
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, now, termination,
+            reason="review_request_worker_alive",
+        )
+        return False
+
+    with write_txn(conn):
+        task = conn.execute(
+            "SELECT status, assignee, current_run_id, claim_lock "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if task is None or task["status"] != "running":
+            return False
+        if expected_run_id is not None and (
+            task["current_run_id"] is None
+            or int(task["current_run_id"]) != int(expected_run_id)
+        ):
+            return False
+        if str(task["assignee"] or "").strip().lower() != maker:
+            raise ValueError("maker does not match the running task assignee")
+        # Claim moved under us (reclaim/steal) — fail closed, do not hand off.
+        if task["claim_lock"] != prev_lock:
+            return False
+        event_payload = dict(manifest)
+        event_payload.update(termination)
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="review_requested",
+            status="done",
+            summary=manifest["summary"] or f"submitted {pr} for review",
+            metadata=event_payload,
+        )
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'review', assignee = ?, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "last_heartbeat_at = NULL WHERE id = ? AND status = 'running' "
+            "AND claim_lock IS ? "
+            + ("" if expected_run_id is None else "AND current_run_id IS NULL"),
+            (checker, task_id, prev_lock),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("review request lost its running-task compare-and-set")
+        body = (
+            f"actor: {maker}\n"
+            "REVIEW REQUESTED — native manifest\n"
+            f"pr: {pr}\nhead: {head}\nmaker: {maker}\nchecker: {checker}"
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, maker, body, now),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "review_requested",
+            event_payload,
+            run_id=run_id,
+        )
+    return True
+
+
 def heartbeat_claim(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3632,7 +3851,8 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, worker_pgid, claim_expires, "
+        "       last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -3641,6 +3861,7 @@ def release_stale_claims(
     for row in stale:
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
+        pgid = row["worker_pgid"] if "worker_pgid" in row.keys() else None
         hb = row["last_heartbeat_at"]
         # Heartbeat staleness backstop: if we have a heartbeat at all
         # and it's older than the max-stale threshold, the worker is
@@ -3653,7 +3874,10 @@ def release_stale_claims(
         if (
             host_local
             and row["worker_pid"]
-            and _pid_alive(row["worker_pid"])
+            # Group-aware: a live grandchild in the worker's group keeps the
+            # claim extended too, so we never reclaim (and then respawn a
+            # duplicate) beside a process the crashed leader forked.
+            and _worker_alive(row["worker_pid"], pgid)
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
@@ -3693,7 +3917,7 @@ def release_stale_claims(
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            row["worker_pid"], row["claim_lock"], pgid=pgid, signal_fn=signal_fn,
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -3759,11 +3983,25 @@ def reclaim_task(
     when an operator wants to abort a running worker without waiting
     for the TTL to expire (e.g. after seeing a hallucination warning).
 
-    Returns True if a reclaim happened, False if the task isn't in a
-    reclaimable state (not running, or doesn't exist).
+    Termination is group-scoped exactly like the automatic reclaim paths:
+    the worker's ``worker_pgid`` is signalled via ``os.killpg`` (through
+    :func:`_terminate_reclaimed_worker`) so a grandchild the worker forked
+    dies with the leader. If that group is STILL alive after SIGTERM+SIGKILL
+    the claim is DEFERRED (held ``running`` via
+    :func:`_defer_reclaim_for_live_worker`, a ``reclaim_deferred`` event
+    emitted) instead of being reset to ``ready`` beside a live member —
+    resetting there would let the next dispatch tick spawn a duplicate
+    beside the orphan (the exact dual-execution hazard 1/7). Legacy rows
+    with a NULL ``worker_pgid`` fall back to a pid-only kill.
+
+    Returns True if a reclaim happened; False if the task isn't in a
+    reclaimable state (not running, or doesn't exist) OR the reclaim was
+    deferred because our own host-local worker group survived termination.
     """
+    now = int(time.time())
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        "SELECT status, claim_lock, worker_pid, worker_pgid "
+        "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row:
@@ -3772,9 +4010,23 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
+    pgid = row["worker_pgid"] if "worker_pgid" in row.keys() else None
     termination = _terminate_reclaimed_worker(
-        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        row["worker_pid"], prev_lock, pgid=pgid, signal_fn=signal_fn,
     )
+    # Never free the slot beside a live process: if our own host-local
+    # worker group survived SIGTERM+SIGKILL (uninterruptible I/O, a
+    # throttled fork, or a grandchild that outlived the grace), DEFER —
+    # hold the claim ``running`` and let the next tick retry the kill —
+    # instead of resetting to ``ready`` and spawning a duplicate. Mirrors
+    # the survival guard in release_stale_claims / enforce_max_runtime /
+    # detect_crashed_workers.
+    if _worker_survived_termination(termination):
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, now, termination,
+            reason="manual_reclaim_worker_alive",
+        )
+        return False
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -3820,6 +4072,7 @@ def reassign_task(
     *,
     reclaim_first: bool = False,
     reason: Optional[str] = None,
+    signal_fn=None,
 ) -> bool:
     """Reassign a task, optionally reclaiming a stuck running worker first.
 
@@ -3829,18 +4082,31 @@ def reassign_task(
     otherwise the function refuses to reassign a currently-running task
     and returns False (caller can retry with ``reclaim_first=True``).
 
+    The ``reclaim_first`` branch delegates to :func:`reclaim_task`, so it
+    inherits the same group-scoped termination + defer-on-survival guard:
+    if the worker's process group is still alive after the kill, the claim
+    is held ``running`` (not reset to ``ready``) and this reassign returns
+    False because ``assign_task``'s still-running guard then refuses —
+    which is the safe outcome (no reassign + duplicate spawn beside a live
+    orphan). ``signal_fn`` is a test hook forwarded to the reclaim.
+
     Returns True if the reassign landed. ``profile`` may be ``None`` to
     unassign entirely.
     """
     if reclaim_first:
-        # Safe to call even if nothing to reclaim.
-        reclaim_task(conn, task_id, reason=reason or "reassign")
+        # Safe to call even if nothing to reclaim. Group-death-proof: if the
+        # worker survives, reclaim_task defers (keeps the task running) and
+        # assign_task's guard below refuses the reassign — no duplicate.
+        reclaim_task(
+            conn, task_id, reason=reason or "reassign", signal_fn=signal_fn,
+        )
     # assign_task handles its own txn + the still-running guard.
     try:
         return assign_task(conn, task_id, profile)
     except RuntimeError:
-        # Task is still running and reclaim_first was False; caller
-        # needs to decide whether to retry with reclaim.
+        # Task is still running and reclaim_first was False (or reclaim was
+        # deferred because the worker group is still alive); caller needs to
+        # decide whether to retry.
         return False
 
 
@@ -5027,6 +5293,25 @@ def promote_task(
                 f"{', '.join(unsatisfied)} (use --force to override)"
             )
 
+    # Promotion-time skill validation (HARNESS-FF2). Refuse to promote a
+    # card whose force-loaded skills the assignee cannot load — same check
+    # create/assign apply, so a bad skill fails LOUD before the card hits
+    # ready. ``force=True`` still overrides parent deps but NOT skill
+    # validity: a missing skill is a routing/config error, not a dep race.
+    full = conn.execute(
+        "SELECT assignee, skills FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if full is not None:
+        promo_skills = _row_skills_list(full)
+        promo_assignee = (full["assignee"] or "").strip() or None
+        if promo_skills and promo_assignee:
+            try:
+                _raise_if_skills_unknown_for_assignee(
+                    promo_skills, promo_assignee, context="promote",
+                )
+            except ValueError as exc:
+                return False, str(exc)
+
     if dry_run:
         return True, None
 
@@ -5909,6 +6194,47 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Skill preflight constants (root cause #2 — anti-silent-fail)
+# ---------------------------------------------------------------------------
+
+# Skills the DISPATCHER injects itself (not authored on the card) and that are
+# supplied to every worker OUT OF BAND — i.e. NOT loaded through the
+# per-profile ``skills/`` tree — so preflight always treats them as "known"
+# and never false-blocks a card that names them. ``kanban-worker`` is the
+# mandatory lifecycle guidance injected into every worker's system prompt via
+# ``KANBAN_GUIDANCE`` (there is no ``skills/kanban-worker`` artifact to scan).
+#
+# NOTE (root cause fix #2 — checker lane): ``sdlc-review`` is DELIBERATELY NOT
+# in this set. It is a real skill artifact that the review-dispatch path
+# force-loads onto the checker; if the assignee profile cannot load it the
+# worker crash-loops. Whitelisting it here made that failure un-catchable, so
+# the review lane now runs the SAME preflight against ``sdlc-review`` and
+# blocks pre-spawn instead. If ``sdlc-review`` legitimately should be
+# loadable, it must be authored/enabled in the checker profile's skills tree —
+# it is not silently assumed present.
+_PREFLIGHT_ALWAYS_KNOWN_SKILLS = frozenset({"kanban-worker"})
+
+# Reserved dot-directories the runtime skill scanner skips (mirrors
+# ``agent.skill_commands.scan_skill_commands``). Kept in sync so preflight's
+# view of the enabled set matches what a worker would actually load.
+_PREFLIGHT_SKIP_DIR_PARTS = frozenset({".git", ".github", ".hub", ".archive"})
+
+# Progressive-disclosure support directories that sit *inside* a skill dir
+# (alongside its ``SKILL.md``). Markdown under these is loaded via
+# ``skill_view(skill, file_path=...)`` and is NOT independently addressable as
+# a skill, so preflight excludes it from the enabled set — mirrors
+# ``agent.skill_utils.SKILL_SUPPORT_DIRS`` / ``is_skill_support_path``.
+_PREFLIGHT_SKILL_SUPPORT_DIRS = frozenset(
+    {"references", "templates", "assets", "scripts"}
+)
+
+# Skill(s) the review-dispatch path force-loads onto the checker agent. Kept as
+# a single source of truth so the checker-lane preflight validates EXACTLY what
+# the spawn will inject (see the ``claimed.skills = [...]`` assignment in the
+# review loop).
+_REVIEW_FORCE_SKILLS = ("sdlc-review",)
+
 
 @dataclass
 class DispatchResult:
@@ -5942,6 +6268,19 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skill_preflight_blocked: list[tuple[str, str, str]] = field(default_factory=list)
+    """Ready tasks failed CLOSED this tick because their assignee profile does
+    not enable one or more requested ``skills`` (root cause #2 — the
+    skill-name silent-fail). Each entry is
+    ``(task_id, assignee, unknown_skills_csv)``. In a real run the task is
+    moved to ``blocked`` (kind ``capability``) with a diagnostic naming the
+    exact unknown skill(s) and profile, and is NOT retried — a missing skill
+    is a deterministic routing/config error that only a human/CTO re-routing
+    or enabling the skill can fix. In ``dry_run`` the task is reported here
+    with no DB mutation. This is the anti-silent-fail guard: without it a
+    worker would either crash-loop (every requested skill unknown) or, worse,
+    silently drop the intended playbook and run blind (one real skill
+    present)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -6049,26 +6388,195 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     return ("unknown", None)
 
 
-def reap_worker_zombies() -> "list[int]":
-    """Reap all zombie children of this process without blocking.
+# ---------------------------------------------------------------------------
+# Worker process-group management (hazards 1/5/6/7)
+# ---------------------------------------------------------------------------
+#
+# Workers are spawned with ``start_new_session=True`` so each is the leader
+# of its own session and process group (``pgid == worker_pid`` at spawn).
+# Any process the worker forks inherits that pgid unless it calls ``setsid``.
+# Terminating only the leader pid leaves such a grandchild alive; the card
+# then resets to ``ready`` and the next tick spawns a duplicate beside the
+# still-running orphan (dual execution). The helpers below let every kill
+# path signal the WHOLE group and prove the group is dead before freeing the
+# claim.
 
-    Returns the list of reaped PIDs. Safe to call when there are no
-    children (returns []). No-op on Windows.
+# Registry of child PIDs this dispatcher actually spawned (via
+# ``_default_spawn``). ``reap_worker_zombies`` reaps ONLY these — never a
+# global ``waitpid(-1)`` — so it can't steal the exit status of, or
+# misclassify, a foreign child the surrounding gateway process spawned for
+# some other purpose. Self-pruning: reaped pids and pids that are no longer
+# our children (``ChildProcessError``) are discarded on the next reap.
+_SPAWNED_WORKER_PIDS: "set[int]" = set()
+
+
+def _register_worker_pid(pid: Optional[int]) -> None:
+    """Record a PID we spawned so ``reap_worker_zombies`` will reap it."""
+    if pid and pid > 0:
+        _SPAWNED_WORKER_PIDS.add(int(pid))
+
+
+def _worker_pgid_for(pid: Optional[int]) -> Optional[int]:
+    """Best-effort process-group id for a freshly-spawned worker ``pid``.
+
+    Workers use ``start_new_session=True`` so the child is its own group
+    leader and ``os.getpgid(pid) == pid``. If the child already exited (fast
+    failure) or the platform has no process groups (Windows), fall back to
+    ``pid`` itself, which is still the correct group id under our spawn
+    convention. Returns ``None`` only for a falsy pid.
+    """
+    if not pid or pid <= 0:
+        return None
+    getpgid = getattr(os, "getpgid", None)
+    if getpgid is None:
+        return int(pid)
+    try:
+        return int(getpgid(int(pid)))
+    except (ProcessLookupError, OSError):
+        return int(pid)
+
+
+def _group_member_pids(pgid: Optional[int]) -> "list[int]":
+    """All PIDs currently in process group ``pgid`` (POSIX).
+
+    Includes zombies — liveness/zombie filtering is the caller's job via
+    ``_pid_alive`` so that a single primitive (and a single monkeypatch
+    point in tests) decides "is this process actually running". Returns
+    ``[]`` where process groups don't exist (Windows) or nothing matches.
+    """
+    if not pgid or pgid <= 0 or not hasattr(os, "killpg"):
+        return []
+    members: "list[int]" = []
+    try:
+        if sys.platform == "linux":
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/stat", "rb") as f:
+                        data = f.read()
+                    # "pid (comm) state ppid pgrp ..." — comm may contain
+                    # spaces and ')' so split on the LAST ')'.
+                    rest = data[data.rindex(b")") + 1:].split()
+                    pgrp = int(rest[2])
+                except (OSError, ValueError, IndexError):
+                    continue
+                if pgrp == int(pgid):
+                    members.append(int(entry))
+        else:
+            # macOS / BSD: one `ps` snapshot of pid + pgid.
+            proc = subprocess.run(
+                ["ps", "-A", "-o", "pid=,pgid="],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if proc.returncode == 0:
+                for line in (proc.stdout or "").splitlines():
+                    parts = line.split()
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        mpid = int(parts[0])
+                        mpgid = int(parts[1])
+                    except ValueError:
+                        continue
+                    if mpgid == int(pgid):
+                        members.append(mpid)
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return members
+    return members
+
+
+def _group_alive(pgid: Optional[int]) -> bool:
+    """True if process group ``pgid`` has at least one live (non-zombie) member.
+
+    Delegates the per-member liveness/zombie decision to ``_pid_alive`` — the
+    same primitive the single-pid paths use — so behaviour (and test
+    monkeypatching) stays consistent between leader and group checks.
+    """
+    return any(_pid_alive(m) for m in _group_member_pids(pgid))
+
+
+def _worker_alive(pid: Optional[int], pgid: Optional[int]) -> bool:
+    """Group-aware worker liveness.
+
+    True if the leader ``pid`` is alive OR any other process in the worker's
+    group is still running. Checking ``pid`` first keeps the common healthy
+    path cheap (no process-table scan) — the group scan only runs when the
+    leader itself is gone. When ``pgid`` is unknown (legacy rows) this
+    degrades to a plain leader-pid check.
+    """
+    if _pid_alive(pid):
+        return True
+    return _group_alive(pgid)
+
+
+def _kill_worker_group(
+    pid: Optional[int],
+    pgid: Optional[int],
+    sig: int,
+    kill_fn=None,
+) -> bool:
+    """Send ``sig`` to the worker's whole process group, else the bare pid.
+
+    When ``pgid`` is known and the platform supports process groups the
+    signal is delivered via ``os.killpg`` (whole group → grandchildren die
+    too). Otherwise it falls back to the single ``pid``.
+
+    ``kill_fn`` is a unit-test hook receiving ``(pid, sig)`` — it is always
+    handed the leader pid (not the pgid) so tests that assert on the
+    signalled pid keep their contract; real group delivery happens only on
+    the production (``kill_fn is None``) path via ``os.killpg``. Returns True
+    when a signal was delivered or the target was already gone; False on any
+    other error.
+    """
+    use_group = bool(pgid) and int(pgid) > 0 and hasattr(os, "killpg")
+    if not pid and not use_group:
+        return False
+    try:
+        if kill_fn is not None:
+            kill_fn(int(pid) if pid else int(pgid), sig)
+        elif use_group:
+            os.killpg(int(pgid), sig)
+        else:
+            os.kill(int(pid), sig)
+        return True
+    except ProcessLookupError:
+        # Already gone — a successful termination, not a failure.
+        return True
+    except OSError:
+        return False
+
+
+def reap_worker_zombies() -> "list[int]":
+    """Reap exited children *this dispatcher spawned*, without blocking.
+
+    Scoped to ``_SPAWNED_WORKER_PIDS`` (never a global ``waitpid(-1)``) so a
+    foreign child the surrounding gateway spawned is never reaped or
+    misclassified as a crashed worker (hazard: foreign-child misattribution).
+    Returns the list of reaped PIDs. No-op on Windows.
     """
     reaped: "list[int]" = []
-    if os.name != "nt":
+    if os.name == "nt":
+        return reaped
+    for pid in list(_SPAWNED_WORKER_PIDS):
         try:
-            while True:
-                try:
-                    pid, status = os.waitpid(-1, os.WNOHANG)
-                except ChildProcessError:
-                    break
-                if pid == 0:
-                    break
-                _record_worker_exit(pid, status)
-                reaped.append(pid)
-        except Exception:
-            pass
+            wpid, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            # Not (or no longer) our child — stop tracking it.
+            _SPAWNED_WORKER_PIDS.discard(pid)
+            continue
+        except OSError:
+            continue
+        if wpid == 0:
+            # Still running — keep watching.
+            continue
+        _record_worker_exit(wpid, status)
+        _SPAWNED_WORKER_PIDS.discard(wpid)
+        reaped.append(wpid)
     return reaped
 
 
@@ -6140,17 +6648,30 @@ def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
+    pgid: Optional[int] = None,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    Signals the worker's whole process GROUP (``pgid``) when known so any
+    grandchild the worker forked dies with the leader — a bare
+    ``kill(worker_pid)`` would leave such a grandchild running and the next
+    dispatch tick would spawn a duplicate beside it (hazards 1/5/6/7).
+    Falls back to the single ``pid`` when ``pgid`` is unknown (legacy rows).
+    Liveness (and therefore the ``terminated`` verdict) is group-scoped: the
+    worker only counts as terminated once EVERY non-zombie member of its
+    group is gone.
+    """
     import signal
 
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
+        "prev_pgid": int(pgid) if pgid else None,
         "host_local": False,
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "group_kill": bool(pgid) and hasattr(os, "killpg"),
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -6160,41 +6681,36 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
-    kill = signal_fn if signal_fn is not None else (
-        os.kill if hasattr(os, "kill") else None
-    )
-    if kill is None:
+    # ``signal_fn`` is a test hook; when absent (the production path) leave it
+    # None so ``_kill_worker_group`` delivers via the real ``os.killpg`` /
+    # ``os.kill`` — passing ``os.kill`` here would make group-mode call
+    # ``os.kill(pgid)`` (leader only), defeating the whole fix.
+    if signal_fn is None and not hasattr(os, "kill"):
         return info
 
     info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except ProcessLookupError:
-        # Process is already gone — that's a successful termination, not a
-        # survival. Leaving terminated=False here would make the reclaim guard
-        # misread a dead worker as still-alive and defer forever.
-        info["terminated"] = True
+    if not _kill_worker_group(pid, pgid, signal.SIGTERM, signal_fn):
+        # Non-ProcessLookup OSError delivering the signal — can't manage it.
         return info
-    except OSError:
+    if not _worker_alive(pid, pgid):
+        # Already gone (or SIGTERM took immediately).
+        info["terminated"] = True
         return info
 
     for _ in range(10):
-        if not _pid_alive(pid):
+        if not _worker_alive(pid, pgid):
             info["terminated"] = True
             return info
         time.sleep(0.5)
 
-    if _pid_alive(pid):
-        try:
-            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
-            # (which maps to TerminateProcess via the stdlib shim).
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
+    if _worker_alive(pid, pgid):
+        # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
+        # (which maps to TerminateProcess via the stdlib shim).
+        _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+        if _kill_worker_group(pid, pgid, _sigkill, signal_fn):
             info["sigkill"] = True
-        except (ProcessLookupError, OSError):
-            return info
 
-    info["terminated"] = not _pid_alive(pid)
+    info["terminated"] = not _worker_alive(pid, pgid)
     return info
 
 
@@ -6329,7 +6845,7 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, "
+        "SELECT t.id, t.worker_pid, t.worker_pgid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -6350,32 +6866,55 @@ def enforce_max_runtime(
             continue
 
         pid = int(row["worker_pid"])
+        pgid = row["worker_pgid"] if "worker_pgid" in row.keys() else None
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
+        # SIGTERM then SIGKILL, delivered to the worker's whole process
+        # GROUP so a grandchild it forked dies too (a bare kill(pid) leaves
+        # the grandchild running and the reset-to-ready below would let the
+        # next tick spawn a duplicate beside it — hazard 5+1). Keep it
+        # simple: 5 s grace. Workers that want a cleaner shutdown can install
+        # their own SIGTERM handler before the grace expires.
         killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
-        )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
+        # ``signal_fn`` is a test hook; None (production) routes through the
+        # real ``os.killpg`` inside ``_kill_worker_group``. Do NOT substitute
+        # ``os.kill`` here — that would signal only the leader pid, not the
+        # group, and leave a forked grandchild alive.
+        can_signal = signal_fn is not None or hasattr(os, "kill")
+        if can_signal:
+            _kill_worker_group(pid, pgid, signal.SIGTERM, signal_fn)
             # Short polling wait — no time.sleep on the write txn.
             for _ in range(10):
-                if not _pid_alive(pid):
+                if not _worker_alive(pid, pgid):
                     break
                 time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+            if _worker_alive(pid, pgid):
+                # signal.SIGKILL doesn't exist on Windows.
+                _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                _kill_worker_group(pid, pgid, _sigkill, signal_fn)
+                killed = True
+
+        # Death-proof: never free the slot beside a live process. If the
+        # group is STILL alive after SIGTERM+SIGKILL (uninterruptible I/O,
+        # a throttled fork, or a grandchild that outlives our grace), DEFER
+        # — hold the claim and retry next tick — instead of resetting the
+        # card to ``ready`` (which would spawn a duplicate). Mirrors the
+        # reclaim-survival guard used by release_stale_claims /
+        # detect_stale_running.
+        if can_signal and _worker_alive(pid, pgid):
+            termination = {
+                "prev_pid": pid,
+                "prev_pgid": int(pgid) if pgid else None,
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": False,
+                "sigkill": killed,
+                "group_kill": bool(pgid) and hasattr(os, "killpg"),
+            }
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_worker_alive",
+            )
+            continue
 
         with write_txn(conn):
             cur = conn.execute(
@@ -6464,7 +7003,8 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.worker_pgid, t.last_heartbeat_at, "
+        "       t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -6486,12 +7026,13 @@ def detect_stale_running(
             continue  # recent heartbeat → still alive
 
         pid = row["worker_pid"]
+        pgid = row["worker_pgid"] if "worker_pgid" in row.keys() else None
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        # Terminate the worker if it's still host-local.
+        # Terminate the worker (whole process group) if it's still host-local.
         termination = _terminate_reclaimed_worker(
-            pid, lock, signal_fn=signal_fn,
+            pid, lock, pgid=pgid, signal_fn=signal_fn,
         )
 
         # Never release a claim while our own worker is still alive: that would
@@ -6676,9 +7217,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # counter (see the post-txn loop below).
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
+    import signal as _signal_mod
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, worker_pgid, claim_lock, started_at "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6695,7 +7238,29 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:
                     continue
+            pgid = row["worker_pgid"] if "worker_pgid" in row.keys() else None
             if _pid_alive(row["worker_pid"]):
+                continue
+            # Leader pid is gone. If a grandchild the worker forked is still
+            # alive in the worker's process GROUP, reclaiming now would reset
+            # the card to ``ready`` and let the next tick spawn a duplicate
+            # beside that live orphan (hazard 6/1). SIGKILL the whole group
+            # and DEFER — leave the task ``running`` this tick and reclaim on
+            # a later tick once the group is fully dead. Non-blocking single
+            # signal; safe inside the write txn.
+            if _group_alive(pgid):
+                _sigkill = getattr(_signal_mod, "SIGKILL", _signal_mod.SIGTERM)
+                _kill_worker_group(row["worker_pid"], pgid, _sigkill)
+                _append_event(
+                    conn, row["id"], "crash_orphan_terminated",
+                    {
+                        "pid": int(row["worker_pid"]),
+                        "pgid": int(pgid) if pgid else None,
+                        "claimer": row["claim_lock"],
+                        "reason": "leader_dead_group_alive",
+                    },
+                    run_id=_current_run_id(conn, row["id"]),
+                )
                 continue
 
             pid = int(row["worker_pid"])
@@ -7091,24 +7656,38 @@ def _record_spawn_failure(
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event.
+    """Record the spawned child's pid + process-group id, emit ``spawned``.
+
+    Persists ``worker_pgid`` alongside ``worker_pid`` so every kill path can
+    signal the worker's whole process group (``os.killpg``) rather than just
+    the leader — otherwise a grandchild the worker forked survives a
+    termination and races the respawn (hazards 1/5/6/7). Under our
+    ``start_new_session=True`` spawn the child is its own group leader, so
+    the pgid equals the pid; ``_worker_pgid_for`` confirms via
+    ``os.getpgid`` and falls back to the pid if the child already exited.
 
     The event's payload carries the pid so a human reading ``hermes kanban
     tail`` can correlate log lines with OS-level traces without opening
     the drawer.
     """
+    pgid = _worker_pgid_for(pid)
     with write_txn(conn):
         conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+            "UPDATE tasks SET worker_pid = ?, worker_pgid = ? WHERE id = ?",
+            (int(pid), int(pgid) if pgid else None, task_id),
         )
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
+                "UPDATE task_runs SET worker_pid = ?, worker_pgid = ? "
+                "WHERE id = ?",
+                (int(pid), int(pgid) if pgid else None, run_id),
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        # Keep the ``spawned`` payload as ``{"pid": ...}`` for backward
+        # compatibility with consumers/tests; the pgid lives on the row.
+        _append_event(
+            conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id,
+        )
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -7268,7 +7847,320 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def _preflight_is_support_path(rel_parts: tuple[str, ...], skills_root: Path) -> bool:
+    """True if a path (given by its parts RELATIVE to ``skills_root``) is a
+    progressive-disclosure support doc that ``skill_view`` would NOT treat as
+    an independently addressable skill.
+
+    Mirrors ``agent.skill_utils.is_skill_support_path``: a ``references/``,
+    ``templates/``, ``assets/``, or ``scripts/`` component counts as support
+    only when a ``SKILL.md`` sits at the directory *above* it (i.e. it is a
+    support area of a real skill), not when it is itself a top-level category.
+    """
+    for idx in range(len(rel_parts) - 1):
+        part = rel_parts[idx]
+        if part not in _PREFLIGHT_SKILL_SUPPORT_DIRS or idx == 0:
+            continue
+        skill_root_dir = skills_root.joinpath(*rel_parts[:idx])
+        if (skill_root_dir / "SKILL.md").exists():
+            return True
+    return False
+
+
+def _register_skill_identifiers(
+    names: set[str], rel_dir_or_file_stem: Path
+) -> None:
+    """Register every identifier form the worker's ``skill_view`` accepts for a
+    skill located at the given path RELATIVE to the ``skills/`` root.
+
+    ``rel_dir_or_file_stem`` is the skill directory (for ``<dir>/SKILL.md``) or
+    the flat markdown file WITH its ``.md`` suffix stripped (for legacy flat
+    ``<name>.md``). We register:
+
+    * the bare leaf name (``skill_view`` strategy 2 / 3 — recursive by dir
+      name and legacy ``rglob('<name>.md')``);
+    * the categorized relative path, e.g. ``software-development/harness-engineering``
+      (strategy 1 — direct ``search_dir / name``);
+    * the plugin-namespaced fall-through form ``namespace:bare`` that maps onto
+      the same on-disk ``namespace/bare`` path (``skill_view`` strategy 1b,
+      reached when ``plugin:skill`` finds no registered plugin).
+    """
+    parts = rel_dir_or_file_stem.parts
+    if not parts:
+        return
+    # Bare leaf name.
+    names.add(parts[-1])
+    # Categorized relative path.
+    rel_posix = rel_dir_or_file_stem.as_posix()
+    names.add(rel_posix)
+    # Plugin-namespaced fall-through form (split at the FIRST separator, which
+    # is exactly how ``parse_qualified_name`` splits ``namespace:bare``).
+    if "/" in rel_posix:
+        namespace, bare = rel_posix.split("/", 1)
+        names.add(f"{namespace}:{bare}")
+
+
+def _scan_skill_names_under(skills_root: Path) -> set[str]:
+    """Collect every loadable skill identifier under a ``skills/`` directory.
+
+    Recognizes the SAME identifier forms the worker's real resolver
+    (``tools.skills_tool.skill_view`` via ``_load_skill_payload``) accepts, so
+    preflight never false-blocks a card that names a skill by a form the
+    worker would happily load:
+
+    * bare leaf directory name (recursive-by-dir-name lookup);
+    * front-matter ``name:`` (canonical identifier surfaced by ``skills_list``);
+    * categorized relative path, e.g. ``software-development/harness-engineering``
+      (direct-path lookup);
+    * plugin-namespaced fall-through form ``namespace:bare`` for the same path;
+    * legacy flat ``<name>.md`` files anywhere under the tree (addressable by
+      stem AND by categorized relative path).
+
+    Skips reserved dot-dirs and progressive-disclosure support docs the runtime
+    scanner also skips. Pure and read-only — no imports of the skill runtime,
+    no global-state mutation, safe to call from the dispatcher hot path.
+    """
+    names: set[str] = set()
+    if not skills_root.is_dir():
+        return names
+    # ── Skill directories (``<dir>/SKILL.md``) ──────────────────────────
+    for skill_md in skills_root.rglob("SKILL.md"):
+        if any(part in _PREFLIGHT_SKIP_DIR_PARTS for part in skill_md.parts):
+            continue
+        try:
+            rel_dir = skill_md.parent.relative_to(skills_root)
+        except ValueError:
+            continue
+        # An archived package SKILL.md nested under a support dir is not an
+        # active skill root (matches ``iter_skill_index_files``' exclusion).
+        if _preflight_is_support_path(
+            rel_dir.parts + (skill_md.name,), skills_root
+        ):
+            continue
+        _register_skill_identifiers(names, rel_dir)
+        # Front-matter ``name:`` (canonical identifier). Read only the head of
+        # the file; skill front matter is at the very top.
+        try:
+            text = skill_md.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines()[:25]:
+            if line.startswith("name:"):
+                val = line.split(":", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    names.add(val)
+                break
+    # ── Legacy flat ``<name>.md`` files (skill_view strategy 3) ─────────
+    for md_file in skills_root.rglob("*.md"):
+        if md_file.name == "SKILL.md":
+            continue
+        if any(part in _PREFLIGHT_SKIP_DIR_PARTS for part in md_file.parts):
+            continue
+        try:
+            rel_file = md_file.relative_to(skills_root)
+        except ValueError:
+            continue
+        if _preflight_is_support_path(rel_file.parts, skills_root):
+            continue
+        _register_skill_identifiers(names, rel_file.with_suffix(""))
+    return names
+
+
+def _profile_external_skill_dirs(home: Path) -> list[Path]:
+    """Best-effort read of ``skills.external_dirs`` from a profile config.yaml.
+
+    Returns absolute, existing directories. Any parse/IO failure yields an
+    empty list — external dirs are additive, so failing to read them can only
+    make preflight MORE conservative (never causes a false block), and the
+    local ``skills/`` tree remains the primary source of truth.
+    """
+    cfg = home / "config.yaml"
+    if not cfg.is_file():
+        return []
+    try:
+        import yaml  # lazy: keep the module import graph light
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    skills_cfg = data.get("skills") if isinstance(data, dict) else None
+    raw = skills_cfg.get("external_dirs") if isinstance(skills_cfg, dict) else None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    out: list[Path] = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        try:
+            p = Path(os.path.expandvars(entry)).expanduser()
+        except Exception:
+            continue
+        if p.is_dir():
+            out.append(p)
+    return out
+
+
+def _profile_enabled_skill_names(profile: str) -> Optional[frozenset[str]]:
+    """Return the skill identifiers a ``profile``'s workers can load, or
+    ``None`` when the enabled set cannot be determined reliably.
+
+    The dispatcher runs in its own ``HERMES_HOME``; a spawned worker runs
+    with the *assignee* profile's ``HERMES_HOME`` (see :func:`_default_spawn`),
+    so a skill is loadable for that worker iff it resolves under the profile's
+    ``skills/`` tree (plus any ``skills.external_dirs`` the profile configures).
+
+    Return-value contract, chosen so the guard fails SAFE:
+
+    * ``None`` — the profile dir / skills tree could not be resolved or read
+      (unusual install, external-executor lane with no Hermes home, transient
+      IO error). The caller DEFERS: it does not block, preserving today's
+      behavior rather than risk false-blocking a loadable card on an infra
+      hiccup.
+    * a ``frozenset`` (possibly empty) — the skills tree was scanned
+      successfully. The caller may now block a card whose requested skills are
+      genuinely absent from this set.
+    """
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        home = Path(get_profile_dir(profile))
+    except Exception:
+        return None
+    skills_root = home / "skills"
+    if not skills_root.is_dir():
+        # A real profile with no skills tree at all is unusual; treat as
+        # "cannot validate" so we never false-block on an odd/partial install.
+        return None
+    names = _scan_skill_names_under(skills_root)
+    for ext in _profile_external_skill_dirs(home):
+        names |= _scan_skill_names_under(ext)
+    return frozenset(names)
+
+
+def _skill_preflight_unknown(
+    task_skills: Optional[Iterable[str]],
+    profile: str,
+    *,
+    enabled: Optional[frozenset[str]] = None,
+) -> list[str]:
+    """Return the requested skills ``profile`` cannot load, in request order.
+
+    An empty list means "safe to spawn": either the card requests no skills,
+    every requested skill is loadable, or the enabled set could not be
+    resolved (``None``) and we deliberately defer. A non-empty list is the
+    set of skills that would be silently dropped (or crash the worker) —
+    the caller fails the card CLOSED instead.
+
+    ``enabled`` may be passed by the caller to reuse a per-tick cache and
+    avoid rescanning a profile's skills tree once per ready task.
+    """
+    if not task_skills:
+        return []
+    requested: list[str] = []
+    seen: set[str] = set()
+    for raw in task_skills:
+        name = (str(raw) if raw is not None else "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        requested.append(name)
+    if not requested:
+        return []
+    if enabled is None:
+        enabled = _profile_enabled_skill_names(profile)
+    if enabled is None:
+        return []
+    return [
+        s for s in requested
+        if s not in enabled and s not in _PREFLIGHT_ALWAYS_KNOWN_SKILLS
+    ]
+
+
+def _raise_if_skills_unknown_for_assignee(
+    task_skills: Optional[Iterable[str]],
+    profile: Optional[str],
+    *,
+    context: str = "authoring",
+) -> None:
+    """Raise ``ValueError`` when ``profile`` cannot load any of ``task_skills``.
+
+    Used at CREATE / ASSIGN / PROMOTE time so a bad skill name fails LOUD at
+    authoring (HARNESS-FF2) rather than only at dispatch. Defers (no raise)
+    when ``profile`` is empty or the enabled set cannot be resolved — those
+    cases still hit the dispatch-time preflight safety net.
+    """
+    if not task_skills:
+        return
+    assignee = (str(profile) if profile is not None else "").strip()
+    if not assignee:
+        return
+    unknown = _skill_preflight_unknown(task_skills, assignee)
+    if not unknown:
+        return
+    unknown_csv = ", ".join(unknown)
+    raise ValueError(
+        f"skill-validate ({context}): profile '{assignee}' does not enable "
+        f"requested skill(s): {unknown_csv}. Fix the skill name(s) or route "
+        f"to a profile that enables them. Fails loud at authoring so a bad "
+        f"skill never sits on the board waiting for dispatch."
+    )
+
+
+def _row_skills_list(row: sqlite3.Row) -> list[str]:
+    """Parse a task row's ``skills`` JSON column into a list of names.
+
+    Tolerant of a missing column, NULL, malformed JSON, or a non-list
+    payload — any of which yields ``[]`` (no skills to validate).
+    """
+    try:
+        raw = row["skills"]
+    except (KeyError, IndexError):
+        return []
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(s) for s in parsed if s]
+
+
+def _assignee_is_spawnable(
+    assignee: str,
+    *,
+    role: str,
+    spawnable_fn=None,
+) -> bool:
+    """Resolve native or explicitly configured external spawn eligibility.
+
+    ``spawnable_fn`` is policy-only: it must not claim, spawn, or mutate. Any
+    exception fails the external route closed while native profiles continue.
+    """
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception:
+        # Preserve the historical degraded-install behavior. The downstream
+        # spawn function still fails visibly if the environment is incomplete.
+        return True
+    if profile_exists(assignee):
+        return True
+    if spawnable_fn is None:
+        return False
+    try:
+        return bool(spawnable_fn(assignee, role))
+    except TypeError:
+        # Compatibility for a one-argument policy probe.
+        try:
+            return bool(spawnable_fn(assignee))
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def has_spawnable_ready(conn: sqlite3.Connection, *, spawnable_fn=None) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
 
@@ -7289,18 +8181,15 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     ).fetchall()
     if not rows:
         return False
-    try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-    except Exception:
-        # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if _assignee_is_spawnable(
+            row["assignee"], role="maker", spawnable_fn=spawnable_fn
+        ):
             return True
     return False
 
 
-def has_spawnable_review(conn: sqlite3.Connection) -> bool:
+def has_spawnable_review(conn: sqlite3.Connection, *, spawnable_fn=None) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
 
@@ -7315,12 +8204,10 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     ).fetchall()
     if not rows:
         return False
-    try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-    except Exception:
-        return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if _assignee_is_spawnable(
+            row["assignee"], role="checker", spawnable_fn=spawnable_fn
+        ):
             return True
     return False
 
@@ -7329,6 +8216,7 @@ def dispatch_once(
     conn: sqlite3.Connection,
     *,
     spawn_fn=None,
+    spawnable_fn=None,
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
@@ -7354,6 +8242,8 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
+    if spawnable_fn is not None and spawn_fn is None:
+        raise ValueError("spawnable_fn requires spawn_fn")
     try:
         db_path = kanban_db_path(board=board)
     except Exception:
@@ -7363,6 +8253,7 @@ def dispatch_once(
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
+            spawnable_fn=spawnable_fn,
             ttl_seconds=ttl_seconds,
             dry_run=dry_run,
             max_spawn=max_spawn,
@@ -7379,6 +8270,7 @@ def dispatch_once(
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
+            spawnable_fn=spawnable_fn,
             ttl_seconds=ttl_seconds,
             dry_run=dry_run,
             max_spawn=max_spawn,
@@ -7395,6 +8287,7 @@ def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
     spawn_fn=None,
+    spawnable_fn=None,
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
@@ -7470,7 +8363,7 @@ def _dispatch_once_locked(
     # they sit in status='running' until the worker calls
     # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
-    if max_spawn is not None:
+    if max_spawn is not None or max_in_progress is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
@@ -7478,24 +8371,28 @@ def _dispatch_once_locked(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, skills FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    # Per-tick cache of each profile's loadable-skill set, so the skill
+    # preflight (below) scans a profile's skills tree at most once per tick
+    # even when the ready queue holds many cards for the same assignee.
+    _enabled_skills_cache: dict[str, Optional[frozenset[str]]] = {}
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
     # pile up and time out.
     if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
-        if in_progress >= max_in_progress:
+        if running_count >= max_in_progress:
             return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
+        # Both limits are absolute live-concurrency caps.  Keep an absolute
+        # ceiling here because the loop below compares ``running_count +
+        # spawned`` against ``max_spawn``.  Replacing max_spawn with the
+        # number of *remaining* slots would make a partially occupied fleet
+        # stop immediately (for example: 1 running, both caps=2 -> 1 >= 1).
+        if max_spawn is None or max_spawn > max_in_progress:
+            max_spawn = max_in_progress
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -7590,11 +8487,9 @@ def _dispatch_once_locked(
         # subprocess would crash on startup, get reaped as a zombie,
         # the task would loop back to ``ready`` on next tick, and we'd
         # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
-        try:
-            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
+        if not _assignee_is_spawnable(
+            row_assignee, role="maker", spawnable_fn=spawnable_fn
+        ):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -7603,6 +8498,53 @@ def _dispatch_once_locked(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Skill preflight (root cause #2 — the skill-name silent-fail).
+        # Before burning a claim/spawn, verify the assignee profile can
+        # actually LOAD every skill this card requests. A worker started
+        # with an unknown skill either crash-loops (every requested skill
+        # unknown) or — the master silent-fail — SILENTLY drops the intended
+        # playbook and runs blind (at least one real skill present). Both are
+        # failure modes we must never enter. Fail the card CLOSED into
+        # 'blocked' (kind=capability) with a diagnostic naming the exact
+        # unknown skill(s) + profile, and do NOT retry: a missing skill is a
+        # deterministic routing/config error only a human/CTO can fix by
+        # re-routing the card or enabling the skill in the profile.
+        row_skills = _row_skills_list(row)
+        if row_skills:
+            if row_assignee not in _enabled_skills_cache:
+                _enabled_skills_cache[row_assignee] = _profile_enabled_skill_names(
+                    row_assignee
+                )
+            _unknown_skills = _skill_preflight_unknown(
+                row_skills, row_assignee,
+                enabled=_enabled_skills_cache[row_assignee],
+            )
+            if _unknown_skills:
+                _unknown_csv = ", ".join(_unknown_skills)
+                result.skill_preflight_blocked.append(
+                    (row["id"], row_assignee, _unknown_csv)
+                )
+                if not dry_run:
+                    _reason = (
+                        f"skill-preflight: profile '{row_assignee}' does not "
+                        f"enable requested skill(s): {_unknown_csv}. The worker "
+                        f"would silently skip them (or crash on startup) and run "
+                        f"without the intended playbook. Fix routing (assign a "
+                        f"profile that enables these skills) or enable them in "
+                        f"the '{row_assignee}' profile, then unblock. Not retried."
+                    )
+                    try:
+                        block_task(
+                            conn, row["id"], reason=_reason, kind="capability",
+                        )
+                    except Exception:
+                        _log.debug(
+                            "kanban dispatch: skill preflight failed to block "
+                            "task %s (assignee=%s, unknown=%s)",
+                            row["id"], row_assignee, _unknown_csv,
+                            exc_info=True,
+                        )
+                continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
         # its in-flight cap. Prevents one profile's local model / API
@@ -7730,15 +8672,84 @@ def _dispatch_once_locked(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        try:
-            from hermes_cli.profiles import profile_exists
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if not _assignee_is_spawnable(
+            row["assignee"], role="checker", spawnable_fn=spawnable_fn
+        ):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Checker-lane skill preflight (root cause #2 — the review-lane gap).
+        # The review path force-loads the sdlc-review skill onto the checker
+        # (see ``claimed.skills = list(_REVIEW_FORCE_SKILLS)`` below) but never
+        # preflighted it — and sdlc-review used to be whitelisted, so a review
+        # routed to a profile that cannot load it would spawn, crash on the
+        # missing skill, reset, and re-dispatch: a silent crash-loop that ends
+        # in an auto-block with an opaque reason. Run the SAME preflight the
+        # ready lane runs, against the checker's forced skill(s), and fail the
+        # card CLOSED pre-spawn with a diagnostic that names the exact skill +
+        # profile. Fails SAFE: an unresolvable enabled set (None) DEFERS rather
+        # than blocks, so profiles without a scannable skills tree behave
+        # exactly as before.
+        _review_assignee = row["assignee"]
+        if _review_assignee not in _enabled_skills_cache:
+            _enabled_skills_cache[_review_assignee] = _profile_enabled_skill_names(
+                _review_assignee
+            )
+        _review_unknown = _skill_preflight_unknown(
+            _REVIEW_FORCE_SKILLS, _review_assignee,
+            enabled=_enabled_skills_cache[_review_assignee],
+        )
+        if _review_unknown:
+            _review_csv = ", ".join(_review_unknown)
+            result.skill_preflight_blocked.append(
+                (row["id"], _review_assignee, _review_csv)
+            )
+            if not dry_run:
+                _review_reason = (
+                    f"skill-preflight (review lane): profile "
+                    f"'{_review_assignee}' does not enable the review "
+                    f"skill(s) the checker force-loads: {_review_csv}. A review "
+                    f"agent spawned without them crashes on startup and "
+                    f"crash-loops. Route the review to a profile that enables "
+                    f"the review skill(s), or author/enable them in the "
+                    f"'{_review_assignee}' profile, then unblock. Not retried."
+                )
+                # ``block_task`` only transitions running/ready → blocked, and
+                # this card is still in ``review``. Claim it (review → running)
+                # first — mirroring the state the crash-loop would reach — then
+                # fail it CLOSED, so the block is recorded through the normal
+                # run-ending path (event + run outcome) instead of a raw status
+                # poke. If the claim races and loses, another dispatcher owns
+                # it; just skip.
+                try:
+                    _blocked_claim = claim_review_task(
+                        conn, row["id"], ttl_seconds=ttl_seconds
+                    )
+                    if _blocked_claim is not None:
+                        block_task(
+                            conn, _blocked_claim.id, reason=_review_reason,
+                            kind="capability",
+                        )
+                except Exception:
+                    _log.debug(
+                        "kanban dispatch: review skill preflight failed to "
+                        "block task %s (assignee=%s, unknown=%s)",
+                        row["id"], _review_assignee, _review_csv,
+                        exc_info=True,
+                    )
+            continue
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(row["assignee"], 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], row["assignee"], current)
+                )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            if _per_profile_cap is not None:
+                _per_profile_running[row["assignee"]] = (
+                    _per_profile_running.get(row["assignee"], 0) + 1
+                )
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -7767,7 +8778,7 @@ def _dispatch_once_locked(
         # kanban lifecycle is already injected into every worker's system
         # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
         # review agent needs.
-        claimed.skills = ["sdlc-review"]
+        claimed.skills = list(_REVIEW_FORCE_SKILLS)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect
@@ -7783,6 +8794,10 @@ def _dispatch_once_locked(
                 _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            if _per_profile_cap is not None and claimed.assignee:
+                _per_profile_running[claimed.assignee] = (
+                    _per_profile_running.get(claimed.assignee, 0) + 1
+                )
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
@@ -8241,6 +9256,11 @@ def _default_spawn(
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
+    #
+    # Track this pid so ``reap_worker_zombies`` reaps it (and only it and
+    # its siblings) — a scoped reap that never touches foreign children the
+    # surrounding gateway process spawned for other purposes.
+    _register_worker_pid(proc.pid)
     return proc.pid
 
 

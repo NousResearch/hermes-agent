@@ -59,8 +59,21 @@ function subscribeWindowSize(cb: () => void) {
   }
 }
 
-const viewportIsFullscreen = () =>
-  window.innerWidth >= window.screen.width && window.innerHeight >= window.screen.height
+export const viewportIsFullscreen = () => {
+  if (window.innerWidth < window.screen.width || window.innerHeight < window.screen.height) {
+    return false
+  }
+  // On macOS, true fullscreen (green button) hides the menu bar, making
+  // screen.availHeight equal to screen.height.  "Zoom" (double-click titlebar
+  // to fill the screen) keeps the menu bar visible, so availHeight < height.
+  // In zoom mode the traffic-light buttons are still visible at the top-left,
+  // so we must NOT treat it as fullscreen — otherwise the titlebar controls
+  // shift underneath them (issue #45264).
+  if (window.screen.availHeight < window.screen.height) {
+    return false
+  }
+  return true
+}
 
 export function AppShell({
   children,

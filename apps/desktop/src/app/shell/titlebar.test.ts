@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment jsdom
+import { describe, expect, it, vi, afterEach } from 'vitest'
 
 import {
   TITLEBAR_CONTROL_OFFSET_X,
@@ -6,6 +7,7 @@ import {
   TITLEBAR_FALLBACK_WINDOW_BUTTON_X,
   titlebarControlsPosition
 } from './titlebar'
+import { viewportIsFullscreen } from './app-shell'
 
 describe('titlebarControlsPosition', () => {
   it('offsets controls from visible traffic lights', () => {
@@ -22,5 +24,45 @@ describe('titlebarControlsPosition', () => {
 
   it('uses the macOS fallback while the initial window state is unknown', () => {
     expect(titlebarControlsPosition(undefined).left).toBe(TITLEBAR_FALLBACK_WINDOW_BUTTON_X + TITLEBAR_CONTROL_OFFSET_X)
+  })
+})
+
+describe('viewportIsFullscreen', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function mockScreen(overrides: Partial<Screen>) {
+    const defaults = { width: 1920, height: 1080, availHeight: 1080, availWidth: 1920 }
+    Object.defineProperty(window, 'screen', { value: { ...defaults, ...overrides }, configurable: true })
+  }
+
+  it('returns false when viewport is smaller than screen', () => {
+    mockScreen({ width: 1920, height: 1080 })
+    vi.stubGlobal('innerWidth', 1600)
+    vi.stubGlobal('innerHeight', 900)
+    expect(viewportIsFullscreen()).toBe(false)
+  })
+
+  it('returns true for true macOS fullscreen (menu bar hidden, availHeight equals height)', () => {
+    mockScreen({ width: 1920, height: 1080, availHeight: 1080, availWidth: 1920 })
+    vi.stubGlobal('innerWidth', 1920)
+    vi.stubGlobal('innerHeight', 1080)
+    expect(viewportIsFullscreen()).toBe(true)
+  })
+
+  it('returns false for macOS zoom (menu bar visible, availHeight < height) — #45264', () => {
+    // macOS menu bar is 25px; availHeight is screen.height minus menu bar
+    mockScreen({ width: 1920, height: 1080, availHeight: 1055, availWidth: 1920 })
+    vi.stubGlobal('innerWidth', 1920)
+    vi.stubGlobal('innerHeight', 1055)
+    expect(viewportIsFullscreen()).toBe(false)
+  })
+
+  it('returns true on Windows/Linux where availHeight equals height (no menu bar)', () => {
+    mockScreen({ width: 1920, height: 1080, availHeight: 1080, availWidth: 1920 })
+    vi.stubGlobal('innerWidth', 1920)
+    vi.stubGlobal('innerHeight', 1080)
+    expect(viewportIsFullscreen()).toBe(true)
   })
 })

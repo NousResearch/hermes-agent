@@ -42,6 +42,12 @@ DEFAULT_TIMEOUT = 15.0
 # hermes_cli.auth.NOUS_BILLING_MANAGE_SCOPE (kept here too so this module has no
 # import-time dependency on the much heavier auth module).
 BILLING_MANAGE_SCOPE = "billing:manage"
+_BILLING_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+_BILLING_ERROR_BODY_MAX_BYTES = 64 * 1024
+
+
+class _BillingResponseTooLarge(ValueError):
+    pass
 
 
 # =============================================================================
@@ -295,8 +301,13 @@ def _request(
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
+            raw = _read_billing_response_text(
+                resp,
+                max_bytes=_BILLING_RESPONSE_BODY_MAX_BYTES,
+            )
             return json.loads(raw) if raw.strip() else {}
+    except _BillingResponseTooLarge as exc:
+        raise BillingError(str(exc), error="response_too_large") from exc
     except urllib.error.HTTPError as exc:
         # A 401 on a cached token → drop the cache and retry once with a fresh
         # (refresh-aware) resolve before surfacing the auth error.
@@ -313,7 +324,16 @@ def _request(
             )
         raw = ""
         try:
-            raw = exc.read().decode("utf-8")
+            raw = _read_billing_response_text(
+                exc,
+                max_bytes=_BILLING_ERROR_BODY_MAX_BYTES,
+            )
+        except _BillingResponseTooLarge as read_exc:
+            payload = {
+                "error": "response_too_large",
+                "message": str(read_exc),
+            }
+            _raise_for_error(exc.code, payload, getattr(exc, "headers", None))
         except Exception:
             raw = ""
         try:
@@ -326,6 +346,15 @@ def _request(
         raise BillingError(
             f"Could not reach Nous Portal: {exc.reason}", error="network_error"
         ) from exc
+
+
+def _read_billing_response_text(resp: Any, *, max_bytes: int) -> str:
+    raw = resp.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise _BillingResponseTooLarge(
+            f"Billing response exceeded {max_bytes} bytes"
+        )
+    return raw.decode("utf-8")
 
 
 # =============================================================================

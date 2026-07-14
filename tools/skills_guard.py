@@ -827,8 +827,9 @@ def format_scan_report(result: ScanResult) -> str:
         for f in sorted_findings:
             sev = f.severity.upper().ljust(8)
             cat = f.category.ljust(14)
+            pattern = f.pattern_id.ljust(24)
             loc = f"{f.file}:{f.line}".ljust(30)
-            lines.append(f"  {sev} {cat} {loc} \"{f.match[:60]}\"")
+            lines.append(f"  {sev} {cat} {pattern} {loc} \"{f.match[:60]}\"")
 
         lines.append("")
 
@@ -952,11 +953,11 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                 description=f"binary/executable file ({ext}) should not be in a skill",
             ))
 
+        mode = f.stat().st_mode
         script_exts = {'.sh', '.bash', '.py', '.rb', '.pl'}
-        is_executable = bool(f.stat().st_mode & 0o111)
 
         # Executable permission on non-script files
-        if ext not in script_exts and is_executable:
+        if ext not in script_exts and mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
                 severity="medium",
@@ -967,28 +968,27 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                 description="file has executable permission but is not a recognized script type",
             ))
 
-        # A shebang advertises direct execution. On POSIX, flag scripts whose
-        # mode contradicts that contract; interpreter-only files should omit
-        # the shebang or be documented as such.
-        if os.name != "nt" and ext in script_exts and not is_executable:
+        # Shipped scripts should be directly executable. Limit this to shebang
+        # files and conventional scripts/ helpers so ordinary library modules
+        # do not get flagged for having no executable bit.
+        is_script_helper = rel.startswith("scripts/") and ext in script_exts
+        has_shebang = False
+        if ext in script_exts:
             try:
-                with f.open("rb") as handle:
-                    has_shebang = handle.read(2) == b"#!"
+                with f.open("rb") as fh:
+                    has_shebang = fh.read(2) == b"#!"
             except OSError:
                 has_shebang = False
-            if has_shebang:
-                findings.append(Finding(
-                    pattern_id="script_not_executable",
-                    severity="low",
-                    category="structural",
-                    file=rel,
-                    line=1,
-                    match="shebang without executable bit",
-                    description=(
-                        "script declares an interpreter but is not executable; "
-                        "set an executable mode or remove the shebang"
-                    ),
-                ))
+        if (is_script_helper or has_shebang) and not mode & 0o111:
+            findings.append(Finding(
+                pattern_id="script_not_executable",
+                severity="medium",
+                category="structural",
+                file=rel,
+                line=0,
+                match="missing executable bit",
+                description="script file is not executable",
+            ))
 
     # File count limit
     if file_count > MAX_FILE_COUNT:

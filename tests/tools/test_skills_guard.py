@@ -382,6 +382,19 @@ class TestCheckStructure:
         assert any(fi.pattern_id == "script_not_executable" for fi in findings)
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX executable bits")
+    def test_scripts_helper_without_shebang_must_be_executable(self, tmp_path):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        helper = scripts / "helper.py"
+        helper.write_text("print('ok')\n")
+        helper.chmod(0o600)
+
+        findings = _check_structure(tmp_path)
+        finding = next(fi for fi in findings if fi.pattern_id == "script_not_executable")
+        assert finding.severity == "medium"
+        assert finding.file == "scripts/helper.py"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX executable bits")
     def test_executable_shebang_script_allowed(self, tmp_path):
         script = tmp_path / "helper.py"
         script.write_text("#!/usr/bin/env python3\nprint('ok')\n")
@@ -481,6 +494,7 @@ class TestFormatScanReport:
         report = format_scan_report(result)
         assert "DANGEROUS" in report
         assert "BLOCKED" in report
+        assert f"{'x':<24}" in report
         assert "curl $KEY" in report
 
 

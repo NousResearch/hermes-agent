@@ -16,12 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-# Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
-# at module level. Run them in the same xdist worker so they don't race
-# against each other (and against any other file that also touches
-# ``app.state``) — the marker name is shared across all dashboard-auth test
-# files that gate the app.
-pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
@@ -116,8 +110,11 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
 def test_gated_html_redirects_to_login(gated_app):
     r = gated_app.get("/", follow_redirects=False)
     assert r.status_code == 302
-    # Phase 6: gate carries a ``next=`` so post-login bounces back to /.
-    assert r.headers["location"] in ("/login", "/login?next=%2F")
+    # Phase 1 (cloud-auto-discovery): with a single interactive provider, an
+    # unauthenticated HTML load auto-initiates the OAuth redirect to
+    # /auth/login rather than rendering the /login interstitial. The /login
+    # page remains the fallback (multiple/zero providers, or loop-guard trip).
+    assert r.headers["location"].startswith("/auth/login?provider=stub")
 
 
 def test_gated_auth_providers_is_public(gated_app):

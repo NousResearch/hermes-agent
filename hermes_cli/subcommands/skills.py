@@ -181,6 +181,28 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Skip confirmation prompt when using --restore",
     )
 
+    skills_rollback = skills_subparsers.add_parser(
+        "rollback",
+        help="Rollback a skill to an autonomous-edit snapshot",
+        description=(
+            "Restore a skill to the snapshot captured before an autonomous "
+            "background-review skill_manage edit. By default restores the "
+            "newest snapshot for that skill."
+        ),
+    )
+    skills_rollback.add_argument("name", help="Skill name to rollback")
+    skills_rollback.add_argument(
+        "--to",
+        dest="snapshot_id",
+        default=None,
+        help="Specific snapshot id to restore",
+    )
+    skills_rollback.add_argument(
+        "--list",
+        action="store_true",
+        help="List available autonomous-edit snapshots without restoring",
+    )
+
     skills_list_modified = skills_subparsers.add_parser(
         "list-modified",
         help="List bundled skills you've edited (which `hermes update` keeps)",

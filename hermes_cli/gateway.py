@@ -4854,11 +4854,24 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         print("\nGateway stopped.")
         return
     except SystemExit as e:
+        exit_code = getattr(e, "code", None)
         _exit_diag(
             "asyncio.run.SystemExit",
-            code=getattr(e, "code", None),
+            code=exit_code,
             traceback=_traceback.format_exc(),
         )
+        if exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE:
+            # A plain re-raise here only unwinds the main thread; if any
+            # non-daemon worker/network thread survived start_gateway()'s
+            # teardown, the interpreter stays alive waiting on it and
+            # systemd/launchd never observes exit 75, so
+            # RestartForceExitStatus=75 never respawns the service. Delegate
+            # to the shared hard-exit backstop (gateway.run, cde3ca4eb /
+            # #53107) instead of duplicating its PID-file/runtime-lock
+            # release and bounded log-queue drain here.
+            from gateway.run import _exit_after_graceful_shutdown
+
+            _exit_after_graceful_shutdown(exit_code)
         raise
     except BaseException as e:
         # Absolutely everything else: Exception, asyncio.CancelledError,

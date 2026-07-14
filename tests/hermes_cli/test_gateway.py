@@ -61,6 +61,62 @@ def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
     assert "Gateway stopped." in out
 
 
+class _HardExitCalled(Exception):
+    """Sentinel raised by the fake backstop so control never returns, like os._exit."""
+
+
+def test_run_gateway_hard_exits_on_service_restart_code(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        return object()
+
+    def fake_asyncio_run(coro):
+        raise SystemExit(gateway.GATEWAY_SERVICE_RESTART_EXIT_CODE)
+
+    def fake_exit_after_graceful_shutdown(exit_code):
+        calls.append(exit_code)
+        raise _HardExitCalled
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    sys.modules["gateway.run"]._exit_after_graceful_shutdown = (
+        fake_exit_after_graceful_shutdown
+    )
+    monkeypatch.setattr(gateway.asyncio, "run", fake_asyncio_run)
+
+    with pytest.raises(_HardExitCalled):
+        gateway.run_gateway()
+
+    assert calls == [gateway.GATEWAY_SERVICE_RESTART_EXIT_CODE]
+
+
+@pytest.mark.parametrize("exit_code", [0, 1, None])
+def test_run_gateway_reraises_non_restart_system_exit(monkeypatch, exit_code):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        return object()
+
+    def fake_asyncio_run(coro):
+        raise SystemExit(exit_code)
+
+    def fake_exit_after_graceful_shutdown(code):
+        calls.append(code)
+        raise _HardExitCalled
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    sys.modules["gateway.run"]._exit_after_graceful_shutdown = (
+        fake_exit_after_graceful_shutdown
+    )
+    monkeypatch.setattr(gateway.asyncio, "run", fake_asyncio_run)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.run_gateway()
+
+    assert exc_info.value.code == exit_code
+    assert calls == []
+
+
 def test_run_gateway_exits_nonzero_when_start_gateway_reports_failure(monkeypatch):
     calls = []
 

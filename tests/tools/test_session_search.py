@@ -821,7 +821,7 @@ class TestCheckSessionSearchRequirementsAdditional:
         with patch.dict(sys.modules, {"hermes_state": fake_hermes_state}):
             assert check_session_search_requirements() is False
 
-    def test_check_requirements_no_db_file(self, monkeypatch, tmp_path):
+    def test_check_requirements_missing_parent(self, monkeypatch, tmp_path):
         import hermes_state
 
         monkeypatch.setattr(
@@ -831,3 +831,14 @@ class TestCheckSessionSearchRequirementsAdditional:
         )
 
         assert check_session_search_requirements() is False
+
+    def test_check_requirements_missing_db_file(self, monkeypatch, tmp_path):
+        import hermes_state
+
+        db_path = tmp_path / "state.db"
+        assert db_path.parent.exists()
+        assert not db_path.exists()
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
+
+        assert check_session_search_requirements() is True

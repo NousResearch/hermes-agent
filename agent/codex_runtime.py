@@ -674,6 +674,10 @@ def _consume_codex_event_stream(
     saw_terminal = False
 
     for event in event_iter:
+        # Guard: backend can emit None events. Skip rather than crash on
+        # attribute access or `in` operator below.
+        if event is None:
+            continue
         if on_event is not None:
             try:
                 on_event(event)

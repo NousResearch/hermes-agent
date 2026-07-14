@@ -2339,7 +2339,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if agent._interrupt_requested:
                 break
 
-            if not chunk.choices:
+            if chunk.choices is None or not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model
                 # Usage comes in the final chunk with empty choices
@@ -2347,7 +2347,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     usage_obj = chunk.usage
                 continue
 
-            delta = chunk.choices[0].delta
+            _choices0 = chunk.choices[0]
+            if _choices0 is None:
+                logger.warning(
+                    "Chat completions stream: chunk.choices[0] is None, skipping. Chunk type=%s",
+                    type(chunk).__name__,
+                )
+                continue
+            delta = _choices0.delta
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
 
@@ -2627,6 +2634,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             for event in stream:
+                # Guard: None events would crash `in` operator on event_type below.
+                if event is None:
+                    continue
                 # Update stale-stream timer on every event so the
                 # outer poll loop knows data is flowing.  Without
                 # this, the detector kills healthy long-running

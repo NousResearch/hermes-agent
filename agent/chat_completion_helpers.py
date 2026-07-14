@@ -1862,6 +1862,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     reasoning_config=agent.reasoning_config,
                     is_oauth=agent._is_anthropic_oauth,
                     preserve_dots=agent._anthropic_preserve_dots(),
+                    context_length=getattr(
+                        getattr(agent, "context_compressor", None),
+                        "context_length",
+                        None,
+                    ),
+                    base_url=getattr(agent, "_anthropic_base_url", None),
                     anthropic_model_family=_resolve_anthropic_model_family(agent),
                 )
                 summary_response = agent._anthropic_messages_create(_ant_kw)
@@ -1898,6 +1904,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     max_tokens=agent.max_tokens,
                     reasoning_config=agent.reasoning_config,
                     preserve_dots=agent._anthropic_preserve_dots(),
+                    context_length=getattr(
+                        getattr(agent, "context_compressor", None),
+                        "context_length",
+                        None,
+                    ),
+                    base_url=getattr(agent, "_anthropic_base_url", None),
                     anthropic_model_family=_resolve_anthropic_model_family(agent),
                 )
                 retry_response = agent._anthropic_messages_create(_ant_kw2)

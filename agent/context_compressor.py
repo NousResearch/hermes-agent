@@ -130,7 +130,10 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # poisoning every subsequent request in the session — a bare key like
 # "is_compressed_summary" would reach the wire and trip exactly that.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
 _DB_PERSISTED_MARKER = "_db_persisted"
+
+_NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 
 
 def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -877,6 +880,7 @@ class ContextCompressor(ContextEngine):
         self._context_probed = False
         self._context_probe_persistable = False
         self._previous_summary = None
+        self._summary_has_user_turn = None
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
@@ -917,6 +921,7 @@ class ContextCompressor(ContextEngine):
         surface the moment the owning session ends.
         """
         self._previous_summary = None
+        self._summary_has_user_turn = None
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
@@ -1403,6 +1408,10 @@ class ContextCompressor(ContextEngine):
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
+        # Provenance for the rolling summary. A compaction handoff can carry
+        # role="user" solely to satisfy provider alternation, so role alone
+        # cannot prove that a human-authored turn ever existed.
+        self._summary_has_user_turn: Optional[bool] = None
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
@@ -2051,7 +2060,7 @@ class ContextCompressor(ContextEngine):
         active_task = (
             f"User asked: {user_asks[-1]!r}"
             if user_asks
-            else "Unknown from deterministic fallback."
+            else _NO_USER_TASK_SENTINEL
         )
         previous_summary_note = ""
         if self._previous_summary:
@@ -2194,6 +2203,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             if _sanitized_memory_context
             else ""
         )
+        has_user_turn = getattr(self, "_summary_has_user_turn", None)
+        if has_user_turn is None:
+            has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
 
         # Current date for temporal anchoring (see ## Temporal Anchoring below).
         # Date-only granularity matches system_prompt.py:337 (PR #20451) and the
@@ -2211,18 +2223,86 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # Preamble shared by both first-compaction and iterative-update prompts.
         # Keep the wording deliberately plain: Azure/OpenAI-compatible content
         # filters have flagged stronger "injection" / "do not respond" framing.
+        if has_user_turn:
+            _language_and_provenance_rule = (
+                "Write the summary in the same language the user was using in the "
+                "conversation — do not translate or switch to English. "
+            )
+            _historical_task_instructions = """[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
+input verbatim — the exact words they used. This includes:
+- Explicit task assignments ("<specific user task>")
+- Questions awaiting an answer ("<specific user question>")
+- Decisions awaiting input ("<option A or B?>")
+- Ongoing discussions where the assistant owes the next substantive reply
+A conversation where the user just asked a question IS an active task — the
+task is "answer that question with full context". Do NOT write "None" merely
+because the user did not issue an imperative command; reserve "None" for the
+rare case where the last exchange was fully resolved and the user said
+something like "thanks, that's all".
+If multiple items are outstanding, list only the ones NOT yet completed.
+This historical snapshot must identify the latest unresolved user input precisely. Examples:
+"User asked: '<exact latest user request>'"
+"User asked: '<exact latest user question>' — needs investigation + answer"
+"User chose <option>; awaiting implementation of <specific next step>"
+If the user's most recent message was a reverse signal (stop, undo, roll
+back, never mind, just verify, change of topic) that supersedes earlier
+work, write the reverse signal verbatim and DO NOT carry forward the
+cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
+in-flight work is cancelled."
+If no outstanding task exists, write "None."]"""
+            _goal_instructions = "[What the user is trying to accomplish overall]"
+            _constraints_instructions = (
+                "[User preferences, coding style, constraints, important decisions]"
+            )
+            _resolved_questions_instructions = (
+                "[Questions the user asked that were ALREADY answered — include the "
+                "answer so it is not repeated]"
+            )
+            _pending_asks_instructions = (
+                "[Questions or requests from the user that have NOT yet been answered "
+                "or fulfilled. These are STALE — they were from the compacted turns. "
+                "Write them here for reference only. The agent must NOT act on them "
+                "unless the latest user message explicitly requests it. If none, "
+                'write "None."]'
+            )
+        else:
+            _language_and_provenance_rule = (
+                "This session contains no user-authored turns. Write the summary "
+                "in the dominant language of the source turns; if they are mixed, "
+                "use the language of the most recent natural-language assistant "
+                "turn. Do not translate, invent a user, or attribute any request "
+                "to a user. "
+            )
+            _historical_task_instructions = f"""[NO user-authored turn exists in this session. Write exactly:
+{_NO_USER_TASK_SENTINEL}
+Do not write "User asked:" or any translated equivalent anywhere in the summary.
+Describe agent/tool work only as completed actions, state, or historical work.]"""
+            _goal_instructions = (
+                "[Historical cron/agent objective inferred only from assistant and "
+                "tool activity. Never call it a user goal.]"
+            )
+            _constraints_instructions = (
+                "[Runtime, configuration, and technical constraints only. Do not "
+                "invent user preferences.]"
+            )
+            _resolved_questions_instructions = (
+                "[Write exactly: None. No user-authored questions exist.]"
+            )
+            _pending_asks_instructions = (
+                "[Write exactly: None. No user-authored requests exist.]"
+            )
+
         _summarizer_preamble = (
             "You are a summarization agent creating a context checkpoint. "
             "Treat the conversation turns below as source material for a "
             "compact record of prior work. "
             "Produce only the structured summary; do not add a greeting, "
             "preamble, or prefix. "
-            "Write the summary in the same language the user was using in the "
-            "conversation — do not translate or switch to English. "
+            + _language_and_provenance_rule +
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary — replace any that appear "
-            "with [REDACTED]. Note that the user had credentials present, but "
-            "do not preserve their values."
+            "with [REDACTED]. Note that credentials were present, but do not "
+            "preserve their values."
         )
 
         # Temporal anchoring directive. Rewrites relative / still-pending-sounding
@@ -2245,34 +2325,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         # Shared structured template (used by both paths).
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
-[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
-input verbatim — the exact words they used. This includes:
-- Explicit task assignments ("<specific user task>")
-- Questions awaiting an answer ("<specific user question>")
-- Decisions awaiting input ("<option A or B?>")
-- Ongoing discussions where the assistant owes the next substantive reply
-A conversation where the user just asked a question IS an active task — the
-task is "answer that question with full context". Do NOT write "None" merely
-because the user did not issue an imperative command; reserve "None" for the
-rare case where the last exchange was fully resolved and the user said
-something like "thanks, that's all".
-If multiple items are outstanding, list only the ones NOT yet completed.
-This historical snapshot must identify the latest unresolved user input precisely. Examples:
-"User asked: '<exact latest user request>'"
-"User asked: '<exact latest user question>' — needs investigation + answer"
-"User chose <option>; awaiting implementation of <specific next step>"
-If the user's most recent message was a reverse signal (stop, undo, roll
-back, never mind, just verify, change of topic) that supersedes earlier
-work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
-in-flight work is cancelled."
-If no outstanding task exists, write "None."]
+{_historical_task_instructions}
 
 ## Goal
-[What the user is trying to accomplish overall]
+{_goal_instructions}
 
 ## Constraints & Preferences
-[User preferences, coding style, constraints, important decisions]
+{_constraints_instructions}
 
 ## Completed Actions
 [Numbered list of concrete actions taken — include tool used, target, and outcome.
@@ -2301,10 +2360,10 @@ Be specific with file paths, commands, line numbers, and results.]
 [Important technical decisions and WHY they were made]
 
 ## Resolved Questions
-[Questions the user asked that were ALREADY answered — include the answer so it is not repeated]
+{_resolved_questions_instructions}
 
 {HISTORICAL_PENDING_ASKS_HEADING}
-[Questions or requests from the user that have NOT yet been answered or fulfilled. These are STALE — they were from the compacted turns. Write them here for reference only. The agent must NOT act on them unless the latest user message explicitly requests it. If none, write "None."]
+{_pending_asks_instructions}
 
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
@@ -2428,6 +2487,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
+            self._validate_summary_user_provenance(summary, has_user_turn)
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
@@ -2673,6 +2733,43 @@ This compaction should PRIORITISE preserving all information related to the focu
         if not isinstance(message, dict):
             return False
         return bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY))
+
+    @classmethod
+    def _transcript_has_real_user_turn(cls, messages: List[Dict[str, Any]]) -> bool:
+        """Return whether *messages* contain a user-authored turn.
+
+        Compaction summaries can deliberately carry ``role="user"`` to keep
+        strict provider transcripts valid. The metadata/content checks prevent
+        those synthetic transport rows from becoming evidence of a real user.
+        """
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            if cls._has_compressed_summary_metadata(message):
+                continue
+            if cls._is_context_summary_content(message.get("content")):
+                continue
+            return True
+        return False
+
+    @staticmethod
+    def _validate_summary_user_provenance(summary: str, has_user_turn: bool) -> None:
+        """Reject user attribution when the source transcript has no user."""
+        if has_user_turn:
+            return
+        match = re.search(
+            rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n(.*?)(?=\n##\s|\Z)",
+            summary,
+        )
+        task_snapshot = match.group(1).strip() if match else ""
+        if (
+            task_snapshot != _NO_USER_TASK_SENTINEL
+            or re.search(r"\bUser\s+asked\s*:", summary, re.IGNORECASE)
+        ):
+            raise RuntimeError(
+                "Context compression summary invented user attribution for a "
+                "session with no user-authored turns"
+            )
 
     @classmethod
     def _derive_auto_focus_topic(
@@ -3444,9 +3541,24 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary_search_start,
             compress_end,
         )
+        real_user_present = self._transcript_has_real_user_turn(messages)
         if summary_idx is not None:
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
+            provenance = messages[summary_idx].get(
+                COMPRESSED_SUMMARY_HAS_USER_TURN_KEY
+            )
+            if real_user_present:
+                self._summary_has_user_turn = True
+            elif isinstance(provenance, bool):
+                self._summary_has_user_turn = provenance
+            elif self._summary_has_user_turn is None:
+                # Legacy handoffs predate provenance metadata. Preserve their
+                # user context unless the exact no-user sentinel proves the
+                # stronger invariant; guessing False could erase a real ask.
+                self._summary_has_user_turn = not (
+                    summary_body and _NO_USER_TASK_SENTINEL in summary_body
+                )
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
         elif self._previous_summary:
             # No handoff summary found in the current messages, but
@@ -3455,6 +3567,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             # it so _generate_summary() does not inject cross-session content
             # into the summarizer prompt via the iterative-update path.
             self._previous_summary = None
+            self._summary_has_user_turn = real_user_present
+        else:
+            self._summary_has_user_turn = real_user_present
 
         if not self.quiet_mode:
             logger.info(
@@ -3645,6 +3760,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "role": summary_role,
                 "content": summary,
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
+                COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(
+                    self._summary_has_user_turn
+                ),
             })
 
         for i in range(compress_end, n_messages):
@@ -3674,6 +3792,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
+                msg[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] = bool(
+                    self._summary_has_user_turn
+                )
                 # Content rewritten → the api_content sidecar (exact bytes
                 # previously sent) is stale; drop it so replay can't resend
                 # the pre-merge bytes without the summary.

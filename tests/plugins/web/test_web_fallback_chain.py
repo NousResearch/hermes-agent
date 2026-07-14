@@ -247,9 +247,10 @@ class TestResolveFallbackChain:
         finally:
             reg._read_config_key = original
 
-    def test_configured_provider_included_even_when_unavailable(self) -> None:
-        """The explicitly configured provider is in the chain even if
-        is_available() is False -- the dispatcher will surface the error."""
+    def test_configured_unavailable_provider_excluded_from_chain(self) -> None:
+        """The explicitly configured provider is NOT in the chain when
+        is_available() is False. The preflight resolver surfaces the typed
+        credential error; the chain is for runtime failures only."""
         import agent.web_search_registry as reg
 
         original = reg._read_config_key
@@ -265,7 +266,9 @@ class TestResolveFallbackChain:
             register_provider(_FakeProvider("ddgs", available=True))
             chain = resolve_fallback_chain(capability="search")
             names = [p.name for p in chain]
-            assert names == ["firecrawl", "ddgs"]
+            # firecrawl excluded (unavailable); only ddgs in chain
+            assert "firecrawl" not in names
+            assert names == ["ddgs"]
         finally:
             reg._read_config_key = original
 
@@ -347,3 +350,69 @@ class TestExtractChainExceptionHandling:
             {"url": "https://b.com", "error": "403"},
         ]
         assert _is_provider_failure(result) is False
+
+
+# ---------------------------------------------------------------------------
+# Contentless-row detection (teknium1 review comment)
+# ---------------------------------------------------------------------------
+
+
+class TestContentlessRowDetection:
+    """Regression: a list of rows with no ``error`` key but also no
+    ``content`` (e.g. Firecrawl returning empty markdown/HTML) must be
+    detected as a failure so the chain advances to the next provider.
+
+    teknium1 pointed out that Firecrawl can produce a result like::
+
+        [{"url": "https://a.com", "title": "a", "content": ""}]
+
+    -- no ``error`` key, structurally "successful", but useless to the user.
+    The old ``all(r.get("error"))`` check returned False, the loop broke,
+    and the fallback chain never tried the next provider.
+    """
+
+    def test_all_rows_contentless_no_error_is_failure(self) -> None:
+        """Every row has empty content and no error -> failure."""
+        result = [
+            {"url": "https://a.com", "title": "a", "content": ""},
+            {"url": "https://b.com", "title": "b", "content": ""},
+        ]
+        assert _is_provider_failure(result) is True
+
+    def test_all_rows_missing_content_key_is_failure(self) -> None:
+        """Every row lacks a content key entirely -> failure."""
+        result = [
+            {"url": "https://a.com", "title": "a"},
+            {"url": "https://b.com", "title": "b"},
+        ]
+        assert _is_provider_failure(result) is True
+
+    def test_mixed_contentless_and_content_is_not_failure(self) -> None:
+        """One row has content, one doesn't -> partial success, not failure."""
+        result = [
+            {"url": "https://a.com", "title": "a", "content": ""},
+            {"url": "https://b.com", "title": "b", "content": "hello"},
+        ]
+        assert _is_provider_failure(result) is False
+
+    def test_mixed_error_and_contentless_is_failure(self) -> None:
+        """One row errored, one contentless (no error) -> failure.
+        Not all have error, but all lack content -> failure via content check."""
+        result = [
+            {"url": "https://a.com", "error": "403"},
+            {"url": "https://b.com", "content": ""},
+        ]
+        assert _is_provider_failure(result) is True
+
+    def test_single_row_empty_content_is_failure(self) -> None:
+        """Single row with no error but empty content -> failure."""
+        result = [{"url": "https://a.com", "content": ""}]
+        assert _is_provider_failure(result) is True
+
+    def test_all_rows_error_and_contentless_is_failure(self) -> None:
+        """All rows have both error and empty content -> failure (via error check)."""
+        result = [
+            {"url": "https://a.com", "error": "403", "content": ""},
+            {"url": "https://b.com", "error": "timeout", "content": ""},
+        ]
+        assert _is_provider_failure(result) is True

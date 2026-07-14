@@ -314,12 +314,18 @@ def _is_provider_failure(result: Any) -> bool:
 
     Detection rules:
 
+    * ``None`` / empty dict / empty list -> failure.
     * ``success: False`` -> failure.
     * ``success: True`` but empty ``data.web`` -> failure (0 results).
     * List result where every entry has an ``error`` key -> failure.
+    * List result where no entry has an ``error`` key AND no entry has
+      usable content (empty/missing ``content``) -> failure.  This catches
+      providers (e.g. Firecrawl) that return a row per URL with neither
+      markdown nor HTML -- structurally "successful" but useless to the
+      user.  At least one content-bearing row means partial success and
+      does NOT trigger fallback.
     * List result with at least one content-bearing entry -> NOT a failure
       (partial success is good enough to return to the user).
-    * Empty list -> failure.
     """
     if not result:
         return True
@@ -332,8 +338,17 @@ def _is_provider_failure(result: Any) -> bool:
             web = data.get("web")
             if isinstance(web, list) and not web:
                 return True
+        return False
     if isinstance(result, list):
+        if not result:
+            return True
+        # All entries have an "error" key -> failure
         if all(isinstance(r, dict) and r.get("error") for r in result):
+            return True
+        # No entry has an "error" key, but none has usable content either
+        # (e.g. Firecrawl returning empty content for every URL).  At least
+        # one content-bearing row means partial success.
+        if all(isinstance(r, dict) and not r.get("content") for r in result):
             return True
     return False
 
@@ -346,15 +361,12 @@ def resolve_fallback_chain(*, capability: str) -> List[WebSearchProvider]:
     providers that support *capability*, ordered by :data:`_LEGACY_PREFERENCE`
     with any unrecognised providers appended alphabetically.
 
-    If the user has set an explicit ``web.backend`` (or per-capability
-    variant), that provider is still first -- but the chain provides
-    automatic fallback when it fails mid-call.
-
-    Note: the explicitly configured provider is included even when
-    ``is_available()`` is False -- the dispatcher will attempt the call
-    and surface a typed credential error if the chain exhausts. Remaining
-    providers are filtered by ``is_available()`` so we don't waste time
-    on providers the user has no credentials for.
+    All providers in the chain are filtered by ``is_available()`` so we
+    never waste a round-trip on a provider the user has no credentials for.
+    When the configured provider is unavailable, the preflight resolver
+    (:func:`_resolve` / :func:`get_active_search_provider`) already
+    surfaces a typed credential error to the user -- the chain's job is
+    runtime failures after a valid invocation, not config errors.
     """
     with _lock:
         snapshot = dict(_providers)
@@ -382,7 +394,7 @@ def resolve_fallback_chain(*, capability: str) -> List[WebSearchProvider]:
 
     if configured:
         p = snapshot.get(configured)
-        if p and _capable(p):
+        if p and _capable(p) and _is_available_safe(p):
             chain.append(p)
             seen.add(p.name)
 

@@ -1013,6 +1013,20 @@ async def web_extract_tool(
                 # All providers in the chain failed
                 if last_error:
                     logger.warning("All extract providers failed, last: %s", last_error[:120])
+                # When every provider failed (including the single-provider
+                # fallback path where chain=[provider] for an unavailable
+                # configured provider), surface the last error as a typed
+                # response instead of swallowing it into empty results.
+                # Without this, a user whose configured extract provider has
+                # no API key sees empty results instead of the credential error.
+                if last_error and not (isinstance(results, list) and results):
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": last_error,
+                        },
+                        ensure_ascii=False,
+                    )
                 if isinstance(results, list):
                     results = results or []
                 else:

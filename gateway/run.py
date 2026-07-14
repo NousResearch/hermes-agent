@@ -58,6 +58,12 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.reminder_shortcuts import (
+    is_reminder_intent,
+    parse_simple_relative_reminder,
+    parse_snooze_reply,
+    is_reminder_close_intent,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -10336,6 +10342,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        # ── WhatsApp reminder shortcuts (deterministic fast-path) ──────────────
+        # For high-confidence reminder requests, bypass the LLM entirely and
+        # manage cron jobs directly. This handles patterns like:
+        #   "Remind me in 2 hours call mom"           → new reminder
+        #   "Remind me tomorrow 5am a\n... 5:05am b"  → batch of reminders
+        #   "1h" / "Monday 5:35am" (reply to fired)   → reschedule, keep subject
+        #   "done" (reply to fired reminder)          → close/resolve it
+        #   "show me my reminders"                    → labelled list
+        # A reply ALWAYS inherits the quoted reminder's subject, so the user
+        # never has to retype what the reminder is about.
+        _reminder_shortcut_result = self._try_reminder_shortcut(event, source)
+        if _reminder_shortcut_result is not None:
+            return _reminder_shortcut_result
+
         # ── External-drain new-turn gate (Phase 2) ────────────────────
         # When NAS has engaged an external drain (.drain_request.json present,
         # observed by _drain_control_watcher), refuse to START a new turn so
@@ -10453,6 +10473,267 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._evict_cached_agent(quick_key)
         except Exception:
             pass
+
+    def _reminder_chat_id(self, source: "SessionSource") -> Optional[str]:
+        """Chat id used to key the per-chat last-reminder-subject fallback."""
+        return getattr(source, "chat_id", None) or getattr(source, "user_id", None)
+
+    def _cached_reminder_subject(self, source: "SessionSource") -> Optional[str]:
+        """Most-recent reminder subject for this chat, if still fresh.
+
+        Used as a fallback when the user replies to a reminder but the platform
+        stripped the quoted text. Reads the in-memory cache first, then the
+        persistent per-chat store written when a reminder fires.
+        """
+        chat_id = self._reminder_chat_id(source)
+        if not chat_id:
+            return None
+        cache = getattr(self, "_last_reminder_subject_by_chat", None) or {}
+        entry = cache.get(chat_id)
+        if entry:
+            subject, ts = entry
+            if subject and (time.time() - ts) < 7 * 24 * 3600:
+                return subject
+        try:
+            from gateway.reminder_shortcuts import lookup_last_reminder_subject
+            return lookup_last_reminder_subject(chat_id)
+        except Exception:
+            return None
+
+    def _find_pending_reminder_job(self, subject: str, source: "SessionSource"):
+        """Return a still-pending reminder cron job matching ``subject``.
+
+        Matches on the reminder subject embedded in the job prompt. A fired
+        one-shot reminder is deleted on fire, so there is usually no live job to
+        update — in that case this returns None and the caller creates a fresh
+        job instead of updating in place.
+        """
+        from cron import jobs as cron_jobs
+        from gateway.reminder_shortcuts import extract_subject_from_reminder_text
+
+        want = (subject or "").strip().casefold()
+        if not want:
+            return None
+        try:
+            jobs = cron_jobs.list_jobs(include_disabled=False)
+        except Exception:
+            return None
+        for job in jobs or []:
+            job_subject = extract_subject_from_reminder_text(job.get("prompt")) or ""
+            if job_subject.strip().casefold() == want:
+                return job
+        return None
+
+    def _try_handle_reminder_reply(
+        self, event: "MessageEvent", source: Optional["SessionSource"] = None
+    ) -> Optional[str]:
+        """Handle a reply to a fired/pending reminder (reschedule or close).
+
+        A reply that names only a time means "move this reminder, keep its
+        text"; a reply like "done" means "close this reminder". The reminder
+        subject is ALWAYS inherited from the quoted reminder text, falling back
+        to the per-chat cache when the platform stripped the quote. Returns a
+        confirmation string when handled, or None to fall through.
+        """
+        from cron import jobs as cron_jobs
+        from gateway.reminder_shortcuts import (
+            is_reminder_close_intent,
+            parse_snooze_reply,
+            extract_subject_from_reminder_text,
+        )
+
+        if source is None:
+            source = event.source
+        message_text = (event.text or "").strip()
+        reply_to_text = (
+            (event.reply_to_text or "").strip()
+            if getattr(event, "reply_to_text", None)
+            else None
+        )
+
+        # A reply must have reminder context: either quoted reminder text or a
+        # cached subject from a recently-fired reminder. A bare message with no
+        # such context must NOT be hijacked (e.g. a standalone "done").
+        subject_fallback = self._cached_reminder_subject(source)
+        has_quoted_subject = bool(extract_subject_from_reminder_text(reply_to_text))
+        if not has_quoted_subject and not subject_fallback:
+            return None
+
+        # Close / resolve intent: "done", "completed", "cancel", etc.
+        if is_reminder_close_intent(message_text):
+            subject = (
+                extract_subject_from_reminder_text(reply_to_text) or subject_fallback or ""
+            ).strip()
+            if not subject:
+                return None
+            job = self._find_pending_reminder_job(subject, source)
+            if job is not None:
+                try:
+                    cron_jobs.remove_job(job.get("id"))
+                except Exception as exc:
+                    logger.warning("Reminder close shortcut failed: %s", exc)
+                    return None
+            return f'Closed — "{subject}". Nice work!'
+
+        # Reschedule / snooze: reply names only a time/interval.
+        parsed = parse_snooze_reply(
+            message_text,
+            reply_to_text=reply_to_text,
+            reply_to_subject_fallback=subject_fallback,
+        )
+        if parsed is None:
+            return None
+
+        # If the reminder is still pending, update it in place to avoid a
+        # duplicate. Otherwise (already fired & deleted) create a fresh job.
+        existing = self._find_pending_reminder_job(parsed.subject, source)
+        try:
+            if existing is not None:
+                cron_jobs.update_job(existing.get("id"), {"schedule": parsed.schedule})
+            else:
+                cron_jobs.create_job(
+                    prompt=f"📅 REMINDER:\n{parsed.subject}",
+                    schedule=parsed.schedule,
+                    name=f"Reminder: {parsed.subject}",
+                    repeat=1,
+                    deliver="origin",
+                    origin=self._reminder_origin(source),
+                )
+        except Exception as exc:
+            logger.warning("Reminder reschedule shortcut failed: %s", exc)
+            return None
+        logger.info(
+            "Reminder reschedule shortcut: %s -> %s (%s)",
+            parsed.subject,
+            parsed.display_time,
+            "in place" if existing is not None else "new job",
+        )
+        return (
+            f'Done — rescheduled "{parsed.subject}" to {parsed.display_time}. '
+            f'Reply "done" when handled.'
+        )
+
+    def _reminder_origin(self, source: "SessionSource") -> Optional[Dict[str, Any]]:
+        """Build a cron ``origin`` dict so reminders deliver back to this chat."""
+        platform = getattr(source, "platform", None)
+        return {
+            "platform": platform.value if hasattr(platform, "value") else platform,
+            "chat_id": getattr(source, "chat_id", None),
+            "user_id": getattr(source, "user_id", None),
+            "thread_id": getattr(source, "thread_id", None),
+        }
+
+    def _try_reminder_shortcut(
+        self,
+        event: "MessageEvent",
+        source: "SessionSource",
+    ) -> Optional[str]:
+        """Try to handle reminder requests deterministically via shortcuts.
+
+        Dispatch order (WhatsApp only):
+          1. reminder-list intent  -> labelled list of future reminders
+          2. reply-to-reminder     -> reschedule (keep subject) or close
+          3. batch of reminders    -> one job per parsed line
+          4. single new reminder   -> one job
+
+        Returns a confirmation string if handled, None if the message isn't a
+        high-confidence reminder pattern (falls through to normal LLM dispatch).
+        """
+        from gateway.platforms.base import Platform
+        from cron import jobs as cron_jobs
+        from gateway.reminder_shortcuts import (
+            is_reminder_intent,
+            is_reminder_list_intent,
+            parse_simple_reminder_batch,
+            parse_simple_relative_reminder,
+            reminder_list_output,
+        )
+
+        # Reminder shortcuts are WhatsApp-only for now (but could expand).
+        if getattr(source, "platform", None) != Platform.WHATSAPP:
+            return None
+
+        message_text = (event.text or "").strip()
+        reply_to_text = (
+            (event.reply_to_text or "").strip()
+            if getattr(event, "reply_to_text", None)
+            else None
+        )
+
+        # 1) Reminder-list intent: "show me my reminders".
+        if is_reminder_list_intent(message_text):
+            try:
+                jobs = cron_jobs.list_jobs(include_disabled=False)
+                return reminder_list_output(jobs)
+            except Exception as exc:
+                logger.warning("Reminder list shortcut failed: %s", exc)
+                return None
+
+        # 2) Reply to a fired/pending reminder (reschedule or close). This is
+        # tried whenever there is reminder context (quoted text or a recent
+        # cached subject), independent of the literal "remind" keyword so that
+        # bare replies like "1h" or "done" are handled.
+        reply_result = self._try_handle_reminder_reply(event, source)
+        if reply_result is not None:
+            return reply_result
+
+        # Everything below is a NEW reminder and requires explicit intent.
+        if not is_reminder_intent(message_text):
+            return None
+
+        # 3) Batch of reminders (e.g. several "tomorrow at <time> <subject>"
+        # lines in one message).
+        batch = parse_simple_reminder_batch(message_text, reply_to_text=reply_to_text)
+        if batch is not None and len(batch.reminders) > 1:
+            lines = []
+            try:
+                for parsed in batch.reminders:
+                    cron_jobs.create_job(
+                        prompt=f"📅 REMINDER:\n{parsed.subject}",
+                        schedule=parsed.schedule,
+                        name=f"Reminder: {parsed.subject}",
+                        repeat=1,
+                        deliver="origin",
+                        origin=self._reminder_origin(source),
+                    )
+                    lines.append(
+                        f"Done. Reminder set: {parsed.display_time} — {parsed.subject}."
+                    )
+            except Exception as exc:
+                logger.warning("Reminder batch shortcut failed: %s", exc)
+                return None
+            return "\n".join(lines)
+
+        # 4) Single new reminder.
+        parsed_reminder = parse_simple_relative_reminder(
+            message_text,
+            reply_to_text=reply_to_text,
+        )
+        if parsed_reminder is not None:
+            try:
+                cron_jobs.create_job(
+                    prompt=f"📅 REMINDER:\n{parsed_reminder.subject}",
+                    schedule=parsed_reminder.schedule,
+                    name=f"Reminder: {parsed_reminder.subject}",
+                    repeat=1,
+                    deliver="origin",
+                    origin=self._reminder_origin(source),
+                )
+                logger.info(
+                    "Reminder shortcut: created %s for %s",
+                    parsed_reminder.display_time,
+                    parsed_reminder.subject,
+                )
+                return (
+                    f"Done. Reminder set: {parsed_reminder.display_time} "
+                    f"— {parsed_reminder.subject}."
+                )
+            except Exception as exc:
+                logger.warning("Reminder shortcut failed: %s", exc)
+                return None
+
+        # Not a high-confidence reminder pattern; let the agent handle it.
+        return None
 
     async def _prepare_inbound_message_text(
         self,

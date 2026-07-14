@@ -1,5 +1,7 @@
 """Tests for the provider module registry and profiles."""
 
+from dataclasses import fields
+
 from providers import get_provider_profile, _REGISTRY
 from providers.base import ProviderProfile, OMIT_TEMPERATURE
 
@@ -267,7 +269,6 @@ class TestAlibabaRegionalAndTokenPlanProfiles:
     "Unknown provider" and users were forced onto the `custom` escape hatch.
     Profile names intentionally match the catalog keys exactly so model
     metadata lines up."""
-
     def test_alibaba_cn_registered(self):
         p = get_provider_profile("alibaba-cn")
         assert p is not None and p.name == "alibaba-cn"
@@ -311,3 +312,20 @@ class TestAlibabaRegionalAndTokenPlanProfiles:
             assert resolve_provider(pid) == pid
         assert (PROVIDER_REGISTRY["alibaba-token-plan-cn"].inference_base_url
                 == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")
+class TestBaseProfile:
+    def test_live_model_metadata_opt_in_is_class_only(self):
+        class LiveMetadataProfile(ProviderProfile):
+            use_live_model_metadata = True
+
+        assert ProviderProfile(name="default").use_live_model_metadata is False
+        assert LiveMetadataProfile(name="live").use_live_model_metadata is True
+        assert "use_live_model_metadata" not in {
+            profile_field.name for profile_field in fields(ProviderProfile)
+        }
+
+    def test_prepare_messages_passthrough(self):
+        p = ProviderProfile(name="test")
+        msgs = [{"role": "user", "content": "hi"}]
+        assert p.prepare_messages(msgs) is msgs
+
+

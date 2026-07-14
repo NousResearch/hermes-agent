@@ -4121,6 +4121,95 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_verification_gate_nudges_no_tool_file_check(self, agent):
+        self._setup_agent(agent)
+        first = _mock_response(
+            content="It probably contains claude.",
+            finish_reason="stop",
+        )
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        final = _mock_response(
+            content="Verified after checking.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [first, tool_turn, final]
+
+        with (
+            patch(
+                "run_agent.handle_function_call",
+                return_value="verified result",
+            ) as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "Check ./agent/prompt_builder.py for claude; do not answer from memory."
+            )
+
+        assert result["final_response"] == "Verified after checking."
+        assert result["api_calls"] == 3
+        assert mock_handle_function_call.called
+        assert any(
+            m.get("role") == "user"
+            and "requires verification" in (m.get("content") or "")
+            for m in result["messages"]
+        )
+
+    def test_verification_gate_does_not_nudge_plain_explanation(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content="tool_use_enforcement is prompt guidance.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Explain what tool_use_enforcement means.")
+
+        assert result["final_response"] == "tool_use_enforcement is prompt guidance."
+        assert result["api_calls"] == 1
+        assert not any(
+            m.get("role") == "user"
+            and "requires verification" in (m.get("content") or "")
+            for m in result["messages"]
+        )
+
+    def test_verification_gate_does_not_nudge_without_tools(self, agent):
+        self._setup_agent(agent)
+        agent.valid_tool_names.clear()
+        resp = _mock_response(
+            content="It probably contains claude.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "Check ./agent/prompt_builder.py for claude; do not answer from memory."
+            )
+
+        assert result["final_response"] == "It probably contains claude."
+        assert result["api_calls"] == 1
+        assert not any(
+            m.get("role") == "user"
+            and "requires verification" in (m.get("content") or "")
+            for m in result["messages"]
+        )
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

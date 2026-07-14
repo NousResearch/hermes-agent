@@ -108,6 +108,127 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+_VERIFICATION_GATE_NON_EVIDENCE_TOOLS = frozenset({
+    "memory",
+    "todo",
+    "skill_manage",
+})
+
+_VERIFICATION_GATE_DIRECT_MARKERS = (
+    "do not answer from memory",
+    "don't answer from memory",
+    "not from memory",
+    "without guessing",
+    "don't guess",
+    "verify",
+    "confirm",
+    "inspect",
+    "check",
+    "debug",
+    "look at this",
+    "take a look",
+    "不要凭记忆",
+    "别凭记忆",
+    "不要猜",
+    "别猜",
+    "核验",
+    "验证",
+    "确认",
+    "检查",
+    "查一下",
+    "看一下",
+    "看看这个",
+    "帮我看看",
+)
+
+_VERIFICATION_GATE_EVIDENCE_MARKERS = (
+    "traceback",
+    "stack trace",
+    "exception",
+    "error:",
+    "warning:",
+    "failed",
+    "failure",
+    "logs",
+    "log",
+    "screenshot",
+    "image",
+    "attached",
+    "api",
+    "github",
+    "pull request",
+    "issue",
+    "报错",
+    "错误",
+    "日志",
+    "截图",
+    "图片",
+    "当前",
+    "现在",
+    "最新",
+)
+
+_VERIFICATION_GATE_PATH_OR_URL_RE = re.compile(
+    r"(?i)(https?://\S+|(?:^|\s)(?:~?/|\./|\.\./)[^\s]+|"
+    r"\b[\w.-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|c|cpp|h|md|json|ya?ml|toml|log|txt)\b)"
+)
+
+
+def _message_text_for_verification(value: Any) -> str:
+    """Extract user-visible text from string or multimodal message content."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(_message_text_for_verification(item) for item in value)
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in ("text", "content", "url", "image_url", "path"):
+            item = value.get(key)
+            if item is not None:
+                parts.append(_message_text_for_verification(item))
+        if value.get("type"):
+            parts.append(str(value.get("type")))
+        return "\n".join(parts)
+    return ""
+
+
+def _verification_gate_required(user_message: Any) -> bool:
+    """Return True for high-confidence prompts that require external evidence."""
+    text = _message_text_for_verification(user_message)
+    if not text:
+        return False
+
+    lowered = text.lower()
+    if any(marker in lowered for marker in _VERIFICATION_GATE_DIRECT_MARKERS):
+        return True
+    if _VERIFICATION_GATE_PATH_OR_URL_RE.search(text):
+        return True
+    if any(marker in lowered for marker in _VERIFICATION_GATE_EVIDENCE_MARKERS):
+        return True
+    return False
+
+
+def _tool_calls_include_verification_evidence(tool_calls: Any) -> bool:
+    """Treat any non-housekeeping tool call as satisfying the verification gate."""
+    for tool_call in tool_calls or []:
+        name = getattr(getattr(tool_call, "function", None), "name", None)
+        if name is None and isinstance(tool_call, dict):
+            function = tool_call.get("function") or {}
+            if isinstance(function, dict):
+                name = function.get("name")
+        if name and name not in _VERIFICATION_GATE_NON_EVIDENCE_TOOLS:
+            return True
+    return False
+
+
+def _verification_gate_has_evidence_tools(tool_names: Any) -> bool:
+    """Return True when a verification nudge has a substantive tool to request."""
+    for name in tool_names or []:
+        if name and name not in _VERIFICATION_GATE_NON_EVIDENCE_TOOLS:
+            return True
+    return False
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -612,6 +733,12 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    verification_gate_required = (
+        _verification_gate_required(original_user_message)
+        and _verification_gate_has_evidence_tools(agent.valid_tool_names)
+    )
+    verification_gate_retries = 0
+    verification_gate_satisfied = False
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
@@ -4673,6 +4800,8 @@ def run_conversation(
                 assistant_message.tool_calls = agent._deduplicate_tool_calls(
                     assistant_message.tool_calls
                 )
+                if _tool_calls_include_verification_evidence(assistant_message.tool_calls):
+                    verification_gate_satisfied = True
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
@@ -4884,6 +5013,36 @@ def run_conversation(
                 # prior housekeeping tool turn and should not silence the
                 # final response path.
                 agent._mute_post_response = False
+
+                if (
+                    verification_gate_required
+                    and not verification_gate_satisfied
+                    and verification_gate_retries < 1
+                    and agent._has_content_after_think_block(final_response)
+                ):
+                    verification_gate_retries += 1
+                    logger.info(
+                        "Verification gate rejected no-tool final response; "
+                        "nudging model to inspect evidence"
+                    )
+                    agent._emit_status(
+                        "↻ Verification required — nudging model to inspect evidence"
+                    )
+                    interim_msg = agent._build_assistant_message(
+                        assistant_message, "incomplete"
+                    )
+                    messages.append(interim_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[System: This user request requires verification before "
+                            "a final answer. Use the relevant tool calls now to inspect "
+                            "the evidence, then answer based on those results. Do not "
+                            "answer from memory or inference alone.]"
+                        ),
+                    })
+                    agent._session_messages = messages
+                    continue
                 
                 # Check if response only has think block with no actual content after it
                 if not agent._has_content_after_think_block(final_response):

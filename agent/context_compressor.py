@@ -736,6 +736,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
@@ -773,6 +774,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0
@@ -790,12 +792,84 @@ class ContextCompressor(ContextEngine):
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._fallback_compression_streak = 0
         self.get_active_compression_failure_cooldown()
+        self._load_fallback_compression_streak()
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
         super().on_session_start(session_id, **kwargs)
-        self.bind_session_state(kwargs.get("session_db", getattr(self, "_session_db", None)), session_id)
+        boundary_reason = kwargs.get("boundary_reason")
+        old_session_id = kwargs.get("old_session_id")
+        session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
+        previous_fallback_streak = self._fallback_compression_streak
+        if boundary_reason == "compression" and old_session_id:
+            getter = getattr(session_db, "get_compression_fallback_streak", None)
+            if callable(getter):
+                try:
+                    stored_streak = getter(old_session_id)
+                    if isinstance(stored_streak, (int, float, str)):
+                        previous_fallback_streak = max(0, int(stored_streak))
+                except (TypeError, ValueError, sqlite3.Error) as exc:
+                    logger.debug("compression parent fallback streak lookup failed: %s", exc)
+                except Exception as exc:
+                    logger.debug(
+                        "compression parent fallback streak lookup failed (non-sqlite): %s",
+                        exc,
+                    )
+        self.bind_session_state(session_db, session_id)
+        if boundary_reason == "compression":
+            # Rotation creates a fresh child row before this callback. Preserve
+            # the logical conversation's streak until boundary bookkeeping
+            # persists the updated value onto the child row.
+            self._fallback_compression_streak = previous_fallback_streak
+
+    def _load_fallback_compression_streak(self) -> None:
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        getter = getattr(session_db, "get_compression_fallback_streak", None)
+        if not session_id or not callable(getter):
+            return
+        try:
+            stored_streak = getter(session_id)
+            self._fallback_compression_streak = max(
+                0,
+                int(stored_streak)
+                if isinstance(stored_streak, (int, float, str))
+                else 0,
+            )
+        except (TypeError, ValueError, sqlite3.Error) as exc:
+            logger.debug("compression fallback streak lookup failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression fallback streak lookup failed (non-sqlite): %s", exc)
+
+    def _persist_fallback_compression_streak(self) -> None:
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        setter = getattr(session_db, "set_compression_fallback_streak", None)
+        if not session_id or not callable(setter):
+            return
+        try:
+            setter(session_id, self._fallback_compression_streak)
+        except sqlite3.Error as exc:
+            logger.debug("compression fallback streak persist failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression fallback streak persist failed (non-sqlite): %s", exc)
+
+    def record_completed_compaction(self, *, used_fallback: bool = False) -> None:
+        """Record one completed boundary and its summary quality."""
+        self._verify_compaction_cleared_threshold = True
+        if used_fallback:
+            self._fallback_compression_streak += 1
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compaction completed with a deterministic fallback summary. "
+                    "fallback_compression_streak=%d",
+                    self._fallback_compression_streak,
+                )
+        elif self._fallback_compression_streak:
+            self._fallback_compression_streak = 0
+        self._persist_fallback_compression_streak()
 
     def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
@@ -894,6 +968,12 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
+        runtime_changed = any((
+            model != self.model,
+            provider != self.provider,
+            base_url != self.base_url,
+            api_mode != self.api_mode,
+        ))
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
@@ -950,6 +1030,9 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+        if runtime_changed:
+            self._fallback_compression_streak = 0
+            self._persist_fallback_compression_streak()
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
 
@@ -1124,6 +1207,10 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # Consecutive completed deterministic-fallback boundaries. Unlike the
+        # real-usage effectiveness counter, ordinary fitting responses must not
+        # reset this breaker; only a healthy completed summary does.
+        self._fallback_compression_streak: int = 0
         # Set after a completed compression boundary; consumed by the next
         # provider-reported prompt count in update_from_response().
         self._verify_compaction_cleared_threshold: bool = False
@@ -1177,8 +1264,10 @@ class ContextCompressor(ContextEngine):
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
                 # Any real provider reading below the trigger proves the prompt
-                # fits again. Clear the episode latch even when this response was
-                # not the one immediately following compaction.
+                # fits again. Clear the real-usage effectiveness latch even
+                # when this response was not immediately after compaction. The
+                # independent fallback streak is boundary-scoped and survives
+                # ordinary fitting responses during context regrowth.
                 self._ineffective_compression_count = 0
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
@@ -1262,6 +1351,10 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        return not self._automatic_compression_blocked()
+
+    def _automatic_compression_blocked(self) -> bool:
+        """Return whether automatic compaction is in cooldown or tripped."""
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and
         # returns None; compress() then inserts a static fallback marker and
@@ -1278,18 +1371,23 @@ class ContextCompressor(ContextEngine):
                     "Compression deferred — summary LLM in cooldown for %.0fs more",
                     _cooldown_remaining,
                 )
-            return False
+            return True
         # Anti-thrashing: back off if recent compressions were ineffective
-        if self._ineffective_compression_count >= 2:
+        if (
+            self._ineffective_compression_count >= 2
+            or self._fallback_compression_streak >= 2
+        ):
             if not self.quiet_mode:
                 logger.warning(
-                    "Compression skipped — last %d compaction attempts did not "
-                    "restore enough context headroom. Consider /new to start a "
-                    "fresh session, or /compress <topic> for focused compression.",
+                    "Compression skipped — repeated compaction attempts did not "
+                    "restore healthy context. ineffective=%d fallback=%d. "
+                    "Consider /new to start fresh, or /compress <topic> for "
+                    "focused compression.",
                     self._ineffective_compression_count,
+                    self._fallback_compression_streak,
                 )
-            return False
-        return True
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)

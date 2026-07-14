@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -9,7 +9,7 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
+import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -49,6 +49,19 @@ import type { RpcEvent } from '@/types/hermes'
 import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
+
+const COMPACTION_RESUME_EVENT_TYPES = new Set([
+  'message.delta',
+  'thinking.delta',
+  'reasoning.delta',
+  'reasoning.available',
+  'moa.reference',
+  'moa.aggregating',
+  'tool.start',
+  'tool.progress',
+  'tool.generating',
+  'tool.complete'
+])
 
 interface GatewayEventDeps {
   activeSessionIdRef: MutableRefObject<string | null>
@@ -95,17 +108,40 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     upsertToolCall
   } = deps
 
+  const unscopedStreamSessionIdRef = useRef<string | null>(null)
+
   return useCallback(
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
 
-      if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
+      const route = resolveGatewayEventSessionId({
+        activeSessionId: activeSessionIdRef.current,
+        eventType: event.type,
+        explicitSessionId: explicitSid,
+        unscopedStreamSessionId: unscopedStreamSessionIdRef.current
+      })
+
+      unscopedStreamSessionIdRef.current = route.nextUnscopedStreamSessionId
+
+      if (route.drop) {
         return
       }
 
-      const sessionId = explicitSid || activeSessionIdRef.current
+      const sessionId = route.sessionId
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+
+      // Mid-turn compaction does not emit another message.start. The first
+      // model output or tool event proves summarization has finished and the
+      // turn has resumed, so retire the phase label without waiting for the
+      // whole turn to complete.
+      if (
+        sessionId &&
+        COMPACTION_RESUME_EVENT_TYPES.has(event.type) &&
+        compactedTurnRef.current.has(sessionId)
+      ) {
+        setSessionCompacting(sessionId, false)
+      }
 
       if (event.type === 'gateway.ready') {
         return

@@ -84,6 +84,11 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
+from hermes_cli.memory_providers import (
+    MemoryProvider as DeclaredMemoryProvider,
+    ProviderField as DeclaredProviderField,
+    get_memory_provider as get_declared_memory_provider,
+)
 from utils import env_var_enabled
 
 try:
@@ -610,7 +615,30 @@ async def _token_auth_seam(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 # Manual overrides for fields that need select options or custom types
+def _memory_provider_options() -> List[str]:
+    """Discovered memory providers for the ``memory.provider`` select.
+
+    Directory-scan only (no provider imports), so it's safe at module import
+    time. ``""`` (built-in) is always first; discovery failures degrade to the
+    bundled defaults rather than dropping the field.
+    """
+    options = ["", "builtin"]
+    try:
+        from plugins.memory import list_memory_provider_names
+
+        options.extend(list_memory_provider_names())
+    except Exception:
+        options.extend(["honcho"])
+    # Dedupe, preserve order
+    return list(dict.fromkeys(options))
+
+
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "memory.provider": {
+        "type": "select",
+        "description": "Memory provider plugin",
+        "options": _memory_provider_options(),
+    },
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",
@@ -780,7 +808,7 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in {"_config_version", "memory.provider"}:
+        if full_key in {"_config_version"}:
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -2331,6 +2359,11 @@ async def git_worktrees_route(path: str):
 @app.get("/api/git/branches")
 async def git_branches_route(path: str):
     return {"branches": await _git_op(_web_git.branch_list, _git_path(path))}
+
+
+@app.get("/api/git/base-branches")
+async def git_base_branches_route(path: str):
+    return {"branches": await _git_op(_web_git.base_branch_list, _git_path(path))}
 
 
 @app.get("/api/git/review/list")
@@ -5141,9 +5174,129 @@ def _require_valid_memory_provider_name(name: str) -> None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
 
 
+# ---------------------------------------------------------------------------
+# Declared surface — curated desktop schema from hermes_cli.memory_providers.
+# The desktop panel requests ?surface=declared; the dashboard keeps the raw
+# plugin schema. Providers without a declaration render no desktop panel.
+# ---------------------------------------------------------------------------
+
+def _declared_provider_file_path(provider: DeclaredMemoryProvider) -> Path:
+    return get_hermes_home() / provider.name / "config.json"
+
+
+def _read_declared_provider_file(provider: DeclaredMemoryProvider) -> Dict[str, Any]:
+    return _read_json_file(_declared_provider_file_path(provider))
+
+
+def _declared_read_field_value(field: DeclaredProviderField, data: Dict[str, Any]) -> str:
+    for source_key in (field.key, *field.aliases):
+        value = data.get(source_key)
+        if value:
+            return str(value)
+
+    env_on_disk = load_env()
+    for env_key in field.env_fallbacks:
+        value = env_on_disk.get(env_key)
+        if value:
+            return str(value)
+
+    return field.default
+
+
+def _declared_field_is_set(field: DeclaredProviderField, data: Dict[str, Any]) -> bool:
+    env_on_disk = load_env()
+    for env_key in (field.env_key, *field.env_fallbacks):
+        if env_key and env_on_disk.get(env_key):
+            return True
+    return any(data.get(source_key) for source_key in (field.key, *field.aliases))
+
+
+def _declared_provider_payload(provider: DeclaredMemoryProvider) -> Dict[str, Any]:
+    data = _read_declared_provider_file(provider)
+    fields: List[Dict[str, Any]] = []
+
+    for field in provider.fields:
+        entry: Dict[str, Any] = {
+            "key": field.key,
+            "label": field.label,
+            "kind": field.kind,
+            "description": field.description,
+            "placeholder": field.placeholder,
+            "options": [
+                {"value": opt.value, "label": opt.label, "description": opt.description}
+                for opt in field.options
+            ],
+        }
+
+        if field.is_secret:
+            # Secrets are write-only over the API; only expose whether one is set.
+            entry["value"] = ""
+            entry["is_set"] = _declared_field_is_set(field, data)
+        else:
+            value = _declared_read_field_value(field, data)
+            if field.kind == "select" and value not in field.allowed_values():
+                value = field.default
+            entry["value"] = value
+            entry["is_set"] = bool(value)
+
+        fields.append(entry)
+
+    return {"name": provider.name, "label": provider.label, "fields": fields}
+
+
+def _coerce_declared_field_value(field: DeclaredProviderField, raw: str) -> str:
+    value = (raw or "").strip()
+    if field.kind == "select":
+        if not value:
+            value = field.default
+        if value not in field.allowed_values():
+            raise ValueError(f"Invalid value for '{field.key}'")
+        return value
+    return value or field.default
+
+
+def _update_declared_provider_config(provider: DeclaredMemoryProvider, values: Dict[str, Any]) -> None:
+    existing = _read_declared_provider_file(provider)
+    json_values: Dict[str, Any] = {}
+    secrets: Dict[str, str] = {}
+
+    for field in provider.fields:
+        if field.is_secret:
+            submitted = str(values.get(field.key) or "").strip()
+            if submitted and field.env_key:
+                secrets[field.env_key] = submitted
+            continue
+
+        raw = (
+            values[field.key]
+            if field.key in values
+            else str(existing.get(field.key, field.default))
+        )
+        json_values[field.key] = _coerce_declared_field_value(field, str(raw))
+
+    path = _declared_provider_file_path(provider)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing.update(json_values)
+    from utils import atomic_json_write
+
+    atomic_json_write(path, existing, mode=0o600)
+
+    for env_key, secret in secrets.items():
+        save_env_value(env_key, secret)
+
+
 @app.get("/api/memory/providers/{name}/config")
-async def get_memory_provider_config(name: str):
+async def get_memory_provider_config(name: str, surface: Optional[str] = None):
     _require_valid_memory_provider_name(name)
+
+    if surface == "declared":
+        declared = get_declared_memory_provider(name)
+        if declared is None:
+            # Undeclared providers (e.g. builtin, honcho) have no desktop
+            # config surface; the generic panel renders nothing.
+            return {"name": name, "label": name, "fields": []}
+        return _declared_provider_payload(declared)
+
     provider = _load_memory_provider(name)
     if provider is None:
         # Undeclared providers (e.g. builtin) have no config surface. Return an
@@ -5174,8 +5327,22 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
 
 
 @app.put("/api/memory/providers/{name}/config")
-async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
+async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None):
     _require_valid_memory_provider_name(name)
+
+    if surface == "declared":
+        declared = get_declared_memory_provider(name)
+        if declared is None:
+            raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+        try:
+            _update_declared_provider_config(declared, body.values or {})
+            return {"ok": True}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:
+            _log.exception("PUT /api/memory/providers/%s/config (declared) failed", name)
+            raise HTTPException(status_code=500, detail="Internal server error")
+
     provider = _load_memory_provider(name)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")

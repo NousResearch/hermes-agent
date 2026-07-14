@@ -91,7 +91,7 @@ Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the m
 
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
-Private general-plugin repositories can also be discovered without copying them into `~/.hermes/plugins/`. Add either a directory that contains multiple plugin folders or a direct single-plugin checkout with a root `plugin.yaml` to `plugins.extra_paths` in `~/.hermes/config.yaml`. External plugins are discovered for visibility, but they still require `plugins.enabled` before their code runs. Memory, context-engine, model-provider, and dashboard plugins use their category-specific install locations and are not loaded from `extra_paths`.
+Private general-plugin repositories can also be discovered without copying them into `~/.hermes/plugins/`. Add either a directory that contains multiple plugin folders or a direct single-plugin checkout with a root `plugin.yaml` to `plugins.extra_paths` in `~/.hermes/config.yaml`. External plugins appear in `hermes plugins list` and can be activated with `hermes plugins enable <key>`, but they still require `plugins.enabled` before their code runs. `extra_paths` is consumed only by the general `PluginManager`; it does not extend the independent memory, context-engine, model-provider, or dashboard-asset discovery roots.
 
 ## What plugins can do
 
@@ -128,7 +128,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
 | Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](/getting-started/nix-setup#plugins) |
 
-Later sources override earlier ones on name collision, so a user plugin with the same name as a bundled plugin replaces it.
+Later opt-in sources replace earlier plugins on key collision only when the later plugin is explicitly enabled. Merely discovering external code never suppresses an active bundled backend or platform.
 
 ### Plugin sub-categories
 

@@ -3277,7 +3277,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
+        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1", "HERMES_SPAWNER_PID": str(os.getpid())},
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = windows_detach_flags()

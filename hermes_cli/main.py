@@ -6115,6 +6115,9 @@ def _kill_stale_dashboard_processes(
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
     # path can skip killing the desktop-managed process.  (#37532)
+    # Similarly, when the dashboard spawns `hermes update`, it sets
+    # HERMES_SPAWNER_PID so the update process doesn't kill the dashboard
+    # that spawned it.  (#52218)
     exclude: set[int] | None = None
     raw_pid = os.environ.get("HERMES_DESKTOP_CHILD_PID")
     if raw_pid:
@@ -6131,6 +6134,18 @@ def _kill_stale_dashboard_processes(
                 pass
         if parsed:
             exclude = parsed
+
+    # Also exclude the dashboard that spawned this update process, if any.
+    spawner_pid = os.environ.get("HERMES_SPAWNER_PID")
+    if spawner_pid:
+        try:
+            sp = int(spawner_pid)
+            if exclude is None:
+                exclude = {sp}
+            else:
+                exclude.add(sp)
+        except (ValueError, TypeError):
+            pass
 
     pids = _find_stale_dashboard_pids(exclude_pids=exclude)
     if not pids:
@@ -11131,10 +11146,60 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Kill stale dashboard processes — the dashboard has no service
         # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
+        # silent frontend/backend mismatch.
+        #
+        # Capture the original launch command(s) from /proc/<pid>/cmdline
+        # BEFORE killing, so we can auto-restart the dashboard with the
+        # same args the user originally used (--port, --host, etc.).
+        _dashboard_restart_cmds: list[list[str]] = []
+        _exclude_pids: set[int] = set()
+        _spawner_pid_str = os.environ.get("HERMES_SPAWNER_PID")
+        if _spawner_pid_str:
+            try:
+                _exclude_pids.add(int(_spawner_pid_str))
+            except (ValueError, TypeError):
+                pass
+        try:
+            _dash_pids = _find_stale_dashboard_pids(exclude_pids=_exclude_pids or None)
+            for _pid in _dash_pids:
+                try:
+                    _cmdline_path = f"/proc/{_pid}/cmdline"
+                    _raw = open(_cmdline_path, "rb").read()
+                    # cmdline is null-byte separated; split and filter empties
+                    _parts = _raw.split(b"\x00")
+                    _parts = [p.decode("utf-8", errors="replace") for p in _parts if p]
+                    if _parts:
+                        _dashboard_restart_cmds.append(_parts)
+                except (OSError, IOError):
+                    pass  # Process died between find and read, skip
+        except Exception:
+            pass  # Best-effort capture; fall through to kill + manual hint
+
         _kill_stale_dashboard_processes()
+
+        # Auto-restart each dashboard we found, using its original cmdline.
+        # This fixes the crash-after-update bug: the dashboard process was
+        # killed but never relaunched, so the user saw a blank page.
+        if _dashboard_restart_cmds:
+            print()
+            print("⟳ Auto-restarting dashboard process(es)...")
+            for _cmd in _dashboard_restart_cmds:
+                try:
+                    subprocess.Popen(
+                        _cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    print(f"  ✓ Restarted: {' '.join(_cmd)}")
+                except (OSError, IOError) as _exc:
+                    print(f"  ✗ Failed to restart dashboard: {_exc}")
+        else:
+            # No cmdline captured — print the original hint so the user
+            # knows to restart manually.
+            print()
+            print("  Restart the dashboard when you're ready:")
+            print("    hermes dashboard --port <port>")
 
         print()
         print("Tip: You can now select a provider and model:")

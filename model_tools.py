@@ -221,6 +221,22 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 _last_resolved_tool_names: List[str] = []
 
 
+def record_resolved_tool_names(tool_defs: List[Dict[str, Any]]) -> None:
+    """Publish a finalized runtime surface for legacy process-global callers.
+
+    Pure diagnostics intentionally do not call this; agent/runtime assembly
+    publishes only after the complete surface is ready.
+    """
+    global _last_resolved_tool_names
+    _last_resolved_tool_names = [
+        tool["function"]["name"]
+        for tool in tool_defs
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and tool["function"].get("name")
+    ]
+
+
 # =============================================================================
 # Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
 # =============================================================================
@@ -248,7 +264,8 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 
 # Module-level memoization for get_tool_definitions(). Keyed on
-# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry generation,
+# config fingerprint, kanban mode, skip_tool_search_assembly).
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -281,6 +298,7 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    record_resolved_names: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -296,6 +314,8 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        record_resolved_names: Update the legacy process-global resolved-name
+            list. Pure inspection callers should pass False.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -328,14 +348,19 @@ def get_tool_definitions(
         if cached is not None:
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
-            global _last_resolved_tool_names
-            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+            if record_resolved_names:
+                record_resolved_tool_names(cached)
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+    result = _compute_tool_definitions(
+        enabled_toolsets,
+        disabled_toolsets,
+        quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+        record_resolved_names=record_resolved_names,
+    )
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -359,6 +384,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    record_resolved_names: bool = True,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -519,63 +545,52 @@ def _compute_tool_definitions(
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+    # Finalize through the same non-mutating path used by agent initialization,
+    # MCP refreshes, and `hermes tools diagnose`. External provider/context
+    # schemas are supplied by those callers; normal registry resolution has no
+    # additional families to append here.
+    from agent.tool_surface import assemble_full_tool_surface
 
-    # Sanitize schemas for broad backend compatibility. llama.cpp's
-    # json-schema-to-grammar converter (used by its OAI server to build
-    # GBNF tool-call parsers) rejects some shapes that cloud providers
-    # silently accept — bare "type": "object" with no properties,
-    # string-valued schema nodes from malformed MCP servers, etc. This
-    # is a no-op for schemas that are already well-formed.
-    try:
-        from tools.schema_sanitizer import sanitize_tool_schemas
-        filtered_tools = sanitize_tool_schemas(filtered_tools)
-    except Exception as e:  # pragma: no cover — defensive
-        logger.warning("Schema sanitization skipped: %s", e)
+    tool_search_config = None
+    context_length = None
+    if not skip_tool_search_assembly:
+        try:
+            from tools.tool_search import load_config as _load_ts_config
 
-    # ── Tool Search (progressive disclosure) ────────────────────────────
-    # Conditionally replace MCP + plugin (non-core) tools with three bridge
-    # tools (tool_search / tool_describe / tool_call) when the deferrable
-    # surface exceeds the configured threshold (default 10% of context
-    # window). Core Hermes tools (toolsets._HERMES_CORE_TOOLS) are NEVER
-    # deferred. See tools/tool_search.py for full design notes.
-    #
-    # This is deliberately the last step before returning — sanitization
-    # has already normalized schemas, and the assembly is idempotent in
-    # case some caller invokes get_tool_definitions twice.
-    try:
-        from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
-        ts_cfg = _load_ts_config()
-        if not skip_tool_search_assembly and ts_cfg.enabled != "off":
-            context_length = _resolve_active_context_length()
-            assembly = assemble_tool_defs(
-                filtered_tools,
-                context_length=context_length,
-                config=ts_cfg,
-            )
-            if assembly.activated and not quiet_mode:
-                print(
-                    f"🔎 Tool Search: {assembly.deferred_count} MCP/plugin tools deferred "
-                    f"(~{assembly.deferred_tokens} tokens) behind tool_search/describe/call. "
-                    f"Threshold ~{assembly.threshold_tokens} tokens."
-                )
-            filtered_tools = assembly.tool_defs
-    except Exception as e:  # pragma: no cover — never break tool loading
-        logger.warning("Tool search assembly skipped: %s", e)
+            tool_search_config = _load_ts_config()
+            if tool_search_config.enabled != "off":
+                context_length = _resolve_active_context_length()
+        except Exception as exc:  # pragma: no cover - fail soft as before
+            logger.warning("Tool search config load skipped: %s", exc)
 
+    full_surface = assemble_full_tool_surface(
+        filtered_tools,
+        apply_tool_search=not skip_tool_search_assembly,
+        context_length=context_length,
+        tool_search_config=tool_search_config,
+        quiet_mode=quiet_mode,
+    )
+    filtered_tools = full_surface.tool_defs
+    if record_resolved_names:
+        record_resolved_tool_names(filtered_tools)
     return filtered_tools
 
 
-def _resolve_active_context_length() -> int:
+def _resolve_active_context_length(config: Optional[Dict[str, Any]] = None) -> int:
     """Look up the active model's context length for the tool-search gate.
 
-    Returns 0 when the model can't be resolved — ``should_activate`` falls
-    back to a fixed token cutoff in that case.
+    ``config`` lets inspection callers resolve the exact snapshot they are
+    reporting without re-reading mutable on-disk state. Returns 0 when the
+    model can't be resolved, so ``should_activate`` falls back to its fixed
+    token cutoff.
     """
     try:
-        from hermes_cli.config import load_config as _load
-        cfg = _load() or {}
+        if config is None:
+            from hermes_cli.config import load_config as _load
+
+            cfg = _load() or {}
+        else:
+            cfg = config
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         if not isinstance(model_cfg, dict):
             model_cfg = {}

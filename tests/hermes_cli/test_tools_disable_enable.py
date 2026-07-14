@@ -182,7 +182,10 @@ class TestToolsList:
 class TestToolsDiagnose:
 
     def test_build_diagnostics_reports_visible_and_disabled_tools(self):
-        config = {"platform_toolsets": {"cli": ["file"]}}
+        config = {
+            "platform_toolsets": {"cli": ["file"]},
+            "tools": {"tool_search": {"enabled": "off"}},
+        }
 
         diag = build_tools_diagnostics(config, "cli")
 
@@ -195,18 +198,118 @@ class TestToolsDiagnose:
             "reason": "toolset disabled",
         } in diag["filtered"]
 
-    def test_build_diagnostics_reports_memory_provider_status(self):
+    def test_build_diagnostics_reports_external_memory_and_context_tools(self):
         config = {
-            "memory": {"provider": "mnemosyne"},
-            "platform_toolsets": {"cli": ["file"]},
+            "memory": {"provider": "stub-memory"},
+            "context": {"engine": "stub-context"},
+            "platform_toolsets": {
+                "cli": ["file", "memory", "context_engine"]
+            },
+            "tools": {"tool_search": {"enabled": "off"}},
+        }
+        memory_schema = {
+            "name": "stub_memory_recall",
+            "description": "Recall",
+            "parameters": {"type": "object", "properties": {}},
+        }
+        context_schema = {
+            "name": "stub_context_expand",
+            "description": "Expand",
+            "parameters": {"type": "object", "properties": {}},
         }
 
-        diag = build_tools_diagnostics(config, "cli")
+        with patch(
+            "hermes_cli.tools_config._diagnostic_memory_provider",
+            return_value=("stub-memory", [memory_schema], None),
+        ), patch(
+            "hermes_cli.tools_config._diagnostic_context_engine",
+            return_value=("stub-context", [context_schema], None),
+        ):
+            diag = build_tools_diagnostics(config, "cli")
 
-        assert diag["provider_tools"]["memory"]["provider"] == "mnemosyne"
-        assert diag["provider_tools"]["memory"]["schemas"] >= 1
-        assert diag["provider_tools"]["memory"]["injected"] == 0
+        assert "stub_memory_recall" in diag["tools_visible"]
+        assert "stub_context_expand" in diag["tools_visible"]
+        assert diag["provider_tools"]["memory"]["injected"] == 1
+        assert diag["provider_tools"]["context_engine"]["injected"] == 1
+
+    def test_build_diagnostics_reports_external_family_toolset_gates(self):
+        config = {
+            "memory": {"provider": "stub-memory"},
+            "context": {"engine": "stub-context"},
+            "platform_toolsets": {"cli": ["file"]},
+            "agent": {"disabled_toolsets": ["memory", "context_engine"]},
+            "tools": {"tool_search": {"enabled": "off"}},
+        }
+        memory_schema = {"name": "gated_memory", "parameters": {}}
+        context_schema = {"name": "gated_context", "parameters": {}}
+
+        with patch(
+            "hermes_cli.tools_config._diagnostic_memory_provider",
+            return_value=("stub-memory", [memory_schema], None),
+        ), patch(
+            "hermes_cli.tools_config._diagnostic_context_engine",
+            return_value=("stub-context", [context_schema], None),
+        ):
+            diag = build_tools_diagnostics(config, "cli")
+
+        assert "gated_memory" not in diag["tools_visible"]
+        assert "gated_context" not in diag["tools_visible"]
         assert diag["provider_tools"]["memory"]["skipped_reason"] == "toolset disabled"
+        assert diag["provider_tools"]["context_engine"]["skipped_reason"] == "toolset disabled"
+
+    def test_build_diagnostics_reports_activated_tool_search(self):
+        from tools.registry import registry
+
+        tool_name = "diagnose_deferred_tool"
+        toolset = "mcp-diagnose-test"
+        registry.register(
+            name=tool_name,
+            handler=lambda args, **kwargs: "{}",
+            schema={
+                "name": tool_name,
+                "description": "Deferred diagnostic tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            toolset=toolset,
+        )
+        try:
+            config = {
+                "platform_toolsets": {"cli": [toolset]},
+                "tools": {"tool_search": {"enabled": "on"}},
+            }
+            with patch(
+                "hermes_cli.tools_config._get_platform_tools",
+                return_value={toolset},
+            ):
+                diag = build_tools_diagnostics(config, "cli")
+        finally:
+            registry.deregister(tool_name)
+
+        assert diag["tool_search"]["activated"] is True
+        assert tool_name not in diag["tools_visible"]
+        assert {"tool_search", "tool_describe", "tool_call"}.issubset(
+            diag["tools_visible"]
+        )
+        assert {
+            "tool": tool_name,
+            "toolset": toolset,
+            "reason": "deferred by tool search",
+        } in diag["filtered"]
+
+    def test_build_diagnostics_does_not_publish_process_global_resolution(
+        self, monkeypatch
+    ):
+        import model_tools
+
+        monkeypatch.setattr(model_tools, "_last_resolved_tool_names", ["runtime_tool"])
+        config = {
+            "platform_toolsets": {"cli": ["file"]},
+            "tools": {"tool_search": {"enabled": "off"}},
+        }
+
+        build_tools_diagnostics(config, "cli")
+
+        assert model_tools._last_resolved_tool_names == ["runtime_tool"]
 
 
 # ── Validation ───────────────────────────────────────────────────────────────

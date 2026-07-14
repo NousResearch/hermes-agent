@@ -97,11 +97,19 @@ async def test_reload_mcp_refreshes_cached_agent_tools():
     fresh_tool_defs = [
         {
             "type": "function",
-            "function": {"name": "HassTurnOn", "description": "Turns on a device"},
+            "function": {
+                "name": "HassTurnOn",
+                "description": "Turns on a device",
+                "parameters": {"type": "object", "properties": {}},
+            },
         },
         {
             "type": "function",
-            "function": {"name": "HassTurnOff", "description": "Turns off a device"},
+            "function": {
+                "name": "HassTurnOff",
+                "description": "Turns off a device",
+                "parameters": {"type": "object", "properties": {}},
+            },
         },
     ]
 

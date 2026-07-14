@@ -13,6 +13,18 @@ Scope: GET only. This tool is wired into ``feishu_drive`` (comment-agent
 path with lark client injection). Writes stay on typed tools and the
 handler's controlled ``deliver_comment_reply`` path — not this gateway.
 
+Why not write+approval here?
+    Hermes approval is not a generic "Open API DELETE" gate. Existing
+    surfaces are: shell dangerous-command patterns (``tools.approval`` +
+    platform ``send_exec_approval`` on Feishu/WhatsApp/Teams/…), plugin
+    ``pre_tool_call`` → ``request_tool_approval``, ACP edit approval for
+    ``write_file``/``patch``, and optional ``write_approval`` for memory/
+    skills. Platform tools such as Discord ``delete_message`` do not go
+    through that gate. Comment-agent is output-only, so admitting writes
+    (even after a shell-style approval click) would still bypass
+    ``deliver_comment_reply``. Fail-closed GET-only is the matching
+    control for this toolset placement.
+
 Validation is pure Python (no SDK import). Dispatch reuses
 ``feishu_drive_tool._do_request``.
 """

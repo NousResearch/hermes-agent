@@ -158,6 +158,33 @@ class TestHandler(unittest.TestCase):
         self.assertIn("client not available", out["error"])
 
 
+class TestNoWriteApprovalSurface(unittest.TestCase):
+    """Writes are not admitted — even with a client — so no approval path is needed.
+
+    Hermes' request_tool_approval / send_exec_approval stack is for shell
+    (and plugin escalate / ACP edits / memory write_approval). Platform API
+    mutators (e.g. Discord delete_message) do not use that stack. This tool
+    stays GET-only on the comment-agent path instead of inventing a new
+    Open-API write-approval product.
+    """
+
+    def tearDown(self):
+        set_client(None)
+
+    def test_schema_is_get_only(self):
+        entry = registry.get_entry("feishu_request")
+        self.assertEqual(
+            entry.schema["parameters"]["properties"]["method"]["enum"],
+            ["GET"],
+        )
+
+    def test_allowed_methods_constant_is_get_only(self):
+        from tools.feishu_request_tool import _ALLOWED_METHODS, _FEISHU_ENDPOINTS
+
+        self.assertEqual(_ALLOWED_METHODS, {"GET"})
+        self.assertTrue(all(m == "GET" for m, _ in _FEISHU_ENDPOINTS))
+
+
 class TestFakeClientDispatch(unittest.TestCase):
     """Prove canonical folder-list dispatch and write rejection without HTTP."""
 

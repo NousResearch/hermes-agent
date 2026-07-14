@@ -49,6 +49,25 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
+def _normalize_skills(skills: object = None) -> list[str]:
+    if not skills:
+        return []
+
+    raw_items = [skills] if isinstance(skills, str) else skills
+    if not isinstance(raw_items, (list, tuple)):
+        raw_items = [raw_items]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        for part in str(item).split(","):
+            name = part.strip()
+            if name and name not in seen:
+                seen.add(name)
+                normalized.append(name)
+    return normalized
+
+
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
@@ -171,6 +190,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: object = None,
     usage_file: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
@@ -182,6 +202,8 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional skill name, comma-separated names, or iterable to
+            preload into the one-shot system prompt.
         usage_file: Optional path; when set, a JSON usage report (estimated
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
@@ -238,6 +260,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    skills=skills,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -306,6 +329,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    skills: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -421,6 +445,30 @@ def _run_agent(
     agent.suppress_status_output = True
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
+
+    requested_skills = _normalize_skills(skills)
+    if requested_skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
+            requested_skills,
+            task_id=getattr(agent, "session_id", None),
+        )
+        if missing_skills and not loaded_skills:
+            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+        if missing_skills:
+            logging.warning(
+                "Unknown skill(s) requested, skipping: %s. Continuing with: %s.",
+                ", ".join(missing_skills),
+                ", ".join(loaded_skills),
+            )
+        if skills_prompt:
+            agent.system_prompt = "\n\n".join(
+                part
+                for part in (getattr(agent, "system_prompt", ""), skills_prompt)
+                if part
+            ).strip()
+        agent.preloaded_skills = loaded_skills
 
     result = agent.run_conversation(prompt)
     return (result.get("final_response") or "", result)

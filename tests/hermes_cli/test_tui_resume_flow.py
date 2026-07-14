@@ -353,7 +353,10 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["hermes", "-z", "hello", "--model", "gpt-test", "--provider", "openai"],
+        [
+            "hermes", "-z", "hello", "--model", "gpt-test",
+            "--provider", "openai", "--skills", "memory-consolidation",
+        ],
     )
     monkeypatch.setattr(
         main_mod, "_prepare_agent_startup", lambda args: prepared.append(args.command)
@@ -379,6 +382,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "model": "gpt-test",
         "provider": "openai",
         "toolsets": None,
+        "skills": ["memory-consolidation"],
         "usage_file": None,
     }
 
@@ -571,13 +575,18 @@ def test_read_git_revision_fingerprint_unresolved_ref_is_stable(tmp_path, main_m
     assert fingerprint == "git:refs/heads/missing:unresolved"
 
 
-def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
+def test_main_top_level_oneshot_accepts_toolsets_and_skills(monkeypatch, main_mod):
     captured = {}
 
     import hermes_cli.config as config_mod
 
     monkeypatch.setattr(
-        sys, "argv", ["hermes", "-z", "hello", "--toolsets", "web,terminal"]
+        sys,
+        "argv",
+        [
+            "hermes", "-z", "hello", "--toolsets", "web,terminal",
+            "--skills", "memory-consolidation",
+        ],
     )
     monkeypatch.setitem(
         sys.modules,
@@ -618,8 +627,26 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
+        "skills": ["memory-consolidation"],
         "usage_file": None,
     }
+
+
+def test_oneshot_forwards_skills_to_run_agent(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    captured = {}
+
+    def fake_run(prompt, **kwargs):
+        captured.update({"prompt": prompt, **kwargs})
+        return "done", {}
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", fake_run)
+
+    assert oneshot_mod.run_oneshot("hello", skills=["alpha", "beta"]) == 0
+    assert captured["skills"] == ["alpha", "beta"]
+    assert capsys.readouterr().out == "done\n"
 
 
 def _stub_plugin_discovery(monkeypatch):
@@ -828,12 +855,16 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     class FakeAgent:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.session_id = "oneshot-test"
+            self.system_prompt = "base prompt"
             self.suppress_status_output = False
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
         def run_conversation(self, prompt, **_kwargs):
             captured["prompt"] = prompt
+            captured["system_prompt"] = self.system_prompt
+            captured["preloaded_skills"] = self.preloaded_skills
             return {"final_response": "ok", "failed": False, "partial": False}
 
     class FakeSessionDB:
@@ -877,13 +908,27 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         "hermes_cli.tools_config",
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.skill_commands",
+        mod(
+            "agent.skill_commands",
+            build_preloaded_skills_prompt=lambda names, task_id=None: (
+                "loaded skill body",
+                names,
+                [],
+            ),
+        ),
+    )
 
-    text, result = _run_agent("recall this")
+    text, result = _run_agent("recall this", skills=["memory-consolidation"])
     assert text == "ok"
     assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
+    assert captured["system_prompt"] == "base prompt\n\nloaded skill body"
+    assert captured["preloaded_skills"] == ["memory-consolidation"]
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):

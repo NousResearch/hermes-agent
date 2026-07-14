@@ -1134,13 +1134,52 @@ class APIServerAdapter(BasePlatformAdapter):
                 async def _authed_plugin_handler(
                     request: "web.Request",
                     _handler: Callable = handler,
+                    _method: str = method,
+                    _path: str = path,
+                    _plugin: str = str(route.get("plugin", "unknown")),
                 ) -> "web.Response":
                     auth_err = self._check_auth(request)
                     if auth_err:
                         return auth_err
-                    result = _handler(request)
-                    if inspect.isawaitable(result):
-                        return await result
+                    try:
+                        result = _handler(request)
+                        if inspect.isawaitable(result):
+                            result = await result
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] Plugin route handler failed for %s %s (plugin=%s): %s",
+                            self.name,
+                            _method,
+                            _path,
+                            _plugin,
+                            redact_sensitive_text(str(exc)),
+                        )
+                        return web.json_response(
+                            _openai_error(
+                                "Plugin route failed",
+                                err_type="server_error",
+                                code="plugin_route_failed",
+                            ),
+                            status=500,
+                        )
+                    if not isinstance(result, web.StreamResponse):
+                        logger.warning(
+                            "[%s] Plugin route returned %s instead of aiohttp.web.StreamResponse "
+                            "for %s %s (plugin=%s)",
+                            self.name,
+                            type(result).__name__,
+                            _method,
+                            _path,
+                            _plugin,
+                        )
+                        return web.json_response(
+                            _openai_error(
+                                "Plugin route returned an invalid response",
+                                err_type="server_error",
+                                code="plugin_route_invalid_response",
+                            ),
+                            status=500,
+                        )
                     return result
 
                 route_name = route.get("name")

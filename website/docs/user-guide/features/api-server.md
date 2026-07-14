@@ -228,10 +228,16 @@ treat unknown plugin keys as optional extension data.
 Plugins may also register HTTP handlers under `/v1/plugins/<name>`. These
 routes use the same `API_SERVER_KEY` bearer authentication as core API-server
 routes. Plugin handlers receive the native `aiohttp.web.Request` and must
-return an `aiohttp.web.Response` (synchronously or asynchronously). Hermes
-rejects non-callable handlers/providers during plugin registration, refuses
-paths outside `/v1/plugins/`, and does not allow plugin routes to replace a
-core route.
+return an `aiohttp.web.StreamResponse` (synchronously or asynchronously).
+Hermes rejects non-callable handlers, invalid methods and paths, duplicate
+method/path pairs, and duplicate route names during plugin registration. A
+handler exception or invalid response produces a stable JSON `500` response
+without exposing the exception to the API client.
+
+Capability providers are synchronous, one per plugin, and must return a
+JSON-serializable object or `None`. Invalid or failing providers are skipped so
+they cannot break the core capability response. Plugin routes cannot leave the
+`/v1/plugins/` namespace or replace a core route.
 
 ### GET /health
 

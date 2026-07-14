@@ -37,6 +37,7 @@ import asyncio
 import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import sys
@@ -1206,9 +1207,25 @@ class PluginContext:
         """Register an aiohttp route contribution for the API server adapter."""
         if not callable(handler):
             raise TypeError("API server route handler must be callable")
+        normalized_method = str(method or "").upper()
+        if normalized_method not in {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}:
+            raise ValueError(f"unsupported method: {normalized_method or '<empty>'}")
+        if not isinstance(path, str):
+            raise TypeError("API server route path must be a string")
+        if not path.startswith("/v1/plugins/"):
+            raise ValueError("API server route path must be under /v1/plugins/")
+        if path == "/v1/plugins/":
+            raise ValueError("API server route path must include a route name")
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            raise TypeError("API server route name must be a non-empty string or None")
+        for route in self._manager._api_server_routes:
+            if (route.get("method"), route.get("path")) == (normalized_method, path):
+                raise ValueError(f"API server route already registered: {normalized_method} {path}")
+            if name is not None and route.get("name") == name:
+                raise ValueError(f"API server route name already registered: {name}")
         self._manager._api_server_routes.append(
             {
-                "method": str(method or "").upper(),
+                "method": normalized_method,
                 "path": path,
                 "handler": handler,
                 "name": name,
@@ -1218,7 +1235,7 @@ class PluginContext:
         logger.debug(
             "Plugin %s registered API server route: %s %s",
             self.manifest.name,
-            str(method or "").upper(),
+            normalized_method,
             path,
         )
 
@@ -1226,6 +1243,17 @@ class PluginContext:
         """Register a provider callback for /v1/capabilities extensions."""
         if not callable(provider):
             raise TypeError("API server capability provider must be callable")
+        if inspect.iscoroutinefunction(provider) or inspect.iscoroutinefunction(
+            getattr(provider, "__call__", None)
+        ):
+            raise TypeError("API server capability provider must be synchronous")
+        if any(
+            entry.get("plugin") == self.manifest.name
+            for entry in self._manager._api_server_capability_providers
+        ):
+            raise ValueError(
+                f"API server capability provider already registered for plugin: {self.manifest.name}"
+            )
         self._manager._api_server_capability_providers.append(
             {
                 "plugin": self.manifest.name,
@@ -2070,6 +2098,14 @@ class PluginManager:
             if not isinstance(payload, dict):
                 logger.warning(
                     "Plugin '%s' API server capability provider returned non-dict payload; skipping",
+                    plugin_name,
+                )
+                continue
+            try:
+                json.dumps(payload)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Plugin '%s' API server capability provider returned a non-JSON-serializable payload; skipping",
                     plugin_name,
                 )
                 continue

@@ -2245,6 +2245,18 @@ class TestPluginApiServerHooks:
 
         assert mgr._api_server_capability_providers == []
 
+    def test_register_api_server_capability_rejects_async_provider(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+
+        async def _provider(**kwargs):
+            return {"feature": True}
+
+        with pytest.raises(TypeError, match="must be synchronous"):
+            ctx.register_api_server_capability(_provider)
+
+        assert mgr._api_server_capability_providers == []
+
     def test_register_api_server_route_tracks_route_definition(self):
         mgr = PluginManager()
         manifest = PluginManifest(name="api-plugin", source="user")
@@ -2262,6 +2274,54 @@ class TestPluginApiServerHooks:
         assert routes[0]["handler"] is _handler
         assert routes[0]["name"] == "plugin_ping"
         assert routes[0]["plugin"] == "api-plugin"
+
+    @pytest.mark.parametrize(
+        ("method", "path", "name", "message"),
+        [
+            ("NOPE", "/v1/plugins/ping", None, "unsupported method"),
+            ("GET", "/v1/models", None, "under /v1/plugins/"),
+            ("GET", "/v1/plugins/", None, "include a route name"),
+            ("GET", "/v1/plugins/ping", "", "name must be"),
+        ],
+    )
+    def test_register_api_server_route_rejects_invalid_definition(
+        self, method, path, name, message
+    ):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+
+        with pytest.raises((TypeError, ValueError), match=message):
+            ctx.register_api_server_route(method, path, lambda request: None, name=name)
+
+        assert mgr.get_api_server_routes() == []
+
+    def test_register_api_server_route_rejects_duplicate_method_and_path(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+        handler = lambda request: None
+
+        ctx.register_api_server_route("GET", "/v1/plugins/ping", handler)
+
+        with pytest.raises(ValueError, match="already registered"):
+            ctx.register_api_server_route("get", "/v1/plugins/ping", handler)
+
+        assert len(mgr.get_api_server_routes()) == 1
+
+    def test_register_api_server_route_rejects_duplicate_name(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+        handler = lambda request: None
+
+        ctx.register_api_server_route(
+            "GET", "/v1/plugins/one", handler, name="api_plugin_route"
+        )
+
+        with pytest.raises(ValueError, match="name already registered"):
+            ctx.register_api_server_route(
+                "POST", "/v1/plugins/two", handler, name="api_plugin_route"
+            )
+
+        assert len(mgr.get_api_server_routes()) == 1
 
     def test_register_api_server_capability_provider_is_invoked_with_context(self):
         mgr = PluginManager()
@@ -2295,6 +2355,28 @@ class TestPluginApiServerHooks:
             capabilities = mgr.get_api_server_capabilities(adapter=None, request=None)
         assert capabilities == []
         assert "api server capability provider" in caplog.text.lower()
+
+    def test_register_api_server_capability_rejects_duplicate_provider(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+
+        ctx.register_api_server_capability(lambda **kwargs: {"first": True})
+
+        with pytest.raises(ValueError, match="already registered"):
+            ctx.register_api_server_capability(lambda **kwargs: {"second": True})
+
+        assert len(mgr._api_server_capability_providers) == 1
+
+    def test_plugin_capability_provider_non_json_payload_is_isolated(self, caplog):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+        ctx.register_api_server_capability(lambda **kwargs: {"bad": object()})
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            capabilities = mgr.get_api_server_capabilities(adapter=None, request=None)
+
+        assert capabilities == []
+        assert "json-serializable" in caplog.text.lower()
 
 
 class TestPluginDebugLogging:

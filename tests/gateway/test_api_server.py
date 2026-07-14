@@ -1102,6 +1102,65 @@ class TestPluginApiServerRoutes:
             assert await authed.json() == {"ok": True}
             assert called == 1
 
+    @pytest.mark.asyncio
+    async def test_plugin_route_handler_exception_is_isolated(self, adapter, caplog):
+        async def _plugin_handler(request):
+            raise RuntimeError("private plugin detail")
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/failing",
+                        "handler": _plugin_handler,
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        adapter._mount_plugin_api_routes(app.router)
+
+        with caplog.at_level("WARNING"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/plugins/failing")
+                body = await resp.json()
+
+        assert resp.status == 500
+        assert body["error"]["code"] == "plugin_route_failed"
+        assert "private plugin detail" not in str(body)
+        assert "plugin-test" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_plugin_route_invalid_response_is_isolated(self, adapter, caplog):
+        def _plugin_handler(request):
+            return {"not": "an aiohttp response"}
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/invalid-response",
+                        "handler": _plugin_handler,
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        adapter._mount_plugin_api_routes(app.router)
+
+        with caplog.at_level("WARNING"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/plugins/invalid-response")
+                body = await resp.json()
+
+        assert resp.status == 500
+        assert body["error"]["code"] == "plugin_route_invalid_response"
+        assert "plugin-test" in caplog.text
+
     def test_plugin_route_registration_failure_is_isolated(self, adapter, caplog):
         async def _plugin_handler(request):
             return web.json_response({"ok": True})

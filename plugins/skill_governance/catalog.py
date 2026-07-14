@@ -279,7 +279,7 @@ CANDIDATES: list[dict[str, Any]] = [
         "areas": ["agent-infra", "skills", "governance"],
         "sources": ["hermes-skill-library-operations", "hermes-agent-skill-authoring", "curator"],
         "tools": [
-            "skills_audit",
+            "skills_installed_audit",
             "skills_find_plugin_candidates",
             "skills_detect_duplicates",
             "skills_usage_stats",

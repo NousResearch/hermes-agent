@@ -1,11 +1,12 @@
 """Tool schemas for the skill-governance plugin."""
 
-SKILLS_AUDIT_SCHEMA = {
-    "name": "skills_audit",
+SKILLS_PLUGIN_ROADMAP_SUMMARY_SCHEMA = {
+    "name": "skills_plugin_roadmap_summary",
     "description": (
-        "Summarize the approved skill-to-plugin migration roadmap: total candidates, "
+        "Summarize the static approved skill-to-plugin roadmap catalog: total candidates, "
         "priority distribution, wave distribution, and candidates that require guarded "
-        "live/credentialed operations. Use before deciding which Hermes plugin to build next."
+        "live/credentialed operations. This does not inspect installed skills or curator state. "
+        "Use before deciding which Hermes plugin to build next."
     ),
     "parameters": {
         "type": "object",

@@ -1,7 +1,7 @@
 """Handlers for the skill-governance plugin.
 
 All handlers are read-only and return JSON strings, matching the Hermes plugin
-contract documented in ``website/docs/guides/build-a-hermes-plugin.md``.
+contract documented in ``website/docs/developer-guide/plugins/index.md``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any
 from .catalog import all_candidates, find_candidate
 
 REGISTERED_TOOLS = [
-    "skills_audit",
+    "skills_plugin_roadmap_summary",
     "skills_find_plugin_candidates",
     "skills_to_plugin_plan",
 ]
@@ -185,8 +185,8 @@ def skills_to_plugin_plan(args: dict, **kwargs) -> str:
     )
 
 
-def skills_audit(args: dict, **kwargs) -> str:
-    """Summarize the approved migration roadmap."""
+def skills_plugin_roadmap_summary(args: dict, **kwargs) -> str:
+    """Summarize the approved skill-to-plugin migration roadmap."""
 
     _args = _normalize_args(args)
     candidates = all_candidates()
@@ -199,6 +199,7 @@ def skills_audit(args: dict, **kwargs) -> str:
     return _json(
         {
             "success": True,
+            "summary_type": "static_roadmap_catalog",
             "total_candidates": len(candidates),
             "waves": dict(sorted(waves.items())),
             "priorities": dict(sorted(priorities.items())),

@@ -1,9 +1,9 @@
 name: skill-governance
 version: "0.1.0"
-description: "Skill-to-plugin governance tools for auditing approved plugin candidates, filtering migration priorities, and generating implementation plans without external side effects."
+description: "Skill-to-plugin governance tools for summarizing approved plugin candidates, filtering migration priorities, and generating implementation plans without external side effects."
 author: "NousResearch / OpenClaw"
 kind: standalone
 provides_tools:
-  - skills_audit
+  - skills_plugin_roadmap_summary
   - skills_find_plugin_candidates
   - skills_to_plugin_plan

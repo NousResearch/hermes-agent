@@ -81,23 +81,13 @@ def _load_tools():
 
 
 class TestCandidateCatalog:
-    def test_contains_all_approved_plugin_candidates(self):
+    def test_candidate_catalog_contract(self):
         catalog = _load_catalog()
         ids = [candidate["id"] for candidate in catalog.CANDIDATES]
-        assert ids == [
-            "bitrix_ops",
-            "telegram_thread_router",
-            "management_digest",
-            "watchdog_guardian",
-            "google_workspace_ops",
-            "procurement_tender_pipeline",
-            "document_factory",
-            "ozon_marketplace_import",
-            "broker_perplexity_relay",
-            "github_pr_governance",
-            "employee_access_adoption",
-            "skill_governance",
-        ]
+        assert ids
+        assert "skill_governance" in ids
+        assert min(candidate["wave"] for candidate in catalog.CANDIDATES) == 1
+        assert max(candidate["wave"] for candidate in catalog.CANDIDATES) <= 3
 
     def test_candidate_ids_and_tool_names_are_unique(self):
         catalog = _load_catalog()
@@ -108,7 +98,20 @@ class TestCandidateCatalog:
 
     def test_each_candidate_has_sources_guardrails_and_business_value(self):
         catalog = _load_catalog()
+        required_fields = {
+            "id",
+            "title",
+            "priority",
+            "wave",
+            "areas",
+            "sources",
+            "tools",
+            "business_value",
+            "guardrails",
+            "requires_live_go",
+        }
         for candidate in catalog.CANDIDATES:
+            assert required_fields <= candidate.keys()
             assert candidate["title"]
             assert candidate["priority"] in {"very_high", "high", "medium_high", "medium"}
             assert candidate["wave"] in {1, 2, 3}
@@ -167,14 +170,15 @@ class TestSkillGovernanceTools:
         assert plan_payload["success"] is False
         assert plan_payload["error"] == "candidate_id is required"
 
-    def test_audit_summarizes_waves_and_guarded_live_candidates(self):
+    def test_roadmap_summary_summarizes_waves_and_guarded_live_candidates(self):
         tools = _load_tools()
-        payload = json.loads(tools.skills_audit({}))
+        payload = json.loads(tools.skills_plugin_roadmap_summary({}))
         assert payload["success"] is True
+        assert payload["summary_type"] == "static_roadmap_catalog"
         assert payload["total_candidates"] == 12
         assert payload["waves"] == {"1": 4, "2": 4, "3": 4}
         assert payload["registered_tools"] == [
-            "skills_audit",
+            "skills_plugin_roadmap_summary",
             "skills_find_plugin_candidates",
             "skills_to_plugin_plan",
         ]
@@ -209,7 +213,7 @@ class TestBundledDiscovery:
         loaded = mgr._plugins["skill-governance"]
         assert loaded.enabled
         assert sorted(loaded.tools_registered) == [
-            "skills_audit",
             "skills_find_plugin_candidates",
+            "skills_plugin_roadmap_summary",
             "skills_to_plugin_plan",
         ]

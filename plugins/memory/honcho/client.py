@@ -359,6 +359,13 @@ class HonchoClientConfig:
     # Eager init in tools mode — when true, initializes session during
     # initialize() instead of deferring to first tool call
     init_on_session_start: bool = False
+    # Dialectic prewarm on session init — when true (default), fires a
+    # generic "Who is this person?" dialectic call during session
+    # initialization to reduce first-turn latency. When false, the
+    # prewarm is skipped; the first turn's dialectic runs on-demand
+    # instead. This is a latency/cost opt-out, not a message-anchoring
+    # mechanism.
+    prefetch_generic_context: bool = True
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
@@ -593,6 +600,11 @@ class HonchoClientConfig:
                 host_block.get("initOnSessionStart"),
                 raw.get("initOnSessionStart"),
                 default=False,
+            ),
+            prefetch_generic_context=_resolve_bool(
+                host_block.get("prefetchGenericContext"),
+                raw.get("prefetchGenericContext"),
+                default=True,
             ),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users

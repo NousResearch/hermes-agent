@@ -473,15 +473,22 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # ----- B7: Pre-warming at init -----
         # Context prewarm warms peer.context() (base layer), consumed via
-        # pop_context_result() in prefetch(). Dialectic prewarm runs the
-        # full configured depth and writes into _prefetch_result so turn 1
-        # consumes the result directly.
+        # pop_context_result() in prefetch(). Always runs in context/hybrid
+        # mode — this is the cheap peer-card fetch, not the LLM dialectic.
         if self._recall_mode in {"context", "hybrid"}:
             try:
                 self._manager.prefetch_context(self._session_key)
             except Exception as e:
                 logger.debug("Honcho context prewarm failed: %s", e)
 
+        # Dialectic prewarm: fires a generic "Who is this person?" LLM call
+        # during session init. When prefetchGenericContext is True (default),
+        # this reduces first-turn latency at the cost of generic context.
+        # When False, the prewarm is skipped — the first turn's dialectic
+        # call runs on-demand with the cold/warm prompt, not the user's
+        # message. This is a latency/cost opt-out, not a message-anchoring
+        # mechanism.
+        if self._recall_mode in {"context", "hybrid"} and cfg.prefetch_generic_context:
             _prewarm_query = (
                 "Summarize what you know about this user. "
                 "Focus on preferences, current projects, and working style."

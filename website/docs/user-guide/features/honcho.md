@@ -129,6 +129,7 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `messageMaxChars` | `25000` | Max chars per message sent via `add_messages()`. Chunked if exceeded |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
 | `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, or `global` |
+| `prefetchGenericContext` | `true` | When `true`, fires a generic "Who is this person?" dialectic call during session init to reduce first-turn latency. When `false`, the prewarm is skipped — the first turn runs the dialectic on-demand instead (latency/cost opt-out, not message-anchoring) |
 | `pinUserPeer` | `false` | Gateway only. When `true`, every platform user collapses to `peerName` |
 | `userPeerAliases` | `{}` | Gateway only. Map of runtime IDs to peers (`{"7654321": "alice"}`). Many-to-one |
 | `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_7654321`) when no alias matches |

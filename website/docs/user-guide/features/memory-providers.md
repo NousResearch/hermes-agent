@@ -97,6 +97,7 @@ The legacy `hermes honcho setup` command still works (it now redirects to `herme
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
 | `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, `global` |
+| `prefetchGenericContext` | `true` | When `true`, fires a generic dialectic prewarm during session init to reduce first-turn latency. When `false`, skipped — first turn runs dialectic on-demand (latency/cost opt-out) |
 | `pinUserPeer` | `false` | Gateway only. When `true`, every non-agent gateway user collapses to `peerName`; the pin overrides all aliases |
 | `userPeerAliases` | `{}` | Gateway only. Maps runtime IDs to peers (`{"7654321": "alice"}`). Many-to-one |
 | `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_7654321`) when no alias matches |

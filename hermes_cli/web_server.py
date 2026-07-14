@@ -6533,6 +6533,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
             "EMAIL_PASSWORD",
             "EMAIL_IMAP_HOST",
             "EMAIL_SMTP_HOST",
+            "EMAIL_SMTP_SECURITY",
         ),
         "required_env": (
             "EMAIL_ADDRESS",
@@ -6742,6 +6743,10 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     "EMAIL_SMTP_HOST": {
         "description": "SMTP server host (e.g. smtp.gmail.com)",
         "prompt": "SMTP host",
+    },
+    "EMAIL_SMTP_SECURITY": {
+        "description": "SMTP transport security: auto (465=implicit TLS / SMTP_SSL, other ports=STARTTLS), starttls, or implicit_tls",
+        "prompt": "SMTP security mode",
     },
     "TWILIO_ACCOUNT_SID": {
         "description": "Twilio Account SID",

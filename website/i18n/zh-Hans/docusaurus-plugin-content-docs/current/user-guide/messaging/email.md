@@ -70,6 +70,7 @@ EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
 # 可选
 EMAIL_IMAP_PORT=993                    # 默认：993（IMAP SSL）
 EMAIL_SMTP_PORT=587                    # 默认：587（SMTP STARTTLS）
+EMAIL_SMTP_SECURITY=auto               # 默认：auto（465=implicit TLS，其他端口=STARTTLS）。建议使用 config.yaml：platforms.email.smtp_security
 EMAIL_POLL_INTERVAL=15                 # 收件箱检查间隔（秒），默认：15
 EMAIL_HOME_ADDRESS=your@email.com      # cron 任务的默认投递目标
 ```
@@ -131,6 +132,30 @@ platforms:
 
 启用后，附件和内嵌部分会在解码前被跳过，邮件正文文本仍正常处理。
 
+### SMTP 安全模式
+
+默认情况下，适配器根据端口选择合理的 SMTP 传输安全：**端口 465 使用 implicit TLS**（`smtplib.SMTP_SSL`，经典的 SMTPS 端口），**其他端口使用 STARTTLS**（在端口 587 等上的机会性升级）。这种 `auto` 行为适用于 Gmail、Outlook 以及大多数服务商。
+
+仅在自定义 SMTP 部署中默认推断不正确时才进行覆盖。规范设置位于 `config.yaml` 的 `platforms.email.smtp_security`：
+
+```yaml
+platforms:
+  email:
+    smtp_security: auto  # auto（默认）| starttls | implicit_tls
+```
+
+可接受的值：
+
+| 值 | 行为 |
+|-------|----------|
+| `auto`（默认） | 端口 465 -> implicit TLS（`SMTP_SSL`）；其他任意端口 -> STARTTLS |
+| `starttls` | 始终以明文连接，再用 STARTTLS 升级（例如端口 587） |
+| `implicit_tls` | 始终开启 implicit TLS 会话（`SMTP_SSL`，例如端口 465） |
+
+为方便起见接受别名：`start_tls`/`start-tls` -> `starttls`，`implicit-tls`/`smtps`/`smtp_ssl` -> `implicit_tls`。模糊值如 `tls`、`ssl` 或 `plain` 会报错，以便配置错误时明确失败，而非静默选择错误的传输方式。
+
+也可以通过 `EMAIL_SMTP_SECURITY` 环境变量设置相同的值以保持向后兼容（由 `hermes gateway setup` 收集并桥接进 `platforms.email`）。`config.yaml` 优先；新设置建议使用 config.yaml。
+
 ---
 
 ## 访问控制
@@ -184,6 +209,7 @@ platforms:
 | `EMAIL_SMTP_HOST` | 是 | — | SMTP 服务器主机（例如 `smtp.gmail.com`） |
 | `EMAIL_IMAP_PORT` | 否 | `993` | IMAP 服务器端口 |
 | `EMAIL_SMTP_PORT` | 否 | `587` | SMTP 服务器端口 |
+| `EMAIL_SMTP_SECURITY` | 否 | `auto` | SMTP 传输安全（`auto`/`starttls`/`implicit_tls`）；建议使用 config.yaml 的 `platforms.email.smtp_security` |
 | `EMAIL_POLL_INTERVAL` | 否 | `15` | 收件箱检查间隔（秒） |
 | `EMAIL_ALLOWED_USERS` | 否 | — | 允许的发件人地址，逗号分隔 |
 | `EMAIL_HOME_ADDRESS` | 否 | — | cron 任务的默认投递目标 |

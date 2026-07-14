@@ -77,6 +77,7 @@ EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
 # Optional
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
+EMAIL_SMTP_SECURITY=auto               # Default: auto (465=implicit TLS, else STARTTLS). Prefer config.yaml: platforms.email.smtp_security
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
@@ -138,6 +139,30 @@ platforms:
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
+### SMTP Security Mode
+
+By default the adapter picks a sensible SMTP transport security from the port: **port 465 uses implicit TLS** (`smtplib.SMTP_SSL`, the classic SMTPS port), and **every other port uses STARTTLS** (the opportunistic upgrade on port 587 and others). This `auto` behavior is correct for Gmail, Outlook, and most providers.
+
+Override it only for custom SMTP deployments where the default guess is wrong. The canonical setting lives in `config.yaml` under `platforms.email.smtp_security`:
+
+```yaml
+platforms:
+  email:
+    smtp_security: auto  # auto (default) | starttls | implicit_tls
+```
+
+Accepted values:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Port 465 -> implicit TLS (`SMTP_SSL`); any other port -> STARTTLS |
+| `starttls` | Always connect plaintext then upgrade with STARTTLS (e.g. port 587) |
+| `implicit_tls` | Always open an implicit TLS session (`SMTP_SSL`, e.g. port 465) |
+
+Aliases are accepted for convenience: `start_tls`/`start-tls` -> `starttls`, and `implicit-tls`/`smtps`/`smtp_ssl` -> `implicit_tls`. Ambiguous values like `tls`, `ssl`, or `plain` raise an error so a misconfiguration fails loudly instead of silently picking the wrong transport.
+
+You can also set the same value via the `EMAIL_SMTP_SECURITY` environment variable for backward compatibility (it is collected by `hermes gateway setup` and bridged into `platforms.email`). `config.yaml` takes precedence; prefer it for new setups.
+
 ---
 
 ## Access Control
@@ -192,6 +217,7 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
+| `EMAIL_SMTP_SECURITY` | No | `auto` | SMTP transport security (`auto`/`starttls`/`implicit_tls`); prefer `platforms.email.smtp_security` in config.yaml |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |

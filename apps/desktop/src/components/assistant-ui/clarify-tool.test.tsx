@@ -1,15 +1,28 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { I18nProvider } from '@/i18n'
+import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { $gateway } from '@/store/gateway'
+import { $activeSessionId } from '@/store/session'
 
 import { ClarifyTool, readClarifyResult } from './clarify-tool'
 
+// The live pending card only renders while its message is running. Force that so
+// keyboard-navigation tests can exercise ClarifyToolPending directly.
+vi.mock('@assistant-ui/react', () => ({
+  useAuiState: () => true
+}))
+
 afterEach(() => {
   cleanup()
+  clearClarifyRequest()
+  $activeSessionId.set(null)
+  $gateway.set(null)
+  vi.clearAllMocks()
 })
 
 function renderClarify(ui: ReactNode) {
@@ -38,6 +51,40 @@ function settledClarifyProps(
     toolName: 'clarify',
     type: 'tool-call'
   }
+}
+
+function liveClarifyProps(choices = ['staging', 'production']): ToolCallMessagePartProps {
+  const args = { choices, question: 'Which deployment target?' }
+
+  return {
+    addResult: vi.fn(),
+    args,
+    argsText: JSON.stringify(args),
+    isError: false,
+    respondToApproval: vi.fn(),
+    result: undefined,
+    resume: vi.fn(),
+    status: { type: 'running' },
+    toolCallId: 'clarify-live',
+    toolName: 'clarify',
+    type: 'tool-call'
+  }
+}
+
+function renderLiveClarify() {
+  const request = vi.fn().mockResolvedValue({ ok: true })
+
+  $activeSessionId.set('session-1')
+  $gateway.set({ request } as never)
+  setClarifyRequest({
+    choices: ['staging', 'production'],
+    question: 'Which deployment target?',
+    requestId: 'request-1',
+    sessionId: 'session-1'
+  })
+  renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+  return request
 }
 
 describe('readClarifyResult', () => {
@@ -180,5 +227,72 @@ describe('ClarifyTool settled view', () => {
     )
 
     expect(document.querySelector('[data-clarify-late-choices]')).toBeNull()
+  })
+})
+
+describe('ClarifyTool keyboard navigation', () => {
+  it('cycles through choices and Other with the arrow keys', () => {
+    renderLiveClarify()
+
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+    const other = screen.getByPlaceholderText(/Other/)
+
+    expect(staging.getAttribute('data-highlighted')).toBe('true')
+    expect(staging.getAttribute('aria-current')).toBe('true')
+    expect(staging.getAttribute('aria-keyshortcuts')).toBe('A 1')
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    expect(production.getAttribute('data-highlighted')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    expect(other.closest('label')?.getAttribute('data-highlighted')).toBe('true')
+    expect(other.getAttribute('aria-current')).toBe('true')
+    expect(other.getAttribute('aria-keyshortcuts')).toBe('C 3')
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    expect(staging.getAttribute('data-highlighted')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    expect(other.closest('label')?.getAttribute('data-highlighted')).toBe('true')
+  })
+
+  it('selects by number and confirms the answer with Enter', async () => {
+    const request = renderLiveClarify()
+
+    fireEvent.keyDown(window, { key: '2' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'production',
+        request_id: 'request-1'
+      })
+    })
+  })
+
+  it('focuses Other when its number is pressed and leaves typing keys alone', () => {
+    renderLiveClarify()
+
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.keyDown(window, { key: '3' })
+    expect(document.activeElement).toBe(other)
+
+    fireEvent.change(other, { target: { value: 'canary' } })
+    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(other)
+    expect((other as HTMLTextAreaElement).value).toBe('canary')
+  })
+
+  it('does not intercept keyboard events while an action button has focus', () => {
+    const request = renderLiveClarify()
+    const skip = screen.getByRole('button', { name: 'Skip' })
+
+    skip.focus()
+
+    expect(fireEvent.keyDown(window, { key: 'Enter' })).toBe(true)
+    expect(fireEvent.keyDown(window, { key: 'ArrowDown' })).toBe(true)
+    expect(request).not.toHaveBeenCalled()
   })
 })

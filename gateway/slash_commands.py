@@ -1287,22 +1287,26 @@ class GatewaySlashCommandsMixin:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
         active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd) or inside a
-        # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
+        # When running under a service manager (systemd/launchd/s6) or inside
+        # a container, use the service restart path: exit with code 75 so the
+        # service manager / container restart policy restarts us.  The detached
+        # subprocess approach (setsid + bash) doesn't work under systemd
+        # (KillMode=mixed kills the cgroup) or containers (tini/s6-svscan
         # exits when the gateway dies, taking the detached helper with it).
         # systemd sets INVOCATION_ID; launchd sets XPC_SERVICE_NAME to the
-        # job label.  Without the launchd check, macOS /restart takes the
-        # detached path and exits 0, which KeepAlive.SuccessfulExit=false
-        # treats as a deliberate stop — the gateway stays dead until next
-        # login.  Interactive macOS shells inherit XPC_SERVICE_NAME=0, so
-        # "0" must count as not-under-launchd.
-        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
-            "XPC_SERVICE_NAME", "0"
-        ) not in ("", "0")
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        # job label; s6-overlay exports HERMES_S6_SUPERVISED_CHILD.  Without
+        # the launchd check, macOS /restart takes the detached path and exits
+        # 0, which KeepAlive.SuccessfulExit=false treats as a deliberate
+        # stop — the gateway stays dead until next login.  Interactive macOS
+        # shells inherit XPC_SERVICE_NAME=0, so "0" must count as
+        # not-under-launchd.
+        _under_service = (
+            bool(os.environ.get("INVOCATION_ID"))
+            or os.environ.get("XPC_SERVICE_NAME", "0") not in ("", "0")
+            or bool(os.environ.get("HERMES_S6_SUPERVISED_CHILD"))
+        )
+        from hermes_constants import is_container
+        _in_container = is_container()
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:

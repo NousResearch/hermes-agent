@@ -453,12 +453,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             for key, value in overrides.items():
                 if key == "extra_body" and isinstance(value, dict):
-                    existing = api_kwargs.get("extra_body")
-                    merged = {}
-                    if isinstance(existing, dict):
-                        merged.update(existing)
-                    merged.update(value)
-                    api_kwargs["extra_body"] = merged
+                    api_kwargs[key] = {**api_kwargs.get(key, {}), **value}
                 else:
                     api_kwargs[key] = value
 

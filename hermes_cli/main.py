@@ -2168,12 +2168,9 @@ def cmd_chat(args):
 
     _pin_kanban_board_env()
 
-    # --extra-body not currently supported through the TUI path.
-    # The TUI execs a Node process and does not forward extra_body.
     if use_tui and getattr(args, "extra_body", None):
         print(
-            "Error: --extra-body is not currently supported with the TUI. "
-            "Use --cli to run the classic CLI path.",
+            "Error: --extra-body is not supported with the TUI. Use --cli instead.",
             file=sys.stderr,
         )
         sys.exit(1)

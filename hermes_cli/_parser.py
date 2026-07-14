@@ -370,11 +370,7 @@ def build_top_level_parser():
         "-x",
         "--extra-body",
         default=None,
-        help=(
-            "Arbitrary JSON object to pass as OpenAI SDK extra_body. "
-            "Useful for provider-specific request options, e.g. "
-            '\'{"provider":{"only":["anthropic"]}}\' for OpenRouter.'
-        ),
+        help="JSON object to merge into the provider request body (classic CLI only)",
     )
     chat_parser.add_argument(
         "--source",

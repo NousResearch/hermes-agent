@@ -354,12 +354,7 @@ def _parse_service_tier_config(raw: str) -> str | None:
     return None
 
 def _parse_extra_body(raw: str | dict | None) -> dict | None:
-    """Parse --extra-body JSON string into a dict for OpenAI SDK extra_body.
-
-    Accepts None, empty string, a pre-parsed dict, or a JSON string.
-    Returns None for None/empty (no extra body). Rejects non-object JSON
-    values (list, string, number, boolean, null) with a ValueError.
-    """
+    """Parse a CLI extra_body value and require a JSON object."""
     if raw in (None, ""):
         return None
     if isinstance(raw, dict):
@@ -13260,7 +13255,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
-    extra_body: str = None,
+    extra_body: str | dict | None = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant

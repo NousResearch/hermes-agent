@@ -373,7 +373,26 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
-                        continue
+                        # Name contains only non-ASCII characters (e.g. Chinese).
+                        # Fall back to the skill directory name so the command
+                        # is still registered and can be invoked.
+                        dir_slug = skill_md.parent.name.lower().replace(' ', '-').replace('_', '-')
+                        dir_slug = _SKILL_INVALID_CHARS.sub('', dir_slug)
+                        dir_slug = _SKILL_MULTI_HYPHEN.sub('-', dir_slug).strip('-')
+                        if not dir_slug:
+                            logger.warning(
+                                "Skill at %s: name %r produces an empty slug and"
+                                " the directory name also yields no valid slug —"
+                                " skipping.",
+                                skill_md, name,
+                            )
+                            continue
+                        logger.warning(
+                            "Skill at %s: name %r contains non-ASCII characters;"
+                            " registering as /%s (derived from directory name).",
+                            skill_md, name, dir_slug,
+                        )
+                        cmd_name = dir_slug
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",

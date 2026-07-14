@@ -11808,7 +11808,13 @@ def _(rid, params: dict) -> dict:
 
             for k, info in sorted(scan_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
-                all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
+                pair = [k, d[:120] + ("…" if len(d) > 120 else "")]
+                all_pairs.append(pair)
+                bucket = "Tools & Skills"
+                if bucket not in cat_map:
+                    cat_map[bucket] = []
+                    cat_order.append(bucket)
+                cat_map[bucket].append(pair)
                 skill_count += 1
         except Exception as e:
             warning = f"skill discovery unavailable: {e}"

@@ -4544,6 +4544,27 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     assert resp["result"]["canon"]["/notes"] == "/notes"
 
 
+def test_commands_catalog_surfaces_skills_in_flat_and_categorized_pairs(monkeypatch):
+    import agent.skill_commands as skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "scan_skill_commands",
+        lambda: {"/test-skill": {"description": "A test skill"}},
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    assert dict(resp["result"]["pairs"])["/test-skill"] == "A test skill"
+    skills_cat = next(
+        c for c in resp["result"]["categories"] if c["name"] == "Tools & Skills"
+    )
+    assert dict(skills_cat["pairs"])["/test-skill"] == "A test skill"
+    assert resp["result"]["skill_count"] == 1
+
+
 def test_commands_catalog_includes_tui_mouse_command():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}

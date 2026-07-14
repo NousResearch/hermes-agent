@@ -1,6 +1,7 @@
 """Tests for agent/prompt_builder.py — context scanning, truncation, skills index."""
 
 import builtins
+import os
 import importlib
 import logging
 import sys
@@ -8,6 +9,7 @@ import sys
 import pytest
 
 from agent.prompt_builder import (
+    _build_skills_manifest,
     _scan_context_content,
     _truncate_content,
     _parse_skill_file,
@@ -414,6 +416,19 @@ class TestBuildSkillsSystemPrompt:
         assert "python-debug" in result
         assert "Debug Python scripts" in result
         assert "available_skills" in result
+
+    def test_manifest_excludes_backup_skill_sibling(self, tmp_path):
+        live = tmp_path / "live-skill"
+        live.mkdir()
+        (live / "SKILL.md").write_text("---\nname: live-skill\n---\n")
+
+        backup = tmp_path / "live-skill.bak-20260510"
+        backup.mkdir()
+        (backup / "SKILL.md").write_text("---\nname: backup-skill\n---\n")
+
+        manifest = _build_skills_manifest(tmp_path)
+
+        assert set(manifest) == {os.path.join("live-skill", "SKILL.md")}
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

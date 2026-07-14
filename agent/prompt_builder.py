@@ -20,6 +20,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS,
     SKILL_SUPPORT_DIRS,
+    _is_backup_dir_name,
     extract_skill_conditions,
     extract_skill_description,
     get_all_skills_dirs,
@@ -1284,6 +1285,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             d
             for d in dirs
             if d not in EXCLUDED_SKILL_DIRS
+            and not _is_backup_dir_name(d)
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
         for filename in ("SKILL.md", "DESCRIPTION.md"):

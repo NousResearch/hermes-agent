@@ -217,8 +217,28 @@ async def download_url(
         ValueError:  内容超过大小限制
         httpx.HTTPError: 网络/HTTP 错误
     """
+    # SSRF protection: yuanbao downloads model-supplied and inbound URLs
+    # server-side. Reject private/internal targets up front, and re-validate
+    # every redirect hop so a public URL can't 302 to http://169.254.169.254/.
+    from tools.url_safety import is_safe_url
+
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
+
+    async def _redirect_guard(response: httpx.Response) -> None:
+        if response.is_redirect and response.next_request:
+            redirect_url = str(response.next_request.url)
+            if not is_safe_url(redirect_url):
+                raise ValueError(
+                    f"Blocked redirect to private/internal address: {redirect_url}"
+                )
+
     max_bytes = max_size_mb * 1024 * 1024
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_redirect_guard]},
+    ) as client:
         # 先 HEAD 检查大小
         try:
             head = await client.head(url)

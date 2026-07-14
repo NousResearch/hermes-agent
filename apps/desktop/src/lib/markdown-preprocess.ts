@@ -1,5 +1,4 @@
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
@@ -9,14 +8,18 @@ const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
 const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
-const RAW_URL_RE = /https?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?]/g
+// Bare-URL autolink matcher. The character classes EXCLUDE `*` so a URL that
+// abuts markdown emphasis with no separating space (e.g. `**label: https://x**`,
+// a very common LLM pattern) doesn't swallow the trailing `**` into the href.
+// `*` is never meaningful in a real URL path, and GFM's own autolink extension
+// likewise strips trailing emphasis/punctuation — so dropping it here is safe
+// and keeps the emphasis run intact. Other trailing punctuation is still peeled
+// off by the final `[^\s<>"'`*.,;:!?]` class.
+const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
-
-const LOCAL_IMAGE_MARKDOWN_RE =
-  /!\[([^\]\n]*(?:\\.[^\]\n]*)*)\]\(\s*(<file:[^>\n]+>|file:[^\s)\n]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/gi
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
@@ -142,22 +145,16 @@ function normalizeVisibleProse(text: string): string {
       part.startsWith('`')
         ? part
         : autoLinkRawUrls(
-            rewriteLocalImageMarkdown(part)
-              .replace(/`{3,}/g, '')
-              .replace(LOCAL_PREVIEW_URL_RE, '$1')
-              .replace(CITATION_MARKER_RE, '')
+            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
           )
     )
     .join('')
 }
 
-function rewriteLocalImageMarkdown(text: string): string {
-  return text.replace(LOCAL_IMAGE_MARKDOWN_RE, (_, alt: string, destination: string) => {
-    const path = destination.startsWith('<') && destination.endsWith('>') ? destination.slice(1, -1) : destination
-    const label = alt || mediaDisplayLabel(path)
-
-    return `[${label}](${mediaMarkdownHref(path)})`
-  })
+function extend(out: string[], lines: string[]) {
+  for (const line of lines) {
+    out.push(line)
+  }
 }
 
 function pushProseFence(out: string[], indent: string, info: string, lines: string[]) {
@@ -165,7 +162,7 @@ function pushProseFence(out: string[], indent: string, info: string, lines: stri
     out.push(`${indent}${info}`.trimEnd())
   }
 
-  out.push(...lines)
+  extend(out, lines)
 }
 
 function findClosingFence(lines: string[], start: number, marker: string): number {
@@ -250,7 +247,7 @@ function normalizeFenceBlocks(text: string): string {
     }
 
     if (closeIndex !== -1 && isUrlOnlyBlock(bodyLines)) {
-      out.push(...bodyLines)
+      extend(out, bodyLines)
       index = closeIndex + 1
 
       continue
@@ -273,10 +270,10 @@ function normalizeFenceBlocks(text: string): string {
         // any literal `$$` characters in the body don't collide with
         // an outer math wrapper. No close emitted yet — streaming.
         out.push(`${indent}${marker}math`)
-        out.push(...bodyLines)
+        extend(out, bodyLines)
       } else {
         out.push(`${indent}${marker}${language}`)
-        out.push(...bodyLines)
+        extend(out, bodyLines)
       }
 
       break
@@ -297,7 +294,7 @@ function normalizeFenceBlocks(text: string): string {
       // colliding with our wrapper. Without this rewrite the block
       // would render as a syntax-highlighted "latex" code listing.
       out.push(`${indent}${marker}math`)
-      out.push(...bodyLines)
+      extend(out, bodyLines)
       out.push(`${indent}${marker}`)
       index = closeIndex + 1
 
@@ -305,7 +302,7 @@ function normalizeFenceBlocks(text: string): string {
     }
 
     out.push(`${indent}${marker}${language}`)
-    out.push(...bodyLines)
+    extend(out, bodyLines)
     out.push(`${indent}${marker}`)
     index = closeIndex + 1
   }

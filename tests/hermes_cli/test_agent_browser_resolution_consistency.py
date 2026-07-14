@@ -46,3 +46,47 @@ def test_runtime_and_availability_share_windows_native_fallback(
     assert dep_ensure._DEP_CHECKS["browser"]() is True
     assert nous_subscription._has_agent_browser() is True
     assert doctor._resolve_agent_browser_for_doctor(shim) == native
+
+
+def test_managed_windows_native_fallback_is_consistent(tmp_path, monkeypatch):
+    home = tmp_path / "hermes-home"
+    node_root = home / "node"
+    node_root.mkdir(parents=True)
+    shim = _make_executable(
+        node_root / "agent-browser.cmd",
+        "#!/bin/sh\n# node agent-browser.js\nexit 1\n",
+    )
+    package_bin = node_root / "node_modules" / "agent-browser" / "bin"
+    package_bin.mkdir(parents=True)
+    native_path = package_bin / "agent-browser-win32-x64.exe"
+    native_path.write_text("#!/bin/sh\nexit 0\n")
+    native_path.chmod(0o644)
+    native = str(native_path)
+
+    monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+    monkeypatch.setattr(hermes_constants.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(browser_tool, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+
+    def fake_which(cmd, path=None):
+        if cmd == "agent-browser" and path and str(node_root) in path:
+            return shim
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(dep_ensure, "_has_system_browser", lambda: False)
+    monkeypatch.setattr(
+        browser_tool, "_candidate_agent_browser_native_bins", lambda: []
+    )
+    monkeypatch.setattr(browser_tool, "_cached_agent_browser", None)
+    monkeypatch.setattr(browser_tool, "_agent_browser_resolved", False)
+
+    assert dep_ensure._DEP_CHECKS["browser"]() is True
+    assert native_path.stat().st_mode & 0o111
+    assert nous_subscription._has_agent_browser() is True
+    assert any(
+        doctor._resolve_agent_browser_for_doctor(candidate) == native
+        for candidate in doctor._agent_browser_candidates_for_doctor()
+    )
+    assert browser_tool._find_agent_browser() == native

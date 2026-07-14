@@ -671,12 +671,30 @@ class TestAgentBrowserRunnable:
             package_bin,
             agent_browser_native_binary_names()[0],
             "#!/bin/sh\nexit 0\n",
+            mode=0o644,
         )
 
         assert resolve_agent_browser_candidate(str(shim), env={"PATH": ""}) == str(
             native
         )
+        assert os.access(native, os.X_OK)
 
+    def test_direct_native_recovers_missing_executable_bit(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+        monkeypatch.setattr(hermes_constants.platform, "machine", lambda: "x86_64")
+        native = self._stub(
+            tmp_path,
+            agent_browser_native_binary_names()[0],
+            "#!/bin/sh\nexit 0\n",
+            mode=0o644,
+        )
+
+        assert resolve_agent_browser_candidate(str(native), env={"PATH": ""}) == str(
+            native
+        )
+        assert os.access(native, os.X_OK)
 
     def test_node_tool_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
         good = self._stub(tmp_path, "node", "#!/bin/sh\necho v22\n")

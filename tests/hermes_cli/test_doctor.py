@@ -379,6 +379,30 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "docker not found (optional)" not in out
 
 
+def test_run_doctor_reports_native_agent_browser_without_node(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    managed_bin = tmp_path / ".hermes" / "node" / "bin"
+    managed_bin.mkdir(parents=True)
+    agent_browser = managed_bin / "agent-browser"
+    agent_browser.write_text("#!/bin/sh\nexit 0\n")
+    agent_browser.chmod(0o755)
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd, path=None: None)
+    import tools.browser_tool as browser_tool
+
+    monkeypatch.setattr(browser_tool, "_chromium_installed", lambda: True)
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: None)
+    monkeypatch.setattr(browser_tool, "_using_lightpanda_engine", lambda: False)
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+    assert "Node.js not found (native agent-browser is available)" in out
+    assert "agent-browser" in out
+    assert "optional, needed for browser tools" not in out
+
+
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

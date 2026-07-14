@@ -115,6 +115,7 @@ def test_has_hermes_agent_browser_windows_path(tmp_path):
     candidate.chmod(0o755)
     from hermes_cli.dep_ensure import _has_hermes_agent_browser
     with patch("hermes_cli.dep_ensure._IS_WINDOWS", True), \
+         patch("hermes_constants.sys.platform", "win32"), \
          patch("hermes_constants.get_hermes_home", return_value=tmp_path):
         assert _has_hermes_agent_browser() is True
 

@@ -71,6 +71,7 @@ from hermes_constants import (
     agent_browser_native_sibling_candidates,
     agent_browser_runnable,
     get_hermes_home,
+    prepare_agent_browser_native_candidate,
 )
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -2142,19 +2143,7 @@ def _candidate_agent_browser_native_bins() -> List[Path]:
 
 
 def _is_executable_file(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    if os.access(path, os.X_OK):
-        return True
-    # Some npm tarballs have shipped native bins without executable bits; the
-    # JS wrapper fixes that at runtime, but we bypass the wrapper specifically
-    # when Node is unavailable. Best-effort chmod lets user-owned installs work
-    # without penalizing read-only/global installs (they simply remain false).
-    try:
-        path.chmod(path.stat().st_mode | 0o111)
-    except OSError:
-        return False
-    return os.access(path, os.X_OK)
+    return prepare_agent_browser_native_candidate(path)
 
 
 def _native_agent_browser_candidate(path: Path, *, validate: bool) -> str | None:

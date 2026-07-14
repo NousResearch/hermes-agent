@@ -159,24 +159,28 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
 def _has_agent_browser() -> bool:
     import shutil
 
-    from hermes_constants import resolve_agent_browser_candidate
+    from hermes_constants import (
+        agent_browser_managed_shim_candidates,
+        get_hermes_home,
+        resolve_agent_browser_candidate,
+    )
     from tools.environments.local import hermes_subprocess_env
 
     probe_env = hermes_subprocess_env(inherit_credentials=False)
 
-    # Validate the resolved binary actually runs — a dangling global symlink
-    # (issue #48521) is reported by ``which`` but fails at exec. Fall through to
-    # the local node_modules copy, which the validator also checks.
-    if resolve_agent_browser_candidate(
-        shutil.which("agent-browser"),
-        env=probe_env,
-    ):
-        return True
     local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
     local_bin = shutil.which("agent-browser", path=str(local_bin_dir)) or str(
         local_bin_dir / "agent-browser"
     )
-    return resolve_agent_browser_candidate(local_bin, env=probe_env) is not None
+    candidates = (
+        shutil.which("agent-browser"),
+        local_bin,
+        *(str(path) for path in agent_browser_managed_shim_candidates(get_hermes_home())),
+    )
+    return any(
+        resolve_agent_browser_candidate(candidate, env=probe_env)
+        for candidate in candidates
+    )
 
 
 def _local_browser_runnable() -> bool:

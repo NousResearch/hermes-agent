@@ -567,6 +567,107 @@ class TestRunBackgroundTask:
 
 
 
+
+
+    @pytest.mark.asyncio
+    async def test_qqbot_background_task_windows_file_url(self, tmp_path, monkeypatch):
+        """Background-task with ``file:///C:/...`` (three-slash Windows URI)
+        routes through ``send_multiple_images`` → ``send_image_file``.
+        """
+        from urllib.parse import quote as _urlquote
+
+        from gateway import run as gateway_run
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        png = tmp_path / "win_test.png"
+        png.write_bytes(b"png")
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (tmp_path.resolve(),),
+        )
+
+        class _QQBotLikeV2(BasePlatformAdapter):
+            def __init__(self):
+                super().__init__(PlatformConfig(enabled=True, token="test"), Platform.QQBOT)
+                self.send_calls = []
+
+            async def connect(self, *, is_reconnect: bool = False):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, chat_id, content=None, **kwargs):
+                self.send_calls.append(("send", chat_id, content))
+                return SendResult(success=True, message_id="text")
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id, "type": "dm"}
+
+        adapter = _QQBotLikeV2()
+        adapter.send_image = AsyncMock(return_value=SendResult(success=True, message_id="img"))
+        adapter.send_image_file = AsyncMock(
+            return_value=SendResult(success=True, message_id="img-file")
+        )
+
+        runner.adapters[Platform.QQBOT] = adapter
+
+        source = SessionSource(
+            platform=Platform.QQBOT,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        # Use ``file:///C:/...`` three-slash Windows-style URI
+        three_slash_uri = "file:///" + _urlquote(str(png.resolve()), safe="/:\\")
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={
+                "final_response": f"see attached ![pic]({three_slash_uri})",
+                "messages": [],
+            }
+        )
+
+        await runner._run_background_task(
+            "make pic win", source, "bg_win_file_url",
+        )
+
+        # Verify send_image was NOT called with the raw file:// URI
+        for call in adapter.send_image.await_args_list or []:
+            url_arg = call.kwargs.get("image_url") or (
+                call.args[1] if len(call.args) > 1 else None
+            )
+            assert not (url_arg and str(url_arg).startswith("file://")), (
+                f"send_image should not receive raw file:// URI, got {url_arg!r}"
+            )
+        # send_image_file must be called once with the decoded path
+        adapter.send_image_file.assert_awaited_once()
+        _, kwargs = adapter.send_image_file.call_args
+        received_path = kwargs.get("image_path")
+        assert received_path is not None
+        expected = str(png).replace("/", "\\").casefold()
+        got = str(received_path).replace("/", "\\").casefold()
+        assert expected in got, (
+            f"decoded image_path mismatch: expected {expected!r}, got {got!r}"
+        )
+
+
 class TestBackgroundInHelp:
     """Verify /background appears in help text and known commands."""
 

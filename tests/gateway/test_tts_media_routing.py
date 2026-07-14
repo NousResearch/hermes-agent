@@ -583,3 +583,129 @@ async def test_post_stream_html_src_bare_path_not_delivered(tmp_path, monkeypatc
         adapter.send_multiple_images.assert_not_awaited()
         adapter.send_image_file.assert_not_awaited()
         adapter.send_document.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Dev tests: Windows paths, unicode paths, paths with spaces (PR #43332)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_stream_file_url_windows_path_delivered(tmp_path, monkeypatch):
+    """``file:///C:/...`` style Windows URI (three slashes + drive letter)
+    in a markdown image tag reaches ``send_multiple_images``.
+    """
+    event = _event()
+    img = _allowed_media_path(tmp_path, monkeypatch, "win_test.png")
+    # Simulate Windows absolute path URI: file:///C:/path/to/file.png
+    # Convert the resolved PosixPath to a "Windows-style" path string
+    # by using as_posix() (forward slashes) which _normalize_file_url
+    # handles via ``file:///C:/...`` syntax.
+    win_uri = f"file:///{img.as_posix()}"
+    response = f"See: ![shot]({win_uri})"
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    kwargs = adapter.send_multiple_images.call_args.kwargs
+    images = kwargs.get("images")
+    assert images is not None, "images kwarg missing"
+    assert len(images) == 1
+    file_uri = images[0][0]
+    assert file_uri.startswith("file://")
+    assert str(img) in file_uri
+
+
+@pytest.mark.asyncio
+async def test_post_stream_file_url_unicode_path(tmp_path, monkeypatch):
+    """file:// URI with unicode characters in path reaches send_multiple_images."""
+    event = _event()
+    # Create a file with unicode name
+    img = _allowed_media_path(tmp_path, monkeypatch, "照片.png")
+    response = f"See: ![photo](file://{img.as_posix()})"
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    kwargs = adapter.send_multiple_images.call_args.kwargs
+    images = kwargs.get("images")
+    assert images is not None, "images kwarg missing"
+    assert len(images) == 1
+    file_uri = images[0][0]
+    assert file_uri.startswith("file://")
+    # The unicode filename must be present in the URI (percent-encoded)
+    from urllib.parse import quote as _urlquote
+    expected_part = _urlquote("照片.png")
+    assert expected_part in file_uri, (
+        f"Expected {expected_part} in {file_uri}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_stream_file_url_space_path(tmp_path, monkeypatch):
+    """file:// URI with spaces in directory/file name reaches send_multiple_images."""
+    event = _event()
+    img = _allowed_media_path(tmp_path, monkeypatch, "screen shot.png")
+    response = f"See: ![img](file://{img.as_posix()})"
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    kwargs = adapter.send_multiple_images.call_args.kwargs
+    images = kwargs.get("images")
+    assert images is not None, "images kwarg missing"
+    assert len(images) == 1
+    file_uri = images[0][0]
+    assert file_uri.startswith("file://")
+    # Space in filename must be percent-encoded
+    assert "%20" in file_uri, (
+        f"Expected percent-encoded space (%20) in {file_uri}"
+    )

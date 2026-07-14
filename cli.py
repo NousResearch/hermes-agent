@@ -11269,14 +11269,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _is_quit = (canonical in {"quit", "exit"})
         if not _is_quit:
             try:
-                from hermes_cli.plugins import invoke_hook as _post_cmd_hook
-                _post_cmd_hook(
-                    "post_command",
-                    command=canonical,
-                    raw=cmd_original,
-                    session_id=self.session_id,
-                    cli=self,
-                )
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("post_command"):
+                    invoke_hook(
+                        "post_command",
+                        command=canonical,
+                        raw=cmd_original,
+                        session_id=self.session_id,
+                        cli=self,
+                    )
             except Exception:
                 pass
 
@@ -11294,14 +11295,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Plugin hook: on_quit — fires before CLI exits so plugins
             # can auto-title, compress conversation, or save state.
             try:
-                from hermes_cli.plugins import invoke_hook as _quit_hook
-                _quit_hook(
-                    "on_quit",
-                    command="quit",
-                    raw=cmd_original,
-                    session_id=self.session_id,
-                    cli=self,
-                )
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("on_quit"):
+                    invoke_hook(
+                        "on_quit",
+                        command="quit",
+                        raw=cmd_original,
+                        session_id=self.session_id,
+                        cli=self,
+                    )
             except Exception:
                 pass
             return False

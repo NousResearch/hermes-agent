@@ -5820,6 +5820,16 @@ def _(rid, params: dict) -> dict:
     # the currently-focused window (a watch window the user deliberately opened
     # should still render); we only withhold delegate children from the
     # *sibling* set so they can never become current without an explicit open.
+    #
+    # The DB lookup alone misses the lazy-resume pre-flush race: ``session.resume``
+    # can register a delegate-child watch record (``lazy=True``, see
+    # ``_deferred_session_record`` at the ``found = {}`` branch) before the child's
+    # own run has flushed its ``_delegate_from``-marked row to the DB. During that
+    # window ``delegate_child_session_ids`` returns nothing for it, so it would
+    # still leak through. ``lazy`` is only ever set on records built by that
+    # delegate-watch branch (a normal cold resume never sets it — see
+    # ``session.resume``), so it is a reliable in-memory stand-in for the DB
+    # marker until the row exists.
     delegate_keys: set = set()
     db = _get_db()
     if db is not None:
@@ -5835,7 +5845,10 @@ def _(rid, params: dict) -> dict:
         if not session.get("_finalized")
         and (
             sid == current
-            or str(session.get("session_key") or sid) not in delegate_keys
+            or (
+                not session.get("lazy")
+                and str(session.get("session_key") or sid) not in delegate_keys
+            )
         )
     ]
     return _ok(rid, {"sessions": rows})

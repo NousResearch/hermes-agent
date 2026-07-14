@@ -177,6 +177,59 @@ def test_active_list_excludes_delegate_child_watch_sessions(monkeypatch):
         server._sessions.update(saved)
 
 
+def test_active_list_excludes_delegate_child_before_db_row_flushes(monkeypatch):
+    """#45336 regression: ``session.resume``'s lazy path can register a
+    delegate-child watch record (``found = {}``, see the pre-flush race comment
+    in ``session.resume``) before the child's own run has persisted its
+    ``_delegate_from``-marked row. ``delegate_child_session_ids`` returns nothing
+    for it during that window, so the exclusion must not depend solely on the
+    DB lookup — the in-memory ``lazy`` marker has to withhold it too."""
+    root_sid, child_sid = "root_sd", "child_sd"
+    root_key, child_key = "root-key", "child-key"
+
+    class _Db:
+        def delegate_child_session_ids(self, ids):
+            # Simulates the pre-flush race: the child's row doesn't exist yet,
+            # so the DB-backed lookup can't classify it.
+            return set()
+
+    monkeypatch.setattr(server, "_get_db", lambda: _Db())
+    monkeypatch.setattr(
+        server,
+        "_session_live_item",
+        lambda sid, session, current="": {
+            "id": sid,
+            "session_key": session.get("session_key"),
+        },
+    )
+
+    saved = dict(server._sessions)
+    server._sessions.clear()
+    try:
+        server._sessions[root_sid] = {"session_key": root_key}
+        server._sessions[child_sid] = {
+            "session_key": child_key,
+            "lazy": True,
+            "agent": None,
+        }
+
+        # Focused on the parent: the not-yet-persisted delegate child watch
+        # window must still be withheld, purely off the in-memory marker.
+        res = server._methods["session.active_list"](
+            "r1", {"current_session_id": root_sid}
+        )
+        assert {r["id"] for r in res["result"]["sessions"]} == {root_sid}
+
+        # Focused on the child watch window itself: it still renders.
+        res = server._methods["session.active_list"](
+            "r2", {"current_session_id": child_sid}
+        )
+        assert {r["id"] for r in res["result"]["sessions"]} == {root_sid, child_sid}
+    finally:
+        server._sessions.clear()
+        server._sessions.update(saved)
+
+
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
     """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
     parent workspace is passed explicitly; it must pin instead of clearing back

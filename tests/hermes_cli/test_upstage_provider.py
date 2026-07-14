@@ -12,7 +12,6 @@ from __future__ import annotations
 import sys
 import types
 
-import pytest
 
 if "dotenv" not in sys.modules:
     fake_dotenv = types.ModuleType("dotenv")

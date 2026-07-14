@@ -8723,6 +8723,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "codex-usage":
+            self._handle_codex_usage_command(cmd_original)
         elif canonical == "credits":
             self._show_credits()
         elif canonical == "billing":
@@ -9726,6 +9728,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # into stream-retry events, credential rotations, etc.
             # Console quietness is enforced by hermes_logging not
             # installing a console StreamHandler in non-verbose mode.
+
+    def _handle_codex_usage_command(self, cmd_original: str) -> None:
+        """Show OpenAI Codex / ChatGPT subscription usage for the signed-in account."""
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        snapshot = fetch_account_usage("openai-codex")
+        if not snapshot or not snapshot.available:
+            self._console_print("  [yellow]No OpenAI Codex usage data available.[/]")
+            self._console_print("  Make sure you're signed in with the OpenAI Codex / ChatGPT account first.")
+            return
+
+        self._console_print()
+        for line in render_account_usage_lines(snapshot):
+            self._console_print(f"  {line}")
+        self._console_print()
 
     def _print_nous_credits_block(self) -> bool:
         """Print the Nous credits magnitudes + monthly-grant gauge when a Nous account

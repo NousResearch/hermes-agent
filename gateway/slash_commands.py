@@ -4090,6 +4090,22 @@ class GatewaySlashCommandsMixin:
             return "\n".join(parts)
         return t("gateway.usage.no_data")
 
+    async def _handle_codex_usage_command(self, event: MessageEvent) -> str:
+        """Show OpenAI Codex / ChatGPT subscription usage for the signed-in account."""
+        try:
+            snapshot = await asyncio.to_thread(fetch_account_usage, "openai-codex")
+        except Exception as exc:
+            logger.error("Codex usage lookup failed: %s", exc, exc_info=True)
+            return f"OpenAI Codex usage lookup failed: {exc}"
+
+        if not snapshot or not snapshot.available:
+            return (
+                "No OpenAI Codex usage data available. "
+                "Make sure you're signed in with the OpenAI Codex / ChatGPT account first."
+            )
+
+        return "\n".join(render_account_usage_lines(snapshot, markdown=True))
+
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
         args = event.get_command_args().strip()

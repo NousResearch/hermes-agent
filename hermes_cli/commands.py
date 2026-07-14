@@ -229,6 +229,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
+    CommandDef("codex-usage", "Show OpenAI Codex / ChatGPT subscription usage and reset time", "Info"),
     CommandDef("credits", "Show Nous credit balance and top up", "Info"),
     CommandDef("billing", "Manage Nous terminal billing — buy credits, auto-reload, limits", "Info",
                cli_only=True),
@@ -1163,7 +1164,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - codex-usage: subscription-quota lookup; reached via /hermes codex-usage.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "codex-usage"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

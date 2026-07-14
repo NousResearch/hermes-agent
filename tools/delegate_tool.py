@@ -2826,24 +2826,61 @@ def delegate_task(
 
         _session_key = get_current_session_key(default="")
         _origin_ui_session_id = ""
+        _origin_profile = ""
+        _origin_hermes_home = ""
         try:
             from gateway.session_context import get_session_env
 
-            _source = get_session_env("HERMES_SESSION_SOURCE", "")
-            _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
-            # In desktop/TUI, the routable session key is the durable
-            # AIAgent.session_id. Context compression can rotate that id during
-            # the same turn before the TUI-side session dict is re-anchored;
-            # if we capture the stale approval/session context key here, the
-            # async completion becomes an orphan and any desktop poller may
-            # consume it. Gateway chats are different: their session_key is the
-            # platform conversation key (agent:main:...), so keep it there.
-            if _source == "tui":
+            _source = (get_session_env("HERMES_SESSION_SOURCE", "") or "").strip().lower()
+            # Prefer the turn-scoped UI id stamped on the parent agent by the
+            # desktop/TUI host. ContextVars are correct on the parent turn
+            # thread, but multi-session hosts can leave stale process fallbacks
+            # if a tool path loses the context; the agent attribute is set
+            # once per turn and is the precise return address.
+            _origin_ui_session_id = str(
+                getattr(parent_agent, "_hermes_ui_session_id", "") or ""
+            ) or get_session_env("HERMES_UI_SESSION_ID", "")
+            _origin_profile = (
+                str(getattr(parent_agent, "_hermes_session_profile", "") or "")
+                or get_session_env("HERMES_SESSION_PROFILE", "")
+            )
+            try:
+                from hermes_constants import get_hermes_home
+
+                _origin_hermes_home = str(
+                    getattr(parent_agent, "_hermes_home", "") or ""
+                ) or str(get_hermes_home())
+            except Exception:
+                _origin_hermes_home = str(
+                    getattr(parent_agent, "_hermes_home", "") or ""
+                )
+            # Desktop and TUI share one process-wide completion queue across
+            # many tabs and (in app-global remote mode) many profiles. The
+            # routable session key must be the durable AIAgent.session_id so
+            # ownership cannot collapse onto a shared approval/session context
+            # key. Gateway chats keep the platform conversation key
+            # (agent:main:...).
+            # BUG: only treating source=="tui" left desktop sessions on the
+            # approval key path, so completions could re-enter the wrong tab
+            # or even a different profile's live session.
+            if _source in {"tui", "desktop", "cli", "webui"}:
                 _agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
                 if _agent_session_id:
                     _session_key = _agent_session_id
         except Exception:
-            _origin_ui_session_id = ""
+            # Preserve any already-captured origin fields; only fill blanks.
+            if not _origin_ui_session_id:
+                _origin_ui_session_id = str(
+                    getattr(parent_agent, "_hermes_ui_session_id", "") or ""
+                )
+            if not _origin_profile:
+                _origin_profile = str(
+                    getattr(parent_agent, "_hermes_session_profile", "") or ""
+                )
+            if not _origin_hermes_home:
+                _origin_hermes_home = str(
+                    getattr(parent_agent, "_hermes_home", "") or ""
+                )
         _parent_session_id = getattr(parent_agent, "session_id", None)
         _child_agents = [c for (_, _, c) in children]
 
@@ -2886,6 +2923,8 @@ def delegate_task(
             model=creds["model"],
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
+            origin_profile=_origin_profile,
+            origin_hermes_home=_origin_hermes_home,
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,

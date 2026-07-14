@@ -68,6 +68,46 @@ class TestSessionOwnsNotificationEvent:
             assert _session_owns_notification_event("tabX", self._session("child_key"), evt) is True
 
 
+    def test_origin_ui_blocks_session_key_fallback(self):
+        """When origin UI id is stamped, only that tab owns — not session_key."""
+        evt = {
+            "type": "async_delegation",
+            "origin_ui_session_id": "tab_origin",
+            "session_key": "sess_key_1",
+        }
+        # Same durable key, different tab → NOT owner
+        assert _session_owns_notification_event("tabX", self._session("sess_key_1"), evt) is False
+        # Exact origin tab → owner
+        assert _session_owns_notification_event("tab_origin", self._session("other"), evt) is True
+
+    def test_profile_mismatch_never_owns(self):
+        from tui_gateway.server import _session_owns_notification_event
+        evt = {
+            "type": "async_delegation",
+            "origin_ui_session_id": "tab1",
+            "session_key": "sess_key_1",
+            "origin_profile": "highbeam",
+            "origin_hermes_home": "/tmp/profiles/highbeam",
+        }
+        sess = self._session()
+        sess["profile"] = "default"
+        sess["profile_home"] = "/tmp/profiles/default"
+        assert _session_owns_notification_event("tab1", sess, evt) is False
+
+    def test_profile_match_with_origin_owns(self):
+        evt = {
+            "type": "async_delegation",
+            "origin_ui_session_id": "tab1",
+            "session_key": "sess_key_1",
+            "origin_profile": "highbeam",
+            "origin_hermes_home": "/tmp/profiles/highbeam",
+        }
+        sess = self._session()
+        sess["profile"] = "highbeam"
+        sess["profile_home"] = "/tmp/profiles/highbeam"
+        assert _session_owns_notification_event("tab1", sess, evt) is True
+
+
 class TestInterruptForSession:
     def _seed_record(self, delegation_id, session_key="", origin_ui_session_id="", status="running"):
         fn = MagicMock()

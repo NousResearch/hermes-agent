@@ -1992,6 +1992,8 @@ def _set_session_context(
     cwd: str | None = None,
     *,
     ui_session_id: str = "",
+    profile: str = "",
+    profile_home: str | None = None,
 ) -> list:
     try:
         from gateway.session_context import set_session_vars
@@ -2002,16 +2004,37 @@ def _set_session_context(
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
         source = _resolve_session_platform()
+        resolved_profile = (profile or "").strip()
+        resolved_home = profile_home
         with _sessions_lock:
             for sess in list(_sessions.values()):
-                if sess.get("session_key") == session_key:
+                if sess.get("session_key") == session_key or (
+                    ui_session_id and sess is _sessions.get(ui_session_id)
+                ):
                     source = _session_source(sess)
+                    if not resolved_profile:
+                        resolved_profile = str(sess.get("profile") or "").strip()
+                    if resolved_home is None:
+                        resolved_home = sess.get("profile_home")
                     break
+        if not resolved_profile and resolved_home:
+            # Derive profile name from .../profiles/<name>
+            try:
+                from pathlib import Path as _P
+
+                parts = _P(str(resolved_home)).parts
+                if "profiles" in parts:
+                    idx = parts.index("profiles")
+                    if idx + 1 < len(parts):
+                        resolved_profile = parts[idx + 1]
+            except Exception:
+                pass
         return set_session_vars(
             session_key=session_key,
             source=source,
             cwd=resolved,
             ui_session_id=ui_session_id,
+            profile=resolved_profile,
         )
     except Exception:
         return []
@@ -8544,6 +8567,85 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+def _session_profile_identity(session: dict) -> tuple[str, str]:
+    """Return ``(profile_name, profile_home)`` for a live desktop session."""
+    profile = str(session.get("profile") or "").strip()
+    home = str(session.get("profile_home") or "").strip()
+    if not profile and home:
+        try:
+            from pathlib import Path as _P
+
+            parts = _P(home).parts
+            if "profiles" in parts:
+                idx = parts.index("profiles")
+                if idx + 1 < len(parts):
+                    profile = parts[idx + 1]
+        except Exception:
+            pass
+    return profile, home
+
+
+def _event_profile_matches_session(session: dict, evt: dict) -> bool:
+    """False when an event is stamped for a different Hermes profile.
+
+    Multi-profile desktop backends host every profile in one process and share
+    one completion queue. A highbeam-origin completion must never inject into a
+    default-profile tab even if durable session ids or UI ids collide.
+    """
+    evt_profile = str(evt.get("origin_profile") or "").strip()
+    evt_home = str(evt.get("origin_hermes_home") or "").strip()
+    if not evt_profile and not evt_home:
+        return True  # legacy events: no profile stamp
+    sess_profile, sess_home = _session_profile_identity(session)
+    if evt_home and sess_home:
+        try:
+            from pathlib import Path as _P
+
+            if _P(evt_home).resolve() != _P(sess_home).resolve():
+                return False
+        except Exception:
+            if evt_home.rstrip("/") != sess_home.rstrip("/"):
+                return False
+    if evt_profile and sess_profile and evt_profile != sess_profile:
+        return False
+    # If the event is stamped but this session has no profile identity, do not
+    # claim it — better to requeue/drop than cross-profile inject.
+    if (evt_profile or evt_home) and not (sess_profile or sess_home):
+        # Launch-profile sessions often have profile_home=None. Treat empty
+        # session profile as the launch/default profile: only match events
+        # that also look like launch/default (empty profile, or home == launch).
+        try:
+            from hermes_constants import get_hermes_home
+
+            launch_home = str(get_hermes_home())
+            if evt_home:
+                from pathlib import Path as _P
+
+                if _P(evt_home).resolve() == _P(launch_home).resolve():
+                    return True
+                return False
+        except Exception:
+            pass
+        return not evt_profile  # unstamped profile name only
+    return True
+
+
+def _db_for_event(evt: dict):
+    """Resolve the state.db used for compression-chain lookup of ``evt``."""
+    home = str(evt.get("origin_hermes_home") or "").strip()
+    if home:
+        try:
+            from pathlib import Path as _P
+            from hermes_state import SessionDB
+
+            db_path = _P(home) / "state.db"
+            if db_path.exists():
+                return SessionDB(db_path=db_path)
+        except Exception:
+            pass
+    return _get_db()
+
+
 def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) -> bool:
     """True if ``evt`` is owned by a *different* live session.
 
@@ -8554,20 +8656,53 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
     poller must skip events it doesn't own so a detached result surfaces in the
     launching session, not whichever poller happened to dequeue first.
     """
+    # Hard profile fence first. A different profile never owns the event; it is
+    # "elsewhere" only when a live same-profile owner still exists (so we
+    # requeue). If no same-profile owner is live, return False so the
+    # fail-closed owns() check drops the orphan instead of spinning forever.
+    if not _event_profile_matches_session(session, evt):
+        try:
+            with _sessions_lock:
+                has_same_profile_owner = any(
+                    not s.get("_finalized")
+                    and _event_profile_matches_session(s, evt)
+                    for s in _sessions.values()
+                )
+                evt_ui = str(evt.get("origin_ui_session_id") or "")
+                if not has_same_profile_owner and evt_ui:
+                    owner = _sessions.get(evt_ui)
+                    has_same_profile_owner = bool(
+                        owner
+                        and not owner.get("_finalized")
+                        and _event_profile_matches_session(owner, evt)
+                    )
+        except Exception:
+            has_same_profile_owner = False
+        return has_same_profile_owner
+
     evt_ui_sid = str(evt.get("origin_ui_session_id") or "")
     if evt_ui_sid:
         if evt_ui_sid == str(sid or "") and not session.get("_finalized"):
             return False
         try:
             with _sessions_lock:
-                owner_live = evt_ui_sid in _sessions and not _sessions[evt_ui_sid].get("_finalized")
+                owner = _sessions.get(evt_ui_sid)
+                owner_live = bool(
+                    owner
+                    and not owner.get("_finalized")
+                    and _event_profile_matches_session(owner, evt)
+                )
         except Exception:
             owner_live = False
         if owner_live:
             return True
-        # If the exact UI tab is gone, fall through to durable session_key
-        # routing. That avoids wrong-session delivery while still allowing a
-        # resumed continuation with the same durable key/lineage to claim it.
+        # Exact UI tab is gone. For async-delegation, do NOT fall through to
+        # ambiguous session_key matching across unrelated tabs — that is the
+        # cross-session leak. Only a live continuation that shares the durable
+        # key AND profile may claim it (handled below with profile fence).
+        if evt.get("type") == "async_delegation":
+            # Fall through only for same-profile durable-key recovery.
+            pass
 
     evt_key = str(evt.get("session_key") or "")
     if not evt_key:
@@ -8579,20 +8714,16 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
     }
 
     # Compression can rotate AIAgent.session_id while the detached child is
-    # still running. Resolve the event's original key to its continuation tip so
-    # an event captured before or after compression still maps to the same live
-    # desktop session instead of becoming an orphan that any poller may consume.
+    # still running. Resolve against the ORIGIN profile's state.db so multi-
+    # profile desktop backends do not map keys through the wrong lineage.
     resolved_key = evt_key
     try:
-        db = _get_db()
+        db = _db_for_event(evt)
         if db is not None:
             resolved_key = db.resolve_resume_session_id(evt_key) or evt_key
     except Exception:
         resolved_key = evt_key
 
-    # If the key has a live continuation, prefer that continuation over the
-    # compressed parent. Otherwise a stale parent tab could consume the event
-    # before the real current conversation sees it.
     if resolved_key != evt_key:
         if resolved_key in current_keys:
             return False
@@ -8600,6 +8731,7 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
             with _sessions_lock:
                 continuation_live = any(
                     not s.get("_finalized")
+                    and _event_profile_matches_session(s, evt)
                     and (
                         str(s.get("session_key") or "") == resolved_key
                         or _session_lookup_key(s, fallback="") == resolved_key
@@ -8611,25 +8743,32 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
         if continuation_live:
             return True
 
-    if evt_key in current_keys:
+    if evt_key in current_keys or resolved_key in current_keys:
         return False
 
     try:
         with _sessions_lock:
-            snapshot = list(_sessions.values())
+            snapshot = list(_sessions.items())
     except Exception:
-        # If we can't safely enumerate live sessions, fail open so we don't
-        # crash the poller thread or drop the event.
-        return False
+        # If we can't safely enumerate live sessions, fail closed for
+        # async-delegation (requeue via belongs-elsewhere=True) rather than
+        # letting a foreign tab adopt a conversation payload.
+        return evt.get("type") == "async_delegation"
 
     return any(
-        s is not session
+        other_sid != sid
+        and s is not session
         and not s.get("_finalized")
+        and _event_profile_matches_session(s, evt)
         and (
             str(s.get("session_key") or "") in {evt_key, resolved_key}
             or _session_lookup_key(s, fallback="") in {evt_key, resolved_key}
+            or (
+                str(evt.get("origin_ui_session_id") or "")
+                and other_sid == str(evt.get("origin_ui_session_id") or "")
+            )
         )
-        for s in snapshot
+        for other_sid, s in snapshot
     )
 
 
@@ -8637,17 +8776,27 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     """True iff *this* session PROVABLY owns ``evt``.
 
     Positive ownership — the mirror of ``_notification_event_belongs_elsewhere``
-    minus its orphan-adoption fallback. An event owns-matches when its
-    ``origin_ui_session_id`` is this live session, or its ``session_key``
-    (raw or resolved through the compression chain) matches this session's
-    key/lineage. Used as a fail-closed gate for async-delegation payloads:
-    "not provably elsewhere" is NOT good enough to inject a conversation
-    payload into this chat (#55578).
+    minus its orphan-adoption fallback. Used as a fail-closed gate for
+    async-delegation payloads (#55578).
+
+    Hardening (cross-session / cross-profile leak):
+    - Profile stamp must match when present.
+    - When ``origin_ui_session_id`` is present, ONLY that live UI tab owns the
+      event. Durable session_key is NOT a substitute while an origin UI id was
+      recorded — that was the path that let idle foreign tabs inject results.
+    - Session-key / compression-chain matching applies only when origin UI id
+      is empty (legacy / gateway / CLI single-session paths).
     """
     if session.get("_finalized"):
         return False
-    if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
-        return True
+    if not _event_profile_matches_session(session, evt):
+        return False
+
+    evt_ui_sid = str(evt.get("origin_ui_session_id") or "")
+    if evt_ui_sid:
+        # Strict: origin UI id is the return address. No session_key fallback.
+        return evt_ui_sid == str(sid or "")
+
     evt_key = str(evt.get("session_key") or "")
     if not evt_key:
         return False
@@ -8658,7 +8807,7 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     if evt_key in current_keys:
         return True
     try:
-        db = _get_db()
+        db = _db_for_event(evt)
         resolved_key = (
             db.resolve_resume_session_id(evt_key) if db is not None else evt_key
         ) or evt_key
@@ -8969,10 +9118,27 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             session_tokens = _set_session_context(
                 session["session_key"],
                 ui_session_id=sid,
+                profile=str(session.get("profile") or ""),
+                profile_home=session.get("profile_home"),
             )
             _profile_home_str = session.get("profile_home")
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
+            # Stamp durable return-address fields on the agent so background
+            # delegate_task can re-enter THIS tab/profile even if ContextVars
+            # are lost on a tool worker path.
+            try:
+                from hermes_constants import get_hermes_home as _ghh
+
+                agent._hermes_ui_session_id = str(sid or "")
+                agent._hermes_session_profile = str(
+                    session.get("profile")
+                    or _session_profile_identity(session)[0]
+                    or ""
+                )
+                agent._hermes_home = str(_profile_home_str or _ghh())
+            except Exception:
+                pass
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty

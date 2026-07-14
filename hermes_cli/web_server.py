@@ -15716,8 +15716,15 @@ async def pty_ws(ws: WebSocket) -> None:
     if channel:
         active_session_file = _active_session_file_for_channel(ws.app, channel)
         if force_fresh:
-            resume = None
+            # fresh=1 should bypass the PTY keep-alive, NOT override an
+            # explicit resume target from the WebSocket query params.
+            # Without this guard, clicking a sidebar session sends
+            # ?resume=TARGET_ID&fresh=1 and the resume is silently dropped,
+            # causing the sidebar click to spawn a fresh session instead
+            # of switching to the selected conversation.
             _forget_active_session_file(active_session_file)
+            if not resume:
+                resume = None
         elif not resume:
             resume = _read_active_session_file(active_session_file)
 
@@ -15764,6 +15771,13 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
+    if resume is not None:
+        # When resuming a different session, discard any existing keep-alive
+        # PTY so the registry is forced to spawn a new one with the updated
+        # argv/env (HERMES_TUI_RESUME). Without this, attach_or_spawn returns
+        # the stale PTY whose HERMES_TUI_RESUME points at the original session
+        # — every resume-after-the-first silently lands on the first session.
+        await PTY_REGISTRY.close_if_exists(attach_token)
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(
             attach_token, spawn=_spawn

@@ -170,6 +170,21 @@ class PtySessionRegistry:
         if s is not None:
             s.detach(ws)
 
+    async def close_if_exists(self, key: str) -> bool:
+        """Close and remove a session if present. Returns True if one was removed.
+
+        Used to force a fresh PTY spawn when resuming a different session
+        via the dashboard — without this, ``attach_or_spawn`` returns the
+        existing PTY (which was spawned with stale argv/env) and the new
+        resume target takes no effect.
+        """
+        s = self._sessions.get(key)
+        if s is not None:
+            await s.close()
+            self._sessions.pop(key, None)
+            return True
+        return False
+
     async def reap_idle(self, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
         doomed = [

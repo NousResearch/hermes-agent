@@ -19,6 +19,12 @@ Exposes an HTTP server with endpoints:
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
+- GET  /api/profiles                — list profiles (profiles:read)
+- POST /api/profiles                — create/clone a profile (profiles:write)
+- PATCH /api/profiles/{name}        — rename a profile (profiles:write, If-Match)
+- DELETE /api/profiles/{name}       — delete a profile (profiles:write, If-Match)
+- GET  /api/profiles/{name}/soul    — read profile persona (profiles:read)
+- PUT  /api/profiles/{name}/soul    — write profile persona (profiles:write, If-Match)
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -42,9 +48,11 @@ import hmac
 import json
 import logging
 import os
+import secrets
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -600,6 +608,84 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+# ---------------------------------------------------------------------------
+# Profile resource revisions (opaque If-Match tokens for /api/profiles)
+# ---------------------------------------------------------------------------
+#
+# hermes_cli.profiles has no built-in revision/etag concept — it's a local
+# CLI/Dashboard surface with no concurrent-writer story. The API server adds
+# one so remote scoped clients get optimistic-concurrency safety without
+# hermes_cli.profiles itself changing. A hidden per-profile marker file (not
+# filesystem mtimes, which have platform-dependent granularity) is the source
+# of truth for "did a mutation happen since this token was issued."
+
+_PROFILE_REVISION_MARKER = ".hermes_api_revision"
+
+
+def _compute_profile_revision(canon: str, profile_dir: "Path") -> str:
+    """Return the current opaque revision for a profile directory.
+
+    Reads the marker file written by :func:`_bump_profile_revision` after
+    every successful mutation. A profile never touched through this API
+    (no marker yet) falls back to a hash of its mutable file state so a
+    freshly-discovered profile still has a valid, reproducible revision to
+    hand back as an ``If-Match`` candidate.
+    """
+    marker = profile_dir / _PROFILE_REVISION_MARKER
+    token = ""
+    try:
+        token = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+
+    if token:
+        seed = f"{canon}:{token}"
+    else:
+        parts = [canon]
+        for fname in ("SOUL.md", "profile.yaml", "config.yaml"):
+            fpath = profile_dir / fname
+            try:
+                st = fpath.stat()
+                parts.append(f"{fname}:{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                parts.append(f"{fname}:missing")
+        seed = "|".join(parts)
+
+    return "rev-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def _bump_profile_revision(profile_dir: "Path") -> None:
+    """Write a fresh random marker so the profile's next revision differs.
+
+    Called at the end of every successful profile mutation (create, rename
+    target, soul write), inside the caller's ``_profiles_lock``. Best-effort:
+    a failure here just means the profile falls back to the mtime-derived
+    revision on the next read, which still changed after a real write.
+    """
+    marker = profile_dir / _PROFILE_REVISION_MARKER
+    try:
+        marker.write_text(secrets.token_hex(16), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _ensure_default_hermes_home() -> None:
+    """Best-effort bootstrap of the default Hermes home directory.
+
+    Profile list/create read and clone from the default profile's root
+    (``HERMES_HOME``). Every other Hermes entrypoint creates this directory
+    implicitly on first run; the API server is itself long-running and must
+    not assume some other process already did so (e.g. a freshly mounted
+    container volume). Creates only the bare directory — clone/list already
+    tolerate its subtrees being absent.
+    """
+    from hermes_cli import profiles as profiles_mod
+    try:
+        profiles_mod._get_default_hermes_home().mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -818,6 +904,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        # Serializes profile mutations (create/rename/delete/soul-write) so
+        # the If-Match revision check-and-mutate is atomic even if a future
+        # handler offloads work to a thread pool. See _compute_profile_revision.
+        self._profiles_lock = threading.RLock()
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
         # config.yaml gateway.api_server.max_concurrent_runs; 0 disables
@@ -1410,6 +1500,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork", "required_scopes": ["sessions:write"], "profile_scoped": False},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat", "required_scopes": ["sessions:write"], "profile_scoped": False},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream", "required_scopes": ["sessions:write"], "profile_scoped": False},
+                "profiles": {"method": "GET", "path": "/api/profiles", "required_scopes": ["profiles:read"], "profile_scoped": False},
+                "profile_create": {"method": "POST", "path": "/api/profiles", "required_scopes": ["profiles:write"], "profile_scoped": False},
+                "profile_update": {"method": "PATCH", "path": "/api/profiles/{name}", "required_scopes": ["profiles:write"], "profile_scoped": False},
+                "profile_delete": {"method": "DELETE", "path": "/api/profiles/{name}", "required_scopes": ["profiles:write"], "profile_scoped": False},
+                "profile_soul": {"method": "GET", "path": "/api/profiles/{name}/soul", "required_scopes": ["profiles:read"], "profile_scoped": False},
+                "profile_soul_update": {"method": "PUT", "path": "/api/profiles/{name}/soul", "required_scopes": ["profiles:write"], "profile_scoped": False},
             },
         })
 
@@ -2110,6 +2206,338 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    # ------------------------------------------------------------------
+    # /api/profiles — scoped profile CRUD + persona (SOUL.md) contracts
+    # ------------------------------------------------------------------
+    #
+    # Thin HTTP wrappers over hermes_cli.profiles — the same domain module
+    # the Dashboard calls. No Dashboard HTTP proxying and no active-profile
+    # mutation endpoint: Navivox profile selection is client state, never a
+    # server-selected "current" profile. Responses only ever carry stable
+    # ids/names, opaque revisions, descriptions, model/skills summaries, and
+    # gateway status — never filesystem paths, env values, or wrapper/alias
+    # commands.
+
+    @staticmethod
+    def _profile_public_dict(info: Any, revision: str) -> Dict[str, Any]:
+        return {
+            "id": info.name,
+            "name": info.name,
+            "revision": revision,
+            "description": info.description or "",
+            "model": info.model or "",
+            "skills_count": int(info.skill_count or 0),
+            "gateway_running": bool(info.gateway_running),
+            "is_default": bool(info.is_default),
+        }
+
+    @staticmethod
+    def _find_profile_info(canon: str) -> Optional[Any]:
+        from hermes_cli import profiles as profiles_mod
+        for info in profiles_mod.list_profiles():
+            if info.name == canon:
+                return info
+        return None
+
+    def _resolve_profile_or_error(self, name: str) -> tuple[Optional[Path], Optional["web.Response"]]:
+        """Validate and resolve a path-segment profile name to its directory.
+
+        Returns ``(None, response)`` with a 400 for a malformed/reserved
+        name or a 404 when the profile doesn't exist. Never includes a
+        filesystem path in the error body.
+        """
+        from hermes_cli import profiles as profiles_mod
+        try:
+            profiles_mod.validate_profile_name(name)
+        except ValueError as exc:
+            return None, web.json_response(
+                _openai_error(str(exc), code="invalid_profile_name"), status=400
+            )
+        if not profiles_mod.profile_exists(name):
+            return None, web.json_response(
+                _openai_error(f"Profile '{name}' does not exist.", code="profile_not_found"),
+                status=404,
+            )
+        return profiles_mod.get_profile_dir(name), None
+
+    @staticmethod
+    def _require_if_match(request: "web.Request") -> tuple[Optional[str], Optional["web.Response"]]:
+        raw = request.headers.get("If-Match", "").strip()
+        if not raw:
+            return None, web.json_response(
+                _openai_error(
+                    "If-Match header is required for this mutation.",
+                    code="if_match_required",
+                ),
+                status=428,
+            )
+        return raw, None
+
+    async def _handle_list_profiles(self, request: "web.Request") -> "web.Response":
+        """GET /api/profiles — list profiles known to this Hermes instance.
+
+        Calls ``hermes_cli.profiles.list_profiles()`` directly (the same
+        function the Dashboard uses). Never reflects any sticky
+        ``active_profile`` state — list contents and ordering don't depend
+        on it.
+        """
+        _principal, auth_err = self._authorize(request, "profiles:read")
+        if auth_err:
+            return auth_err
+
+        _ensure_default_hermes_home()
+        from hermes_cli import profiles as profiles_mod
+        infos = profiles_mod.list_profiles()
+        data = [
+            self._profile_public_dict(info, _compute_profile_revision(info.name, info.path))
+            for info in infos
+        ]
+        return web.json_response({"object": "list", "data": data})
+
+    async def _handle_create_profile(self, request: "web.Request") -> "web.Response":
+        """POST /api/profiles — create, optionally cloning, a new profile.
+
+        ``clone_from`` names a source profile ("default" or a named profile)
+        whose config/.env/SOUL.md/skills/memory are copied into the new
+        profile; omit it for an empty profile. Never creates a CLI wrapper
+        alias — that's a local-shell artifact irrelevant (and unwanted) for
+        a remote scoped client.
+        """
+        _principal, auth_err = self._authorize(request, "profiles:write")
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return web.json_response(_openai_error("name is required", code="invalid_profile_name"), status=400)
+        clone_from = body.get("clone_from")
+        if clone_from is not None and (not isinstance(clone_from, str) or not clone_from.strip()):
+            return web.json_response(_openai_error("clone_from must be a non-empty string", code="invalid_clone_from"), status=400)
+        description = body.get("description")
+        if description is not None and not isinstance(description, str):
+            return web.json_response(_openai_error("description must be a string", code="invalid_description"), status=400)
+
+        _ensure_default_hermes_home()
+        from hermes_cli import profiles as profiles_mod
+        with self._profiles_lock:
+            try:
+                path = profiles_mod.create_profile(
+                    name=name,
+                    clone_from=clone_from,
+                    clone_config=bool(clone_from),
+                    no_alias=True,
+                    description=description,
+                )
+            except FileExistsError as exc:
+                return web.json_response(_openai_error(str(exc), code="profile_exists"), status=409)
+            except FileNotFoundError as exc:
+                return web.json_response(_openai_error(str(exc), code="clone_source_not_found"), status=404)
+            except ValueError as exc:
+                return web.json_response(_openai_error(str(exc), code="invalid_profile_create"), status=400)
+            except Exception:
+                logger.exception("POST /api/profiles failed")
+                return web.json_response(
+                    _openai_error("Failed to create profile", err_type="server_error"), status=500
+                )
+
+            if not clone_from:
+                try:
+                    profiles_mod.seed_profile_skills(path, quiet=True)
+                except Exception:
+                    logger.exception("POST /api/profiles: skill seeding failed for %s", name)
+
+            _bump_profile_revision(path)
+            canon = profiles_mod.normalize_profile_name(name)
+            info = self._find_profile_info(canon)
+            if info is None:
+                return web.json_response(
+                    _openai_error("Profile created but could not be read back", err_type="server_error"),
+                    status=500,
+                )
+            payload = self._profile_public_dict(info, _compute_profile_revision(info.name, info.path))
+
+        return web.json_response({"object": "hermes.profile", **payload}, status=201)
+
+    async def _handle_patch_profile(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/profiles/{name} — rename a profile.
+
+        Requires ``If-Match`` against the profile's current opaque revision;
+        validated and applied inside one locked read-modify-write so a stale
+        caller cannot silently clobber a concurrent rename.
+        """
+        _principal, auth_err = self._authorize(request, "profiles:write")
+        if auth_err:
+            return auth_err
+        old_name = request.match_info["name"]
+        if_match, err = self._require_if_match(request)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        new_name = body.get("new_name")
+        if not isinstance(new_name, str) or not new_name.strip():
+            return web.json_response(_openai_error("new_name is required", code="invalid_new_name"), status=400)
+
+        from hermes_cli import profiles as profiles_mod
+        with self._profiles_lock:
+            old_dir, err = self._resolve_profile_or_error(old_name)
+            if err:
+                return err
+            canon = profiles_mod.normalize_profile_name(old_name)
+            current_revision = _compute_profile_revision(canon, old_dir)
+            if not hmac.compare_digest(if_match, current_revision):
+                return web.json_response(
+                    _openai_error("Profile has been modified since the given revision.", code="revision_conflict"),
+                    status=412,
+                )
+            try:
+                new_dir = profiles_mod.rename_profile(old_name, new_name)
+            except FileNotFoundError as exc:
+                return web.json_response(_openai_error(str(exc), code="profile_not_found"), status=404)
+            except FileExistsError as exc:
+                return web.json_response(_openai_error(str(exc), code="profile_exists"), status=409)
+            except ValueError as exc:
+                return web.json_response(_openai_error(str(exc), code="invalid_profile_rename"), status=400)
+            except Exception:
+                logger.exception("PATCH /api/profiles/%s failed", old_name)
+                return web.json_response(
+                    _openai_error("Failed to rename profile", err_type="server_error"), status=500
+                )
+
+            _bump_profile_revision(new_dir)
+            new_canon = profiles_mod.normalize_profile_name(new_name)
+            info = self._find_profile_info(new_canon)
+            if info is None:
+                return web.json_response(
+                    _openai_error("Profile renamed but could not be read back", err_type="server_error"),
+                    status=500,
+                )
+            payload = self._profile_public_dict(info, _compute_profile_revision(info.name, info.path))
+
+        return web.json_response({"object": "hermes.profile", **payload})
+
+    async def _handle_delete_profile(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/profiles/{name} — permanently delete a profile.
+
+        Requires ``If-Match``. The default profile can never be deleted
+        (rejected by ``hermes_cli.profiles.delete_profile`` itself).
+        """
+        _principal, auth_err = self._authorize(request, "profiles:write")
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        if_match, err = self._require_if_match(request)
+        if err:
+            return err
+
+        from hermes_cli import profiles as profiles_mod
+        with self._profiles_lock:
+            profile_dir, err = self._resolve_profile_or_error(name)
+            if err:
+                return err
+            canon = profiles_mod.normalize_profile_name(name)
+            current_revision = _compute_profile_revision(canon, profile_dir)
+            if not hmac.compare_digest(if_match, current_revision):
+                return web.json_response(
+                    _openai_error("Profile has been modified since the given revision.", code="revision_conflict"),
+                    status=412,
+                )
+            try:
+                profiles_mod.delete_profile(name, yes=True)
+            except FileNotFoundError as exc:
+                return web.json_response(_openai_error(str(exc), code="profile_not_found"), status=404)
+            except ValueError as exc:
+                return web.json_response(_openai_error(str(exc), code="invalid_profile_delete"), status=400)
+            except Exception:
+                logger.exception("DELETE /api/profiles/%s failed", name)
+                return web.json_response(
+                    _openai_error("Failed to delete profile", err_type="server_error"), status=500
+                )
+
+            new_revision = f"rev-deleted-{secrets.token_hex(8)}"
+
+        return web.json_response({
+            "object": "hermes.profile.deleted",
+            "id": canon,
+            "deleted": True,
+            "revision": new_revision,
+        })
+
+    async def _handle_get_profile_soul(self, request: "web.Request") -> "web.Response":
+        """GET /api/profiles/{name}/soul — read the profile's persona (SOUL.md)."""
+        _principal, auth_err = self._authorize(request, "profiles:read")
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        profile_dir, err = self._resolve_profile_or_error(name)
+        if err:
+            return err
+
+        from hermes_cli import profiles as profiles_mod
+        canon = profiles_mod.normalize_profile_name(name)
+        soul_path = profile_dir / "SOUL.md"
+        exists = soul_path.exists()
+        content = ""
+        if exists:
+            try:
+                content = soul_path.read_text(encoding="utf-8")
+            except OSError:
+                logger.exception("GET /api/profiles/%s/soul failed", name)
+                return web.json_response(
+                    _openai_error("Could not read profile persona", err_type="server_error"), status=500
+                )
+        revision = _compute_profile_revision(canon, profile_dir)
+        return web.json_response({"id": canon, "content": content, "exists": exists, "revision": revision})
+
+    async def _handle_put_profile_soul(self, request: "web.Request") -> "web.Response":
+        """PUT /api/profiles/{name}/soul — replace the profile's persona (SOUL.md).
+
+        Requires ``If-Match``; validated and written inside one locked
+        read-modify-write.
+        """
+        _principal, auth_err = self._authorize(request, "profiles:write")
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        if_match, err = self._require_if_match(request)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        content = body.get("content")
+        if not isinstance(content, str):
+            return web.json_response(_openai_error("content must be a string", code="invalid_soul_content"), status=400)
+
+        from hermes_cli import profiles as profiles_mod
+        with self._profiles_lock:
+            profile_dir, err = self._resolve_profile_or_error(name)
+            if err:
+                return err
+            canon = profiles_mod.normalize_profile_name(name)
+            current_revision = _compute_profile_revision(canon, profile_dir)
+            if not hmac.compare_digest(if_match, current_revision):
+                return web.json_response(
+                    _openai_error("Profile has been modified since the given revision.", code="revision_conflict"),
+                    status=412,
+                )
+            soul_path = profile_dir / "SOUL.md"
+            try:
+                soul_path.write_text(content, encoding="utf-8")
+            except OSError:
+                logger.exception("PUT /api/profiles/%s/soul failed", name)
+                return web.json_response(
+                    _openai_error("Could not write profile persona", err_type="server_error"), status=500
+                )
+            _bump_profile_revision(profile_dir)
+            new_revision = _compute_profile_revision(canon, profile_dir)
+
+        return web.json_response({"id": canon, "ok": True, "revision": new_revision})
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -4860,6 +5288,15 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            # Scoped profile CRUD + persona (SOUL.md) contracts. Reuses
+            # hermes_cli.profiles directly — no Dashboard HTTP proxy, no
+            # active-profile mutation endpoint.
+            self._app.router.add_get("/api/profiles", self._handle_list_profiles)
+            self._app.router.add_post("/api/profiles", self._handle_create_profile)
+            self._app.router.add_patch("/api/profiles/{name}", self._handle_patch_profile)
+            self._app.router.add_delete("/api/profiles/{name}", self._handle_delete_profile)
+            self._app.router.add_get("/api/profiles/{name}/soul", self._handle_get_profile_soul)
+            self._app.router.add_put("/api/profiles/{name}/soul", self._handle_put_profile_soul)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

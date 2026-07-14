@@ -10368,14 +10368,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # broken judge never breaks normal message handling.
             try:
                 _final_text = ""
+                _turn_failed = False
                 if isinstance(_agent_result, dict):
                     _final_text = str(_agent_result.get("final_response") or "")
+                    _turn_failed = bool(_agent_result.get("failed"))
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
-                # on error. Let the user drive the next turn.
-                if _final_text.strip():
+                # on error.  Also skip when the provider explicitly marked
+                # the turn as failed: the normalized error text is non-empty
+                # but doesn't represent a successful agent response. (#63180)
+                if _final_text.strip() and not _turn_failed:
                     try:
                         session_entry = await self.async_session_store.get_or_create_session(source)
                     except Exception:

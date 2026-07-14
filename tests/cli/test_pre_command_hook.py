@@ -59,6 +59,10 @@ def test_post_command_in_valid_hooks():
     assert "post_command" in VALID_HOOKS
 
 
+def test_on_quit_in_valid_hooks():
+    assert "on_quit" in VALID_HOOKS
+
+
 # ---------------------------------------------------------------------------
 # Kwarg shape
 # ---------------------------------------------------------------------------
@@ -92,7 +96,7 @@ def test_pre_command_receives_expected_kwargs(tmp_path, monkeypatch):
 
 
 def test_post_command_receives_expected_kwargs(tmp_path, monkeypatch):
-    """Hook callback should see command + same kwargs as pre_command."""
+    """post_command fires after every non-quit command handler."""
     hermes_home = tmp_path / "hermes_test"
     hermes_home.mkdir(exist_ok=True)
     _make_enabled_plugin(
@@ -110,12 +114,12 @@ def test_post_command_receives_expected_kwargs(tmp_path, monkeypatch):
 
     results = mgr.invoke_hook(
         "post_command",
-        command="quit",
-        raw="/quit",
+        command="help",
+        raw="/help",
         session_id="sess-002",
         cli=object(),
     )
-    assert results == ["quit|sess-002"]
+    assert results == ["help|sess-002"]
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +155,7 @@ def test_pre_command_hook_exception_does_not_break_dispatch(tmp_path, monkeypatc
     assert results == []  # raising callback contributes nothing
 
 
-def test_post_command_hook_exception_does_not_break_dispatch(tmp_path, monkeypatch):
+def test_on_quit_hook_exception_does_not_break_dispatch(tmp_path, monkeypatch):
     """Even on quit path, a raising hook must not prevent other hooks from running."""
     hermes_home = tmp_path / "hermes_test"
     hermes_home.mkdir(exist_ok=True)
@@ -162,13 +166,13 @@ def test_post_command_hook_exception_does_not_break_dispatch(tmp_path, monkeypat
         register_body=(
             "def _boom(**kw):\n"
             "        raise RuntimeError(\"boom\")\n"
-            "    ctx.register_hook(\"post_command\", _boom)"
+            "    ctx.register_hook(\"on_quit\", _boom)"
         ),
     )
     _make_enabled_plugin(
         hermes_home, "good_hook",
         register_body=(
-            'ctx.register_hook("post_command", '
+            'ctx.register_hook("on_quit", '
             'lambda **kw: "title-ok"'
             ")"
         ),
@@ -179,7 +183,7 @@ def test_post_command_hook_exception_does_not_break_dispatch(tmp_path, monkeypat
     mgr.discover_and_load()
 
     results = mgr.invoke_hook(
-        "post_command",
+        "on_quit",
         command="quit",
         raw="/quit",
         session_id="s-2",
@@ -194,13 +198,40 @@ def test_post_command_hook_exception_does_not_break_dispatch(tmp_path, monkeypat
 # ---------------------------------------------------------------------------
 
 
+def test_on_quit_receives_expected_kwargs(tmp_path, monkeypatch):
+    """on_quit fires on /quit with command="quit"."""
+    hermes_home = tmp_path / "hermes_test"
+    hermes_home.mkdir(exist_ok=True)
+    _make_enabled_plugin(
+        hermes_home, "capture_hook",
+        register_body=(
+            'ctx.register_hook("on_quit", '
+            'lambda **kw: f"{kw[\'command\']}|{kw[\'session_id\']}"'
+            ")"
+        ),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    mgr = PluginManager()
+    mgr.discover_and_load()
+
+    results = mgr.invoke_hook(
+        "on_quit",
+        command="quit",
+        raw="/quit",
+        session_id="sess-003",
+        cli=object(),
+    )
+    assert results == ["quit|sess-003"]
+
+
 def test_no_plugins_returns_empty_results(tmp_path, monkeypatch):
     """With no plugins loaded, invoke_hook returns [] regardless of hook name."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_empty"))
     plugins_mod._plugin_manager = PluginManager()
 
     mgr = plugins_mod._plugin_manager
-    for hook in ("pre_command", "post_command"):
+    for hook in ("pre_command", "post_command", "on_quit"):
         results = mgr.invoke_hook(
             hook, command="quit", raw="/quit", session_id="", cli=object(),
         )

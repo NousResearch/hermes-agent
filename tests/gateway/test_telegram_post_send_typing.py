@@ -81,23 +81,23 @@ async def test_send_retriggers_typing_by_default(adapter):
 
 
 @pytest.mark.asyncio
-async def test_send_notify_without_suppression_still_retriggers_typing(adapter):
+async def test_send_notify_skips_post_send_typing(adapter):
     result = await adapter.send(
         "12345",
-        "notify-only message",
+        "final answer",
         metadata={"notify": True},
     )
 
     assert result.success is True
-    adapter.send_typing.assert_awaited_once_with("12345", metadata={"notify": True})
+    adapter.send_typing.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_send_skips_post_send_typing_when_suppressed(adapter):
+async def test_send_dedicated_suppression_flag_skips_post_send_typing(adapter):
     result = await adapter.send(
         "12345",
-        "final answer",
-        metadata={"notify": True, "suppress_post_send_typing": True},
+        "footer message",
+        metadata={"suppress_post_send_typing": True},
     )
 
     assert result.success is True

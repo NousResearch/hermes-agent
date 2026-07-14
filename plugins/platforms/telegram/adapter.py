@@ -3825,7 +3825,15 @@ class TelegramAdapter(BasePlatformAdapter):
             # answer itself creates a brand-new typing bubble with no more work
             # behind it, making the bot look stuck "typing" for a few seconds
             # after it already replied.
-            if not (metadata or {}).get("suppress_post_send_typing"):
+            #
+            # Preserve the long-standing ``notify=True`` final-send contract for
+            # existing terminal producers, while also honoring the dedicated
+            # footer-specific suppression flag added for residual post-send paths.
+            suppress_post_send_typing = bool(
+                (metadata or {}).get("notify")
+                or (metadata or {}).get("suppress_post_send_typing")
+            )
+            if not suppress_post_send_typing:
                 try:
                     await self.send_typing(chat_id, metadata=metadata)
                 except Exception:

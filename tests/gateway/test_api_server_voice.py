@@ -1,9 +1,10 @@
 """Tests for voice mode in POST /v1/runs (D13).
 
 Covers:
-- message_type='voice' in body → TTS called, audio_base64 in separate run.tts_audio SSE event
-- X-Hermes-Voice: 'true' header → TTS called
-- Normal run (no voice flag) → TTS not called, no audio_base64 in event
+- message_type='voice' in body → TTS runs as background task; run.tts_audio
+  event emitted with audio_base64 AFTER run.completed (slot released first)
+- X-Hermes-Voice: 'true' header → same TTS behaviour
+- Normal run (no voice flag) → TTS not called, no run.tts_audio event
 """
 import asyncio
 import json

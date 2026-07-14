@@ -4432,7 +4432,8 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id = body.get("session_id") or stored_session_id or run_id
 
         # Voice mode: when message_type='voice' or X-Hermes-Voice header is set,
-        # generate TTS audio after the run completes and emit it as a separate run.tts_audio event (run.completed fires first to release the active-run slot).
+        # emit run.completed immediately (releases the slot), then generate TTS
+        # audio in a background task and emit a separate run.tts_audio event.
         _voice_mode = (
             str(body.get("message_type", "")).lower() == "voice"
             or request.headers.get("X-Hermes-Voice", "").strip().lower()
@@ -4659,8 +4660,12 @@ class APIServerAdapter(BasePlatformAdapter):
                                     pass
 
                         _tts_task = asyncio.ensure_future(_emit_tts_audio())
-                        self._background_tasks.add(_tts_task)
-                        _tts_task.add_done_callback(self._background_tasks.discard)
+                        try:
+                            self._background_tasks.add(_tts_task)
+                        except TypeError:
+                            pass
+                        if hasattr(_tts_task, "add_done_callback"):
+                            _tts_task.add_done_callback(self._background_tasks.discard)
                         # _emit_tts_audio owns the sentinel — suppress the one below.
                         _tts_owns_sentinel = True
             except asyncio.CancelledError:

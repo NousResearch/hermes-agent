@@ -310,7 +310,10 @@ def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatc
     assert not background_started.is_set()
 
     result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
-    assert "could not be initialized" in result["error"]
+    # Tools surface the preserved bootstrap cause instead of the generic
+    # initialization message; the fail-open contract (no ready manager)
+    # is unchanged.
+    assert "session bootstrap failed: boom" in result["error"]
     assert provider._manager is None
 
 

@@ -11,6 +11,7 @@ parity across every registered verb.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -1153,13 +1154,17 @@ def test_heartbeat_refused_when_not_running(kanban_home):
         conn.close()
 
 
-def test_cli_heartbeat_verb(kanban_home):
+def test_cli_heartbeat_verb(kanban_home, monkeypatch):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
-        kb.claim_task(conn, tid)
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
     finally:
         conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_TOKEN", str(claimed.worker_token))
     out = run_slash(f"heartbeat {tid}")
     assert "Heartbeat recorded" in out
 
@@ -1859,13 +1864,17 @@ def test_cli_runs_json(kanban_home):
     assert data[0]["metadata"] == {"files": 1}
 
 
-def test_cli_complete_with_summary_and_metadata(kanban_home):
+def test_cli_complete_with_summary_and_metadata(kanban_home, monkeypatch):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
-        kb.claim_task(conn, tid)
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
     finally:
         conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_TOKEN", str(claimed.worker_token))
     # JSON metadata must round-trip through shlex + argparse.
     meta = '{"files": 3}'
     out = run_slash(
@@ -2056,7 +2065,6 @@ def test_cli_bulk_complete_without_summary_still_works(kanban_home):
     try:
         a = kb.create_task(conn, title="a", assignee="worker")
         b = kb.create_task(conn, title="b", assignee="worker")
-        kb.claim_task(conn, a); kb.claim_task(conn, b)
     finally:
         conn.close()
     out = run_slash(f"complete {a} {b}")
@@ -2078,6 +2086,10 @@ def test_completed_event_payload_carries_summary(kanban_home):
         assert len(comp) == 1
         # First-line-only, within the 400-char cap, preserved verbatim.
         assert comp[0].payload["summary"] == "handoff line 1"
+        assert comp[0].payload["summary_sha256"] == hashlib.sha256(
+            b"handoff line 1\nextra"
+        ).hexdigest()
+        assert comp[0].payload["worker_authenticated"] is False
     finally:
         conn.close()
 
@@ -2092,6 +2104,156 @@ def test_completed_event_payload_summary_none_when_missing(kanban_home):
         events = kb.list_events(conn, tid)
         comp = [e for e in events if e.kind == "completed"][0]
         assert comp.payload.get("summary") is None
+    finally:
+        conn.close()
+
+
+def test_worker_capability_is_ephemeral_and_pinned_to_spawn(kanban_home, monkeypatch):
+    captured = {}
+
+    class FakeProc:
+        pid = 4321
+
+    def fake_popen(command, **kwargs):
+        captured["env"] = kwargs["env"]
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="owned", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.worker_token
+        assert kb.get_task(conn, tid).worker_token is None
+        token_hash = conn.execute(
+            "SELECT worker_token_hash FROM task_runs WHERE id = ?",
+            (claimed.current_run_id,),
+        ).fetchone()["worker_token_hash"]
+        assert token_hash == hashlib.sha256(claimed.worker_token.encode()).hexdigest()
+        assert claimed.worker_token not in json.dumps(dict(conn.execute(
+            "SELECT * FROM task_runs WHERE id = ?",
+            (claimed.current_run_id,),
+        ).fetchone()))
+        workspace = kb.resolve_workspace(claimed)
+        kb._default_spawn(claimed, str(workspace))
+    finally:
+        conn.close()
+
+    assert captured["env"]["HERMES_KANBAN_WORKER_TOKEN"] == claimed.worker_token
+
+
+def test_legacy_run_can_finish_but_cannot_claim_authenticated_evidence(kanban_home, monkeypatch):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        conn.execute(
+            "UPDATE task_runs SET worker_token_hash = NULL WHERE id = ?",
+            (claimed.current_run_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_TOKEN", str(claimed.worker_token))
+
+    assert f"Completed {tid}" in run_slash(f"complete {tid} --summary legacy")
+    conn = kb.connect()
+    try:
+        event = [event for event in kb.list_events(conn, tid) if event.kind == "completed"][0]
+    finally:
+        conn.close()
+    assert event.payload["worker_authenticated"] is False
+
+
+def test_foreign_cli_cannot_complete_dispatcher_worker_run(kanban_home, monkeypatch):
+    conn = kb.connect()
+    try:
+        owner_id = kb.create_task(conn, title="owner", assignee="owner")
+        verifier_id = kb.create_task(conn, title="verifier", assignee="verifier")
+        owner = kb.claim_task(conn, owner_id)
+        verifier = kb.claim_task(conn, verifier_id)
+        assert owner is not None and verifier is not None
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", owner_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(owner.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_TOKEN", str(owner.worker_token))
+    assert "owned by another worker run" in run_slash(f"heartbeat {verifier_id}")
+    assert "owned by another worker run" in run_slash(f"block {verifier_id} forged")
+    out = run_slash(f"complete {verifier_id} --summary forged")
+    assert "owned by another worker run" in out
+
+    # Clearing worker-scoping environment must not turn a worker-facing CLI
+    # call into a trusted orchestrator mutation of an active run.
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID")
+    monkeypatch.delenv("HERMES_KANBAN_WORKER_TOKEN")
+    assert "owned by another worker run" in run_slash(f"heartbeat {verifier_id}")
+    assert "owned by another worker run" in run_slash(f"block {verifier_id} forged")
+    assert "owned by another worker run" in run_slash(
+        f"complete {verifier_id} --summary forged"
+    )
+
+    # Knowing the target task and run id is still insufficient without the
+    # target worker's ephemeral capability.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", verifier_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(verifier.current_run_id))
+    assert "owned by another worker run" in run_slash(f"heartbeat {verifier_id}")
+    assert "owned by another worker run" in run_slash(f"block {verifier_id} forged")
+    out = run_slash(f"complete {verifier_id} --summary forged")
+    assert "owned by another worker run" in out
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, verifier_id).status == "running"
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_TOKEN", str(verifier.worker_token))
+    long_summary = "verified:" + "x" * 600
+    out = run_slash(f"complete {verifier_id} --summary {long_summary}")
+    assert f"Completed {verifier_id}" in out
+    conn = kb.connect()
+    try:
+        event = [
+            item for item in kb.list_events(conn, verifier_id)
+            if item.kind == "completed"
+        ][0]
+    finally:
+        conn.close()
+    assert len(event.payload["summary"]) == 400
+    assert event.payload["summary_sha256"] == hashlib.sha256(
+        long_summary.encode()
+    ).hexdigest()
+    assert event.payload["worker_authenticated"] is True
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", owner_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(owner.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_TOKEN", str(owner.worker_token))
+    assert "cannot edit completed task handoffs" in run_slash(
+        f"edit {verifier_id} --result forged --summary forged"
+    )
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID")
+    monkeypatch.delenv("HERMES_KANBAN_WORKER_TOKEN")
+    assert "task is not done" in run_slash(
+        f"edit {verifier_id} --result forged --summary forged"
+    )
+    conn = kb.connect()
+    try:
+        assert kb.latest_run(conn, verifier_id).summary == long_summary
+        assert not any(event.kind == "edited" for event in kb.list_events(conn, verifier_id))
+        assert not kb.edit_completed_task_result(
+            conn,
+            verifier_id,
+            result="forged",
+            summary="forged",
+        )
     finally:
         conn.close()
 

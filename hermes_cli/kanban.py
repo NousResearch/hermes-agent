@@ -1270,11 +1270,24 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
+        expected_run_id = _worker_run_id_for(args.task_id)
+        if not kb.authorize_worker_transition(
+            conn,
+            args.task_id,
+            expected_run_id=expected_run_id,
+            worker_token=_worker_token_for(args.task_id),
+        ):
+            print(
+                f"cannot heartbeat {args.task_id} "
+                "(running task is owned by another worker run)",
+                file=sys.stderr,
+            )
+            return 1
         ok = kb.heartbeat_worker(
             conn,
             args.task_id,
             note=getattr(args, "note", None),
-            expected_run_id=_worker_run_id_for(args.task_id),
+            expected_run_id=expected_run_id,
         )
     if not ok:
         print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
@@ -1815,7 +1828,12 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(
+            conn,
+            args.task_id,
+            ttl_seconds=args.ttl,
+            issue_worker_capability=False,
+        )
         if task is None:
             # Report why
             existing = kb.get_task(conn, args.task_id)
@@ -1863,6 +1881,13 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _worker_token_for(task_id: str) -> Optional[str]:
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    token = os.environ.get("HERMES_KANBAN_WORKER_TOKEN")
+    return token if token else None
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1894,12 +1919,27 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
+            expected_run_id = _worker_run_id_for(tid)
+            if not kb.authorize_worker_transition(
+                conn,
+                tid,
+                expected_run_id=expected_run_id,
+                worker_token=_worker_token_for(tid),
+            ):
+                failed.append(tid)
+                print(
+                    f"cannot complete {tid} "
+                    "(running task is owned by another worker run)",
+                    file=sys.stderr,
+                )
+                continue
             if not kb.complete_task(
                 conn, tid,
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=expected_run_id,
+                worker_token=_worker_token_for(tid),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
@@ -1909,6 +1949,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        print(
+            "kanban: dispatcher workers cannot edit completed task handoffs",
+            file=sys.stderr,
+        )
+        return 1
     raw_meta = getattr(args, "metadata", None)
     metadata = None
     if raw_meta:
@@ -1944,6 +1990,20 @@ def _cmd_block(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
+            expected_run_id = _worker_run_id_for(tid)
+            if not kb.authorize_worker_transition(
+                conn,
+                tid,
+                expected_run_id=expected_run_id,
+                worker_token=_worker_token_for(tid),
+            ):
+                failed.append(tid)
+                print(
+                    f"cannot block {tid} "
+                    "(running task is owned by another worker run)",
+                    file=sys.stderr,
+                )
+                continue
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
             if not kb.block_task(
@@ -1951,7 +2011,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 tid,
                 reason=reason,
                 kind=kind,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=expected_run_id,
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)

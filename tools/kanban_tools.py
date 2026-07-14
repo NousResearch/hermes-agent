@@ -118,6 +118,13 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _worker_token(task_id: str) -> Optional[str]:
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    token = os.environ.get("HERMES_KANBAN_WORKER_TOKEN")
+    return token if token else None
+
+
 def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
@@ -598,6 +605,18 @@ def _handle_complete(args: dict, **kw) -> str:
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
+            expected_run_id = _worker_run_id(tid)
+            worker_scoped = bool(os.environ.get("HERMES_KANBAN_TASK"))
+            if not kb.authorize_worker_transition(
+                conn,
+                tid,
+                expected_run_id=expected_run_id,
+                worker_token=_worker_token(tid),
+            ):
+                return tool_error(
+                    f"could not complete {tid}: running task is owned by "
+                    "another worker run"
+                )
             if task and task.goal_mode and _goal_judge_available():
                 verdict = "done"
                 reason = ""
@@ -628,7 +647,8 @@ def _handle_complete(args: dict, **kw) -> str:
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
+                    expected_run_id=expected_run_id,
+                    worker_token=_worker_token(tid) if worker_scoped else None,
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -706,6 +726,17 @@ def _handle_block(args: dict, **kw) -> str:
         # and `transient` (or an unset kind) route back through
         # kanban_complete, which the judge now gates.
         task = kb.get_task(conn, tid)
+        expected_run_id = _worker_run_id(tid)
+        if not kb.authorize_worker_transition(
+            conn,
+            tid,
+            expected_run_id=expected_run_id,
+            worker_token=_worker_token(tid),
+        ):
+            conn.close()
+            return tool_error(
+                f"could not block {tid}: running task is owned by another worker run"
+            )
         if (
             task
             and task.goal_mode
@@ -724,7 +755,7 @@ def _handle_block(args: dict, **kw) -> str:
                 conn, tid,
                 reason=reason,
                 kind=kind,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=expected_run_id,
             )
             if not ok:
                 return tool_error(
@@ -773,6 +804,17 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            expected_run_id = _worker_run_id(tid)
+            if not kb.authorize_worker_transition(
+                conn,
+                tid,
+                expected_run_id=expected_run_id,
+                worker_token=_worker_token(tid),
+            ):
+                return tool_error(
+                    f"could not heartbeat {tid}: running task is owned by "
+                    "another worker run"
+                )
             # Extend the claim TTL first. The dispatcher pins
             # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
             # (see _default_spawn in kanban_db.py); falling back to the
@@ -785,7 +827,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 conn,
                 tid,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=expected_run_id,
             )
             if not ok:
                 return tool_error(

@@ -915,6 +915,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Ephemeral capability injected only into the dispatcher-spawned worker.
+    # The database stores a hash on task_runs; get_task()/show never expose it.
+    worker_token: Optional[str] = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1228,7 +1231,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- SHA-256 of the per-run capability injected into the spawned worker.
+    -- The raw token is never persisted or surfaced by show/list APIs.
+    worker_token_hash   TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -2016,6 +2022,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "ON task_events(run_id, id)"
     )
 
+    run_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_runs'"
+    ).fetchone() is not None
+    run_cols = (
+        {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+        if run_table_exists
+        else set()
+    )
+    if run_table_exists and "worker_token_hash" not in run_cols:
+        _add_column_if_missing(
+            conn,
+            "task_runs",
+            "worker_token_hash",
+            "worker_token_hash TEXT",
+        )
+
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
     ).fetchone() is not None
@@ -2140,7 +2162,7 @@ _REBUILD_SPECS = {
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " error TEXT, worker_token_hash TEXT)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",
@@ -3186,6 +3208,103 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+def _new_worker_token() -> tuple[str, str]:
+    """Return an ephemeral worker capability and its persisted SHA-256."""
+    token = secrets.token_urlsafe(32)
+    return token, hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def authorize_worker_transition(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: Optional[int],
+    worker_token: Optional[str],
+) -> bool:
+    """Authenticate a CLI/tool lifecycle mutation for a running task.
+
+    New dispatcher runs carry a per-run capability whose raw value only exists
+    in the spawned worker environment. Legacy in-flight runs have no hash and
+    retain the older exact-run-id check so upgrades do not strand them.
+    Ready/blocked tasks have no active worker and remain manually operable.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if row["status"] != "running":
+        return True
+    current_run_id = row["current_run_id"]
+    if not current_run_id:
+        return False
+    run = conn.execute(
+        "SELECT worker_token_hash, metadata FROM task_runs "
+        "WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+        (int(current_run_id), task_id),
+    ).fetchone()
+    if run is None:
+        return False
+    expected_hash = run["worker_token_hash"]
+    if not expected_hash:
+        # The public ``hermes kanban claim`` command is an operator-driven
+        # workflow.  It deliberately creates a capability-free run so a
+        # later CLI invocation can heartbeat, block, or complete it without
+        # relying on process-local environment variables.  Dispatcher runs
+        # never carry this marker.  Pre-upgrade runs have neither marker nor
+        # hash and retain the exact-run-id compatibility rule below.
+        try:
+            run_metadata = json.loads(run["metadata"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            run_metadata = {}
+        if run_metadata.get("claim_mode") == "manual_cli":
+            return expected_run_id is None or expected_run_id == int(current_run_id)
+        return expected_run_id == int(current_run_id)
+    if expected_run_id != int(current_run_id):
+        return False
+    if not worker_token:
+        return False
+    supplied_hash = hashlib.sha256(worker_token.encode("utf-8")).hexdigest()
+    return secrets.compare_digest(str(expected_hash), supplied_hash)
+
+
+def worker_transition_authenticated(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: Optional[int],
+    worker_token: Optional[str],
+) -> bool:
+    """Return True only for a capability-authenticated active worker run.
+
+    Unlike :func:`authorize_worker_transition`, this never treats a legacy
+    pre-upgrade run as authenticated. Such runs remain operable so an upgrade
+    does not strand them, but their completion evidence cannot unlock a gate
+    that requires cryptographic worker ownership.
+    """
+    if not expected_run_id or not worker_token:
+        return False
+    row = conn.execute(
+        """
+        SELECT t.status, t.current_run_id, r.worker_token_hash
+          FROM tasks t
+          JOIN task_runs r ON r.id = t.current_run_id AND r.task_id = t.id
+         WHERE t.id = ? AND r.ended_at IS NULL
+        """,
+        (task_id,),
+    ).fetchone()
+    if (
+        row is None
+        or row["status"] != "running"
+        or int(row["current_run_id"] or 0) != int(expected_run_id)
+        or not row["worker_token_hash"]
+    ):
+        return False
+    supplied_hash = hashlib.sha256(worker_token.encode("utf-8")).hexdigest()
+    return secrets.compare_digest(str(row["worker_token_hash"]), supplied_hash)
+
+
 def _synthesize_ended_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3376,6 +3495,7 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    issue_worker_capability: bool = True,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -3385,6 +3505,13 @@ def claim_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    if issue_worker_capability:
+        worker_token, worker_token_hash = _new_worker_token()
+        run_metadata = None
+    else:
+        worker_token = None
+        worker_token_hash = None
+        run_metadata = json.dumps({"claim_mode": "manual_cli"})
     with write_txn(conn):
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
@@ -3458,8 +3585,8 @@ def claim_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, worker_token_hash, metadata
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3469,6 +3596,8 @@ def claim_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                worker_token_hash,
+                run_metadata,
             ),
         )
         run_id = run_cur.lastrowid
@@ -3482,6 +3611,8 @@ def claim_task(
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
+        if claimed is not None:
+            claimed.worker_token = worker_token
     _fire_kanban_lifecycle_hook(
         "kanban_task_claimed",
         task_id,
@@ -3514,6 +3645,7 @@ def claim_review_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    worker_token, worker_token_hash = _new_worker_token()
     with write_txn(conn):
         cur = conn.execute(
             """
@@ -3540,8 +3672,8 @@ def claim_review_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, worker_token_hash
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3551,6 +3683,7 @@ def claim_review_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                worker_token_hash,
             ),
         )
         run_id = run_cur.lastrowid
@@ -3564,7 +3697,10 @@ def claim_review_task(
              "source_status": "review"},
             run_id=run_id,
         )
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+        if claimed is not None:
+            claimed.worker_token = worker_token
+        return claimed
 
 
 def heartbeat_claim(
@@ -3989,6 +4125,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    worker_token: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4019,6 +4156,12 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    worker_authenticated = worker_transition_authenticated(
+        conn,
+        task_id,
+        expected_run_id=expected_run_id,
+        worker_token=worker_token,
+    )
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4121,11 +4264,17 @@ def complete_task(
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the
         # full summary stays on the run row.
-        ev_summary = (summary if summary is not None else result) or ""
-        ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
+        full_summary = (summary if summary is not None else result) or ""
+        ev_summary = full_summary.strip().splitlines()[0][:400] if full_summary else ""
         completed_payload: dict = {
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
+            "summary_sha256": (
+                hashlib.sha256(full_summary.encode("utf-8")).hexdigest()
+                if full_summary
+                else None
+            ),
+            "worker_authenticated": bool(worker_authenticated and run_id is not None),
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
@@ -4711,6 +4860,24 @@ def edit_completed_task_result(
         ).fetchone()
         if not row or row["status"] != "done":
             return False
+        completion = conn.execute(
+            """
+            SELECT payload FROM task_events
+             WHERE task_id = ? AND kind = 'completed'
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if completion and completion["payload"]:
+            try:
+                completion_payload = json.loads(completion["payload"])
+            except (TypeError, json.JSONDecodeError):
+                completion_payload = {}
+            if not isinstance(completion_payload, dict):
+                completion_payload = {}
+            if completion_payload.get("worker_authenticated") is True:
+                return False
         conn.execute(
             "UPDATE tasks SET result = ? WHERE id = ?",
             (result, task_id),
@@ -7970,6 +8137,8 @@ def _default_spawn(
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+    if task.worker_token:
+        env["HERMES_KANBAN_WORKER_TOKEN"] = task.worker_token
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
     # Goal-loop mode: the worker reads these and wraps its run in the

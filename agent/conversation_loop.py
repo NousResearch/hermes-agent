@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -393,7 +394,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # subsequent turn).
     if agent._session_db:
         try:
-            agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            _result = agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            if asyncio.iscoroutine(_result):
+                asyncio.run(_result)
         except Exception as exc:
             logger.warning(
                 "Session DB update_system_prompt failed for session %s: "
@@ -998,10 +1001,14 @@ def run_conversation(
         # relative to a recent real provider prompt that fit under threshold
         # (schema overhead / post-compaction over-count, #36718); (2) skip
         # while a same-session compression-failure cooldown is active; (3) then
-        # should_compress() — reusing the canonical threshold_tokens (output
-        # room already reserved by _compute_threshold_tokens) and its summary-
-        # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
-        # hard per-turn backstop shared with the overflow error handlers.
+        # should_compress_request_pressure() — reusing the canonical
+        # threshold_tokens (output room already reserved by
+        # _compute_threshold_tokens) and its summary-LLM cooldown + anti-thrash
+        # guards (#11529) via the default delegate.  The message-aware hook
+        # (#64382) lets alternative engines combine host pressure with their
+        # own eligible-backlog rules, preventing no-op retries when the engine
+        # has no eligible material to compact.  compression_attempts is a hard
+        # per-turn backstop shared with the overflow error handlers.
         _compressor = agent.context_compressor
         _defer_preflight = getattr(
             _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
@@ -1009,13 +1016,25 @@ def run_conversation(
         _compression_cooldown = getattr(
             _compressor, "get_active_compression_failure_cooldown", lambda: None
         )()
+        _request_pressure_eligibility = getattr(
+            _compressor,
+            "should_compress_request_pressure",
+            None,
+        )
+        if _request_pressure_eligibility is not None:
+            _pre_api_eligible = _request_pressure_eligibility(
+                messages, request_pressure_tokens
+            )
+        else:
+            # Fallback for engines that predate the hook (#64382).
+            _pre_api_eligible = _compressor.should_compress(request_pressure_tokens)
         if (
             agent.compression_enabled
             and len(messages) > 1
             and compression_attempts < 3
             and not _defer_preflight(request_pressure_tokens)
             and not _compression_cooldown
-            and _compressor.should_compress(request_pressure_tokens)
+            and _pre_api_eligible
         ):
             compression_attempts += 1
             logger.info(
@@ -1031,12 +1050,48 @@ def run_conversation(
                 f"📦 Pre-API compression: ~{request_pressure_tokens:,} tokens "
                 f"near the context/output limit. Compacting before the next model call."
             )
+            _pre_compress_msg_count = len(messages)
+            _pre_compress_req_tokens = request_pressure_tokens
             messages, active_system_prompt = agent._compress_context(
                 messages,
                 system_message,
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
+            # No-op guard: if the engine returned messages unchanged AND the
+            # rough token estimate hasn't dropped materially, there is nothing
+            # more to compact this cycle.  Saturation the attempt counter so
+            # the loop doesn't retry the same no-op (#64382).  Also re-estimate
+            # the rough token count so the next pressure check sees the real
+            # post-compression size rather than the stale pre-compression value
+            # (mirrors turn_context.py's _compression_made_progress pattern).
+            if len(messages) == _pre_compress_msg_count:
+                _post_req_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                request_pressure_tokens = _post_req_tokens
+                if _post_req_tokens >= _pre_compress_req_tokens or (
+                    _pre_compress_req_tokens - _post_req_tokens
+                ) < int(_pre_compress_req_tokens * 0.05):
+                    logger.info(
+                        "Pre-API compression no-op: messages=%d->%d, "
+                        "tokens=~%s->~%s — engine reported no eligible material "
+                        "(compression_attempts=%s/3, stopping cycle)",
+                        _pre_compress_msg_count, len(messages),
+                        f"{_pre_compress_req_tokens:,}",
+                        f"{_post_req_tokens:,}",
+                        compression_attempts,
+                    )
+                    compression_attempts = 3  # Saturation: stop retrying
+            else:
+                # Re-estimate to give the next pressure check an accurate read.
+                request_pressure_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
             # Reset retry/empty-response state so the compacted request
             # gets a fresh chance instead of inheriting stale recovery
             # counters from the pre-compaction history.
@@ -2119,19 +2174,7 @@ def run_conversation(
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
-                elif getattr(
-                    agent.context_compressor,
-                    "awaiting_real_usage_after_compression",
-                    False,
-                ):
-                    # A response with no usage cannot adjudicate whether the
-                    # prior compaction cleared the threshold. Consume the pending
-                    # verdict now so a much later, unrelated reading is not
-                    # charged to that old compaction, and so preflight deferral
-                    # does not remain latched indefinitely.
-                    agent.context_compressor.update_from_response({})
 
-                if hasattr(response, 'usage') and response.usage:
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
                     # from the error message), not guessed probe tiers.

@@ -124,6 +124,36 @@ class ContextEngine(ABC):
         """
         return False
 
+    # -- Optional: mid-turn request-pressure hook --------------------------
+
+    def should_compress_request_pressure(self, messages: List[Dict[str, Any]], prompt_tokens: int) -> bool:
+        """Mid-turn pressure check — called before a model call when the
+        estimated request size is above ``threshold_tokens``.
+
+        The default delegates to the token-only :meth:`should_compress` so
+        the built-in compressor remains unchanged.  Alternative engines
+        should override this to combine host pressure with their own
+        eligible-backlog rules (e.g. protecting a fresh tail whose raw
+        backlog is below the engine's leaf-compaction threshold).
+
+        This is separate from :meth:`should_compress_preflight` — the
+        preflight hook governs *per-turn ingest/deferred-maintenance*
+        semantics, while this hook governs *mid-turn pre-API* pressure
+        probes.  A dedicated hook avoids conflating the two concerns.
+
+        Args:
+            messages: The current in-memory message list (before any API
+                call).  The engine can inspect message roles, ages,
+                protected regions, etc.
+            prompt_tokens: The estimated request token count (including
+                tool schemas) that triggered the pressure check.
+
+        Returns:
+            True if compaction should proceed, False to defer until more
+            backlog becomes eligible.
+        """
+        return self.should_compress(prompt_tokens)
+
     # -- Optional: manual /compress preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:

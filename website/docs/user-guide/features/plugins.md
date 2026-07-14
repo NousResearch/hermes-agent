@@ -14,7 +14,7 @@ this is usually the right path. The developer guide's
 [Adding Tools](/developer-guide/adding-tools) page is for built-in Hermes
 core tools that live in `tools/` and `toolsets.py`.
 
-**→ [Build a Hermes Plugin](/guides/build-a-hermes-plugin)** — step-by-step guide with a complete working example.
+**→ [Build a Hermes Plugin](/developer-guide/plugins)** — step-by-step guide with a complete working example.
 
 ## Quick overview
 
@@ -222,9 +222,9 @@ The table above shows the four plugin categories, but within "General plugins" t
 
 | Want to add… | How | Authoring guide |
 |---|---|---|
-| A **tool** the LLM can call | Python plugin — `ctx.register_tool()` | [Build a Hermes Plugin](/guides/build-a-hermes-plugin) · [Adding Tools](/developer-guide/adding-tools) |
-| A **lifecycle hook** (pre/post LLM, session start/end, tool filter) | Python plugin — `ctx.register_hook()` | [Hooks reference](/user-guide/features/hooks) · [Build a Hermes Plugin](/guides/build-a-hermes-plugin) |
-| A **slash command** for the CLI / gateway | Python plugin — `ctx.register_command()` | [Build a Hermes Plugin](/guides/build-a-hermes-plugin) · [Extending the CLI](/developer-guide/extending-the-cli) |
+| A **tool** the LLM can call | Python plugin — `ctx.register_tool()` | [Build a Hermes Plugin](/developer-guide/plugins) · [Adding Tools](/developer-guide/adding-tools) |
+| A **lifecycle hook** (pre/post LLM, session start/end, tool filter) | Python plugin — `ctx.register_hook()` | [Hooks reference](/user-guide/features/hooks) · [Build a Hermes Plugin](/developer-guide/plugins) |
+| A **slash command** for the CLI / gateway | Python plugin — `ctx.register_command()` | [Build a Hermes Plugin](/developer-guide/plugins) · [Extending the CLI](/developer-guide/extending-the-cli) |
 | A **subcommand** for `hermes <thing>` | Python plugin — `ctx.register_cli_command()` | [Extending the CLI](/developer-guide/extending-the-cli) |
 | A bundled **skill** that your plugin ships | Python plugin — `ctx.register_skill()` | [Creating Skills](/developer-guide/creating-skills) |
 | An **inference backend** (LLM provider: OpenAI-compat, Codex, Anthropic-Messages, Bedrock) | Provider plugin — `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/` | **[Model Provider Plugins](/developer-guide/model-provider-plugin)** · [Adding Providers](/developer-guide/adding-providers) |
@@ -344,4 +344,4 @@ This enables plugins like remote control viewers, messaging bridges, or webhook 
 `inject_message` is only available in CLI mode. In gateway mode, there is no CLI reference and the method returns `False`.
 :::
 
-See the **[full guide](/guides/build-a-hermes-plugin)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.
+See the **[full guide](/developer-guide/plugins)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.

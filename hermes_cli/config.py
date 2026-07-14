@@ -93,7 +93,9 @@ def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
         return None
 
 
-def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
+def _warn_config_parse_failure(
+    config_path: Path, exc: Exception, *, fallback: str = "defaults"
+) -> None:
     """Surface a config.yaml parse failure to user, log, and stderr.
 
     A YAML parse error in ``~/.hermes/config.yaml`` causes ``load_config()``
@@ -110,6 +112,11 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
     timestamped ``.bak`` (best-effort) so the user's recoverable content
     survives any later rewrite of ``config.yaml`` by the setup wizard or
     ``hermes config set``.
+
+    ``fallback`` selects the message wording: ``"defaults"`` (fresh process,
+    nothing else to serve) or ``"last-known-good"`` (in-process retention of
+    the previously loaded config — see the codex#31188 port in
+    ``_load_config_impl``).
     """
     try:
         st = config_path.stat()
@@ -122,12 +129,19 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
 
     backup_path = _backup_corrupt_config(config_path)
 
-    msg = (
-        f"Failed to parse {config_path}: {exc}. "
-        f"Falling back to default config — every user override "
-        f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
-        f"Fix the YAML and restart."
-    )
+    if fallback == "last-known-good":
+        msg = (
+            f"Failed to parse {config_path}: {exc}. "
+            f"Keeping the previously loaded config for this process — "
+            f"edits to config.yaml are being IGNORED until the YAML is fixed."
+        )
+    else:
+        msg = (
+            f"Failed to parse {config_path}: {exc}. "
+            f"Falling back to default config — every user override "
+            f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
+            f"Fix the YAML and restart."
+        )
     if backup_path is not None:
         msg += f" A copy of the corrupted file was saved to {backup_path}."
     logger.warning(msg)
@@ -441,8 +455,20 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    if (root / ".git").is_dir():
+    
+    # detect git repo installs (normal installer, development env)
+    git_path = root / ".git"
+    if git_path.is_dir():
         return "git"
+
+    # detect git repo installs from worktrees
+    if git_path.is_file():
+        try:
+            content = git_path.read_text(encoding="utf-8").strip()
+            if content.startswith("gitdir:"):
+                return "git"
+        except OSError:
+            pass
     return "pip"
 
 
@@ -528,8 +554,52 @@ def recommended_update_command() -> str:
     managed_cmd = get_managed_update_command()
     if managed_cmd:
         return managed_cmd
-    method = detect_install_method()
+    method = detect_install_method(get_project_root())
     return recommended_update_command_for_method(method)
+
+
+# =============================================================================
+# Unsupported install methods (pip, Homebrew) — deprecation notice
+# =============================================================================
+#
+# pip/PyPI and Homebrew are NOT an officially supported distribution method
+# (see website/docs/getting-started/platform-support.md, "Unsupported"
+# section). pip exists on PyPI for internal/CI reasons, not end-user installs;
+# Homebrew is a legacy packaging path. Unlike NixOS/Homebrew "managed mode"
+# (which hard-blocks config writes), this is a warn-don't-block deprecation
+# notice surfaced everywhere the user might see install-method state: the CLI
+# banner, the TUI/desktop session info panel, and ``hermes update``. NixOS
+# stays fully supported (Tier 2) and must never hit this path.
+
+PLATFORM_SUPPORT_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/getting-started/platform-support"
+
+_UNSUPPORTED_INSTALL_METHODS = frozenset({"pip", "homebrew"})
+
+
+def is_unsupported_install_method(method: str) -> bool:
+    """Whether ``method`` (from ``detect_install_method()``) is deprecated."""
+    return method in _UNSUPPORTED_INSTALL_METHODS
+
+
+def unsupported_install_method_label(method: str) -> str:
+    """Human-readable name for an unsupported install method."""
+    return "pip" if method == "pip" else "Homebrew"
+
+
+def format_unsupported_install_warning(method: str) -> str:
+    """Plain-text (no markup) deprecation notice for pip/Homebrew installs.
+
+    Shared verbatim across the CLI banner, TUI/desktop ``session.info``, and
+    ``hermes update`` / ``hermes update --check`` so the wording — and the
+    docs link — stays consistent across every surface instead of drifting
+    into three slightly different warnings.
+    """
+    label = unsupported_install_method_label(method)
+    return (
+        f"{label} installs are no longer an officially supported platform and "
+        f"will not receive further updates. See {PLATFORM_SUPPORT_DOCS_URL} "
+        "for supported install methods."
+    )
 
 
 # Long-form text for ``hermes update`` / ``--check`` when running inside the
@@ -1341,7 +1411,11 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
-        "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "threshold": 0.50,            # compress when context usage exceeds this ratio.
+                                      # Models with context windows below 512K are
+                                      # floored at 0.75 (raise-only) so compaction
+                                      # doesn't fire with half the window still free;
+                                      # set this above 0.75 to override the floor.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
@@ -1362,20 +1436,30 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
-        "codex_gpt55_autoraise": True,  # When True, gpt-5.5 on the ChatGPT Codex OAuth
-                                      # route raises its compaction trigger to 85% (vs the
-                                      # global `threshold` above). Codex hard-caps gpt-5.5
-                                      # at a 272K window, so the default 50% would compact
-                                      # at ~136K and waste half the usable context. Set to
-                                      # False to opt back down to the global threshold
-                                      # (e.g. 0.50) for Codex gpt-5.5 sessions. Only this
-                                      # exact route is affected — gpt-5.5 on OpenAI's
-                                      # direct API, OpenRouter, and Copilot keep the
-                                      # global threshold regardless.
-        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.5
+        "codex_gpt55_autoraise": True,  # Historical key name kept for compatibility.
+                                      # When True, gpt-5.4 / gpt-5.5 / gpt-5.6 on the
+                                      # ChatGPT Codex OAuth route raise their compaction
+                                      # trigger to 85% (vs the global `threshold` above).
+                                      # Codex hard-caps these families at a 272K window, so
+                                      # the default 50% would compact at ~136K and waste half
+                                      # the usable context. Set to False to opt back down to
+                                      # the global threshold (e.g. 0.50) for those Codex
+                                      # sessions. Only this exact route is affected —
+                                      # gpt-5.4 / 5.5 / 5.6 on OpenAI's direct API,
+                                      # OpenRouter, and Copilot keep the global threshold
+                                      # regardless.
+        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.4/5.5/5.6
                                       # autoraise banner. Set False to keep the
                                       # 85% threshold autoraise but suppress the
                                       # user-facing notice in CLI/gateway output.
+        "codex_app_server_auto": "native",  # Codex app-server (codex CLI runtime) thread
+                                      # compaction mode. The codex agent owns the real
+                                      # thread context, so Hermes' summarizer cannot
+                                      # shrink it (#36801). native = codex decides when
+                                      # to compact its own thread (default); hermes =
+                                      # Hermes' compression threshold triggers
+                                      # thread/compact/start; off = never auto-trigger
+                                      # (codex may still compact natively).
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation
@@ -1701,7 +1785,11 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
-        "show_reasoning": False,
+        # Stream the model's reasoning/thinking live before the response.
+        # Default ON: on thinking models the reasoning phase can run tens of
+        # seconds, and with this off the user stares at a spinner the whole
+        # time even though tokens are streaming. Set false for quiet output.
+        "show_reasoning": True,
         # When reasoning display is on, the post-response "Reasoning" recap box
         # collapses long thinking to the first 10 lines. Set true to print the
         # complete thinking text uncollapsed (live streaming is always full).
@@ -1713,7 +1801,8 @@ DEFAULT_CONFIG = {
         # Per-platform overrides via display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
         "streaming": False,
-        "timestamps": False,      # Show [HH:MM] on user and assistant labels
+        "timestamps": False,      # Show timestamp on user and assistant labels
+        "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
@@ -1975,7 +2064,9 @@ DEFAULT_CONFIG = {
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
     # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # Set explicitly to pin a backend:
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -2031,15 +2122,20 @@ DEFAULT_CONFIG = {
             # "volume": 1.0,
             # "normalize_audio": True,
         },
+        "deepinfra": {
+            "model": "",  # empty = first tts-tagged model from the live catalog
+            "voice": "default",
+            # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
+        },
     },
-    
+
     "stt": {
         "enabled": True,
         # When true, gateway voice messages are transcribed for the agent and
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -2055,6 +2151,10 @@ DEFAULT_CONFIG = {
             "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
             "tag_audio_events": False,
             "diarize": False,
+        },
+        "deepinfra": {
+            "model": "",  # empty = first stt-tagged model from the live catalog
+            # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
         },
     },
 
@@ -2151,8 +2251,8 @@ DEFAULT_CONFIG = {
                                      # (API, tools, iteration budget), never a delegation
                                      # stopwatch. Set a positive number of seconds
                                      # (floor 30s) to enforce a hard cap.
-        "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
-                                 # "low", "minimal", "none" (empty = inherit parent's level)
+        "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
+                                 # "medium", "low", "minimal", "none" (empty = inherit)
         "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
@@ -2370,6 +2470,11 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # When True, Discord approval prompts mention numeric allowed users so
+        # owners notice approval requests in shared channels/threads. Env
+        # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
+        # pings.
+        "approval_mentions": False,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and
@@ -2429,15 +2534,15 @@ DEFAULT_CONFIG = {
     },
 
     # Approval mode for dangerous commands:
-    #   manual — always prompt the user (default)
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   manual — always prompt the user
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands (default)
     #   off    — skip all approval prompts (equivalent to --yolo)
     #
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
-        "mode": "manual",
+        "mode": "smart",
         "timeout": 60,
         "cron_mode": "deny",
         # User-defined deny rules: fnmatch globs matched against terminal
@@ -2600,6 +2705,12 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Timeout (seconds) for SessionDB() init inside cron jobs.
+        # SessionDB opens/migrates state.db synchronously and has no timeout
+        # of its own against a wedged sqlite3.connect. An unbounded hang here
+        # wedges the job's dispatch guard forever. Also overridable via
+        # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
+        "session_db_timeout_seconds": 10,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
@@ -3069,6 +3180,15 @@ DEFAULT_CONFIG = {
     # Pull credentials from external secret managers at process startup
     # rather than storing them in ~/.hermes/.env.
     "secrets": {
+        # Optional explicit ordering of enabled secret sources.  When
+        # omitted, sources run in registration order (bundled first,
+        # then plugin-registered).  Regardless of this list, "mapped"
+        # sources (explicit VAR→ref bindings, e.g. a future 1Password
+        # env: map) always take precedence over "bulk" sources
+        # (project dumps like Bitwarden BSM), and the first source to
+        # claim a var wins — later claims are skipped with a warning.
+        # Example: sources: [onepassword, bitwarden]
+        # "sources": [],
         "bitwarden": {
             # Master switch.  When false, BSM is never contacted and the
             # bws binary is never auto-installed — same as not having
@@ -3099,6 +3219,34 @@ DEFAULT_CONFIG = {
             # as BWS_SERVER_URL.  Prompted for during
             # `hermes secrets bitwarden setup`.
             "server_url": "",
+        },
+        "onepassword": {
+            # Master switch.  When false, the op CLI is never invoked —
+            # same as not having this section at all.
+            "enabled": False,
+            # Mapping of env-var name → 1Password secret reference
+            # (op://vault/item/field).  Each entry is resolved with a
+            # single `op read` at startup.
+            "env": {},
+            # Optional account shorthand / sign-in address passed as
+            # `op read --account <account>`.  Empty = op's default account.
+            "account": "",
+            # Name of the env var holding a 1Password service-account token
+            # for headless auth.  Sourced from ~/.hermes/.env (or the shell)
+            # and exported to the op child as OP_SERVICE_ACCOUNT_TOKEN.
+            # Leave the var unset to use an interactive/desktop op session.
+            "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
+            # Optional absolute path to the op binary.  When set it is used
+            # verbatim (PATH is not consulted) — pin this to avoid trusting
+            # whatever `op` appears first on PATH.  Empty = resolve via PATH.
+            "binary_path": "",
+            # Seconds to cache resolved values in-process and on disk.  0
+            # disables BOTH cache layers (no values are written to disk).
+            "cache_ttl_seconds": 300,
+            # When True (default), resolved values overwrite existing env
+            # vars so rotating a secret in 1Password takes effect on next
+            # start.  Flip to false to let .env / shell exports win locally.
+            "override_existing": True,
         },
     },
 
@@ -3404,6 +3552,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "FIREWORKS_API_KEY": {
+        "description": "Fireworks AI API key",
+        "prompt": "Fireworks AI API key",
+        "url": "https://app.fireworks.ai/settings/users/api-keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",
@@ -3582,7 +3738,6 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
-
     # ── Tool API keys ──
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",
@@ -6112,6 +6267,12 @@ def _deep_merge(base: dict, override: dict) -> dict:
     Keys in *override* take precedence. If both values are dicts the merge
     recurses, so a user who overrides only ``tts.elevenlabs.voice_id`` will
     keep the default ``tts.elevenlabs.model_id`` intact.
+
+    An empty section key in config.yaml (``terminal:`` with no value) parses
+    as YAML ``None``; treating that as an override would replace the entire
+    default dict with ``None`` and crash every downstream consumer that
+    expects a mapping (#58277). A ``None`` override of a dict default is
+    ignored — same as the key being absent.
     """
     result = base.copy()
     for key, value in override.items():
@@ -6121,6 +6282,8 @@ def _deep_merge(base: dict, override: dict) -> dict:
             and isinstance(value, dict)
         ):
             result[key] = _deep_merge(result[key], value)
+        elif key in result and isinstance(result[key], dict) and value is None:
+            continue
         else:
             result[key] = value
     return result
@@ -6819,7 +6982,45 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
                 config = _deep_merge(config, user_config)
             except Exception as e:
-                _warn_config_parse_failure(config_path, e)
+                # Last-known-good fallback (port of openai/codex#31188's
+                # invariant: a parse failure in a policy/config file must not
+                # silently replace the effective policy with an empty/default
+                # one). Falling through to DEFAULT_CONFIG here drops EVERY user
+                # override — including security-critical ``approvals.deny``
+                # rules, which are supposed to block commands even under yolo.
+                # A long-running gateway whose user mid-edits config.yaml into
+                # broken YAML would silently lose those rules on the next load.
+                # Within a running process we still have the last successfully
+                # loaded config — keep serving it until the file is fixed.
+                # Fresh processes with no last-known-good keep the existing
+                # DEFAULT_CONFIG fallback.
+                lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+                _warn_config_parse_failure(
+                    config_path,
+                    e,
+                    fallback="last-known-good" if lkg is not None else "defaults",
+                )
+                if lkg is not None:
+                    # save_config() stores the pre-expansion normalized dict
+                    # (env-ref templates preserved); the load path stores the
+                    # expanded one. Expand defensively — idempotent when the
+                    # stored value is already expanded.
+                    from typing import cast as _cast
+                    lkg_copy: Dict[str, Any] = _cast(
+                        Dict[str, Any], _expand_env_vars(copy.deepcopy(lkg))
+                    )
+                    if cache_sig is not None:
+                        # Cache under the corrupt file's signature (empty env
+                        # snapshot: always valid) so repeated loads don't
+                        # re-parse the broken file; fixing the file changes the
+                        # signature and triggers a normal reload.
+                        _empty_env: Dict[str, Optional[str]] = {}
+                        _LOAD_CONFIG_CACHE[path_key] = (
+                            cache_sig[0], cache_sig[1],
+                            cache_sig[2], cache_sig[3],
+                            lkg_copy, _empty_env,
+                        )
+                    return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
@@ -7755,7 +7956,7 @@ def show_config():
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
     display = config.get('display', {})
     print(f"  Personality:  {display.get('personality') or 'none'}")
-    print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
+    print(f"  Reasoning:    {'on' if display.get('show_reasoning', True) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
     ump_first = ump.get('first_lines', 2)
@@ -7912,6 +8113,20 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
+def _default_value_for_key(dotted_key: str):
+    """Return the leaf value declared for *dotted_key* in ``DEFAULT_CONFIG``.
+
+    Unknown keys and non-leaf paths return ``None`` so they retain the legacy
+    best-effort coercion used by ``config set``.
+    """
+    node = DEFAULT_CONFIG
+    for part in dotted_key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node if not isinstance(node, dict) else None
+
+
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
@@ -7969,16 +8184,21 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Preserve values for string-typed settings.  In particular, enum members
+    # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
+    # retain the historical best-effort coercion behavior.
+    coerced_value: Any = value
+    if not isinstance(_default_value_for_key(key), str):
+        if value.lower() in {'true', 'yes', 'on'}:
+            coerced_value = True
+        elif value.lower() in {'false', 'no', 'off'}:
+            coerced_value = False
+        elif value.isdigit():
+            coerced_value = int(value)
+        elif value.replace('.', '', 1).isdigit():
+            coerced_value = float(value)
 
+    value = coerced_value
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical

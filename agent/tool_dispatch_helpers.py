@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
+from tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +359,13 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
-def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict:
+def make_tool_result_message(
+    name: str,
+    content: Any,
+    tool_call_id: str,
+    *,
+    effect_disposition: str | None = None,
+) -> dict:
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table).
@@ -379,13 +386,23 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     callers should compare by value, not by ``is``.
     """
     wrapped = _maybe_wrap_untrusted(name, content)
-    return {
+    message = {
         "role": "tool",
         "name": name,
         "tool_name": name,
         "content": wrapped,
         "tool_call_id": tool_call_id,
     }
+    try:
+        risk_metadata = _tool_output_risk_metadata(name, content)
+    except Exception as exc:
+        logger.debug("Tool output risk scan failed for %s: %s", name, exc)
+    else:
+        if risk_metadata is not None:
+            message["_tool_output_risk"] = risk_metadata
+    if effect_disposition is not None:
+        message["effect_disposition"] = effect_disposition
+    return message
 
 
 # Tools whose results carry attacker-controllable content.  Wrapping their
@@ -417,6 +434,42 @@ def _is_untrusted_tool(name: Optional[str]) -> bool:
     if name in _UNTRUSTED_TOOL_NAMES:
         return True
     return any(name.startswith(p) for p in _UNTRUSTED_TOOL_PREFIXES)
+
+
+def _tool_output_risk_metadata(name: str, content: Any) -> Optional[Dict[str, Any]]:
+    """Classify textual attacker-controlled output without retaining a copy.
+
+    The advisory metadata is internal-only. It records deterministic finding
+    identifiers, never blocks or redacts the normal result, and deliberately
+    omits raw scanned text.
+    """
+    if not _is_untrusted_tool(name):
+        return None
+    if isinstance(content, str):
+        text_parts = [content]
+    elif isinstance(content, list):
+        text_parts = [
+            item["text"]
+            for item in content
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ]
+        if not text_parts:
+            return None
+    else:
+        return None
+
+    findings: List[str] = []
+    for text in text_parts:
+        for finding in scan_for_threats(text, scope="context"):
+            if finding not in findings:
+                findings.append(finding)
+    return {
+        "risk": "high" if findings else "low",
+        "findings": findings,
+        "redacted": False,
+    }
 
 
 def _neutralize_delimiters(content: str) -> str:

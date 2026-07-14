@@ -447,5 +447,8 @@ class TestGeminiInCheckRequirements:
                 raise ImportError("simulated")
             return real_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=fake_import):
+        with patch(
+            "tools.tts_tool._load_tts_config",
+            return_value={"provider": "gemini"},
+        ), patch("builtins.__import__", side_effect=fake_import):
             assert check_tts_requirements() is True

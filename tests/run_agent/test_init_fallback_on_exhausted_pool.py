@@ -49,6 +49,52 @@ def test_init_tries_fallback_when_primary_returns_none():
         assert agent._fallback_activated is True
 
 
+@pytest.mark.parametrize(
+    ("fallback_provider", "fallback_model", "fallback_base_url"),
+    [
+        ("xai", "grok-4", "https://api.x.ai/v1"),
+        ("openai-codex", "gpt-5.5", "https://chatgpt.com/backend-api/codex"),
+    ],
+)
+def test_init_fallback_infers_responses_api_mode_for_codex_backends(
+    fallback_provider,
+    fallback_model,
+    fallback_base_url,
+):
+    """Init-time fallback must not keep the primary provider transport mode."""
+    fb = _mock_client(base_url=fallback_base_url)
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None):
+        if provider == fallback_provider:
+            return fb, fallback_model
+        return None, None
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("run_agent.check_toolset_requirements", return_value={}), \
+         patch("run_agent.OpenAI", return_value=MagicMock()):
+
+        agent = AIAgent(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[
+                {"provider": fallback_provider, "model": fallback_model}
+            ],
+        )
+
+    assert agent.provider == fallback_provider
+    assert agent.model == fallback_model
+    assert agent.base_url == fallback_base_url
+    assert agent.api_mode == "codex_responses"
+    assert agent._fallback_activated is True
+
+
 def test_init_raises_when_no_fallback_configured():
     """When primary returns None and no fallback is set, should raise."""
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \

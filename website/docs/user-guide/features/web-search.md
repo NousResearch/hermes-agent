@@ -310,6 +310,7 @@ web:
       - arxiv.org
     excluded_domains:            # optional, max 5
       - example-spam.com
+    enable_image_search: false   # opt in to image results under data.images (default false)
     timeout: 90                  # seconds (default)
 ```
 

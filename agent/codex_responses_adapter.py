@@ -500,14 +500,14 @@ def _chat_messages_to_responses_input(
                 elif content_parts:
                     items.append({"role": "assistant", "content": content_parts})
                 elif content_text.strip():
-                    items.append({"role": "assistant", "content": content_text})
+                    items.append({"role": "assistant", "content": [{"type": "output_text", "text": content_text}]})
                 elif has_codex_reasoning:
                     # The Responses API requires a following item after each
                     # reasoning item (otherwise: missing_following_item error).
                     # When the assistant produced only reasoning with no visible
                     # content, emit an empty assistant message as the required
                     # following item.
-                    items.append({"role": "assistant", "content": ""})
+                    items.append({"role": "assistant", "content": [{"type": "output_text", "text": ""}]})
 
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):

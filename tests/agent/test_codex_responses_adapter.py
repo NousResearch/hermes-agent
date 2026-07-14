@@ -429,3 +429,80 @@ def test_normalize_codex_response_failed_with_message_only():
     )
     with pytest.raises(RuntimeError, match=r"^model error$"):
         _normalize_codex_response(response)
+
+
+def test_chat_messages_to_responses_input_plain_string_assistant_content():
+    """Regression: plain-string assistant content must be emitted as output_text,
+    not bare string (which the OpenAI SDK expands to input_text).
+
+    The Responses API rejects input_text inside assistant messages with
+    HTTP 400 Invalid value: 'input_text'.
+
+    This test covers the tool-call-followed-by-model-turn scenario where
+    the assistant's plain-string response is replayed as history.
+    """
+    messages = [
+        {"role": "user", "content": "Write test file"},
+        {
+            "role": "assistant",
+            "content": "I'll write the test file.",
+            "tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": '{"path": "/tmp/test.txt", "content": "test"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_abc",
+            "content": "File written successfully",
+        },
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    # The assistant message should be formatted as a message item
+    assistant_items = [item for item in items if item.get("role") == "assistant"]
+    assert len(assistant_items) == 1
+
+    # Content must be explicitly typed as output_text, not a bare string
+    assert assistant_items[0]["content"] == [{"type": "output_text", "text": "I'll write the test file."}]
+
+
+def test_chat_messages_to_responses_input_reasoning_only_empty_output_text():
+    """When assistant produced only reasoning with no visible content,
+    emit an empty assistant message as a following item.
+
+    The empty content must be explicitly typed as output_text, not a bare
+    empty string (which the OpenAI SDK expands to input_text).
+    """
+    messages = [
+        {"role": "user", "content": "Think about it"},
+        {
+            "role": "assistant",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_123",
+                    "encrypted_content": "opaque-reasoning",
+                    "summary": [{"type": "summary_text", "text": "thinking"}],
+                }
+            ],
+        },
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    # Should have both reasoning item and following assistant message
+    reasoning_items = [item for item in items if item.get("type") == "reasoning"]
+    assistant_items = [item for item in items if item.get("role") == "assistant"]
+    assert len(reasoning_items) == 1
+    assert len(assistant_items) == 1
+
+    # Assistant content must be explicitly typed as empty output_text
+    assert assistant_items[0]["content"] == [{"type": "output_text", "text": ""}]

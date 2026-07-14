@@ -33,6 +33,24 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+# Falsy tokens that disable a boolean-ish knob. YAML 1.1 parses bare ``off``,
+# ``no``, ``false`` as a Python bool, so by the time a value reaches us it may
+# already be ``False``; ``str(False).lower()`` is ``"false"``. Normalize the
+# whole family (plus the string forms) to a canonical ``"on"``/``"off"`` so a
+# user writing ``thread_context: off`` reliably disables the feature.
+_OFF_TOKENS = {"off", "false", "0", "no", "none", ""}
+
+
+def _normalize_onoff(value: Any, default: str = "on") -> str:
+    """Coerce a YAML/env boolean-ish value to canonical ``"on"``/``"off"``."""
+    if value is None:
+        return default
+    token = str(value).strip().lower()
+    if not token:
+        return default
+    return "off" if token in _OFF_TOKENS else "on"
+
 # Mattermost post size limit (server default is 16383, but 4000 is the
 # practical limit for readable messages — matching OpenClaw's choice).
 MAX_POST_LENGTH = 4000
@@ -108,11 +126,12 @@ class MattermostAdapter(BasePlatformAdapter):
         # First-turn thread-context seeding (#37695).
         # Policy read via config.yaml ``mattermost.thread_context`` (bridged to
         # ``MATTERMOST_THREAD_CONTEXT``): "on" (default) seeds prior thread
-        # posts on the first turn, "off" disables it entirely.
-        self._thread_context_mode: str = (
-            str(config.extra.get("thread_context", "") or "").lower()
-            or os.getenv("MATTERMOST_THREAD_CONTEXT", "on")
-        ).lower()
+        # posts on the first turn, "off" disables it entirely. Values are
+        # normalized so YAML booleans (``off`` -> False -> "false") disable it.
+        _raw_tc = config.extra.get("thread_context", None)
+        if _raw_tc is None or str(_raw_tc).strip() == "":
+            _raw_tc = os.getenv("MATTERMOST_THREAD_CONTEXT", "on")
+        self._thread_context_mode: str = _normalize_onoff(_raw_tc, default="on")
         # Short-lived cache keyed by root_id so a burst of near-simultaneous
         # first-turn posts in the same thread doesn't refetch the thread.
         self._thread_context_cache: Dict[str, Tuple[float, str]] = {}
@@ -1432,9 +1451,12 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
     if "strict_mention" in mattermost_cfg and not os.getenv("MATTERMOST_STRICT_MENTION"):
         os.environ["MATTERMOST_STRICT_MENTION"] = str(mattermost_cfg["strict_mention"]).lower()
-    # thread_context: first-turn thread-history seeding policy ("on"/"off").
+    # thread_context: first-turn thread-history seeding policy. Normalize so a
+    # YAML boolean (``off`` -> False) is written as canonical "on"/"off".
     if "thread_context" in mattermost_cfg and not os.getenv("MATTERMOST_THREAD_CONTEXT"):
-        os.environ["MATTERMOST_THREAD_CONTEXT"] = str(mattermost_cfg["thread_context"]).lower()
+        os.environ["MATTERMOST_THREAD_CONTEXT"] = _normalize_onoff(
+            mattermost_cfg["thread_context"], default="on"
+        )
     frc = mattermost_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):

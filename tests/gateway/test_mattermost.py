@@ -1329,3 +1329,51 @@ def test_apply_yaml_config_bridges_thread_context(monkeypatch):
     monkeypatch.delenv("MATTERMOST_THREAD_CONTEXT", raising=False)
     _apply_yaml_config({"thread_context": "off"}, {"thread_context": "off"})
     assert os.environ["MATTERMOST_THREAD_CONTEXT"] == "off"
+
+
+# ---------------------------------------------------------------------------
+# thread_context YAML-boolean normalization (#37695 review follow-up)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (False, "off"),   # YAML 1.1 parses bare `off`/`no`/`false` as bool False
+        ("off", "off"),
+        ("false", "off"),
+        ("no", "off"),
+        (0, "off"),
+        ("0", "off"),
+        (True, "on"),
+        ("on", "on"),
+        ("true", "on"),
+        ("", "on"),       # empty falls through to default
+        (None, "on"),
+    ],
+)
+def test_normalize_onoff(raw, expected):
+    from plugins.platforms.mattermost.adapter import _normalize_onoff
+    assert _normalize_onoff(raw, default="on") == expected
+
+
+@pytest.mark.parametrize("raw", [False, "off", "false", "no", 0, "0"])
+def test_apply_yaml_config_yaml_boolean_off_disables(monkeypatch, raw):
+    from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+    monkeypatch.delenv("MATTERMOST_THREAD_CONTEXT", raising=False)
+    _apply_yaml_config({"thread_context": raw}, {"thread_context": raw})
+    assert os.environ["MATTERMOST_THREAD_CONTEXT"] == "off"
+
+
+def test_adapter_thread_context_off_via_yaml_boolean():
+    """config.extra carrying YAML boolean False must disable seeding."""
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+    config = PlatformConfig(
+        enabled=True,
+        token="test-token",
+        extra={"url": "https://mm.example.com", "thread_context": False},
+    )
+    adapter = MattermostAdapter(config)
+    assert adapter._thread_context_mode == "off"

@@ -1231,7 +1231,12 @@ def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
         _notify_single_query_session_finalize(cli)
-        _run_cleanup(notify_session_finalize=False)
+        try:
+            _run_cleanup(notify_session_finalize=False)
+        finally:
+            close_agent = getattr(getattr(cli, "agent", None), "close", None)
+            if callable(close_agent):
+                close_agent()
     finally:
         cli._release_active_session()
 

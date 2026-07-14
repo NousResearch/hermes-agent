@@ -610,7 +610,30 @@ async def _token_auth_seam(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 # Manual overrides for fields that need select options or custom types
+def _memory_provider_options() -> List[str]:
+    """Discovered memory providers for the ``memory.provider`` select.
+
+    Directory-scan only (no provider imports), so it's safe at module import
+    time. ``""`` (built-in) is always first; discovery failures degrade to the
+    bundled defaults rather than dropping the field.
+    """
+    options = ["", "builtin"]
+    try:
+        from plugins.memory import list_memory_provider_names
+
+        options.extend(list_memory_provider_names())
+    except Exception:
+        options.extend(["honcho"])
+    # Dedupe, preserve order
+    return list(dict.fromkeys(options))
+
+
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "memory.provider": {
+        "type": "select",
+        "description": "Memory provider plugin",
+        "options": _memory_provider_options(),
+    },
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",
@@ -780,7 +803,7 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in {"_config_version", "memory.provider"}:
+        if full_key in {"_config_version"}:
             continue
 
         # Category is the first path component for nested keys, or "general"

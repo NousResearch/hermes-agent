@@ -403,6 +403,44 @@ def test_run_doctor_reports_native_agent_browser_without_node(monkeypatch, tmp_p
     assert "optional, needed for browser tools" not in out
 
 
+def test_run_doctor_reports_managed_node_for_ambient_shim(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    home = tmp_path / ".hermes"
+    managed_bin = home / "node" / "bin"
+    managed_bin.mkdir(parents=True)
+    node = managed_bin / "node"
+    node.write_text("#!/bin/sh\nexit 0\n")
+    node.chmod(0o755)
+    shim = tmp_path / "agent-browser"
+    shim.write_text("#!/bin/sh\n# node agent-browser.js\nnode --version >/dev/null\n")
+    shim.chmod(0o755)
+
+    import hermes_constants
+    import tools.browser_tool as browser_tool
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+
+    def fake_which(cmd, path=None):
+        if cmd == "agent-browser" and path is None:
+            return str(shim)
+        if cmd == "node" and path and str(managed_bin) in path:
+            return str(node)
+        return None
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+    monkeypatch.setattr(browser_tool, "_chromium_installed", lambda: True)
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: None)
+    monkeypatch.setattr(browser_tool, "_using_lightpanda_engine", lambda: False)
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+    assert "Node.js not found" not in out
+    assert "Node.js" in out
+    assert "agent-browser" in out
+
+
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

@@ -15,6 +15,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from hermes_constants import (
     agent_browser_managed_shim_candidates,
+    iter_hermes_node_dirs,
     resolve_agent_browser_candidate,
 )
 from tools.environments.local import hermes_subprocess_env
@@ -100,6 +101,18 @@ def _agent_browser_candidates_for_doctor() -> tuple[str | None, ...]:
         _safe_which("agent-browser", path=str(local_bin_dir)),
         *(str(path) for path in agent_browser_managed_shim_candidates(HERMES_HOME)),
     )
+
+
+def _node_available_for_doctor() -> bool:
+    if _safe_which("node"):
+        return True
+    managed_path = os.pathsep.join(
+        [
+            *(str(path) for path in iter_hermes_node_dirs(HERMES_HOME) if path.is_dir()),
+            os.environ.get("PATH", ""),
+        ]
+    )
+    return bool(_safe_which("node", path=managed_path))
 
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
@@ -1577,7 +1590,7 @@ def run_doctor(args):
             )
 
     # Node.js + agent-browser (for browser automation tools)
-    node_installed = bool(_safe_which("node"))
+    node_installed = _node_available_for_doctor()
     agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
     agent_browser_candidates = _agent_browser_candidates_for_doctor()
     resolved_agent_browser = next(

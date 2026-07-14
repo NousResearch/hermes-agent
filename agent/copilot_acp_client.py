@@ -21,8 +21,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent.file_safety import get_read_block_error, is_write_denied
+from openai.types.chat.chat_completion_message_tool_call import (
+    ChatCompletionMessageToolCall,
+    Function,
+)
+
+from agent.file_safety import get_read_block_error, get_write_denied_error
 from agent.redact import redact_sensitive_text
+from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -94,7 +100,10 @@ def _resolve_home_dir() -> str:
 
 
 def _build_subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
+    # Copilot ACP is a model-driving CLI executor: it legitimately needs LLM
+    # provider credentials. Route through the central helper so Tier-1 secrets
+    # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
+    env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env
@@ -224,11 +233,73 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
-def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
+def _build_openai_tool_call(
+    *,
+    call_id: str,
+    name: str,
+    arguments: str,
+) -> ChatCompletionMessageToolCall:
+    """Build an OpenAI-compatible tool-call object for downstream handling."""
+    return ChatCompletionMessageToolCall(
+        id=call_id,
+        call_id=call_id,
+        response_item_id=None,
+        type="function",
+        function=Function(name=name, arguments=arguments),
+    )
+
+
+def _completion_to_stream_chunks(completion: SimpleNamespace) -> list[SimpleNamespace]:
+    """Convert a one-shot ACP response into OpenAI-style stream chunks."""
+    choice = completion.choices[0]
+    message = choice.message
+    tool_call_deltas = None
+    if message.tool_calls:
+        tool_call_deltas = []
+        for index, tool_call in enumerate(message.tool_calls):
+            tool_call_deltas.append(
+                SimpleNamespace(
+                    index=index,
+                    id=getattr(tool_call, "id", None),
+                    type=getattr(tool_call, "type", "function"),
+                    function=SimpleNamespace(
+                        name=getattr(tool_call.function, "name", None),
+                        arguments=getattr(tool_call.function, "arguments", None),
+                    ),
+                )
+            )
+
+    delta = SimpleNamespace(
+        role="assistant",
+        content=message.content or None,
+        tool_calls=tool_call_deltas,
+        reasoning_content=message.reasoning_content,
+        reasoning=message.reasoning,
+    )
+    data_chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                index=0,
+                delta=delta,
+                finish_reason=choice.finish_reason,
+            )
+        ],
+        model=completion.model,
+        usage=None,
+    )
+    usage_chunk = SimpleNamespace(
+        choices=[],
+        model=completion.model,
+        usage=completion.usage,
+    )
+    return [data_chunk, usage_chunk]
+
+
+def _extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageToolCall], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
 
-    extracted: list[SimpleNamespace] = []
+    extracted: list[ChatCompletionMessageToolCall] = []
     consumed_spans: list[tuple[int, int]] = []
 
     def _try_add_tool_call(raw_json: str) -> None:
@@ -252,12 +323,10 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
             call_id = f"acp_call_{len(extracted)+1}"
 
         extracted.append(
-            SimpleNamespace(
-                id=call_id,
+            _build_openai_tool_call(
                 call_id=call_id,
-                response_item_id=None,
-                type="function",
-                function=SimpleNamespace(name=fn_name.strip(), arguments=fn_args),
+                name=fn_name.strip(),
+                arguments=fn_args,
             )
         )
 
@@ -376,6 +445,7 @@ class CopilotACPClient:
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
+        stream: bool = False,
         **_: Any,
     ) -> Any:
         prompt_text = _format_messages_as_prompt(
@@ -422,11 +492,14 @@ class CopilotACPClient:
         )
         finish_reason = "tool_calls" if tool_calls else "stop"
         choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
-        return SimpleNamespace(
+        completion = SimpleNamespace(
             choices=[choice],
             usage=usage,
             model=model or "copilot-acp",
         )
+        if stream:
+            return _completion_to_stream_chunks(completion)
+        return completion
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
         try:
@@ -654,10 +727,9 @@ class CopilotACPClient:
         elif method == "fs/write_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
-                if is_write_denied(str(path)):
-                    raise PermissionError(
-                        f"Write denied: '{path}' is a protected system/credential file."
-                    )
+                denied = get_write_denied_error(str(path))
+                if denied:
+                    raise PermissionError(denied)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(params.get("content") or ""))
                 response = {

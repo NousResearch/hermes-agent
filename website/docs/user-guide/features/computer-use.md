@@ -255,6 +255,19 @@ of screenshot context, not ~600K.
   drawing (Logic, Final Cut, some games) have sparse or empty AX trees.
   Fall back to pixel coordinates if the tree is empty — or skip the
   task entirely.
+- **Windows: elevated (admin) windows can't be driven from a normal
+  agent.** Windows UIPI (User Interface Privilege Isolation) enforces
+  integrity-level boundaries: a Medium-integrity process (the default
+  Hermes agent) cannot enumerate the UIA tree of, or inject mouse input
+  into, a window owned by a High-integrity (Administrator) process.
+  Symptom: `capture(mode='som')` returns 0 elements and `click(...)`
+  reports success while doing nothing, even though the screenshot
+  renders fine (GDI capture sits below the integrity check). Keyboard
+  events partially bypass UIPI, so Tab / Enter can still navigate an
+  elevated dialog. This is an OS constraint, not a cua-driver bug — it
+  affects every Windows automation stack. To drive elevated windows,
+  run the Hermes agent itself at High integrity (launch from an
+  elevated terminal); otherwise target non-elevated windows.
 - **Platform-specific deployment gotchas:**
   - **macOS** uses private SkyLight SPIs. Apple can change them in any
     OS update. Hermes warns when the installed cua-driver is older than
@@ -287,6 +300,25 @@ Swap the backend entirely (for testing):
 ```
 HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 ```
+
+### Telemetry
+
+cua-driver ships with anonymous usage telemetry (PostHog) enabled by default
+upstream. **Hermes disables it for you** — on every cua-driver invocation
+(the MCP backend, `status`, `doctor`, and install) Hermes sets
+`CUA_DRIVER_RS_TELEMETRY_ENABLED=0` in the driver's environment.
+
+To opt back in (let cua-driver use its own default and send telemetry), set
+this in `config.yaml`:
+
+```yaml
+computer_use:
+  cua_telemetry: true   # default: false (telemetry off)
+```
+
+When it's on, `hermes computer-use doctor` reports `telemetry: enabled`;
+when off (the default), it reports `telemetry: disabled via
+CUA_DRIVER_RS_TELEMETRY_ENABLED`.
 
 ## Testing against a local cua-driver build
 

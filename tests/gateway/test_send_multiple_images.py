@@ -41,7 +41,7 @@ class _StubAdapter(BasePlatformAdapter):
         self.sent_animations = []
         self.sent_files = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         return True
 
     async def disconnect(self):

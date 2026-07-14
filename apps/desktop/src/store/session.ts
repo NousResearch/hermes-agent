@@ -21,6 +21,13 @@ const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 
+// The last chat the user had open, so a relaunch lands back on it instead of an
+// empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
+const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
+
+export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
+export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
+
 let configuredDefaultProjectDir = ''
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
@@ -30,10 +37,12 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
   const profile = encodeURIComponent(connection.profile || 'default')
+
   return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
+export type NewChatWorkspaceTarget = null | string | undefined
 
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
 
@@ -75,6 +84,7 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
   if ($connection.get()?.mode === 'remote') {
     seedLiveCwd(remembered)
+
     return
   }
 
@@ -146,18 +156,34 @@ export function mergeSessionPage(
 ): SessionInfo[] {
   const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
 
+  // Carry a known title onto a row that arrives title-less, so a freshly
+  // submitted session (e.g. a branch draft) holds its placeholder instead of
+  // flashing its raw message preview in the gap between persist and the async
+  // auto-titler. A real clear sets the local title null first, so this never
+  // masks one.
+  const prevById = new Map(previous.map(session => [session.id, session]))
+
+  const merged = incoming.map(session => {
+    if (session.title?.trim()) {
+      return session
+    }
+
+    const carried = prevById.get(session.id)?.title?.trim()
+
+    return carried ? { ...session, title: carried } : session
+  })
+
   if (keep.size === 0) {
-    return incoming
+    return merged
   }
 
-  const incomingIds = new Set(incoming.map(session => session.id))
+  const incomingIds = new Set(merged.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
   // rows survive as separate sidebar entries (fixes #43483).
-  const incomingLineageKeys = new Set(
-    incoming.map(session => session._lineage_root_id ?? session.id)
-  )
+  const incomingLineageKeys = new Set(merged.map(session => session._lineage_root_id ?? session.id))
 
   const survivors = previous.filter(
     session =>
@@ -166,7 +192,7 @@ export function mergeSessionPage(
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
-  return survivors.length ? [...survivors, ...incoming] : incoming
+  return survivors.length ? [...survivors, ...merged] : merged
 }
 
 export const $connection = atom<HermesConnection | null>(null)
@@ -245,6 +271,8 @@ export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // reflection of the truth the gateway reports rather than its own store.
 export const $yoloActive = atom(false)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
+export const $newChatWorkspaceTarget = atom<NewChatWorkspaceTarget>(undefined)
+export const $newChatWorkspaceTargetGeneration = atom(0)
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
   calls: 0,
@@ -313,12 +341,28 @@ export const setCurrentCwd = (next: Updater<string>) => {
   persistString(workspaceCwdKey(), $currentCwd.get().trim() || null)
 }
 
+export const setCurrentCwdTransient = (next: Updater<string>) => updateAtom($currentCwd, next)
+
+export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number => {
+  const generation = $newChatWorkspaceTargetGeneration.get() + 1
+  $newChatWorkspaceTarget.set(next)
+  $newChatWorkspaceTargetGeneration.set(generation)
+
+  return generation
+}
+
 export const workspaceCwdForNewSession = (): string => {
   if ($connection.get()?.mode === 'remote') {
     return getRememberedWorkspaceCwd()
   }
 
-  return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
+  // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
+  // rail (which keys off $currentCwd) shows no branch and the first message runs
+  // in the gateway's default rather than silently in the last repo you touched.
+  // Only an explicit default-project-dir setting pre-attaches. Entering a
+  // project/worktree attaches its cwd directly (startSessionInWorkspace), so the
+  // "remember where I was when I'm in a project" case is unaffected.
+  return getConfiguredDefaultProjectDir()
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
@@ -342,6 +386,20 @@ export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sess
 const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+// Notified (with the stored session id) whenever the watchdog force-clears a
+// stuck session. The session-state cache subscribes to also drop that session's
+// busy/awaiting flags — clearing `$workingSessionIds` alone only removes the
+// sidebar dot, leaving the composer stuck on "Thinking"/Stop for a hung or
+// looping turn that never streamed its terminal event.
+type SessionWatchdogListener = (storedSessionId: string) => void
+const sessionWatchdogListeners = new Set<SessionWatchdogListener>()
+
+export function onSessionWatchdogClear(listener: SessionWatchdogListener): () => void {
+  sessionWatchdogListeners.add(listener)
+
+  return () => void sessionWatchdogListeners.delete(listener)
+}
+
 function armSessionWatchdog(sessionId: string) {
   const existing = sessionWatchdogTimers.get(sessionId)
 
@@ -356,6 +414,10 @@ function armSessionWatchdog(sessionId: string) {
     // away or the session genuinely finished, the timer is a no-op.
     if ($workingSessionIds.get().includes(sessionId)) {
       setWorkingSessionIds(current => current.filter(id => id !== sessionId))
+    }
+
+    for (const listener of sessionWatchdogListeners) {
+      listener(sessionId)
     }
   }, SESSION_WATCHDOG_TIMEOUT_MS)
 

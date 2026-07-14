@@ -37,6 +37,38 @@ _OVERALL_GLYPH = {
 }
 
 
+def _cua_child_env() -> Dict[str, str]:
+    """cua-driver child env with the Hermes telemetry policy applied.
+
+    Delegates to ``cua_backend.cua_driver_child_env`` (telemetry disabled by
+    default unless the user opts in). Falls back to the current environment
+    if that import fails, so doctor never breaks on a telemetry-helper error.
+    """
+    try:
+        from tools.computer_use.cua_backend import cua_driver_child_env
+
+        return cua_driver_child_env()
+    except Exception:
+        return dict(os.environ)
+
+
+def _sanitized_cua_env() -> Dict[str, str]:
+    """Telemetry-policy env with Hermes provider secrets stripped.
+
+    cua-driver is a third-party binary — it must never inherit provider
+    API keys (#53503/#55709/#58889 lineage). Falls back to the unsanitized
+    telemetry env if the sanitizer can't be imported, so doctor keeps
+    working in stripped-down environments.
+    """
+    env = _cua_child_env()
+    try:
+        from tools.environments.local import _sanitize_subprocess_env
+
+        return _sanitize_subprocess_env(env)
+    except Exception:
+        return env
+
+
 def _drive_health_report(
     binary: str,
     *,
@@ -72,6 +104,7 @@ def _drive_health_report(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        env=_sanitized_cua_env(),
     )
     try:
         # 1. initialize

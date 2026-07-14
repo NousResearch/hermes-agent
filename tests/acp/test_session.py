@@ -440,6 +440,45 @@ class TestPersistence:
 
         assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-olympus", "mcp-exa"]
 
+    def test_create_session_honors_platform_toolsets_acp(self, tmp_path, monkeypatch):
+        """platform_toolsets.acp in config replaces the hermes-acp composite."""
+        captured = {}
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), enabled_toolsets=kwargs.get("enabled_toolsets"))
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"},
+            "platform_toolsets": {"acp": ["web", "terminal", "file"]},
+            "mcp_servers": {"olympus": {"command": "python", "enabled": True}},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, **kwargs: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            },
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            manager.create_session(cwd="/work")
+
+        assert captured["enabled_toolsets"] == ["web", "terminal", "file", "mcp-olympus"]
+
+    def test_acp_base_toolsets_fallback_on_empty_or_missing(self, monkeypatch):
+        """Missing, non-list, or empty platform_toolsets.acp falls back to hermes-acp."""
+        for cfg in ({}, {"platform_toolsets": {}}, {"platform_toolsets": {"acp": "web"}},
+                    {"platform_toolsets": {"acp": []}}, {"platform_toolsets": {"acp": ["", None]}}):
+            monkeypatch.setattr("hermes_cli.config.load_config", lambda cfg=cfg: cfg)
+            assert acp_session._acp_base_toolsets() == ["hermes-acp"]
+
     def test_create_session_writes_to_db(self, manager):
         state = manager.create_session(cwd="/project")
         db = manager._get_db()

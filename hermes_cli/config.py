@@ -12,6 +12,7 @@ This module provides:
 - hermes config wizard   - Re-run setup wizard
 """
 
+import collections
 import copy
 import json
 import logging
@@ -247,6 +248,27 @@ _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
 _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# path -> deque[(stat_signature, normalized_raw_state, self_written,
+# foreign_paths)]: the last N DISTINCT on-disk config states this process
+# has OBSERVED (via read_raw_config / load_config parses, or its own
+# save_config writes — the latter flagged self_written, with the key paths
+# that were merge-preserved from foreign edits in foreign_paths). save_config's
+# lost-update protection uses this as its three-way merge base: a caller
+# value that matches ANY previously observed disk state is a stale-snapshot
+# copy, not a deliberate edit, so a newer disk-side value must survive the
+# save. A deque of distinct states (dedup on stat signature), not just the
+# latest observation, because long-running processes (gateways) reload
+# config constantly — a reload AFTER a foreign disk edit would otherwise
+# absorb that edit into the base and mask the caller's staleness.
+# States are stored post _normalize_root_model_keys/_normalize_max_turns so
+# comparisons against save_config's write pipeline are domain-consistent.
+_DISK_STATE_OBSERVATIONS: Dict[str, Any] = {}
+_DISK_STATE_HISTORY_LIMIT = 8
+# (path, dotted_key) pairs already warned about by the unknown-key check —
+# warn once per process, never block.
+_UNKNOWN_KEY_WARNED: Set[Tuple[str, str]] = set()
+# Sentinel for "key absent at this path" in the three-way merge.
+_MERGE_MISSING = object()
 # Serializes all config read/write paths. libyaml's C extension is not
 # thread-safe for concurrent safe_load() on the same file, and multiple
 # tool threads (approval.py, browser_tool.py, setup flows) hit
@@ -6694,6 +6716,7 @@ def read_raw_config() -> Dict[str, Any]:
         path_key = str(config_path)
         cached = _RAW_CONFIG_CACHE.get(path_key)
         if cached is not None and cached[:2] == cache_key:
+            _note_disk_state(path_key, cache_key, cached[2])
             return copy.deepcopy(cached[2])
 
         try:
@@ -6706,7 +6729,354 @@ def read_raw_config() -> Dict[str, Any]:
         if not isinstance(data, dict):
             data = {}
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
+        _note_disk_state(path_key, cache_key, data)
         return data
+
+
+class ConfigWriteConflictError(RuntimeError):
+    """save_config refused to write: the same key changed both on disk and
+    in the caller's snapshot since the caller loaded it.
+
+    Raised instead of silently letting one side's edit clobber the other's
+    (the config lost-update defect). Fail-closed: nothing is written. The
+    caller should re-load config.yaml, re-apply its change, and save again.
+    The message names the conflicting key path(s) only — config values can
+    be secrets and are never included.
+    """
+
+
+class ConfigDuplicateKeyError(RuntimeError):
+    """save_config refused to write: the on-disk config.yaml contains a
+    duplicate mapping key.
+
+    PyYAML parses duplicate keys last-one-wins, so the file's effective
+    semantics are ambiguous (usually a human mid-edit). A whole-file rewrite
+    would silently collapse the duplicates and destroy one of the stanzas —
+    fail closed and make the user fix the YAML instead.
+    """
+
+
+def _make_duplicate_key_rejecting_loader():
+    """A SafeLoader (C-accelerated when available) that raises
+    :class:`ConfigDuplicateKeyError` on duplicate mapping keys at any depth.
+
+    Only the construction step is overridden, so this composes with
+    ``CSafeLoader`` — the C extension accelerates parsing/composing while
+    ``construct_mapping`` remains the Python method we hook.
+    """
+    base_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
+
+    class _DupKeyRejectingLoader(base_loader):  # type: ignore[misc, valid-type]
+        def construct_mapping(self, node, deep=False):
+            seen = set()
+            for key_node, _value_node in node.value:
+                key = self.construct_object(key_node, deep=True)
+                try:
+                    if key in seen:
+                        raise ConfigDuplicateKeyError(
+                            f"duplicate mapping key {key!r} at line "
+                            f"{key_node.start_mark.line + 1}"
+                        )
+                    seen.add(key)
+                except TypeError:
+                    # Unhashable key (e.g. a list) — leave it to the normal
+                    # constructor's own error handling.
+                    continue
+            return super().construct_mapping(node, deep=deep)
+
+    return _DupKeyRejectingLoader
+
+
+_DUP_KEY_REJECTING_LOADER = None
+
+
+def _load_yaml_reject_duplicate_keys(text: str) -> Any:
+    global _DUP_KEY_REJECTING_LOADER
+    if _DUP_KEY_REJECTING_LOADER is None:
+        _DUP_KEY_REJECTING_LOADER = _make_duplicate_key_rejecting_loader()
+    return yaml.load(text, Loader=_DUP_KEY_REJECTING_LOADER)
+
+
+def _note_disk_state(
+    path_key: str,
+    sig: Tuple[int, int],
+    raw_data: Any,
+    *,
+    self_written: bool = False,
+    authored_paths: frozenset = frozenset(),
+) -> None:
+    """Record an observed on-disk config state for ``path_key``.
+
+    Called (under ``_CONFIG_LOCK``) wherever this process actually parses
+    config.yaml content — read_raw_config, _load_config_impl — and after
+    save_config's own writes. Dedups on the file's (mtime_ns, size)
+    signature so cache-hit hot paths cost one tuple compare.
+
+    ``self_written=True`` marks a state this process's own save_config
+    produced; ``authored_paths`` names the key paths that write actually
+    CHANGED relative to the disk state it replaced (values it merely
+    carried over or merge-preserved are not authored). The distinction
+    keeps in-process sequential saves last-write-wins on process-authored
+    values (a process may freely overwrite its own writes, even with older
+    values) while foreign edits — including ones a self-write carried
+    through unchanged — stay protected.
+    """
+    if not isinstance(raw_data, dict):
+        return
+    history = _DISK_STATE_OBSERVATIONS.get(path_key)
+    if history is None:
+        history = collections.deque(maxlen=_DISK_STATE_HISTORY_LIMIT)
+        _DISK_STATE_OBSERVATIONS[path_key] = history
+    if history and history[-1][0] == sig:
+        if self_written and not history[-1][2]:
+            history[-1] = (sig, history[-1][1], True, authored_paths)
+        return
+    normalized = _normalize_root_model_keys(
+        _normalize_max_turns_config(copy.deepcopy(raw_data))
+    )
+    if history and history[-1][1] == normalized:
+        if self_written and not history[-1][2]:
+            history[-1] = (history[-1][0], history[-1][1], True, authored_paths)
+        return
+    history.append((sig, normalized, self_written, authored_paths))
+
+
+def _read_disk_config_for_merge(config_path: Path) -> Optional[Dict[str, Any]]:
+    """Fresh disk read for save_config's lost-update merge.
+
+    Returns the parsed dict (``{}`` for an existing-but-empty file), or
+    ``None`` when there is nothing to merge against: file absent (plain
+    create), unreadable, unparseable, or a non-dict root. ``None`` makes
+    save_config fall back to its legacy overwrite behavior — for a corrupt
+    file that is deliberate: the content was already .bak-snapshotted by
+    ``_warn_config_parse_failure`` when the pipeline's raw read failed, and
+    the last-known-good retention in ``_load_config_impl`` keeps serving
+    the previous config until the YAML is fixed.
+
+    Raises :class:`ConfigDuplicateKeyError` when the file parses but has
+    duplicate mapping keys — see that class's docstring.
+    """
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        data = _load_yaml_reject_duplicate_keys(text)
+    except ConfigDuplicateKeyError as exc:
+        raise ConfigDuplicateKeyError(
+            f"Refusing to overwrite {config_path}: {exc}. The file's "
+            f"effective values are ambiguous (YAML is last-key-wins) and a "
+            f"rewrite would silently collapse the duplicates. Fix the "
+            f"duplicate key first."
+        ) from exc
+    except Exception:
+        return None
+    if data is None:
+        return {}
+    return data if isinstance(data, dict) else None
+
+
+def _config_path_value(state: Any, path: Tuple[str, ...]) -> Any:
+    """Value at a nested key path in ``state``, or ``_MERGE_MISSING``."""
+    node = state
+    for part in path:
+        if not isinstance(node, dict) or part not in node:
+            return _MERGE_MISSING
+        node = node[part]
+    return node
+
+
+def _merge_values_equal(a: Any, b: Any) -> bool:
+    if a is b:
+        return True
+    if a is _MERGE_MISSING or b is _MERGE_MISSING:
+        return False
+    return a == b
+
+
+def _path_has_prefix_in(key_path: Tuple[str, ...], paths: frozenset) -> bool:
+    """True when ``key_path`` or any of its ancestors is in ``paths``."""
+    return any(key_path[: len(p)] == p for p in paths)
+
+
+def _dict_diff_paths(
+    a: Dict[str, Any], b: Dict[str, Any], _path: Tuple[str, ...] = ()
+) -> set:
+    """Leaf-level key paths where two config dicts differ (either side may
+    be missing the path)."""
+    paths: set = set()
+    for key in set(a) | set(b):
+        va = a.get(key, _MERGE_MISSING)
+        vb = b.get(key, _MERGE_MISSING)
+        if isinstance(va, dict) and isinstance(vb, dict):
+            paths |= _dict_diff_paths(va, vb, _path + (key,))
+        elif not _merge_values_equal(va, vb):
+            paths.add(_path + (key,))
+    return paths
+
+
+def _three_way_config_merge(
+    ours: Dict[str, Any],
+    theirs: Dict[str, Any],
+    prior_states: List[Dict[str, Any]],
+    latest_self_state: Optional[Dict[str, Any]] = None,
+    latest_self_authored: frozenset = frozenset(),
+    _path: Tuple[str, ...] = (),
+    _preserved: Optional[List[Tuple[str, ...]]] = None,
+    _conflicts: Optional[List[Tuple[str, ...]]] = None,
+):
+    """Merge the caller's about-to-be-written config with the current disk.
+
+    ``ours``   — save_config's pipeline output (normalized, env templates
+                 restored, defaults stripped): what the caller wants disk to
+                 say.
+    ``theirs`` — the current on-disk config (normalized the same way).
+    ``prior_states`` — disk states this process previously observed (the
+                 merge base; see ``_DISK_STATE_OBSERVATIONS``).
+    ``latest_self_state`` / ``latest_self_authored`` — the last state this
+                 process's own save_config wrote, and the key paths that
+                 write actually CHANGED relative to the disk it replaced
+                 (carried-over and merge-preserved values are not
+                 authored).
+
+    Per key path:
+
+    * equal on both sides → keep;
+    * the current disk value is one THIS process authored in its own last
+      write → sequential in-process saves stay last-write-wins: the caller
+      may overwrite its own process's writes, even with older values;
+    * caller's value (or its absence) matches a previously observed disk
+      state while disk now differs → the caller is carrying a stale
+      snapshot: the disk-side (foreign) edit wins (recorded in
+      ``preserved``);
+    * caller introduced a new value and disk is unchanged since the last
+      observation → the caller's edit wins (including deletions);
+    * caller introduced a new value AND disk changed since the last
+      observation → conflict (recorded; the caller raises).
+
+    The deliberate bias: when staleness is ambiguous, prefer keeping what is
+    on disk — visibly (WARNING log), never silently. Silent loss of a
+    disk-side edit is the defect this exists to fix; a suppressed deletion
+    is visible in the log and recoverable, a clobbered hand-edit is neither.
+    """
+    if _preserved is None:
+        _preserved = []
+    if _conflicts is None:
+        _conflicts = []
+    latest_state = prior_states[-1] if prior_states else theirs
+    merged: Dict[str, Any] = {}
+    keys = list(ours.keys()) + [k for k in theirs.keys() if k not in ours]
+    for key in keys:
+        key_path = _path + (key,)
+        o = ours.get(key, _MERGE_MISSING)
+        t = theirs.get(key, _MERGE_MISSING)
+        if isinstance(o, dict) and isinstance(t, dict):
+            sub, _, _ = _three_way_config_merge(
+                o,
+                t,
+                prior_states,
+                latest_self_state,
+                latest_self_authored,
+                key_path,
+                _preserved,
+                _conflicts,
+            )
+            if sub:
+                merged[key] = sub
+            elif not o:
+                # caller explicitly kept an empty mapping
+                merged[key] = {}
+            # both sides had content but every child resolved to omission →
+            # drop the empty subtree (mirrors _strip_default_values)
+            continue
+        if o is not _MERGE_MISSING and t is not _MERGE_MISSING and o == t:
+            merged[key] = o
+            continue
+        if o is _MERGE_MISSING and t is _MERGE_MISSING:
+            continue
+        if (
+            latest_self_state is not None
+            and _path_has_prefix_in(key_path, latest_self_authored)
+            and _merge_values_equal(
+                t, _config_path_value(latest_self_state, key_path)
+            )
+        ):
+            # The disk value here is one this process AUTHORED in its own
+            # last write — no foreign edit to protect. In-process sequential
+            # saves keep last-write-wins semantics.
+            if o is not _MERGE_MISSING:
+                merged[key] = o
+            continue
+        o_seen_on_disk_before = any(
+            _merge_values_equal(o, _config_path_value(state, key_path))
+            for state in prior_states
+        )
+        if o_seen_on_disk_before:
+            # Stale snapshot: disk moved past the caller's copy of this key.
+            if t is not _MERGE_MISSING:
+                merged[key] = copy.deepcopy(t)
+            _preserved.append(key_path)
+        elif _merge_values_equal(t, _config_path_value(latest_state, key_path)):
+            # Disk unchanged since our last observation → caller's edit wins
+            # (an absent ``o`` here is a deliberate deletion).
+            if o is not _MERGE_MISSING:
+                merged[key] = o
+        else:
+            _conflicts.append(key_path)
+    return merged, _preserved, _conflicts
+
+
+def _warn_unknown_config_keys(config: Dict[str, Any], path_key: str) -> None:
+    """WARN (never block) on suspicious unknown second-level keys inside
+    top-level subtrees that ``DEFAULT_CONFIG`` actually defines as
+    non-empty dicts.
+
+    Deliberately narrow on two axes, because DEFAULT_CONFIG is NOT a
+    complete schema:
+
+    * unknown TOP-LEVEL keys stay silent — legit keys (``session_reset``,
+      ``plugins``, ``mcp_servers``, ...) live only at the top level of
+      user configs;
+    * within a defined subtree, an unknown child only warns when it is a
+      NEAR-MATCH of a known key or of a sibling key — the garbled/typo'd
+      key class (e.g. ``display.tool_progress_gr―ouping`` next to the real
+      ``tool_progress_grouping``). Live profile configs legitimately carry
+      15-25 second-level keys per file that DEFAULT_CONFIG doesn't
+      enumerate (``agent.verbose``, ``cron.script_timeout_seconds``, ...);
+      warning on every one would bury the signal.
+
+    Warns once per (config path, dotted key) per process.
+    """
+    import difflib
+
+    for top_key, value in config.items():
+        default_subtree = DEFAULT_CONFIG.get(top_key)
+        if not isinstance(default_subtree, dict) or not default_subtree:
+            continue
+        if not isinstance(value, dict):
+            continue
+        for child_key in value:
+            if child_key in default_subtree:
+                continue
+            candidates = [k for k in default_subtree if k != child_key]
+            candidates += [k for k in value if k != child_key]
+            close = difflib.get_close_matches(
+                str(child_key), [str(c) for c in candidates], n=1, cutoff=0.8
+            )
+            if not close:
+                continue
+            dotted = f"{top_key}.{child_key}"
+            warn_key = (path_key, dotted)
+            if warn_key in _UNKNOWN_KEY_WARNED:
+                continue
+            _UNKNOWN_KEY_WARNED.add(warn_key)
+            logger.warning(
+                "save_config: unknown config key %s looks like a garbled or "
+                "misspelled %s.%s — writing it anyway; check for a typo.",
+                dotted,
+                top_key,
+                close[0],
+            )
 
 
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:
@@ -6973,6 +7343,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = fast_safe_load(f) or {}
 
+                if isinstance(user_config, dict):
+                    _note_disk_state(path_key, user_sig, user_config)
+
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
                     if agent_user_config.get("max_turns") is None:
@@ -7151,6 +7524,18 @@ def save_config(
     before any normalisation).  This prevents config.yaml from being
     contaminated with schema defaults on every save, which makes future
     default changes invisible to users.
+
+    Lost-update protection: callers pass a dict mutated from a
+    ``load_config()`` snapshot, and this used to be a blind whole-file
+    reserialization — any disk-side edit made after that snapshot (a hand
+    edit, another process's ``hermes config set``, a second gateway) was
+    silently reverted. Now the current disk state is re-read and three-way
+    merge-preserved against the process's observed disk-state history
+    (``_DISK_STATE_OBSERVATIONS``): disk-side edits the caller never saw
+    survive the save. Raises :class:`ConfigWriteConflictError` (fail-closed,
+    nothing written) when the same key changed on both sides, and
+    :class:`ConfigDuplicateKeyError` when the on-disk YAML contains
+    duplicate mapping keys.
     """
     with _CONFIG_LOCK:
         if is_managed():
@@ -7172,11 +7557,22 @@ def save_config(
                     f"(managed by your administrator): {', '.join(sorted(_stripped))}",
                     file=sys.stderr,
                 )
-        from utils import atomic_yaml_write
-
         ensure_hermes_home()
         config_path = get_config_path()
+        path_key = str(config_path)
         require_readable_config_before_write(config_path)
+        # Lost-update merge base: the disk states this process observed
+        # BEFORE this save. Captured first — the reads below observe the
+        # CURRENT disk, which is the merge's "theirs", not the base.
+        prior_entries = list(_DISK_STATE_OBSERVATIONS.get(path_key, ()))
+        prior_disk_states = [entry[1] for entry in prior_entries]
+        latest_self_state: Optional[Dict[str, Any]] = None
+        latest_self_authored: frozenset = frozenset()
+        for entry in reversed(prior_entries):
+            if entry[2]:
+                latest_self_state = entry[1]
+                latest_self_authored = entry[3]
+                break
         # Compute explicit user paths BEFORE any normalisation --------
         # _normalize_max_turns_config may inject agent.max_turns from
         # DEFAULT_CONFIG; using the raw dict preserves which paths the
@@ -7216,13 +7612,59 @@ def save_config(
                 preserve_keys=effective_preserve_keys,
             )
 
+        # ── Lost-update protection ────────────────────────────────────
+        # Every caller of save_config mutated a snapshot from load_config();
+        # blindly reserializing that snapshot reverts any disk-side edit made
+        # after it was taken (hand-edits, `hermes config set` from another
+        # process, a second gateway). Re-read the disk and three-way
+        # merge-preserve: keys the caller didn't change keep the disk's
+        # current value; the same key changed on both sides is a loud,
+        # fail-closed refusal — silent loss is the defect, never the outcome.
+        final: Dict[str, Any] = normalized
+        # Paths this write AUTHORS (changes relative to the disk state it
+        # replaces). () = "the whole file" for the no-merge create/overwrite
+        # paths; recomputed as a real diff after a merge.
+        authored_paths: frozenset = frozenset({()})
+        disk_now_raw = _read_disk_config_for_merge(config_path)
+        if disk_now_raw is not None:
+            theirs = _normalize_root_model_keys(
+                _normalize_max_turns_config(copy.deepcopy(disk_now_raw))
+            )
+            merged, preserved_paths, conflict_paths = _three_way_config_merge(
+                final, theirs, prior_disk_states,
+                latest_self_state, latest_self_authored,
+            )
+            if conflict_paths:
+                dotted = ", ".join(".".join(p) for p in conflict_paths)
+                msg = (
+                    f"Refusing to save {config_path}: concurrent modification "
+                    f"of {dotted} — the key(s) changed on disk after this "
+                    f"process loaded its config snapshot, and the caller is "
+                    f"writing a different value. Re-load the config, re-apply "
+                    f"the change, and save again. (Values not shown: config "
+                    f"entries can contain secrets.)"
+                )
+                logger.error(msg)
+                raise ConfigWriteConflictError(msg)
+            if preserved_paths:
+                logger.warning(
+                    "save_config: preserved %d disk-side edit(s) the caller's "
+                    "config snapshot predates: %s",
+                    len(preserved_paths),
+                    ", ".join(".".join(p) for p in preserved_paths),
+                )
+            final = merged
+            authored_paths = frozenset(_dict_diff_paths(final, theirs))
+
+        _warn_unknown_config_keys(final, path_key)
+
         # Build optional commented-out sections for features that are off by
         # default or only relevant when explicitly configured.
         parts = []
-        sec = normalized.get("security", {})
+        sec = final.get("security", {})
         if not sec or sec.get("redact_secrets") is None:
             parts.append(_SECURITY_COMMENT)
-        fb = normalized.get("fallback_model", {})
+        fb = final.get("fallback_model", {})
         fb_is_valid = False
         if isinstance(fb, list):
             fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
@@ -7231,13 +7673,29 @@ def save_config(
         if not fb_is_valid:
             parts.append(_FALLBACK_COMMENT)
 
-        atomic_yaml_write(
+        atomic_config_write(
             config_path,
-            normalized,
+            final,
             extra_content="".join(parts) if parts else None,
         )
         _secure_file(config_path)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        # The last-expanded snapshot feeds env-template preservation and the
+        # last-known-good parse-failure fallback: overlay the merge result so
+        # disk-side values we just preserved aren't served stale from it.
+        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(
+            _deep_merge(current_normalized, final)
+        )
+        try:
+            st = config_path.stat()
+            _note_disk_state(
+                path_key,
+                (st.st_mtime_ns, st.st_size),
+                final,
+                self_written=True,
+                authored_paths=authored_paths,
+            )
+        except OSError:
+            pass
 
 
 def _parse_env_value(raw_value: str) -> str:

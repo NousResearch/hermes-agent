@@ -2089,7 +2089,16 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        # On Windows, bash (Git Bash / MSYS2) interprets backslashes in
+        # paths as escape sequences, silently mangling them — a path like
+        # C:\Users\... becomes C:Users... and the script is never found.
+        # path.as_posix() normalizes to POSIX forward-slash form
+        # (/c/Users/...) which MSYS2 bash understands natively.
+        # On non-Windows platforms, str(path) is already a valid POSIX path.
+        if os.name == "nt":
+            argv = [_bash, path.as_posix()]
+        else:
+            argv = [_bash, str(path)]
     else:
         argv = [sys.executable, str(path)]
 

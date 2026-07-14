@@ -1382,6 +1382,114 @@ def _command_detection_variants(command: str):
         yield variant
 
 
+def _iter_shell_words(command: str, pos: int):
+    """Yield quote-aware shell words until the current command ends."""
+    for _ in range(256):
+        word_start, word_end, raw_word = _read_shell_word(command, pos)
+        if word_start == word_end:
+            break
+        # An unquoted # at a word boundary starts a shell comment. A quoted
+        # value begins with its quote in raw_word and therefore stays data.
+        if raw_word.startswith("#"):
+            break
+        yield raw_word
+        pos = word_end
+
+
+def _literal_kill_pid_operand(word: str) -> str | None:
+    """Return a literal PID operand, tolerating attached shell syntax."""
+    value = _deobfuscate_shell_word_for_detection(word).strip()
+    # Group closers and redirections are shell syntax, not part of the PID:
+    # `(kill 123)` and `kill 123>/dev/null` both target PID 123.
+    match = re.fullmatch(r"\+?(\d+)(?:[)}]+|[<>].*)?", value)
+    return match.group(1) if match else None
+
+
+def _kill_argv_targets_pid(argv: list[str], own_pid: str) -> bool:
+    """Parse kill options and report a terminating literal own-PID operand."""
+    signal: str | None = None
+    operands: list[str] = []
+    parse_options = True
+    index = 0
+
+    while index < len(argv):
+        arg = _deobfuscate_shell_word_for_detection(argv[index]).strip()
+        if not arg:
+            index += 1
+            continue
+
+        if parse_options and arg == "--":
+            parse_options = False
+            index += 1
+            continue
+
+        if parse_options and arg in {"-l", "--list", "-L", "--table"}:
+            # These modes only print signal names/tables; they do not send.
+            return False
+
+        if parse_options and arg in {"--help", "--version"}:
+            return False
+
+        if parse_options and arg in {"-s", "--signal", "-n"}:
+            if index + 1 >= len(argv):
+                return False
+            signal = _deobfuscate_shell_word_for_detection(argv[index + 1]).strip()
+            index += 2
+            continue
+
+        if parse_options and arg.startswith("--signal="):
+            signal = arg.split("=", 1)[1]
+            index += 1
+            continue
+
+        if parse_options and re.fullmatch(r"-[sn].+", arg):
+            signal = arg[2:]
+            index += 1
+            continue
+
+        if parse_options and arg in {"-q", "--queue"}:
+            # sigqueue payload; the following word is a value, not a PID.
+            index += 2
+            continue
+
+        if parse_options and arg.startswith("--queue="):
+            index += 1
+            continue
+
+        if parse_options and arg == "--timeout":
+            # procps-ng: --timeout <milliseconds> <signal>
+            index += 3
+            continue
+
+        if parse_options and arg.startswith("-") and len(arg) > 1:
+            # Traditional compact signal forms: -9, -TERM, -0.
+            signal = arg[1:]
+            index += 1
+            continue
+
+        pid = _literal_kill_pid_operand(argv[index])
+        if pid is not None:
+            operands.append(pid)
+        index += 1
+
+    normalized_signal = (signal or "TERM").strip().upper()
+    if normalized_signal in {"0", "SIG0"}:
+        return False
+    return own_pid in operands
+
+
+def _command_kills_own_pid(command: str, own_pid: str) -> bool:
+    """Find real command-position kill invocations and parse all operands."""
+    for _word_start, word_end, raw_word in _iter_shell_command_word_spans(command):
+        executable = _deobfuscate_shell_word_for_detection(raw_word).strip()
+        if os.path.basename(executable).lower() != "kill":
+            continue
+        argv = list(_iter_shell_words(command, word_end))
+        if _kill_argv_targets_pid(argv, own_pid):
+            return True
+    return False
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -1395,30 +1503,14 @@ def detect_dangerous_command(command: str) -> tuple:
                 pattern_key = description
                 return (True, pattern_key, description)
 
-        # Dynamic self-PID guard: detect "kill <own-PID>" commands that would
-        # terminate the current Hermes process from within. Static regex cannot
-        # catch this because the PID is only known at runtime.
-        # Covers: kill PID, kill -9 PID, kill -TERM PID, kill -s TERM PID,
-        # kill -s 15 PID, kill --signal TERM PID, kill -- PID. Signal 0 is a
-        # non-terminating liveness probe and must remain approval-free.
+        # Dynamic self-PID guard: parse real command-position `kill`
+        # invocations and every PID operand. Static regex cannot safely
+        # distinguish executable syntax from quoted prose, and one optional
+        # signal fragment misses valid forms such as `kill -n 9 PID`,
+        # `kill -9 -- PID`, and multi-PID commands. Signal 0 remains a
+        # non-terminating liveness probe and is approval-free.
         own_pid = str(os.getpid())
-        non_terminating_probe = (
-            r"(?!(?:-0|-s\s+0|--signal\s+0)\s+(?:--\s+)?"
-            + re.escape(own_pid)
-            + r"\b)"
-        )
-        kill_pid_pattern = (
-            r"\bkill\s+"
-            + non_terminating_probe
-            + r"(?:"
-            r"(?:--signal\s+\S+\s+)"       # kill --signal TERM
-            r"|(?:-s\s+\S+\s+)"            # kill -s TERM / kill -s 15
-            r"|(?:--\s+)"                   # kill -- (end of options)
-            r"|(?:-\S+\s+)"                 # kill -9 / kill -TERM / kill -s15
-            r")?"
-            + re.escape(own_pid) + r"\b"
-        )
-        if re.search(kill_pid_pattern, command_lower):
+        if _command_kills_own_pid(command_variant, own_pid):
             desc = f"kill own Hermes process (self-termination, PID {own_pid})"
             return (True, desc, desc)
     return (False, None, None)

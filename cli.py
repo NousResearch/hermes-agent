@@ -9681,7 +9681,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         if not self.agent:
             if not self._print_nous_credits_block():
-                print("(._.) No active agent -- send a message first.")
+                print("(._.) No usage yet -- the agent is created on the first message; send one to start tracking tokens.")
             return
 
         agent = self.agent

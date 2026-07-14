@@ -61,32 +61,62 @@ export const USER_ACTION_ICON_BUTTON_CLASS =
 export const USER_ACTION_ICON_SIZE = '0.6875rem'
 export const StopGlyph = <StopFilled aria-hidden className="size-3.5 -translate-y-px" />
 
-// Background-process notifications are injected into the conversation as user
-// messages (the agent must react to them, and message-role alternation forbids
-// a synthetic system row mid-loop). They are NOT something the human typed, so
+// Background-process / Hephaestus notifications are injected into the
+// conversation as user messages (the agent must react, and role alternation
+// forbids a synthetic system row mid-loop). They are NOT human prompts —
 // render them as a compact system-style notice instead of a user bubble.
-// Shape: see tools/process_registry.py format_process_notification().
+// Shapes: process_registry format_process_notification() + Hephaestus plugin.
 const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
+const ASYNC_DELEGATION_RE = /^\[ASYNC DELEGATION (?:BATCH )?COMPLETE[\s\S]*$/
+const HEPHAESTUS_RESULT_RE = /^Hephaestus task [\s\S]*$/
+
+function isInjectedProcessNotification(text: string): boolean {
+  const t = text.trim()
+  return (
+    PROCESS_NOTIFICATION_RE.test(t) ||
+    ASYNC_DELEGATION_RE.test(t) ||
+    HEPHAESTUS_RESULT_RE.test(t) ||
+    (t.includes('Hephaestus task ') && (t.includes('verdict=') || t.includes('stop_reason=')))
+  )
+}
 
 const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
-  const body = text.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
-  const newline = body.indexOf('\n')
-  const headline = (newline === -1 ? body : body.slice(0, newline)).trim()
-  const detail = newline === -1 ? '' : body.slice(newline + 1).trim()
+  const raw = text.trim()
+  let headline = raw
+  let detail = ''
+  if (PROCESS_NOTIFICATION_RE.test(raw)) {
+    const body = raw.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
+    const newline = body.indexOf('\n')
+    headline = (newline === -1 ? body : body.slice(0, newline)).trim()
+    detail = newline === -1 ? '' : body.slice(newline + 1).trim()
+  } else if (ASYNC_DELEGATION_RE.test(raw)) {
+    const lines = raw.split('\n')
+    headline = (lines[0] || raw).replace(/^\[|\]$/g, '').trim()
+    // Prefer the RESULT block / structured summary for detail.
+    const resultIdx = lines.findIndex(l => l.trim() === '--- RESULT ---')
+    detail = (resultIdx >= 0 ? lines.slice(resultIdx + 1) : lines.slice(1)).join('\n').trim()
+  } else {
+    const lines = raw.split('\n')
+    headline = (lines[0] || raw).trim()
+    detail = lines.slice(1).join('\n').trim()
+  }
 
   return (
-    <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+    <div
+      className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/70"
+      data-hephaestus-result={headline.includes('Hephaestus') || raw.includes('Hephaestus') ? 'true' : undefined}
+    >
       <span className="flex items-center gap-1.5">
         <Codicon className="shrink-0 text-muted-foreground/55" name="terminal" size="0.75rem" />
-        <span className="wrap-anywhere">{headline}</span>
+        <span className="wrap-anywhere font-medium text-muted-foreground/80">{headline}</span>
       </span>
       {detail && (
-        <details className="pl-[1.3125rem]">
+        <details className="pl-[1.3125rem]" open={raw.includes('Hephaestus') || raw.includes('verdict=')}>
           <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
-            output
+            result
           </summary>
           <pre
-            className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"
+            className="mt-0.5 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/70"
             data-selectable-text="true"
           >
             {detail}
@@ -195,9 +225,9 @@ export const UserMessage: FC<{
 
   useResizeObserver(measureClamp, clampInnerRef)
 
-  // Injected background-process notification, not a human prompt — render the
-  // compact system-style notice (after all hooks above have run).
-  if (PROCESS_NOTIFICATION_RE.test(messageText.trim())) {
+  // Injected background-process / Hephaestus notification, not a human prompt —
+  // render the compact system-style notice (after all hooks above have run).
+  if (isInjectedProcessNotification(messageText)) {
     return (
       <MessagePrimitive.Root
         className="flex w-full min-w-0 flex-col items-stretch"

@@ -150,6 +150,23 @@ interface GatewayEventDeps {
 }
 
 /** The gateway-event dispatcher, extracted from useMessageStream. */
+/** Process-status text that should appear as a durable transcript row. */
+export function isVisibleProcessResultText(text: string): boolean {
+  const t = text.trim()
+  if (!t) {
+    return false
+  }
+  return (
+    t.startsWith('[IMPORTANT: Background process') ||
+    t.startsWith('[ASYNC DELEGATION COMPLETE') ||
+    t.startsWith('[ASYNC DELEGATION BATCH COMPLETE') ||
+    t.includes('Hephaestus task ') ||
+    t.includes('verdict=PASS') ||
+    t.includes('verdict=FAIL') ||
+    t.includes('verdict=PASS_WEAK')
+  )
+}
+
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const {
     appendAssistantDelta,
@@ -892,6 +909,27 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
+          // Also persist *task/process result text* into the transcript.
+          // Previously only the status stack refreshed, so Hephaestus
+          // async-delegation completions never appeared as chat rows even
+          // when the poller emitted full summary text. Mirror review.summary:
+          // durable system message, not a toast that can be missed.
+          const text = coerceGatewayText(payload?.text).trim()
+          if (text && isVisibleProcessResultText(text)) {
+            flushQueuedDeltas(sessionId)
+            updateSessionState(sessionId, state => ({
+              ...state,
+              messages: [
+                ...state.messages,
+                {
+                  id: `process-result-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  role: 'system',
+                  parts: [textPart(text)],
+                  timestamp: Math.floor(Date.now() / 1000)
+                }
+              ]
+            }))
+          }
         }
       } else if (event.type === 'review.summary') {
         // Self-improvement background review saved something to memory/skills

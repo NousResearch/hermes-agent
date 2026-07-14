@@ -10105,6 +10105,27 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+def _is_user_visible_process_result(text: str) -> bool:
+    """True if process-notification text should also land as a chat system line.
+
+    Packaged Hermes Desktop paints durable rows for ``review.summary`` but not
+    for ``status.update`` (kind=process). Hephaestus / async-delegation outcomes
+    must use the former so humans always see the result without a UI rebuild.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    return (
+        t.startswith("[IMPORTANT: Background process")
+        or t.startswith("[ASYNC DELEGATION COMPLETE")
+        or t.startswith("[ASYNC DELEGATION BATCH COMPLETE")
+        or "Hephaestus task " in t
+        or "verdict=PASS" in t
+        or "verdict=FAIL" in t
+        or "verdict=PASS_WEAK" in t
+    )
+
+
 def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) -> bool:
     """True if ``evt`` is owned by a *different* live session.
 
@@ -10342,6 +10363,22 @@ def _notification_poller_loop(
         _dedup_key = _notification_event_dedup_key(evt)
         if _dedup_key not in _emitted:
             _emit("status.update", sid, {"kind": "process", "text": text})
+            # Desktop (packaged) only paints durable transcript rows for a few
+            # event types — status.update(kind=process) just refreshes the
+            # process status stack. review.summary is already rendered as a
+            # persistent system message in the chat (same path as self-improve
+            # reviews). Use it for Hephaestus / async-delegation completions so
+            # humans see the outcome without a desktop rebuild.
+            if _is_user_visible_process_result(text):
+                try:
+                    _emit("review.summary", sid, {"text": text})
+                except Exception:
+                    logger.exception(
+                        "failed to emit review.summary for process result "
+                        "(sid=%s, key=%r)",
+                        sid,
+                        _dedup_key,
+                    )
             _emitted.add(_dedup_key)
 
         _requeued = False
@@ -10428,6 +10465,16 @@ def _notification_poller_loop(
         _dedup_key = _notification_event_dedup_key(evt)
         if _dedup_key not in _emitted:
             _emit("status.update", sid, {"kind": "process", "text": text})
+            if _is_user_visible_process_result(text):
+                try:
+                    _emit("review.summary", sid, {"text": text})
+                except Exception:
+                    logger.exception(
+                        "failed to emit review.summary for process result "
+                        "(sid=%s, key=%r)",
+                        sid,
+                        _dedup_key,
+                    )
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:

@@ -1026,6 +1026,11 @@ class SessionStore:
         self._save_lock = threading.Lock()
         self._routing_generation = 0
         self._persisted_routing_generation = 0
+        # Single-entry upserts persisted since the last full rewrite:
+        # session_key -> (revision, entry_json). Revisions are allocated
+        # from _routing_generation, so fast and full snapshots are totally
+        # ordered; guarded by _save_lock (see _save_entry).
+        self._fast_persisted_entries: Dict[str, tuple[int, str]] = {}
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
         self._has_active_processes_fn = has_active_processes_fn
@@ -1255,6 +1260,16 @@ class SessionStore:
         with save_lock:
             if generation <= getattr(self, "_persisted_routing_generation", 0):
                 return
+            # Fold in single-entry upserts with a newer revision than this
+            # snapshot (see _save_entry): revisions share the routing
+            # generation counter, so a fast record numbered above us was
+            # serialized after us and a delayed full rewrite must not
+            # regress it.
+            fast_persisted = getattr(self, "_fast_persisted_entries", None)
+            if fast_persisted:
+                for key, (revision, entry_json) in fast_persisted.items():
+                    if revision > generation:
+                        data[key] = json.loads(entry_json)
             db_saved = False
             _db = getattr(self, "_db", None)
             if _db:
@@ -1273,6 +1288,14 @@ class SessionStore:
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 self._save_sessions_json(data)
             self._persisted_routing_generation = generation
+            # This rewrite supersedes fast records at or below its
+            # generation; newer ones stay for the next delayed full writer.
+            if fast_persisted:
+                for key in [
+                    k for k, (rev, _) in fast_persisted.items()
+                    if rev <= generation
+                ]:
+                    del fast_persisted[key]
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
@@ -1319,6 +1342,85 @@ class SessionStore:
         with self._lock:
             data, generation = self._snapshot_routing_locked()
         self._persist_routing_data(data, generation)
+
+    def _save_entry(self, session_key: str) -> None:
+        """Persist ONE routing entry via UPSERT — the per-turn fast path.
+
+        The steady-state turn only bumps ``updated_at`` /
+        ``last_prompt_tokens`` on one entry; routing that through the
+        full index rewrite re-serializes every entry, DELETE+INSERTs
+        every gateway_routing row, and dumps+fsyncs a multi-MB
+        sessions.json — ~50ms p50 at ~1100 routing keys, and it runs
+        twice per turn.  A single-row UPSERT keeps the durable state.db
+        mapping current in well under a millisecond.
+
+        Correctness constraints this path relies on:
+
+        - The key -> session_id mapping never changes here.  Structural
+          transitions (create/recover/reset/switch/prune, and
+          compression-tip heals — see get_or_create_session) still use
+          the full-rewrite path, which also refreshes the legacy
+          sessions.json mirror.  Between structural saves the mirror may
+          lag in metadata only; every remaining sessions.json reader is
+          a legacy fallback and state.db stays primary, so restart
+          rebinding is unaffected.
+
+        - Ordering vs concurrent writers: the entry is serialized under
+          ``_lock`` together with a revision allocated from the routing
+          generation counter, so every snapshot — fast or full — carries
+          a unique, monotonically increasing number, and a higher number
+          always means same-or-newer data for this key.  Under
+          ``_save_lock`` the upsert is skipped when a snapshot numbered
+          above ours already persisted this key: a FULL snapshot
+          (``_persisted_routing_generation``) or another fast save of
+          the same key (``_fast_persisted_entries``).  Either contains a
+          same-or-newer copy, so writing ours would regress it.  The
+          reverse interaction — a delayed full rewrite landing after a
+          later-serialized fast save — is handled in
+          ``_persist_routing_data``, which folds fast records numbered
+          above its snapshot into the rewrite.  An older snapshot can
+          therefore never overwrite a newer one, in either direction.
+
+        - No DB, or a failed upsert, falls back to the full rewrite so
+          DB-less installs keep sessions.json — their primary store —
+          durable every turn.
+        """
+        with self._lock:
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return
+            entry_json = json.dumps(entry.to_dict())
+            self._routing_generation = getattr(self, "_routing_generation", 0) + 1
+            revision = self._routing_generation
+        _db = getattr(self, "_db", None)
+        saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
+        if callable(saver):
+            save_lock = getattr(self, "_save_lock", None)
+            if save_lock is None:
+                save_lock = threading.Lock()
+                self._save_lock = save_lock
+            try:
+                with save_lock:
+                    if getattr(self, "_persisted_routing_generation", 0) >= revision:
+                        return
+                    fast_persisted = getattr(self, "_fast_persisted_entries", None)
+                    if fast_persisted is None:
+                        fast_persisted = {}
+                        self._fast_persisted_entries = fast_persisted
+                    persisted = fast_persisted.get(session_key)
+                    if persisted is not None and persisted[0] >= revision:
+                        return
+                    saver(session_key, entry_json, scope=self._routing_scope())
+                    fast_persisted[session_key] = (revision, entry_json)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "gateway.session: single-entry routing save failed for %r "
+                    "(%s); falling back to full index rewrite",
+                    session_key, exc,
+                )
+        self._save_entries()
+
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
 
@@ -1907,6 +2009,11 @@ class SessionStore:
 
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
+        # Healthy-path saves only bump updated_at on one entry; they take
+        # the single-row UPSERT fast path instead of the full index rewrite
+        # (see _save_entry). Structural transitions (recover/create below)
+        # keep the full rewrite.
+        _metadata_only_save = False
         _needs_recover = False
         entry: Optional[SessionEntry] = None
         was_auto_reset = False
@@ -1918,7 +2025,10 @@ class SessionStore:
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
-                self._heal_compression_tip_locked(
+                # A heal rewrites entry.session_id, so it must reach the
+                # sessions.json mirror too: force the full-rewrite save
+                # below (the fast path persists state.db only).
+                _healed = self._heal_compression_tip_locked(
                     entry, existing_session_id, canonical_existing_session_id
                 )
 
@@ -1945,6 +2055,7 @@ class SessionStore:
                     # window.  Treat as healthy -- bump updated_at and save.
                     entry.updated_at = now
                     _needs_save = True
+                    _metadata_only_save = not _healed
                 else:
                     # Stale check clean.  Apply reset decision.
                     if _reset_reason:
@@ -1958,6 +2069,7 @@ class SessionStore:
                     else:
                         entry.updated_at = now
                         _needs_save = True
+                        _metadata_only_save = not _healed
             else:
                 if not force_new:
                     _needs_recover = True
@@ -2019,7 +2131,10 @@ class SessionStore:
                 }
 
         if _needs_save:
-            self._save_entries()
+            if _metadata_only_save:
+                self._save_entry(session_key)
+            else:
+                self._save_entries()
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:
@@ -2050,19 +2165,28 @@ class SessionStore:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
             self._ensure_loaded_locked()
-
-            if session_key in self._entries:
-                entry = self._entries[session_key]
-                entry.updated_at = _now()
-                if last_prompt_tokens is not None:
-                    entry.last_prompt_tokens = last_prompt_tokens
-                self._save()
-                self._record_gateway_session_peer(
-                    entry.session_id,
-                    session_key,
-                    entry.origin,
-                    display_name=entry.display_name,
-                )
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return
+            entry.updated_at = _now()
+            if last_prompt_tokens is not None:
+                entry.last_prompt_tokens = last_prompt_tokens
+            # Snapshot peer fields while still holding _lock: a concurrent
+            # reset/heal may rewrite the entry, and mixing old and new
+            # fields would record a torn peer row.
+            peer_session_id = entry.session_id
+            peer_origin = entry.origin
+            peer_display_name = entry.display_name
+        # Metadata-only change on one entry: single-row UPSERT instead of
+        # the full index rewrite (see _save_entry). Both writes run outside
+        # ``_lock`` so the SQLite commit never blocks routing lookups.
+        self._save_entry(session_key)
+        self._record_gateway_session_peer(
+            peer_session_id,
+            session_key,
+            peer_origin,
+            display_name=peer_display_name,
+        )
 
     def set_model_override(
         self, session_key: str, override: Optional[Dict[str, Any]]

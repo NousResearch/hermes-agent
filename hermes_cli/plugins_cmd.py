@@ -864,6 +864,11 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
 
+    # Always reconcile platform_toolsets — including the already-enabled path —
+    # so a stale config can be repaired by re-running enable (dashboard path
+    # already toggles toolsets; CLI must match).
+    _toggle_plugin_toolset(key, enable=True)
+
     # Built-in tool override is a privileged grant. Bundled plugins ship with
     # Hermes core and are trusted; every other source needs operator opt-in.
     if source == "bundled":
@@ -927,6 +932,9 @@ def cmd_disable(name: str) -> None:
 
     if key not in enabled and key in disabled:
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
+        # Still reconcile platform_toolsets so re-running disable repairs
+        # stale toolset entries left from a prior partial state.
+        _toggle_plugin_toolset(key, enable=False)
         return
 
     enabled.discard(key)
@@ -938,6 +946,8 @@ def cmd_disable(name: str) -> None:
     disabled.add(key)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
+    # Keep platform_toolsets in sync so the agent stops seeing the plugin's tools.
+    _toggle_plugin_toolset(key, enable=False)
     console.print(
         f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. "
         "Takes effect on next session."

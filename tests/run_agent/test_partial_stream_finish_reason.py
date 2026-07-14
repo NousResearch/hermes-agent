@@ -410,6 +410,59 @@ class TestConversationLoopPartialStreamContinuation:
         assert msgs[-1]["role"] == "user"
         assert "network error mid-stream" in (msgs[-1].get("content") or "")
 
+    def test_empty_partial_stream_stub_coalesces_multimodal_user_continuation(
+        self,
+        loop_agent,
+    ):
+        """The retry prompt must remain in the initial multimodal user turn."""
+        from tests.run_agent.test_run_agent import _mock_response, _mock_assistant_msg
+
+        partial_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=None),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        continuation = _mock_response(
+            content="Recovered multimodal answer.",
+            finish_reason="stop",
+        )
+        loop_agent.client.chat.completions.create.side_effect = [
+            partial_stub,
+            continuation,
+        ]
+        multimodal_prompt = [
+            {"type": "text", "text": "Describe this image."},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,YWJj"},
+            },
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+            patch.object(loop_agent, "_model_supports_vision", return_value=True),
+        ):
+            result = loop_agent.run_conversation(multimodal_prompt)
+
+        assert result["completed"] is True
+        second_call_kwargs = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call_kwargs.kwargs.get("messages") or second_call_kwargs.args[0].get("messages")
+        assert not any(
+            first.get("role") == second.get("role") == "user"
+            for first, second in zip(msgs, msgs[1:])
+        ), msgs
+        final_user = next(m for m in reversed(msgs) if m.get("role") == "user")
+        assert isinstance(final_user["content"], list)
+        assert final_user["content"][-1]["type"] == "text"
+        assert "network error mid-stream" in final_user["content"][-1]["text"]
+
 
 class TestContentFilterStallActivatesFallback:
     """Regression for #32421: a provider output-layer content safety filter

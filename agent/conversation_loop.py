@@ -493,6 +493,29 @@ _CODEX_INCOMPLETE_NUDGE = (
     "you were planning).]"
 )
 
+def _append_continuation_user_message(
+    messages: List[Dict[str, Any]],
+    content: str,
+) -> None:
+    """Coalesce a continuation prompt with an adjacent user turn."""
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+        previous = messages[-1]
+        previous_content = previous.get("content")
+        if isinstance(previous_content, str):
+            previous["content"] = (
+                f"{previous_content}\n\n{content}"
+                if previous_content and content
+                else (previous_content or content)
+            )
+            return
+        if isinstance(previous_content, list):
+            previous["content"] = [
+                *previous_content,
+                {"type": "text", "text": content},
+            ]
+            return
+    messages.append({"role": "user", "content": content})
+
 
 # Shared recovery hint appended to every content-policy refusal message. Both
 # the HTTP-200 refusal path (``finish_reason=content_filter``) and the
@@ -2071,11 +2094,16 @@ def run_conversation(
                                 _continue_content = _get_continuation_prompt(
                                     _is_partial_stream_stub, _dropped_tools
                                 )
-                                continue_msg = {
-                                    "role": "user",
-                                    "content": _continue_content,
-                                }
-                                messages.append(continue_msg)
+                                if _is_partial_stream_stub and _trunc_content_empty:
+                                    _append_continuation_user_message(
+                                        messages,
+                                        _continue_content,
+                                    )
+                                else:
+                                    messages.append({
+                                        "role": "user",
+                                        "content": _continue_content,
+                                    })
                                 agent._session_messages = messages
                                 _retry.restart_with_length_continuation = True
                                 break

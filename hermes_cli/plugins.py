@@ -216,12 +216,19 @@ VALID_HOOKS: Set[str] = {
     # Successful skill lifecycle facts. The local skill name is available to
     # plugins, while built-in shared metrics emit only bounded classifications.
     "on_skill_lifecycle",
-    # CLI session-switch hooks.
-    # on_session_pre_switch: fires in new_session() before session rotation.
-    # on_session_post_switch: fires after session rotation completes.
-    # Plugins receive old_session_id, new_session_id (post only), and CLI ref.
-    "on_session_pre_switch",
-    "on_session_post_switch",
+    # CLI session-switch hooks (observer, no mutation).
+    #
+    # session_switch_starting:
+    #   Fires in new_session() before session rotation.
+    #   Payload: old_session_id=str, cli=<CLI ref>
+    #   Privacy: carries old session ID only (no user content).
+    #
+    # session_switched:
+    #   Fires after session rotation completes.
+    #   Payload: old_session_id=str, new_session_id=str, cli=<CLI ref>
+    #   Privacy: carries session IDs only (no user content).
+    "session_switch_starting",
+    "session_switched",
     "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent

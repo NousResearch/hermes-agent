@@ -311,6 +311,8 @@ export interface Translations {
       uiScaleDesc: (percent: number) => string
       translucencyTitle: string
       translucencyDesc: string
+      backdropTitle: string
+      backdropDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string

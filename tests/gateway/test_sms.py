@@ -107,6 +107,62 @@ class TestSmsFormatAndTruncate:
         result = adapter.format_message("a\n\n\n\nb")
         assert result == "a\n\nb"
 
+    @pytest.mark.asyncio
+    async def test_send_caps_each_body_at_sms_limit(self):
+        """Regression: send() must cap every outgoing SMS body at the 1600-char
+        Twilio limit, and split parts must stay readable in order.
+
+        send() previously called truncate_message() with no max_length, so it used
+        the 4096-char default and a long reply became a single oversized body that
+        Twilio rejected with HTTP 400 ("concatenated message body exceeds the 1600
+        character limit"). The reply was silently dropped. This asserts every body
+        is <= MAX_SMS_LENGTH and carries an (n/N) continuity marker.
+        """
+        import re
+
+        from plugins.platforms.sms.adapter import MAX_SMS_LENGTH
+
+        adapter = self._make_adapter()
+        sent_bodies = []
+
+        class _RecordingFormData:
+            def __init__(self):
+                self._data = {}
+
+            def add_field(self, name, value, **kwargs):
+                self._data[name] = value
+
+        class _Resp:
+            status = 201
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def json(self):
+                return {"sid": "SMtest"}
+
+        class _Session:
+            def post(self, url, data=None, headers=None):
+                sent_bodies.append(data._data["Body"])
+                return _Resp()
+
+        adapter._http_session = _Session()
+        long_reply = "Today's scores. " + " ".join(
+            f"Match {i}: TeamA{i} {i % 4}-{(i + 1) % 4} TeamB{i}." for i in range(1, 160)
+        )
+        assert len(long_reply) > MAX_SMS_LENGTH
+
+        with patch("aiohttp.FormData", _RecordingFormData):
+            result = await adapter.send("+15557654321", long_reply)
+
+        assert result.success is True
+        assert len(sent_bodies) > 1
+        assert all(len(b) <= MAX_SMS_LENGTH for b in sent_bodies)
+        assert all(re.search(r"\(\d+/\d+\)", b) for b in sent_bodies)
+
 
 # ── Echo prevention ────────────────────────────────────────────────
 

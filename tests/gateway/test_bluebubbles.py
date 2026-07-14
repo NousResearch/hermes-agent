@@ -263,6 +263,153 @@ class TestBlueBubblesMentionGating:
         assert [event.text for event in handled] == ["hello from a dm"]
 
 
+class TestBlueBubblesSelfEchoGuard:
+    """When the agent's iMessage account is the account a user texts from, each
+    outbound is echoed back to the webhook as an inbound with isFromMe unset. The
+    adapter records the GUID of everything it sends and drops the matching echo so
+    it does not reply to itself in a loop. These tests drive the real outbound
+    send paths (text, new-chat, attachment) and then feed the echo back through
+    the webhook to verify suppression end-to-end.
+    """
+
+    @staticmethod
+    def _echo_request(guid):
+        """A webhook record shaped like a self-echo: our GUID, isFromMe unset."""
+        return _FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": guid,
+                "text": "hello from a dm",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        })
+
+    @staticmethod
+    def _install_capture(monkeypatch, adapter):
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        return handled
+
+    @pytest.mark.asyncio
+    async def test_message_text_echo_is_dropped(self, monkeypatch):
+        """The GUID returned by /api/v1/message/text must be remembered so its
+        webhook echo is dropped (real send() path, response mocked)."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = self._install_capture(monkeypatch, adapter)
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            assert path == "/api/v1/message/text"
+            return {"data": {"guid": "text-guid-1"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "hi there")
+        assert result.success is True
+        assert result.message_id == "text-guid-1"
+
+        # A different inbound GUID is dispatched normally.
+        resp1 = await adapter._handle_webhook(self._echo_request("inbound-1"))
+        await asyncio.sleep(0)
+        assert resp1.status == 200
+        assert len(handled) == 1
+
+        # The echo of the GUID we just sent is dropped.
+        resp2 = await adapter._handle_webhook(self._echo_request("text-guid-1"))
+        await asyncio.sleep(0)
+        assert resp2.status == 200
+        assert len(handled) == 1  # unchanged — echo ignored
+
+    @pytest.mark.asyncio
+    async def test_chat_new_echo_is_dropped(self, monkeypatch):
+        """The GUID returned by /api/v1/chat/new (first message to a new handle)
+        must be remembered so its webhook echo is dropped."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = self._install_capture(monkeypatch, adapter)
+        adapter._private_api_enabled = True
+
+        async def fake_resolve_chat_guid(chat_id):
+            return None  # forces the new-chat path
+
+        async def fake_api_post(path, payload):
+            assert path == "/api/v1/chat/new"
+            return {"data": {"guid": "newchat-guid-1"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "hi there")
+        assert result.success is True
+        assert result.message_id == "newchat-guid-1"
+
+        resp = await adapter._handle_webhook(self._echo_request("newchat-guid-1"))
+        await asyncio.sleep(0)
+        assert resp.status == 200
+        assert len(handled) == 0  # echo ignored
+
+    @pytest.mark.asyncio
+    async def test_attachment_echo_is_dropped(self, monkeypatch, tmp_path):
+        """The GUID returned by /api/v1/message/attachment must be remembered so
+        the echo of a sent attachment is dropped (maintainer feedback)."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = self._install_capture(monkeypatch, adapter)
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+
+        class _AttachResp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "attach-guid-1"}}
+
+        class _Client:
+            async def post(self, url, files=None, data=None, timeout=None):
+                return _AttachResp()
+
+        adapter.client = _Client()
+
+        f = tmp_path / "pic.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        result = await adapter._send_attachment("user@example.com", str(f))
+        assert result.success is True
+        assert result.message_id == "attach-guid-1"
+
+        # The echoed attachment comes back as an inbound record; drop it.
+        resp = await adapter._handle_webhook(self._echo_request("attach-guid-1"))
+        await asyncio.sleep(0)
+        assert resp.status == 200
+        assert len(handled) == 0  # echo ignored
+
+    def test_remember_self_sent_is_bounded_and_ignores_sentinels(self, monkeypatch):
+        """The GUID store is bounded to 500 entries and ignores empty/'ok'."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._remember_self_sent(None)
+        adapter._remember_self_sent("")
+        adapter._remember_self_sent("ok")
+        assert len(adapter._self_sent_guids) == 0
+
+        for i in range(600):
+            adapter._remember_self_sent(f"g-{i}")
+        assert len(adapter._self_sent_guids) == 500
+        assert "g-599" in adapter._self_sent_guids
+        assert "g-0" not in adapter._self_sent_guids  # oldest evicted
+
+
 class TestBlueBubblesWebhookParsing:
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

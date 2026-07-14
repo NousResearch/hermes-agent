@@ -155,6 +155,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # GUIDs of messages we sent — used to drop the webhook echo of our own
+        # outbound. When the agent's iMessage account is the same one the user
+        # texts from (e.g. a self-chat), the echo arrives with isFromMe unset, so
+        # the isFromMe skip misses it and the agent replies to itself in a loop.
+        self._self_sent_guids: OrderedDict[str, bool] = OrderedDict()
+
+    def _remember_self_sent(self, guid: Optional[str]) -> None:
+        """Record a GUID we just sent so its inbound echo can be ignored."""
+        if not guid or guid == "ok":
+            return
+        self._self_sent_guids[guid] = True
+        while len(self._self_sent_guids) > 500:
+            self._self_sent_guids.popitem(last=False)
 
     # ------------------------------------------------------------------
     # API helpers
@@ -491,6 +504,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             res = await self._api_post("/api/v1/chat/new", payload)
             data = res.get("data") or {}
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
+            self._remember_self_sent(str(msg_id))
             return SendResult(success=True, message_id=str(msg_id), raw_response=res)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -552,6 +566,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 res = await self._api_post("/api/v1/message/text", payload)
                 data = res.get("data") or {}
                 msg_id = data.get("guid") or data.get("messageGuid") or "ok"
+                self._remember_self_sent(str(msg_id))
                 last = SendResult(
                     success=True, message_id=str(msg_id), raw_response=res
                 )
@@ -607,6 +622,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if result.get("status") == 200:
                 rdata = result.get("data") or {}
                 msg_id = rdata.get("guid") if isinstance(rdata, dict) else None
+                # Native attachments echo back through the webhook the same way
+                # text does, so record their GUID too or the self-echo of a sent
+                # attachment restarts the reply loop.
+                self._remember_self_sent(str(msg_id) if msg_id else None)
                 return SendResult(
                     success=True, message_id=msg_id, raw_response=result
                 )
@@ -914,6 +933,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or record.get("is_from_me")
         )
         if is_from_me:
+            return web.Response(text="ok")
+
+        # Drop the webhook echo of a message we just sent. When the agent runs on
+        # the same iMessage account the user texts from, our outbound comes back as
+        # an inbound record with isFromMe unset, so the check above misses it and
+        # the agent would reply to its own message in a loop. Match it by GUID.
+        echo_guid = self._value(record.get("guid"), record.get("messageGuid"))
+        if echo_guid and echo_guid in self._self_sent_guids:
             return web.Response(text="ok")
 
         # Skip tapback reactions delivered as messages

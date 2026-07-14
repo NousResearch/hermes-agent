@@ -162,6 +162,7 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
+_OUTBOUND_MENTION_BOUNDARY_CHARS = set(" \t\r\n.,;:!?，。；：！？、)]}）】》>\'\"")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -409,6 +410,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    dm_policy: str = "open"  # "open" | "disabled"
 
 
 @dataclass
@@ -438,6 +440,7 @@ RejectReason = Literal[
     "self_ids_unknown",
     "bots_disabled",
     "bot_not_mentioned",
+    "dm_policy_rejected",
     "group_policy_rejected",
 ]
 
@@ -560,6 +563,151 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
+
+
+def _parse_outbound_mention_aliases(value: str) -> Dict[str, str]:
+    """Parse optional Feishu outbound mention aliases from env text.
+
+    Format: ``Name=ou_xxx,Other:ou_yyy``. Values are Feishu IDs used in
+    post ``at`` tags. Invalid entries are ignored so optional alias config
+    never breaks ordinary delivery.
+    """
+    aliases: Dict[str, str] = {}
+    for item in (value or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, user_id = item.split(":", 1)
+        elif "=" in item:
+            name, user_id = item.split("=", 1)
+        else:
+            continue
+        name = name.strip()
+        user_id = user_id.strip()
+        if name and (user_id.startswith("ou_") or user_id.startswith("u_")):
+            aliases[name] = user_id
+    return aliases
+
+
+def _load_outbound_mention_aliases() -> Dict[str, str]:
+    return _parse_outbound_mention_aliases(
+        os.getenv("FEISHU_MENTION_ALIASES", "")
+        or os.getenv("FEISHU_OUTBOUND_MENTION_ALIASES", "")
+    )
+
+
+def _split_inline_code_segments(text: str) -> List[tuple[str, bool]]:
+    segments: List[tuple[str, bool]] = []
+    current: List[str] = []
+    in_code = False
+    for ch in text:
+        if ch == "`":
+            if current:
+                segments.append(("".join(current), in_code))
+                current = []
+            in_code = not in_code
+        current.append(ch)
+    if current:
+        segments.append(("".join(current), in_code))
+    return segments
+
+
+def _split_text_with_outbound_mentions(
+    text: str,
+    aliases: Optional[Dict[str, str]] = None,
+    *,
+    text_tag: str = "text",
+) -> List[Dict[str, str]]:
+    aliases = aliases or _load_outbound_mention_aliases()
+    if not text or not aliases:
+        return [{"tag": text_tag, "text": text}]
+
+    names = sorted((name for name in aliases if name), key=len, reverse=True)
+    parts: List[Dict[str, str]] = []
+
+    def append_text(value: str) -> None:
+        if value:
+            parts.append({"tag": text_tag, "text": value})
+
+    for segment, is_code in _split_inline_code_segments(text):
+        if is_code:
+            append_text(segment)
+            continue
+        idx = 0
+        while idx < len(segment):
+            match_name: Optional[str] = None
+            match_pos = -1
+            for name in names:
+                pos = segment.find(f"@{name}", idx)
+                if pos < 0:
+                    continue
+                if match_pos < 0 or pos < match_pos or (pos == match_pos and len(name) > len(match_name or "")):
+                    match_pos = pos
+                    match_name = name
+            if match_name is None or match_pos < 0:
+                append_text(segment[idx:])
+                break
+            before = segment[match_pos - 1] if match_pos > 0 else ""
+            end = match_pos + len(match_name) + 1
+            after = segment[end] if end < len(segment) else ""
+            if before and (before.isalnum() or before in {"_", "-", "."}):
+                append_text(segment[idx:end])
+                idx = end
+                continue
+            if after and after not in _OUTBOUND_MENTION_BOUNDARY_CHARS:
+                append_text(segment[idx:end])
+                idx = end
+                continue
+            append_text(segment[idx:match_pos])
+            parts.append({"tag": "at", "user_id": aliases[match_name], "user_name": match_name})
+            idx = end
+    return parts or [{"tag": text_tag, "text": text}]
+
+
+def _content_has_outbound_mention_alias(content: str, aliases: Optional[Dict[str, str]] = None) -> bool:
+    aliases = aliases or _load_outbound_mention_aliases()
+    if not content or not aliases:
+        return False
+    return any(part.get("tag") == "at" for part in _split_text_with_outbound_mentions(content, aliases))
+
+
+def _build_outbound_mention_text_post_payload(content: str) -> str:
+    aliases = _load_outbound_mention_aliases()
+    rows: List[List[Dict[str, str]]] = []
+    current: List[str] = []
+    in_code_block = False
+
+    def flush_current() -> None:
+        nonlocal current
+        if not current:
+            return
+        segment = "\n".join(current)
+        if segment:
+            rows.append(_split_text_with_outbound_mentions(segment, aliases, text_tag="text"))
+        current = []
+
+    for raw_line in (content or "").splitlines():
+        stripped = raw_line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped)
+        )
+        if is_fence:
+            if not in_code_block:
+                flush_current()
+            current.append(raw_line)
+            in_code_block = not in_code_block
+            if not in_code_block:
+                rows.append([{"tag": "text", "text": "\n".join(current)}])
+                current = []
+            continue
+        current.append(raw_line)
+    flush_current()
+    if not rows:
+        rows = [_split_text_with_outbound_mentions(content or "", aliases, text_tag="text")]
+    return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
 
 
 def _build_markdown_post_payload(content: str) -> str:
@@ -1195,10 +1343,13 @@ def _extract_mention_ids(mention: Any) -> tuple[str, str]:
     # object carrying both fields.
     mention_id = getattr(mention, "id", None)
     if isinstance(mention_id, str):
+        mention_id = mention_id.strip()
+        if not mention_id:
+            return "", ""
         id_type = str(getattr(mention, "id_type", "") or "").lower()
-        if id_type == "open_id":
+        if id_type == "open_id" or mention_id.startswith("ou_"):
             return mention_id, ""
-        if id_type == "user_id":
+        if id_type == "user_id" or mention_id.startswith("u_"):
             return "", mention_id
         return "", ""
     if mention_id is None:
@@ -1538,6 +1689,14 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             allow_bots = "none"
 
+        dm_policy = os.getenv("FEISHU_DM_POLICY", "open").strip().lower()
+        if dm_policy not in {"open", "disabled"}:
+            logger.warning(
+                "[Feishu] Unknown dm_policy=%r, falling back to 'open'. Valid: open, disabled.",
+                dm_policy,
+            )
+            dm_policy = "open"
+
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
@@ -1600,6 +1759,7 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            dm_policy=dm_policy,
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1632,6 +1792,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._dm_policy = settings.dm_policy
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -4258,6 +4419,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "bot_not_mentioned"
 
         if not is_group:
+            if self._dm_policy == "disabled":
+                return "dm_policy_rejected"
             if os.getenv("FEISHU_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
                 return None
             if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
@@ -4352,21 +4515,20 @@ class FeishuAdapter(BasePlatformAdapter):
         # IDs trump names: when both sides have open_id (or both user_id),
         # match requires equal IDs. Name fallback only when either side
         # lacks an ID.
+        bot = self._bot_identity()
         for mention in mentions:
-            mention_id = getattr(mention, "id", None)
-            mention_open_id = (getattr(mention_id, "open_id", None) or "").strip()
-            mention_user_id = (getattr(mention_id, "user_id", None) or "").strip()
+            mention_open_id, mention_user_id = _extract_mention_ids(mention)
             mention_name = (getattr(mention, "name", None) or "").strip()
 
             if mention_open_id and self._bot_open_id:
-                if mention_open_id == self._bot_open_id:
+                if bot.matches(open_id=mention_open_id, user_id="", name=mention_name):
                     return True
                 continue  # IDs differ — not the bot; skip name fallback.
             if mention_user_id and self._bot_user_id:
-                if mention_user_id == self._bot_user_id:
+                if bot.matches(open_id="", user_id=mention_user_id, name=mention_name):
                     return True
                 continue
-            if self._bot_name and mention_name == self._bot_name:
+            if bot.matches(open_id=mention_open_id, user_id=mention_user_id, name=mention_name):
                 return True
 
         return False
@@ -4526,6 +4688,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Native Feishu @mentions require post at-tags.  When an outbound alias
+        # is configured, prefer a post built from text + at elements so the
+        # mention survives even for table-shaped content that would otherwise
+        # be downgraded to plain text.
+        if _content_has_outbound_mention_alias(content):
+            return "post", _build_outbound_mention_text_post_payload(content)
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
@@ -5415,6 +5583,12 @@ async def _standalone_send(
 
     media_files = media_files or []
     try:
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(get_hermes_home() / ".env", override=True)
+        except Exception:
+            logger.debug("[Feishu] Unable to load profile .env before standalone send", exc_info=True)
         adapter = FeishuAdapter(pconfig)
         domain_name = getattr(adapter, "_domain_name", "feishu")
         domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN

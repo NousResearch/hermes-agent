@@ -4215,6 +4215,83 @@ class TestFeishuMentionHint(unittest.TestCase):
         self.assertEqual(_build_mention_hint(refs), "[Mentioned: @all]")
 
 
+
+class TestFeishuOutboundMentions(unittest.TestCase):
+    def setUp(self):
+        self._env_patcher = patch.dict(
+            os.environ,
+            {"FEISHU_MENTION_ALIASES": "MOSS=ou_moss,Tweet Copy=ou_tweet"},
+            clear=False,
+        )
+        self._env_patcher.start()
+
+    def tearDown(self):
+        self._env_patcher.stop()
+
+    def _payload(self, content):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        msg_type, payload = adapter._build_outbound_payload(content)
+        return msg_type, json.loads(payload)
+
+    def test_plain_alias_becomes_post_at_entity(self):
+        msg_type, payload = self._payload("@MOSS please inspect")
+        self.assertEqual(msg_type, "post")
+        row = payload["zh_cn"]["content"][0]
+        self.assertEqual(row[0], {"tag": "at", "user_id": "ou_moss", "user_name": "MOSS"})
+        self.assertEqual(row[1], {"tag": "text", "text": " please inspect"})
+
+    def test_alias_with_markdown_table_still_becomes_at_entity(self):
+        msg_type, payload = self._payload("@MOSS\n\n| A | B |\n|---|---|\n| 1 | 2 |")
+        self.assertEqual(msg_type, "post")
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(rows[0][0], {"tag": "at", "user_id": "ou_moss", "user_name": "MOSS"})
+        rendered_text = "\n".join(
+            part.get("text", "")
+            for row in rows
+            for part in row
+            if part.get("tag") == "text"
+        )
+        self.assertIn("| A | B |", rendered_text)
+
+    def test_alias_does_not_match_email_fragment(self):
+        msg_type, payload = self._payload("hello@MOSS.com and @MOSS")
+        self.assertEqual(msg_type, "post")
+        flat = [part for row in payload["zh_cn"]["content"] for part in row]
+        self.assertEqual(sum(1 for part in flat if part.get("tag") == "at"), 1)
+        self.assertIn(
+            "hello@MOSS.com",
+            "".join(part.get("text", "") for part in flat if part.get("tag") == "text"),
+        )
+
+    def test_alias_does_not_match_left_bound_email_fragment(self):
+        msg_type, payload = self._payload("user@MOSS.com")
+        # No real alias match means the normal text path is preserved.
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(payload, {"text": "user@MOSS.com"})
+
+    def test_alias_in_inline_code_stays_plain_text(self):
+        msg_type, payload = self._payload("Use `@MOSS` then @MOSS")
+        self.assertEqual(msg_type, "post")
+        row = payload["zh_cn"]["content"][0]
+        self.assertIn("`@MOSS`", "".join(part.get("text", "") for part in row if part.get("tag") == "text"))
+        self.assertEqual(sum(1 for part in row if part.get("tag") == "at"), 1)
+
+    def test_longer_alias_wins(self):
+        with patch.dict(os.environ, {"FEISHU_MENTION_ALIASES": "MOSS=ou_short,MOSS Bot=ou_long"}, clear=False):
+            msg_type, payload = self._payload("@MOSS Bot check")
+        self.assertEqual(msg_type, "post")
+        row = payload["zh_cn"]["content"][0]
+        self.assertEqual(row[0], {"tag": "at", "user_id": "ou_long", "user_name": "MOSS Bot"})
+
+    def test_bad_alias_entries_are_ignored(self):
+        with patch.dict(os.environ, {"FEISHU_MENTION_ALIASES": "bad,noid=,MOSS=ou_moss"}, clear=False):
+            msg_type, payload = self._payload("@MOSS hi")
+        self.assertEqual(msg_type, "post")
+        self.assertEqual(payload["zh_cn"]["content"][0][0], {"tag": "at", "user_id": "ou_moss", "user_name": "MOSS"})
+
+
 class TestFeishuStripLeadingSelf(unittest.TestCase):
     def _make_refs(self, *, self_name="Hermes", other_name=None):
         from plugins.platforms.feishu.adapter import FeishuMentionRef

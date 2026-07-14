@@ -20,6 +20,7 @@ entitlement granted to the main app is also granted to the inherited helpers.
 
 from __future__ import annotations
 
+import json
 import plistlib
 from pathlib import Path
 
@@ -30,6 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ELECTRON_DIR = REPO_ROOT / "apps" / "desktop" / "electron"
 MAIN_PLIST = ELECTRON_DIR / "entitlements.mac.plist"
 INHERIT_PLIST = ELECTRON_DIR / "entitlements.mac.inherit.plist"
+DESKTOP_PACKAGE_JSON = REPO_ROOT / "apps" / "desktop" / "package.json"
 
 DEVICE_PREFIX = "com.apple.security.device."
 
@@ -67,6 +69,22 @@ def test_device_entitlements_are_inherited() -> None:
         "the latter under hardenedRuntime, so any device access the app needs must "
         "be listed in both (#37718)."
     )
+
+
+def test_desktop_package_declares_calendar_privacy_usage() -> None:
+    """Packaged macOS builds must explain Calendar access to TCC."""
+    package = json.loads(DESKTOP_PACKAGE_JSON.read_text(encoding="utf-8"))
+    extend_info = package["build"]["mac"]["extendInfo"]
+    required = (
+        "NSCalendarsFullAccessUsageDescription",
+        "NSCalendarsUsageDescription",
+    )
+    missing = [
+        key
+        for key in required
+        if not isinstance(extend_info.get(key), str) or not extend_info[key].strip()
+    ]
+    assert not missing, f"missing non-empty macOS Calendar privacy descriptions: {missing}"
 
 
 @pytest.mark.parametrize("plist", [MAIN_PLIST, INHERIT_PLIST])

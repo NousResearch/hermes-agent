@@ -2770,7 +2770,7 @@ class MCPServerTask:
                         return
 
                     initial_retries += 1
-                    if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
+                    if initial_retries >= _MAX_INITIAL_CONNECT_RETRIES:
                         logger.warning(
                             "MCP server '%s' failed initial connection after "
                             "%d attempts, parking until a reconnect is requested: %s",

@@ -31,6 +31,18 @@ vi.mock('@/store/notifications', () => ({
 
 type Controls = ReturnType<typeof useModelControls>
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return { promise, resolve, reject }
+}
+
 function Harness({
   activeSessionId,
   onReady,
@@ -53,6 +65,7 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
@@ -200,5 +213,59 @@ describe('useModelControls', () => {
     // A profile swap forces a reseed to the new profile's default.
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+  })
+
+  it('retries a forced refresh until the profile default becomes available', async () => {
+    vi.useFakeTimers()
+    vi.mocked(getGlobalModelInfo)
+      .mockRejectedValueOnce(new Error('booting'))
+      .mockRejectedValueOnce(new Error('still booting'))
+      .mockResolvedValueOnce({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const refreshPromise = result.current.refreshCurrentModel(true)
+
+    await vi.runAllTimersAsync()
+    await refreshPromise
+
+    expect(getGlobalModelInfo).toHaveBeenCalledTimes(3)
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+  })
+
+  it('ignores stale forced refresh results when a newer profile refresh wins the race', async () => {
+    const first = deferred<{ model: string; provider: string }>()
+    const second = deferred<{ model: string; provider: string }>()
+
+    vi.mocked(getGlobalModelInfo)
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const staleRefresh = result.current.refreshCurrentModel(true)
+    const latestRefresh = result.current.refreshCurrentModel(true)
+
+    second.resolve({ model: 'anthropic/claude-sonnet-4.6', provider: 'anthropic' })
+    await latestRefresh
+
+    first.resolve({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+    await staleRefresh
+
+    expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
   })
 })

@@ -1,5 +1,5 @@
 import { type QueryClient } from '@tanstack/react-query'
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -18,9 +18,18 @@ interface ModelControlsOptions {
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
+const FORCE_REFRESH_RETRY_DELAYS_MS = [250, 750, 2_000] as const
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, ms)
+  })
+}
+
 export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+  const refreshRequestIdRef = useRef(0)
 
   const updateModelOptionsCache = useCallback(
     (provider: string, model: string, includeGlobal: boolean) => {
@@ -41,30 +50,55 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
   const refreshCurrentModel = useCallback(async (force = false) => {
-    try {
-      if ($activeSessionId.get()) {
+    if ($activeSessionId.get()) {
+      return
+    }
+
+    if (!force && $currentModel.get()) {
+      return
+    }
+
+    const requestId = ++refreshRequestIdRef.current
+    const retryDelays = force ? FORCE_REFRESH_RETRY_DELAYS_MS : []
+
+    for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+      try {
+        const result = await getGlobalModelInfo()
+
+        if (refreshRequestIdRef.current !== requestId) {
+          return
+        }
+
+        if ($activeSessionId.get() || (!force && $currentModel.get())) {
+          return
+        }
+
+        if (typeof result.model === 'string') {
+          setCurrentModel(result.model)
+        }
+
+        if (typeof result.provider === 'string') {
+          setCurrentProvider(result.provider)
+        }
+
         return
-      }
+      } catch {
+        if (refreshRequestIdRef.current !== requestId) {
+          return
+        }
 
-      if (!force && $currentModel.get()) {
-        return
-      }
+        const retryDelay = retryDelays[attempt]
 
-      const result = await getGlobalModelInfo()
+        if (typeof retryDelay !== 'number') {
+          return
+        }
 
-      if ($activeSessionId.get() || (!force && $currentModel.get())) {
-        return
-      }
+        await delay(retryDelay)
 
-      if (typeof result.model === 'string') {
-        setCurrentModel(result.model)
+        if (refreshRequestIdRef.current !== requestId) {
+          return
+        }
       }
-
-      if (typeof result.provider === 'string') {
-        setCurrentProvider(result.provider)
-      }
-    } catch {
-      // The delayed session.info event still updates this once the agent is ready.
     }
   }, [])
 

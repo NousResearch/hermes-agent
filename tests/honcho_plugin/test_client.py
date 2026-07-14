@@ -18,8 +18,8 @@ from plugins.memory.honcho.client import (
     resolve_active_host,
     resolve_config_path,
     resolve_global_config_path,
+    sanitize_honcho_id,
 )
-
 
 class TestHonchoClientConfigDefaults:
     def test_default_values(self):
@@ -542,6 +542,22 @@ class TestProfileScopedConfig:
         assert config.host == "hermes_dreamer"
         assert config.peer_name == "dreamer-user"
         assert config.workspace_id == "hermes_dreamer"
+        assert config.ai_peer == "hermes_dreamer"
+
+    def test_default_dotted_host_ids_are_honcho_valid(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "key"}))
+        config = HonchoClientConfig.from_global_config(
+            host="hermes.loki", config_path=config_file,
+        )
+        assert config.host == "hermes.loki"
+        assert config.workspace_id == "hermes-loki"
+        assert config.ai_peer == "hermes-loki"
+
+    def test_sanitize_honcho_id_replaces_invalid_chars(self):
+        assert sanitize_honcho_id("hermes.loki") == "hermes-loki"
+        assert sanitize_honcho_id(" hermes/loki ") == "hermes-loki"
+        assert sanitize_honcho_id("***") == "hermes"
 
 
 class TestObservationModeMigration:

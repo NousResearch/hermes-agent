@@ -1,0 +1,29 @@
+{
+  "gateway_state": "running",
+  "pid": 42002,
+  "start_time": 1234.5,
+  "effective_config": {
+    "schema": 1,
+    "complete": true,
+    "loaded_at": "2026-07-14T12:00:00.000Z",
+    "pid": 42002,
+    "start_time": 1234.5,
+    "profiles": {
+      "default": {
+        "profile_path": "/Agents/Neo/.hermes/profiles/neo",
+        "config_path": "/Agents/Neo/.hermes/profiles/neo/config.yaml",
+        "config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "primary": {
+          "provider": "openai-codex",
+          "model": "gpt-5.5"
+        },
+        "fallbacks": [
+          {
+            "provider": "xai-oauth",
+            "model": "grok-4.3"
+          }
+        ]
+      }
+    }
+  }
+}

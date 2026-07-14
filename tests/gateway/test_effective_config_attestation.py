@@ -469,3 +469,44 @@ def test_attested_model_matches_normalized_runtime_model_path(monkeypatch, tmp_p
         {"provider": "openrouter", "model": "${FALLBACK_MODEL}"}
     ]
     assert profile["fallbacks"] == runtime_fallbacks
+
+
+def test_gateway_receipt_matches_fleet_v1_contract_example(monkeypatch, tmp_path):
+    """Keep Hermes' producer shape executable against Fleet's public contract."""
+    contract_path = (
+        Path(__file__).resolve().parents[2]
+        / "docs"
+        / "contracts"
+        / "gateway-effective-config-v1.example.json"
+    )
+    contract_state = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract_receipt = contract_state["effective_config"]
+    contract_profile = contract_receipt["profiles"]["default"]
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: gpt-5.5\n"
+        "fallback_providers:\n"
+        "  - provider: xai-oauth\n    model: grok-4.3\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("gateway.run._hermes_home", home)
+
+    runner = GatewayRunner(GatewayConfig(platforms={}, sessions_dir=home / "sessions"))
+    assert asyncio.run(runner.start()) is True
+
+    runtime_state = read_runtime_status()
+    runtime_receipt = runtime_state["effective_config"]
+    runtime_profile = runtime_receipt["profiles"]["default"]
+    assert contract_state["gateway_state"] == runtime_state["gateway_state"] == "running"
+    assert set(runtime_receipt) == set(contract_receipt)
+    assert set(runtime_profile) == set(contract_profile)
+    assert runtime_receipt["schema"] == contract_receipt["schema"] == 1
+    assert runtime_receipt["complete"] is contract_receipt["complete"] is True
+    assert isinstance(runtime_receipt["pid"], type(contract_receipt["pid"]))
+    assert isinstance(runtime_receipt["start_time"], (int, float))
+    assert isinstance(contract_receipt["start_time"], (int, float))
+    assert isinstance(runtime_receipt["loaded_at"], type(contract_receipt["loaded_at"]))
+    assert isinstance(runtime_profile["fallbacks"], type(contract_profile["fallbacks"]))

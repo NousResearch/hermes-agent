@@ -7,6 +7,8 @@ turn counting, tags), and schema completeness.
 
 import json
 import os
+import threading
+from concurrent.futures import Future
 import re
 import stat
 import sys
@@ -790,8 +792,11 @@ class TestToolHandlers:
 
 
 class TestPrefetch:
-    def test_prefetch_returns_empty_when_no_result(self, provider):
-        assert provider.prefetch("test") == ""
+    def test_prefetch_runs_current_query_when_no_result_is_cached(self, provider):
+        result = provider.prefetch("test")
+
+        assert "Memory 1" in result
+        assert provider._client.arecall.call_args.kwargs["query"] == "test"
 
     def test_prefetch_default_preamble(self, provider):
         provider._prefetch_result = "- some memory"
@@ -854,6 +859,343 @@ class TestPrefetch:
         assert call_kwargs["tags"] == ["t1"]
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
+
+    def test_admission_snapshots_identity_atomically_with_session_switch(
+        self, provider_with_config, monkeypatch
+    ):
+        p = provider_with_config(
+            bank_id="fallback-bank",
+            bank_id_template="memory-{session}",
+        )
+        admission_held = threading.Event()
+        release_admission = threading.Event()
+        switch_started = threading.Event()
+        switch_finished = threading.Event()
+        admitted_requests = []
+
+        def _hold_admission(request):
+            admitted_requests.append(request)
+            admission_held.set()
+            assert release_admission.wait(timeout=2.0)
+
+        monkeypatch.setattr(
+            p,
+            "_start_prefetch_worker_locked",
+            _hold_admission,
+            raising=False,
+        )
+
+        admission_thread = threading.Thread(
+            target=lambda: p.queue_prefetch(
+                "  same query  ", session_id="test-session"
+            )
+        )
+        admission_thread.start()
+        assert admission_held.wait(timeout=2.0)
+
+        def _switch():
+            switch_started.set()
+            p.on_session_switch("session-b")
+            switch_finished.set()
+
+        switch_thread = threading.Thread(target=_switch)
+        switch_thread.start()
+        assert switch_started.wait(timeout=2.0)
+        assert not switch_finished.wait(timeout=0.1)
+
+        release_admission.set()
+        admission_thread.join(timeout=2.0)
+        switch_thread.join(timeout=2.0)
+
+        assert not admission_thread.is_alive()
+        assert not switch_thread.is_alive()
+        assert len(admitted_requests) == 1
+        request = admitted_requests[0]
+        assert request.session_id == "test-session"
+        assert request.bank_id == "memory-test-session"
+        assert request.query == "same query"
+        assert request.cache_key == (
+            request.epoch,
+            "test-session",
+            "memory-test-session",
+            "same query",
+        )
+        assert p._prefetch_session_id == "session-b"
+        assert p._prefetch_bank_id == "memory-session-b"
+        assert p._prefetch_epoch > request.epoch
+
+    def test_same_query_switch_starts_new_work_and_discards_late_old_result(
+        self, provider_with_config, monkeypatch
+    ):
+        p = provider_with_config(
+            bank_id="fallback-bank",
+            bank_id_template="memory-{session}",
+        )
+        old_started = threading.Event()
+        new_started = threading.Event()
+        release_old = threading.Event()
+        executed = []
+
+        def _execute(request, operation):
+            executed.append((request.session_id, request.bank_id, request.query))
+            if request.session_id == "test-session":
+                old_started.set()
+                assert release_old.wait(timeout=2.0)
+                return "- old-session memory"
+            new_started.set()
+            return "- new-session memory"
+
+        monkeypatch.setattr(
+            p, "_execute_prefetch_request", _execute, raising=False
+        )
+
+        p.queue_prefetch("same query", session_id="test-session")
+        old_thread = p._prefetch_thread
+        assert old_started.wait(timeout=2.0)
+
+        p.on_session_switch("session-b")
+        p.queue_prefetch("same query", session_id="session-b")
+        new_thread = p._prefetch_thread
+        assert new_started.wait(timeout=2.0)
+        new_thread.join(timeout=2.0)
+        assert not new_thread.is_alive()
+
+        release_old.set()
+        old_thread.join(timeout=2.0)
+        assert not old_thread.is_alive()
+
+        result = p.prefetch("same query", session_id="session-b")
+        assert "new-session memory" in result
+        assert "old-session memory" not in result
+        assert executed == [
+            ("test-session", "memory-test-session", "same query"),
+            ("session-b", "memory-session-b", "same query"),
+        ]
+
+    def test_session_switch_releases_superseded_prefetch_waiter(
+        self, provider, monkeypatch
+    ):
+        old_started = threading.Event()
+        release_old = threading.Event()
+        waiter_admitted = threading.Event()
+        waiter_finished = threading.Event()
+        waiter_result = []
+
+        def _execute(request, operation):
+            old_started.set()
+            assert release_old.wait(timeout=2.0)
+            return "- obsolete memory"
+
+        monkeypatch.setattr(
+            provider, "_execute_prefetch_request", _execute, raising=False
+        )
+        provider.queue_prefetch("same query", session_id="test-session")
+        old_thread = provider._prefetch_thread
+        assert old_started.wait(timeout=2.0)
+
+        original_admit = provider._admit_prefetch_locked
+
+        def _observed_admit(query, session_id):
+            request = original_admit(query, session_id)
+            if threading.current_thread().name == "prefetch-waiter":
+                waiter_admitted.set()
+            return request
+
+        monkeypatch.setattr(provider, "_admit_prefetch_locked", _observed_admit)
+
+        def _wait_for_prefetch():
+            waiter_result.append(
+                provider.prefetch("same query", session_id="test-session")
+            )
+            waiter_finished.set()
+
+        waiter = threading.Thread(
+            target=_wait_for_prefetch,
+            name="prefetch-waiter",
+        )
+        waiter.start()
+        assert waiter_admitted.wait(timeout=2.0)
+
+        provider.on_session_switch("session-b")
+
+        assert waiter_finished.wait(timeout=2.0)
+        waiter.join(timeout=2.0)
+        assert waiter_result == [""]
+
+        release_old.set()
+        old_thread.join(timeout=2.0)
+        assert not old_thread.is_alive()
+
+    def test_prefetch_wait_timeout_does_not_lose_late_current_result(
+        self, provider, monkeypatch
+    ):
+        from plugins.memory import hindsight as hindsight_mod
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _execute(request, operation):
+            started.set()
+            assert release.wait(timeout=2.0)
+            return "- eventually available"
+
+        monkeypatch.setattr(
+            provider, "_execute_prefetch_request", _execute, raising=False
+        )
+        provider.queue_prefetch("slow query", session_id="test-session")
+        worker = provider._prefetch_thread
+        assert started.wait(timeout=2.0)
+
+        real_monotonic = hindsight_mod.time.monotonic
+        ticks = iter((10.0, 13.0))
+        monkeypatch.setattr(hindsight_mod.time, "monotonic", lambda: next(ticks))
+        assert provider.prefetch("slow query", session_id="test-session") == ""
+        monkeypatch.setattr(hindsight_mod.time, "monotonic", real_monotonic)
+
+        with provider._prefetch_condition:
+            assert len(provider._prefetch_inflight) == 1
+
+        release.set()
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+        result = provider.prefetch("slow query", session_id="test-session")
+        assert "eventually available" in result
+
+    def test_operation_timeout_retires_key_but_defers_owned_client_close(
+        self, provider, monkeypatch
+    ):
+        from agent import async_utils
+
+        scheduled = threading.Event()
+        closed = threading.Event()
+        late_future = Future()
+        real_schedule = async_utils.safe_schedule_threadsafe
+        client = provider._client
+
+        async def _close_client():
+            closed.set()
+
+        client.aclose = AsyncMock(side_effect=_close_client)
+
+        def _schedule_without_completion(coro, loop):
+            coro.close()
+            scheduled.set()
+            return late_future
+
+        monkeypatch.setattr(
+            async_utils,
+            "safe_schedule_threadsafe",
+            _schedule_without_completion,
+        )
+        provider._timeout = 0
+
+        provider.queue_prefetch("timed out", session_id="test-session")
+        worker = provider._prefetch_thread
+        assert scheduled.wait(timeout=2.0)
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+
+        with provider._prefetch_condition:
+            assert provider._prefetch_inflight == {}
+            assert len(provider._prefetch_operations) == 1
+
+        provider.shutdown()
+        assert not closed.is_set()
+        assert provider._client is client
+
+        monkeypatch.setattr(
+            async_utils,
+            "safe_schedule_threadsafe",
+            real_schedule,
+        )
+        late_future.set_result(SimpleNamespace(results=[]))
+
+        assert closed.wait(timeout=2.0)
+        with provider._prefetch_condition:
+            assert provider._prefetch_condition.wait_for(
+                lambda: not provider._prefetch_operations,
+                timeout=2.0,
+            )
+        assert provider._client is None
+
+    def test_prefetch_failure_retires_exact_inflight_key(
+        self, provider, monkeypatch
+    ):
+        failed = threading.Event()
+
+        def _execute(request, operation):
+            failed.set()
+            raise RuntimeError("recall failed")
+
+        monkeypatch.setattr(
+            provider, "_execute_prefetch_request", _execute, raising=False
+        )
+        provider.queue_prefetch("failing query", session_id="test-session")
+        worker = provider._prefetch_thread
+        assert failed.wait(timeout=2.0)
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+
+        with provider._prefetch_condition:
+            assert provider._prefetch_inflight == {}
+            assert provider._prefetch_operations == {}
+            assert provider._prefetch_pending_request is None
+
+    def test_repeated_switches_bound_workers_and_coalesce_pending_work(
+        self, provider, monkeypatch
+    ):
+        sessions = ["test-session", "session-1", "session-2", "session-3"]
+        started = {session: threading.Event() for session in sessions}
+        release = {session: threading.Event() for session in sessions}
+        execution_order = []
+        execution_lock = threading.Lock()
+
+        def _execute(request, operation):
+            with execution_lock:
+                execution_order.append(request.session_id)
+            started[request.session_id].set()
+            assert release[request.session_id].wait(timeout=2.0)
+            return f"- memory for {request.session_id}"
+
+        monkeypatch.setattr(
+            provider, "_execute_prefetch_request", _execute, raising=False
+        )
+
+        provider.queue_prefetch("same query", session_id="test-session")
+        assert started["test-session"].wait(timeout=2.0)
+
+        provider.on_session_switch("session-1")
+        provider.queue_prefetch("same query", session_id="session-1")
+        assert started["session-1"].wait(timeout=2.0)
+
+        for session in sessions[2:]:
+            provider.on_session_switch(session)
+            provider.queue_prefetch("same query", session_id=session)
+
+        with provider._prefetch_condition:
+            assert len(provider._prefetch_operations) == 2
+            assert len(provider._prefetch_inflight) == 2
+            assert len(provider._prefetch_threads) == 2
+            assert provider._prefetch_pending_request.session_id == "session-3"
+
+        release["test-session"].set()
+        assert started["session-3"].wait(timeout=2.0)
+        assert not started["session-2"].is_set()
+
+        release["session-1"].set()
+        release["session-3"].set()
+        with provider._prefetch_condition:
+            assert provider._prefetch_condition.wait_for(
+                lambda: (
+                    not provider._prefetch_operations
+                    and not provider._prefetch_inflight
+                    and not provider._prefetch_threads
+                    and provider._prefetch_pending_request is None
+                ),
+                timeout=2.0,
+            )
+
+        assert execution_order == ["test-session", "session-1", "session-3"]
 
 
 # ---------------------------------------------------------------------------
@@ -1247,33 +1589,31 @@ class TestSessionSwitchBufferFlush:
         provider._prefetch_result = "old-session recall: User likes Rust"
         provider.on_session_switch("new-sid")
         assert provider._prefetch_result == ""
-        # And subsequent prefetch() should now report empty, not the leftover.
-        assert provider.prefetch("anything") == ""
+        result = provider.prefetch("anything", session_id="new-sid")
+        assert "old-session recall" not in result
+        assert provider._client.arecall.call_args.kwargs["query"] == "anything"
 
-    def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
-        """on_session_switch must wait for an in-flight prefetch from the
-        old session to settle before clearing _prefetch_result, otherwise
-        the thread can race and re-populate the field after the clear."""
-        import threading
+    def test_in_flight_prefetch_does_not_delay_switch(self, provider, monkeypatch):
+        started = threading.Event()
+        release = threading.Event()
 
-        gate = threading.Event()
-        finished = threading.Event()
+        def _execute(request, operation):
+            started.set()
+            assert release.wait(timeout=2.0)
+            return "- old-session recall"
 
-        def _slow_prefetch():
-            gate.wait(timeout=5.0)
-            with provider._prefetch_lock:
-                provider._prefetch_result = "old-session recall"
-            finished.set()
+        monkeypatch.setattr(provider, "_execute_prefetch_request", _execute)
+        provider.queue_prefetch("old query", session_id="test-session")
+        old_thread = provider._prefetch_thread
+        assert started.wait(timeout=2.0)
 
-        provider._prefetch_thread = threading.Thread(target=_slow_prefetch, daemon=True)
-        provider._prefetch_thread.start()
-
-        # Release the prefetch worker so it writes _prefetch_result, then
-        # call on_session_switch — it must join the thread before clearing.
-        gate.set()
         provider.on_session_switch("new-sid")
 
-        assert finished.is_set(), "switch returned before prefetch thread settled"
+        assert provider._session_id == "new-sid"
+        assert old_thread.is_alive()
+        release.set()
+        old_thread.join(timeout=2.0)
+        assert not old_thread.is_alive()
         assert provider._prefetch_result == ""
 
     def test_flush_serializes_behind_pending_retains_via_writer_queue(

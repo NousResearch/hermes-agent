@@ -81,6 +81,31 @@ EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
 
+### Multiple IMAP/SMTP Accounts
+
+For advanced setups, set `EMAIL_ACCOUNTS` to a JSON list instead of the single-account variables above. The gateway tests every account at startup, polls each inbox, and replies from the account that received the original email:
+
+```bash
+EMAIL_ACCOUNTS='[
+  {
+    "address": "hermes@example.com",
+    "password_env": "HERMES_EMAIL_PASSWORD",
+    "imap_host": "imap.example.com",
+    "smtp_host": "smtp.example.com"
+  },
+  {
+    "address": "assistant@example.org",
+    "password_env": "ASSISTANT_EMAIL_PASSWORD",
+    "imap_host": "imap.example.org",
+    "smtp_host": "smtp.example.org",
+    "imap_port": 993,
+    "smtp_port": 587
+  }
+]'
+```
+
+Use `password_env` to keep account passwords in separate environment variables. A literal `password` field is also supported for compatibility, but `password_env` is preferred.
+
 ---
 
 ## Step 2: Start the Gateway
@@ -186,13 +211,16 @@ Email access is stricter by default than chat-style platforms:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `EMAIL_ADDRESS` | Yes | — | Agent's email address |
-| `EMAIL_PASSWORD` | Yes | — | Email password or app password |
-| `EMAIL_IMAP_HOST` | Yes | — | IMAP server host (e.g., `imap.gmail.com`) |
-| `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
+| `EMAIL_ADDRESS` | Yes* | — | Agent's email address |
+| `EMAIL_PASSWORD` | Yes* | — | Email password or app password |
+| `EMAIL_IMAP_HOST` | Yes* | — | IMAP server host (e.g., `imap.gmail.com`) |
+| `EMAIL_SMTP_HOST` | Yes* | — | SMTP server host (e.g., `smtp.gmail.com`) |
+| `EMAIL_ACCOUNTS` | Yes* | — | JSON list of account objects for multi-account polling; replaces the single-account variables when set |
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+
+\*Configure either the single-account variables (`EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `EMAIL_IMAP_HOST`, `EMAIL_SMTP_HOST`) or `EMAIL_ACCOUNTS`.

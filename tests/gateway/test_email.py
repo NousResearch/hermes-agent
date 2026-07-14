@@ -1775,5 +1775,293 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestMultiAccountEmail(unittest.TestCase):
+    """Multi-account behavior: EMAIL_ACCOUNTS config, per-account polling,
+    outbound routing back through the receiving account on every send path."""
+
+    _ACCOUNTS = [
+        {
+            "address": "daemon@test.com",
+            "password": "daemon-secret",
+            "imap_host": "imap.daemon.test",
+            "smtp_host": "smtp.daemon.test",
+        },
+        {
+            "address": "brice@test.com",
+            "password": "brice-secret",
+            "imap_host": "imap.brice.test",
+            "smtp_host": "smtp.brice.test",
+        },
+    ]
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {}, clear=True):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True, extra={
+                "accounts": [dict(a) for a in self._ACCOUNTS],
+            }))
+        return adapter
+
+    # -- configuration surfaces ------------------------------------------------
+
+    @patch.dict(os.environ, {
+        "EMAIL_ACCOUNTS": __import__("json").dumps(_ACCOUNTS),
+    }, clear=True)
+    def test_email_accounts_loaded_from_env_json(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        self.assertIn(Platform.EMAIL, config.platforms)
+        self.assertTrue(config.platforms[Platform.EMAIL].enabled)
+        self.assertEqual(
+            [acct["address"] for acct in config.platforms[Platform.EMAIL].extra["accounts"]],
+            ["daemon@test.com", "brice@test.com"],
+        )
+
+    @patch.dict(os.environ, {"EMAIL_ACCOUNTS": "not-json"}, clear=True)
+    def test_invalid_email_accounts_json_does_not_enable_platform(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        self.assertNotIn(Platform.EMAIL, config.platforms)
+
+    @patch.dict(os.environ, {
+        "EMAIL_ACCOUNTS": __import__("json").dumps([_ACCOUNTS[0]]),
+    }, clear=True)
+    def test_requirements_met_with_email_accounts_json(self):
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertTrue(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ACCOUNTS": __import__("json").dumps([
+            {"address": "a@test.com", "imap_host": "i", "smtp_host": "s"},  # no password
+        ]),
+    }, clear=True)
+    def test_requirements_not_met_with_incomplete_account(self):
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertFalse(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "DAEMON_PWD": "resolved-secret",
+        "EMAIL_ACCOUNTS": __import__("json").dumps([
+            {
+                "address": "daemon@test.com",
+                "password_env": "DAEMON_PWD",
+                "imap_host": "imap.daemon.test",
+                "smtp_host": "smtp.daemon.test",
+            },
+        ]),
+    }, clear=True)
+    def test_password_env_resolution(self):
+        from plugins.platforms.email.adapter import _resolve_email_accounts
+        accounts = _resolve_email_accounts({})
+        self.assertEqual(len(accounts), 1)
+        self.assertEqual(accounts[0]["password"], "resolved-secret")
+
+    def test_is_connected_with_accounts_in_extra(self):
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _is_connected
+        config = SimpleNamespace(extra={"accounts": [dict(self._ACCOUNTS[0])]})
+        self.assertTrue(_is_connected(config))
+
+    @patch.dict(os.environ, {
+        "EMAIL_ACCOUNTS": __import__("json").dumps([_ACCOUNTS[0]]),
+    }, clear=True)
+    def test_is_connected_with_accounts_env(self):
+        from types import SimpleNamespace
+        import plugins.platforms.email.adapter as adapter_mod
+        with patch("hermes_cli.gateway.get_env_value", return_value=""):
+            self.assertTrue(adapter_mod._is_connected(SimpleNamespace(extra={})))
+
+    # -- inbound polling -------------------------------------------------------
+
+    def test_fetch_new_messages_namespaces_seen_uids_by_account(self):
+        adapter = self._make_adapter()
+
+        def make_raw(sender, subject):
+            raw_email = MIMEText("Hello", "plain", "utf-8")
+            raw_email["From"] = sender
+            raw_email["Subject"] = subject
+            raw_email["Message-ID"] = f"<{subject}@test.com>"
+            return raw_email.as_bytes()
+
+        def make_imap(raw):
+            mock_imap = MagicMock()
+            def uid_handler(command, *args):
+                if command == "search":
+                    return ("OK", [b"1"])
+                if command == "fetch":
+                    return ("OK", [(b"1", raw)])
+                return ("NO", [])
+            mock_imap.uid.side_effect = uid_handler
+            return mock_imap
+
+        imaps = {
+            "imap.daemon.test": make_imap(make_raw("sender1@test.com", "Daemon Inbox")),
+            "imap.brice.test": make_imap(make_raw("sender2@test.com", "Brice Inbox")),
+        }
+
+        with patch("imaplib.IMAP4_SSL", side_effect=lambda host, port, timeout: imaps[host]):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual([r["subject"] for r in results], ["Daemon Inbox", "Brice Inbox"])
+        self.assertEqual(
+            [r["account_address"] for r in results],
+            ["daemon@test.com", "brice@test.com"],
+        )
+        self.assertIn(("daemon@test.com", b"1"), adapter._seen_uids)
+        self.assertIn(("brice@test.com", b"1"), adapter._seen_uids)
+
+    def test_fetch_error_on_one_account_does_not_block_others(self):
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "sender@test.com"
+        raw_email["Subject"] = "Brice Inbox"
+        raw = raw_email.as_bytes()
+
+        working_imap = MagicMock()
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"7"])
+            if command == "fetch":
+                return ("OK", [(b"7", raw)])
+            return ("NO", [])
+        working_imap.uid.side_effect = uid_handler
+
+        def imap_factory(host, port, timeout):
+            if host == "imap.daemon.test":
+                raise OSError("connection refused")
+            return working_imap
+
+        with patch("imaplib.IMAP4_SSL", side_effect=imap_factory):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual([r["subject"] for r in results], ["Brice Inbox"])
+        self.assertEqual(results[0]["account_address"], "brice@test.com")
+
+    def test_self_message_from_any_account_filtered(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._message_handler = MagicMock()
+
+        msg_data = {
+            "uid": b"1",
+            "account_address": "daemon@test.com",
+            "sender_addr": "brice@test.com",  # the OTHER configured account
+            "sender_name": "Brice",
+            "subject": "Cross-account mail",
+            "message_id": "<x@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+        }
+        asyncio.run(adapter._dispatch_message(msg_data))
+        adapter._message_handler.assert_not_called()
+
+    # -- outbound routing ------------------------------------------------------
+
+    def test_reply_uses_account_that_received_original_message(self):
+        adapter = self._make_adapter()
+        adapter._thread_context["sender@test.com"] = {
+            "subject": "Question",
+            "message_id": "<original@test.com>",
+            "account_address": "brice@test.com",
+        }
+        mock_smtp = MagicMock()
+
+        with patch("smtplib.SMTP", return_value=mock_smtp) as mock_smtp_ctor:
+            adapter._send_email("sender@test.com", "Reply")
+
+        mock_smtp_ctor.assert_called_once_with("smtp.brice.test", 587, timeout=30)
+        mock_smtp.login.assert_called_once_with("brice@test.com", "brice-secret")
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+        self.assertEqual(sent_msg["From"], "brice@test.com")
+        self.assertEqual(sent_msg["To"], "sender@test.com")
+        self.assertIn("@test.com>", sent_msg["Message-ID"])
+
+    def test_unsolicited_send_uses_primary_account(self):
+        adapter = self._make_adapter()
+        mock_smtp = MagicMock()
+
+        with patch("smtplib.SMTP", return_value=mock_smtp) as mock_smtp_ctor:
+            adapter._send_email("stranger@test.com", "Hello")
+
+        mock_smtp_ctor.assert_called_once_with("smtp.daemon.test", 587, timeout=30)
+        mock_smtp.login.assert_called_once_with("daemon@test.com", "daemon-secret")
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+        self.assertEqual(sent_msg["From"], "daemon@test.com")
+
+    def test_attachment_send_uses_account_that_received_original_message(self):
+        import tempfile
+        adapter = self._make_adapter()
+        adapter._thread_context["sender@test.com"] = {
+            "subject": "Files",
+            "message_id": "<original@test.com>",
+            "account_address": "brice@test.com",
+        }
+        mock_smtp = MagicMock()
+
+        with tempfile.NamedTemporaryFile(suffix=".bin") as f:
+            f.write(b"data")
+            f.flush()
+            with patch("smtplib.SMTP", return_value=mock_smtp) as mock_smtp_ctor:
+                adapter._send_email_with_attachment("sender@test.com", "See file", f.name)
+
+        mock_smtp_ctor.assert_called_once_with("smtp.brice.test", 587, timeout=30)
+        mock_smtp.login.assert_called_once_with("brice@test.com", "brice-secret")
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+        self.assertEqual(sent_msg["From"], "brice@test.com")
+
+    def test_multi_attachment_send_uses_account_that_received_original_message(self):
+        import tempfile
+        adapter = self._make_adapter()
+        adapter._thread_context["sender@test.com"] = {
+            "subject": "Images",
+            "message_id": "<original@test.com>",
+            "account_address": "brice@test.com",
+        }
+        mock_smtp = MagicMock()
+
+        with tempfile.NamedTemporaryFile(suffix=".png") as f:
+            f.write(b"data")
+            f.flush()
+            with patch("smtplib.SMTP", return_value=mock_smtp) as mock_smtp_ctor:
+                adapter._send_email_with_attachments("sender@test.com", "See images", [f.name])
+
+        mock_smtp_ctor.assert_called_once_with("smtp.brice.test", 587, timeout=30)
+        mock_smtp.login.assert_called_once_with("brice@test.com", "brice-secret")
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+        self.assertEqual(sent_msg["From"], "brice@test.com")
+
+    # -- standalone delivery ---------------------------------------------------
+
+    @patch.dict(os.environ, {
+        "EMAIL_ACCOUNTS": __import__("json").dumps(_ACCOUNTS),
+    }, clear=True)
+    def test_standalone_send_uses_primary_account_from_email_accounts(self):
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send
+
+        mock_server = MagicMock()
+        with patch("smtplib.SMTP", return_value=mock_server) as mock_smtp_ctor:
+            result = asyncio.run(
+                _standalone_send(
+                    SimpleNamespace(token=None, api_key=None, extra={}),
+                    "user@test.com",
+                    "Hello",
+                )
+            )
+
+        self.assertTrue(result["success"])
+        mock_smtp_ctor.assert_called_once_with("smtp.daemon.test", 587)
+        mock_server.login.assert_called_once_with("daemon@test.com", "daemon-secret")
+        sent_msg = mock_server.send_message.call_args[0][0]
+        self.assertEqual(sent_msg["From"], "daemon@test.com")
+
+
 if __name__ == "__main__":
     unittest.main()

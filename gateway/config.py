@@ -1718,15 +1718,30 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_pwd = getenv("EMAIL_PASSWORD")
     email_imap = getenv("EMAIL_IMAP_HOST")
     email_smtp = getenv("EMAIL_SMTP_HOST")
-    if all([email_addr, email_pwd, email_imap, email_smtp]):
+    email_accounts_raw = (getenv("EMAIL_ACCOUNTS") or "").strip()
+    email_accounts = []
+    if email_accounts_raw:
+        try:
+            parsed_accounts = json.loads(email_accounts_raw)
+            if isinstance(parsed_accounts, list):
+                email_accounts = [acct for acct in parsed_accounts if isinstance(acct, dict)]
+            else:
+                logger.warning("EMAIL_ACCOUNTS must be a JSON list of account objects")
+        except json.JSONDecodeError as e:
+            logger.warning("Invalid EMAIL_ACCOUNTS JSON: %s", e)
+
+    if email_accounts or all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
         config.platforms[Platform.EMAIL].enabled = True
-        config.platforms[Platform.EMAIL].extra.update({
-            "address": email_addr,
-            "imap_host": email_imap,
-            "smtp_host": email_smtp,
-        })
+        if email_accounts:
+            config.platforms[Platform.EMAIL].extra["accounts"] = email_accounts
+        if all([email_addr, email_pwd, email_imap, email_smtp]):
+            config.platforms[Platform.EMAIL].extra.update({
+                "address": email_addr,
+                "imap_host": email_imap,
+                "smtp_host": email_smtp,
+            })
     email_home = getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(

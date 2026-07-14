@@ -478,6 +478,7 @@ def _prune_cron_sessions_from_config() -> None:
             removed = _session_db.prune_sessions(
                 older_than_days=retention_days,
                 source="cron",
+                sessions_dir=_get_hermes_home() / "sessions",
             )
             if removed:
                 logger.info(
@@ -489,6 +490,16 @@ def _prune_cron_sessions_from_config() -> None:
             _session_db.close()
     except Exception as exc:
         logger.warning("Cron session retention cleanup failed: %s", exc)
+
+
+def _run_post_run_maintenance() -> None:
+    """Run best-effort cleanup after a scheduler-owned run boundary."""
+    try:
+        from tools.mcp_tool import _kill_orphaned_mcp_children
+        _kill_orphaned_mcp_children()
+    except Exception as exc:
+        logger.debug("Post-run MCP orphan cleanup failed: %s", exc)
+    _prune_cron_sessions_from_config()
 
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
@@ -3461,6 +3472,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            _run_post_run_maintenance()
             return 0
 
         if verbose:
@@ -3599,29 +3611,16 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 if not sync:
                     _results.append(True)  # optimistically counted
 
-        # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown.  Must run AFTER jobs finish so active sessions
-        # (including live user chats) are never touched — only PIDs explicitly
-        # detected as orphans in tools.mcp_tool._run_stdio's finally block are
-        # reaped.
-        def _sweep_mcp_orphans() -> None:
-            try:
-                from tools.mcp_tool import _kill_orphaned_mcp_children
-                _kill_orphaned_mcp_children()
-            except Exception as _e:
-                logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
-
         if sync:
             # Sync mode (tests / manual ticks): wait for all dispatched jobs,
-            # collect results, then sweep once.
+            # collect results, then run maintenance once.
             for f in concurrent.futures.as_completed(_all_futures):
                 try:
                     _results.append(f.result())
                 except Exception as exc:
                     logger.error("Cron job future failed: %s", exc)
                     _results.append(False)
-            _sweep_mcp_orphans()
-            _prune_cron_sessions_from_config()
+            _run_post_run_maintenance()
             return sum(_results)
 
         # Async (gateway ticker) mode: don't block.  Sweep orphans via a
@@ -3639,15 +3638,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 except Exception:
                     pass
                 if _remaining[0] <= 0:
-                    _sweep_mcp_orphans()
-                    _prune_cron_sessions_from_config()
+                    _run_post_run_maintenance()
 
             for _f in _all_futures:
                 _f.add_done_callback(_on_done)
         else:
-            # Nothing dispatched (all skipped / no due jobs) — sweep inline.
-            _sweep_mcp_orphans()
-            _prune_cron_sessions_from_config()
+            # Nothing dispatched (all skipped / no due jobs) — maintain inline.
+            _run_post_run_maintenance()
 
         return sum(_results)
     finally:

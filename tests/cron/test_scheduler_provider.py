@@ -338,12 +338,15 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
+    maintained = []
     monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
     monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+    monkeypatch.setattr(sched, "_run_post_run_maintenance", lambda: maintained.append(True))
 
     assert InProcessCronScheduler().fire_due("j1") is True
     assert ran == ["j1"]
+    assert maintained == [True]
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):
@@ -354,11 +357,14 @@ def test_fire_due_lost_claim_does_not_run(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
+    maintained = []
     monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: False, raising=False)
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+    monkeypatch.setattr(sched, "_run_post_run_maintenance", lambda: maintained.append(True))
 
     assert InProcessCronScheduler().fire_due("j1") is False
     assert ran == []
+    assert maintained == []
 
 
 def test_fire_due_missing_job_does_not_run(monkeypatch):
@@ -369,12 +375,15 @@ def test_fire_due_missing_job_does_not_run(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
+    maintained = []
     monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
     monkeypatch.setattr(jobs, "get_job", lambda jid: None)
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+    monkeypatch.setattr(sched, "_run_post_run_maintenance", lambda: maintained.append(True))
 
     assert InProcessCronScheduler().fire_due("gone") is False
     assert ran == []
+    assert maintained == []
 
 
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──

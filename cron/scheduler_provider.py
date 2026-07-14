@@ -95,14 +95,17 @@ class CronScheduler(ABC):
         was lost (another machine/retry won it) or the job no longer exists.
         """
         from cron.jobs import claim_job_for_fire, get_job
-        from cron.scheduler import run_one_job
+        from cron.scheduler import _run_post_run_maintenance, run_one_job
 
         if not claim_job_for_fire(job_id):
             return False  # another machine already claimed this fire
         job = get_job(job_id)
         if job is None:
             return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        return run_one_job(job, adapters=adapters, loop=loop)
+        try:
+            return run_one_job(job, adapters=adapters, loop=loop)
+        finally:
+            _run_post_run_maintenance()
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (the desired state):

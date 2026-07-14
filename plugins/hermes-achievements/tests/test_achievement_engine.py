@@ -151,6 +151,22 @@ class AchievementEngineTests(unittest.TestCase):
         stats = plugin_api.analyze_messages("s2", "Real config", [{"content": "edited config.yaml, manifest.json, and .env.local"}])
         self.assertGreaterEqual(stats["config_events"], 3)
 
+    def test_dashboard_rescan_button_forces_backend_rescan(self):
+        dashboard_js = (MODULE_PATH.parent / "dist" / "index.js").read_text()
+
+        self.assertIn('api("/rescan", { method: "POST" })', dashboard_js)
+        self.assertIn('onClick: rescan', dashboard_js)
+
+    def test_dashboard_does_not_call_removed_overview_endpoint(self):
+        dashboard_js = (MODULE_PATH.parent / "dist" / "index.js").read_text()
+        manifest = (MODULE_PATH.parent / "manifest.json").read_text()
+
+        self.assertNotIn('/overview', dashboard_js)
+        self.assertNotIn('sessions:top', dashboard_js)
+        self.assertNotIn('analytics:top', dashboard_js)
+        self.assertNotIn('sessions:top', manifest)
+        self.assertNotIn('analytics:top', manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

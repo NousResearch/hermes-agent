@@ -584,6 +584,13 @@
         .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
         .catch(function (err) { setError(String(err)); });
     }
+    function rescan() {
+      setLoading(true);
+      api("/rescan", { method: "POST" })
+        .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
+        .catch(function (err) { setError(String(err)); })
+        .finally(function () { setLoading(false); });
+    }
     hooks.useEffect(load, []);
 
     // Auto-poll while the backend is still scanning. scan_meta.mode is
@@ -669,7 +676,7 @@
           React.createElement("h1", null, tx(t, "hero.title", "Hermes Achievements")),
           React.createElement("p", null, tx(t, "hero.subtitle", "Collectible Hermes badges earned from real session history. Known unfinished achievements are shown as Discovered; Secret achievements stay hidden until the first matching behavior appears."))
         ),
-        React.createElement(C.Button, { onClick: load, className: "ha-refresh" }, tx(t, "actions.rescan", "Rescan"))
+        React.createElement(C.Button, { onClick: rescan, className: "ha-refresh" }, tx(t, "actions.rescan", "Rescan"))
       ),
       scanBanner,
       error && React.createElement(C.Card, { className: "ha-error" }, React.createElement(C.CardContent, null, String(error))),

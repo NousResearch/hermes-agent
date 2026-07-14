@@ -2359,15 +2359,16 @@ def _codex_reasoning_only_response(*, encrypted_content="enc_abc123", summary_te
 
 
 def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch):
-    """A response with only reasoning items and no content should be 'incomplete', not 'stop'.
+    """A response with only reasoning items and no content should be 'incomplete' for Codex backends.
 
-    Without this fix, reasoning-only responses get finish_reason='stop' which
-    sends them into the empty-content retry loop (3 retries then failure).
+    Codex CLI uses reasoning-only responses as a signal that the model is still
+    thinking and needs another turn. This test verifies the Codex-specific path
+    where issuer_kind="codex_backend" preserves the old behavior.
     """
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
     assistant_message, finish_reason = _normalize_codex_response(
-        _codex_reasoning_only_response()
+        _codex_reasoning_only_response(), issuer_kind="codex_backend"
     )
 
     assert finish_reason == "incomplete"
@@ -2375,6 +2376,55 @@ def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch
     assert assistant_message.codex_reasoning_items is not None
     assert len(assistant_message.codex_reasoning_items) == 1
     assert assistant_message.codex_reasoning_items[0]["encrypted_content"] == "enc_abc123"
+
+
+def test_normalize_codex_response_reasoning_only_completed_is_stop_for_other_backends(monkeypatch):
+    """Reasoning-only with status='completed' should be 'stop' for non-Codex backends.
+
+    When response.status == "completed" and no items are queued/in_progress,
+    reasoning alone is a valid final state for non-Codex backends. Forcing
+    "incomplete" here causes multi-minute stalls (3 retries x up to 240s each).
+    See https://github.com/NousResearch/hermes-agent/issues/64434
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+    response = _codex_reasoning_only_response()
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="other:example-relay"
+    )
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == ""
+    assert assistant_message.codex_reasoning_items is not None
+    assert len(assistant_message.codex_reasoning_items) == 1
+
+
+def test_normalize_codex_response_reasoning_only_completed_is_stop_without_issuer(monkeypatch):
+    """Default issuer (None) should also trust response.status='completed' for reasoning-only.
+
+    When no issuer_kind is provided (test or default scenario) and the provider
+    says status='completed', reasoning-only should be treated as 'stop'.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+    response = _codex_reasoning_only_response()
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == ""
+
+
+def test_normalize_codex_response_reasoning_only_is_stop_for_xai_backend(monkeypatch):
+    """xAI backend also preserves incomplete for reasoning-only (same as Codex)."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+    response = _codex_reasoning_only_response()
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
 
 
 def test_normalize_codex_response_reasoning_with_content_is_stop(monkeypatch):

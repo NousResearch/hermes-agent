@@ -1380,12 +1380,23 @@ def _normalize_codex_response(
         finish_reason = "incomplete"
     elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
         # Response contains only reasoning (encrypted thinking state and/or
-        # human-readable summary) with no visible content or tool calls. The
-        # model is still thinking and needs another turn to produce the actual
-        # answer. Marking this as "stop" would send it into the empty-content
-        # retry loop which burns retries then fails — treat it as incomplete so
-        # the Codex continuation path handles it correctly.
-        finish_reason = "incomplete"
+        # human-readable summary) with no visible content or tool calls.
+        #
+        # For known Codex/xAI backends, reasoning-only with status="completed"
+        # means "the model is still thinking and needs another turn" — treat
+        # it as incomplete so the Codex continuation path retries instead of
+        # falling into the empty-content retry loop.
+        #
+        # For all other backends (other:<base_url>, etc.), trust the provider's
+        # own response.status signal. When status == "completed" and no items
+        # are queued/in_progress/incomplete, reasoning alone is a valid final
+        # state — forcing "incomplete" causes multi-minute stalls as the
+        # continuation path re-issues calls (3 retries × up to 240s each).
+        # See https://github.com/NousResearch/hermes-agent/issues/64434
+        if response_status == "completed" and issuer_kind not in ("codex_backend", "xai_responses"):
+            finish_reason = "stop"
+        else:
+            finish_reason = "incomplete"
     else:
         finish_reason = "stop"
     return assistant_message, finish_reason

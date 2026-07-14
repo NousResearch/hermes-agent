@@ -997,6 +997,56 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
+    def test_feishu_app_config_yaml_enables_platform(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  app_id: cli_profile\n"
+            "  app_secret: secret\n"
+            "  domain: lark\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("FEISHU_APP_ID", raising=False)
+        monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.FEISHU].enabled is True
+        assert config.platforms[Platform.FEISHU].extra["app_id"] == "cli_profile"
+        assert config.platforms[Platform.FEISHU].extra["app_secret"] == "secret"
+        assert config.platforms[Platform.FEISHU].extra["domain"] == "lark"
+
+    def test_feishu_extra_group_rules_yaml_reaches_platform(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  app_id: cli_profile\n"
+            "  app_secret: secret\n"
+            "  allow_bots: all\n"
+            "  extra:\n"
+            "    default_group_policy: open\n"
+            "    group_rules:\n"
+            "      oc_jensen:\n"
+            "        policy: open\n"
+            "        require_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+        extra = config.platforms[Platform.FEISHU].extra
+
+        assert extra["allow_bots"] == "all"
+        assert extra["default_group_policy"] == "open"
+        assert extra["group_rules"]["oc_jensen"]["require_mention"] is False
+
     def test_bridges_telegram_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -1,0 +1,5 @@
+name: claude-code-subscription
+kind: model-provider
+version: 1.0.0
+description: Claude through a logged-in Claude Code Pro/Max subscription
+author: Hermes Agent contributors

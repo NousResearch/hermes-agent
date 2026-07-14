@@ -134,10 +134,7 @@ export function useStatusbarItems({
   // instead of rebuilding all ~9 statusbar items per token.
   const focusedBusy = useStoreSelector($focusedSessionState, state => Boolean(state?.busy))
 
-  const focusedRuntimeStartedAt = useStoreSelector(
-    $focusedSessionState,
-    state => state?.runtimeStartedAt ?? null
-  )
+  const focusedRuntimeStartedAt = useStoreSelector($focusedSessionState, state => state?.runtimeStartedAt ?? null)
 
   const focusedTurnStartedAt = useStoreSelector($focusedSessionState, state => state?.turnStartedAt ?? null)
   // `usage` is an object, so it can't be compared as a scalar. It IS however

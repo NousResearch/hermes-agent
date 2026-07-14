@@ -141,20 +141,12 @@ describe('useSessionStateCache — per-session timers', () => {
     render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
 
     act(() => {
-      cache.updateSessionState(
-        'bg-runtime',
-        state => ({ ...state, runtimeStartedAt: 1_700_000_000_000 }),
-        'bg-stored'
-      )
+      cache.updateSessionState('bg-runtime', state => ({ ...state, runtimeStartedAt: 1_700_000_000_000 }), 'bg-stored')
     })
     expect($sessionStartedAt.get()).toBeNull()
 
     act(() => {
-      cache.updateSessionState(
-        'fg-runtime',
-        state => ({ ...state, runtimeStartedAt: 1_700_000_111_000 }),
-        'fg-stored'
-      )
+      cache.updateSessionState('fg-runtime', state => ({ ...state, runtimeStartedAt: 1_700_000_111_000 }), 'fg-stored')
     })
     expect($sessionStartedAt.get()).toBe(1_700_000_111_000)
   })

@@ -548,6 +548,14 @@ class TestCheckWebApiKey:
         self._managed_patchers = [
             patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
             patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            # ddgs availability is package-presence driven and the plugin
+            # registry can hold an available ddgs provider. Neutralize both
+            # fallback surfaces so this class only exercises env-key/gateway
+            # resolution — otherwise these tests flip on machines where the
+            # optional ``ddgs`` package is installed (dev venvs) vs CI.
+            patch("tools.web_tools._ddgs_package_importable", return_value=False),
+            patch("agent.web_search_registry.get_active_search_provider", return_value=None),
+            patch("agent.web_search_registry.get_active_extract_provider", return_value=None),
         ]
         for p in self._managed_patchers:
             p.start()
@@ -567,6 +575,22 @@ class TestCheckWebApiKey:
         with patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
+
+    def test_null_backend_value_does_not_crash(self):
+        # config.yaml with ``web:\n  backend:`` yields backend=None. The gate
+        # must not raise AttributeError on None.lower() — mirrors _get_backend.
+        with patch("tools.web_tools._load_web_config", return_value={"backend": None}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+
+    def test_null_web_section_does_not_crash(self):
+        # config.yaml with a present-but-null ``web:`` section makes the raw
+        # ``.get("web", {})`` return None; _load_web_config must still yield a
+        # dict so no caller does None.get(...).
+        with patch("hermes_cli.config.load_config", return_value={"web": None}):
+            from tools.web_tools import _load_web_config, check_web_api_key
+            assert _load_web_config() == {}
+            assert check_web_api_key() is False
 
     def test_firecrawl_key_only(self):
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
@@ -787,3 +811,95 @@ class TestNonBuiltinProviderAvailability:
                 "web_search tool was filtered out despite custom provider being available"
             assert web_extract_entry is not None, \
                 "web_extract tool was filtered out despite custom provider being available"
+
+
+class TestFirecrawlEnvResolution:
+    """Verify Firecrawl reads env values from hermes_cli.config.get_env_value,
+    not just os.getenv.  This catches the regression reported in #40190 where
+    values stored in ~/.hermes/.env were invisible to the provider."""
+
+    def test_direct_config_reads_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_get_direct_firecrawl_config() must use get_env_value, not os.getenv."""
+        # Ensure os.environ does NOT carry the key
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+
+        fake_key = "fc-test-key-from-dotenv"
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: fake_key if k == "FIRECRAWL_API_KEY" else None,
+        ):
+            from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
+
+            result = _get_direct_firecrawl_config()
+            assert result is not None, "get_env_value fallback should find the key"
+            kwargs, _cache_key = result
+            assert kwargs["api_key"] == fake_key
+
+    def test_direct_config_reads_url_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Self-hosted URL from .env must be picked up."""
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+
+        fake_url = "https://firecrawl.internal.example.com"
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: fake_url if k == "FIRECRAWL_API_URL" else None,
+        ):
+            from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
+
+            result = _get_direct_firecrawl_config()
+            assert result is not None
+            kwargs, _cache_key = result
+            assert kwargs["api_url"] == fake_url.rstrip("/")
+
+
+class TestSiblingProvidersEnvResolution:
+    """The same #40190 bug class widened: every keyed web provider must
+    resolve its credential through the config-aware lookup (os.environ OR
+    ~/.hermes/.env), not bare os.getenv. Parametrized over the four
+    providers that previously read only the process environment."""
+
+    _CASES = [
+        ("plugins.web.exa.provider", "ExaWebSearchProvider", "EXA_API_KEY"),
+        ("plugins.web.parallel.provider", "ParallelWebSearchProvider", "PARALLEL_API_KEY"),
+        ("plugins.web.tavily.provider", "TavilyWebSearchProvider", "TAVILY_API_KEY"),
+        ("plugins.web.brave_free.provider", "BraveFreeWebSearchProvider", "BRAVE_SEARCH_API_KEY"),
+    ]
+
+    @pytest.mark.parametrize("module_path,cls_name,env_key", _CASES)
+    def test_is_available_reads_via_get_env_value(
+        self, monkeypatch, module_path, cls_name, env_key
+    ):
+        """is_available() must see a key that lives only in the .env layer."""
+        monkeypatch.delenv(env_key, raising=False)
+
+        import importlib
+        module = importlib.import_module(module_path)
+        provider = getattr(module, cls_name)()
+
+        assert provider.is_available() is False
+
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: "test-key-from-dotenv" if k == env_key else None,
+        ):
+            assert provider.is_available() is True, (
+                f"{cls_name}.is_available() ignored {env_key} from the "
+                "config-aware env layer (get_env_value)"
+            )
+
+    def test_get_provider_env_falls_back_to_os_environ(self, monkeypatch):
+        """When the config layer has no value, process env still wins."""
+        from agent.web_search_provider import get_provider_env
+
+        monkeypatch.setenv("WSP_TEST_FALLBACK_KEY", "  from-process-env  ")
+        with patch("hermes_cli.config.get_env_value", return_value=None):
+            assert get_provider_env("WSP_TEST_FALLBACK_KEY") == "from-process-env"
+
+    def test_get_provider_env_unset_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("WSP_TEST_UNSET_KEY", raising=False)
+        with patch("hermes_cli.config.get_env_value", return_value=None):
+            from agent.web_search_provider import get_provider_env
+
+            assert get_provider_env("WSP_TEST_UNSET_KEY") == ""

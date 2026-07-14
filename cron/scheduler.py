@@ -58,6 +58,25 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     job_name = job.get("name") or job.get("id") or "cron job"
     text = (error or "unknown error").strip()
     lower = text.lower()
+    script_failure_detail = "script-only job failed" if job.get("no_agent") else "agent was not started"
+
+    # Agent-backed pre-run failures are scheduler/runtime failures, not model
+    # provider failures. Classify them before the generic timeout/auth rules so
+    # a script timeout never tells the operator to inspect the fallback chain.
+    if lower.startswith("script timed out"):
+        return (
+            f"⚠️ Cron '{job_name}' failed: pre-run script timeout; {script_failure_detail}. "
+            "Full details saved in cron output."
+        )
+    if lower.startswith((
+        "script not found", "script path is not a file", "script exited with code",
+        "script execution failed", "cannot run .sh/.bash script",
+        "blocked: script path resolves outside",
+    )):
+        return (
+            f"⚠️ Cron '{job_name}' failed: pre-run script error; {script_failure_detail}. "
+            "Full details saved in cron output."
+        )
 
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
@@ -2039,8 +2058,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             are also validated to ensure they stay within the scripts dir.
 
     Returns:
-        (success, output) — on failure *output* contains the error message so the
-        LLM can report the problem to the user.
+        (success, output) — on failure *output* contains a redacted error for
+        the scheduler to persist and deliver. Agent-backed jobs fail before the
+        LLM is initialized; no-agent jobs use the same result directly.
     """
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -2607,11 +2627,50 @@ def run_job(
         )
         return True, doc, output, None
 
+    # Run an agent-backed job's pre-run script before initializing any agent
+    # machinery. A script failure means its required context was not produced;
+    # asking the model to explain that failure can turn an execution failure
+    # into a false-green scheduler result. Fail closed and let run_one_job
+    # record/deliver the scheduler error instead.
+    prerun_script = None
+    script_path = job.get("script")
+    if script_path:
+        prerun_script = _run_job_script(script_path)
+        _ran_ok, _script_output = prerun_script
+        if not _ran_ok:
+            logger.error(
+                "Job '%s' (ID: %s): pre-run script failed; agent not started: %s",
+                job_name, job_id, _script_output,
+            )
+            failed_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "**Status:** pre-run script failed\n\n"
+                f"{_script_output}\n"
+            )
+            return False, failed_doc, "", _script_output
+        if not _parse_wake_gate(_script_output):
+            logger.info(
+                "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
+                job_name, job_id,
+            )
+            silent_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "Script gate returned `wakeAgent=false` — agent skipped.\n"
+            )
+            return True, silent_doc, SILENT_MARKER, None
+        if not _script_output.strip():
+            logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
+            return True, "", SILENT_MARKER, None
+
     # ---------------------------------------------------------------
     # Default (LLM) path — import and construct the agent machinery now
     # that we know we actually need it. Doing these imports here instead of
-    # at module top keeps no_agent ticks from paying for AIAgent / SessionDB
-    # construction costs.
+    # at module top keeps no_agent and pre-run short-circuit ticks from paying
+    # for AIAgent / SessionDB construction costs.
     # ---------------------------------------------------------------
     from run_agent import AIAgent
 
@@ -2681,28 +2740,6 @@ def run_job(
         )
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
-
-    # Wake-gate: if this job has a pre-check script, run it BEFORE building
-    # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
-    # the whole agent run. We pass the result into _build_job_prompt so
-    # the script is only executed once.
-    prerun_script = None
-    script_path = job.get("script")
-    if script_path:
-        prerun_script = _run_job_script(script_path)
-        _ran_ok, _script_output = prerun_script
-        if _ran_ok and not _parse_wake_gate(_script_output):
-            logger.info(
-                "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
-                job_name, job_id,
-            )
-            silent_doc = (
-                f"# Cron Job: {job_name}\n\n"
-                f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                "Script gate returned `wakeAgent=false` — agent skipped.\n"
-            )
-            return True, silent_doc, SILENT_MARKER, None
 
     try:
         prompt = _build_job_prompt(job, prerun_script=prerun_script)

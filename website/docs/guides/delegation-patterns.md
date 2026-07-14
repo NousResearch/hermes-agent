@@ -25,7 +25,7 @@ For the full feature reference, see [Subagent Delegation](/user-guide/features/d
 - Mechanical multi-step work with logic between steps → `execute_code`
 - Tasks needing user interaction → subagents can't use `clarify`
 - Quick file edits → do them directly
-- Durable long-running work that must outlive the current turn → `cronjob` or `terminal(background=True, notify_on_complete=True)`. `delegate_task` is **synchronous**: if the parent turn is interrupted, active children are cancelled and their work is discarded.
+- Durable long-running work that must survive session or process shutdown → `cronjob` or `terminal(background=True, notify_on_complete=True)`. Background and waiting `delegate_task` workers are process-local and are cancelled if their owning session closes.
 
 ---
 
@@ -61,10 +61,10 @@ delegate_task(tasks=[
         "context": "Focus on: error correction breakthroughs, real-world use cases, key companies",
         "toolsets": ["web"]
     }
-])
+], wait=True)
 ```
 
-All three run concurrently. Each subagent searches the web independently and returns a summary. The parent agent then synthesizes them into a coherent briefing.
+All three run concurrently. `wait=True` keeps the current turn open until their consolidated result returns, so the parent agent can synthesize one coherent briefing before replying. Omit `wait` for optional work that may re-enter the conversation later.
 
 ---
 
@@ -238,7 +238,8 @@ delegation:
 - **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_task`
 - **Default 50 iterations** — set `max_iterations` lower for simple tasks to save cost
-- **Not durable** — `delegate_task` is synchronous and runs inside the parent turn. If the parent is interrupted (new user message, `/stop`, `/new`), all active children are cancelled (`status="interrupted"`) and their work is discarded. For work that must outlive the current turn, use `cronjob` or `terminal(background=True, notify_on_complete=True)`.
+- **Background by default** — top-level `delegate_task` calls return immediately and re-enter the conversation when the consolidated result is ready. Set `wait=true` when the current answer depends on the workers; batch workers still run concurrently, but their result returns inline before the parent finalizes.
+- **Not durable** — background and waiting delegations are process-local. Closing/resetting the owning session or stopping Hermes cancels active children. For work that must survive session or process shutdown, use `cronjob` or `terminal(background=True, notify_on_complete=True)`.
 
 ---
 

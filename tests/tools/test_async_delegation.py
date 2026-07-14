@@ -607,11 +607,8 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert _drain_one() is None
 
 
-def test_model_dispatch_forces_background():
-    """The MODEL-facing dispatch path forces background=True for any top-level
-    delegation (single task OR batch), and keeps it off for an orchestrator
-    subagent (depth > 0). Direct delegate_task() callers are unaffected (they
-    keep the synchronous default)."""
+def test_model_dispatch_supports_explicit_wait():
+    """Top-level model calls default async but can await material workers."""
     import tools.delegate_tool as dt
     from unittest.mock import MagicMock
 
@@ -620,23 +617,27 @@ def test_model_dispatch_forces_background():
     sub = MagicMock()
     sub._delegate_depth = 1
 
-    # Registry-fallback helper: top-level always background, regardless of
-    # single vs batch; subagent never.
+    # Registry-fallback helper: top-level defaults to background, regardless of
+    # single vs batch; wait=true and nested subagents select synchronous mode.
     assert dt._model_background_value({"goal": "x"}, top) is True
     assert dt._model_background_value(
         {"tasks": [{"goal": "a"}, {"goal": "b"}]}, top
     ) is True
     assert dt._model_background_value({"tasks": [{"goal": "a"}]}, top) is True
+    assert dt._model_background_value({"goal": "x", "wait": True}, top) is False
+    assert dt._model_background_value(
+        {"tasks": [{"goal": "a"}, {"goal": "b"}], "wait": True}, top
+    ) is False
+    assert dt._model_background_value({"goal": "x", "wait": False}, top) is True
     assert dt._model_background_value({"goal": "x"}, sub) is False
+    assert dt._model_background_value({"goal": "x", "wait": True}, sub) is False
     assert dt._model_background_value(
         {"tasks": [{"goal": "a"}, {"goal": "b"}]}, sub
     ) is False
 
 
-def test_run_agent_dispatch_forces_background():
-    """run_agent._dispatch_delegate_task — the live model path — forces
-    background on for any top-level delegation (single OR batch) and off for a
-    subagent."""
+def test_run_agent_dispatch_supports_explicit_wait():
+    """The live model path defaults async and honors wait=true."""
     from unittest.mock import patch
     import run_agent
 
@@ -659,9 +660,18 @@ def test_run_agent_dispatch_forces_background():
         )
         assert captured["background"] is True
 
+        run_agent.AIAgent._dispatch_delegate_task(
+            agent, {"goal": "blocking review", "wait": True}
+        )
+        assert captured["background"] is False
+
         sub = _FakeAgent()
         sub._delegate_depth = 1
         run_agent.AIAgent._dispatch_delegate_task(sub, {"goal": "x"})
+        assert captured["background"] is False
+        run_agent.AIAgent._dispatch_delegate_task(
+            sub, {"goal": "nested blocking review", "wait": True}
+        )
         assert captured["background"] is False
 
 

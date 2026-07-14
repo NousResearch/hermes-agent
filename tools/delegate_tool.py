@@ -3250,12 +3250,11 @@ def _build_top_level_description() -> str:
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
         f"items concurrently for this user (configured via "
         f"delegation.max_concurrent_children in config.yaml). {nesting_clause}\n\n"
-        "BOTH MODES RUN IN THE BACKGROUND. delegate_task returns immediately — "
-        "you and the user keep working, and each subagent's full result "
-        "re-enters the conversation as its own new message when it finishes. A "
-        "batch is just N independent background subagents (N handles, each "
-        "completes on its own). Do NOT wait or poll; just continue with other "
-        "work after dispatching.\n\n"
+        "Both modes run in the background by default: delegate_task returns "
+        "immediately and the completed result re-enters the conversation as a "
+        "new message. Set wait=true when the result is required before your "
+        "current turn can be finalized; the workers still run concurrently, but "
+        "delegate_task waits and returns their consolidated result inline.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -3435,16 +3434,21 @@ DELEGATE_TASK_SCHEMA = {
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "wait": {
+                "type": "boolean",
+                "description": (
+                    "Set true when these worker results are required before the "
+                    "parent can finalize its current turn. Workers in a batch "
+                    "still run concurrently, but delegate_task waits for all of "
+                    "them and returns one consolidated result inline. Omit or "
+                    "set false for non-blocking background work."
+                ),
+            },
             "background": {
                 "type": "boolean",
                 "description": (
-                    "DEPRECATED / IGNORED. Single-task delegations always run "
-                    "in the background automatically — you do not need to (and "
-                    "cannot) opt in or out. The result re-enters the "
-                    "conversation as a new message when the subagent finishes; "
-                    "just continue working in the meantime. Setting this has no "
-                    "effect; the parameter remains only for backward "
-                    "compatibility."
+                    "DEPRECATED / IGNORED. Use wait=true for blocking delegation. "
+                    "This parameter remains only for backward compatibility."
                 ),
             },
         },
@@ -3460,17 +3464,18 @@ from tools.registry import registry, tool_error
 def _model_background_value(args: dict, parent_agent=None) -> bool:
     """Background flag for the MODEL-facing dispatch path (registry fallback).
 
-    Delegations from the top-level agent always run in the background — the
-    model does not choose. This applies to both a single task and a fan-out
-    batch (each task becomes its own independent background subagent). The one
-    exception is a delegation from an orchestrator subagent (depth > 0), which
-    needs its workers' results within its own turn. The live path is
+    Top-level delegations run in the background by default. ``wait=true`` lets
+    the model mark material workers as a current-turn dependency and selects
+    the existing synchronous join path. Delegations from an orchestrator
+    subagent (depth > 0) also stay synchronous because the orchestrator needs
+    its workers' results within its own turn. The live path is
     ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare
     case the intercept is bypassed. Direct Python callers of ``delegate_task``
     keep the historical synchronous default.
     """
     is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
-    return not is_subagent
+    should_wait = is_truthy_value(args.get("wait"), default=False)
+    return not (is_subagent or should_wait)
 
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}

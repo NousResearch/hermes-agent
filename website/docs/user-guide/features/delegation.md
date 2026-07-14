@@ -27,8 +27,14 @@ delegate_task(tasks=[
     {"goal": "Research topic A", "toolsets": ["web"]},
     {"goal": "Research topic B", "toolsets": ["web"]},
     {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
-])
+], wait=True)
 ```
+
+Top-level delegation runs in the background by default and returns a handle
+immediately. Use `wait=True` when the parent needs the worker result before it
+can finalize the current answer. Batch workers still execute concurrently; the
+tool waits at the join and returns one consolidated result inline. Nested
+orchestrator delegations wait automatically.
 
 ## How Subagent Context Works
 
@@ -241,10 +247,10 @@ delegate_task(
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
-By default, `delegate_task` runs **inside the parent's current turn** and blocks until every child finishes. With `background=true`, the child may continue after that turn returns while the owning session and Hermes process remain alive:
+By default, a top-level `delegate_task` runs in the background and may continue after the current turn returns while the owning session and Hermes process remain alive. Set `wait=true` when its result is required in the current turn; this changes result delivery, not execution durability:
 
-- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
-- Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
+- Waiting workers are attached to the current parent turn. Interrupting that turn interrupts its active children.
+- Background workers are attached to the owning session. Explicit session close/reset or `/stop` cancels them. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
 - A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
 - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
 - Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.

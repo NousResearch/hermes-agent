@@ -1,37 +1,31 @@
-"""Export telemetry to an OpenTelemetry Collector over OTLP/HTTP.
+"""Export monitoring events to an OpenTelemetry Collector over OTLP/HTTP.
 
-Maps the local tel_* events to OTel spans and sends them to the endpoint configured
-under ``telemetry.export.otlp``. Lets an operator stream Hermes telemetry into their
-own observability stack.
+Maps gateway monitoring events to OTel spans and sends them to the endpoint
+configured under ``monitoring.export.otlp``. Lets an operator stream Hermes
+gateway health into their own observability stack (OTEL Collector, DataDog,
+and similar).
 
 Notes:
-  * The destination is operator-configured; this module only sends to that endpoint.
-    It does not import or interact with any aggregate-metrics path.
-  * ``opentelemetry-sdk`` + ``opentelemetry-exporter-otlp-proto-http`` are an optional
-    extra (``pip install hermes-agent[otlp]``), imported lazily so the dependency is
-    only required when OTLP export is actually used.
-  * ``headers_env`` maps a header name to an environment variable name; values are read
-    from the environment at export time and never logged or stored.
-  * The continuous subscriber runs in the emitter's writer thread after durable writes
-    and is fail-isolated, so an export error cannot affect a run.
+  * The destination is operator-configured; this module only sends to that
+    endpoint. No default destination ships.
+  * ``opentelemetry-sdk`` + ``opentelemetry-exporter-otlp-proto-http`` are an
+    optional extra (``pip install hermes-agent[otlp]``), imported lazily so the
+    dependency is only required when OTLP export is actually used.
+  * ``headers_env`` maps a header name to an environment variable name; values
+    are read from the environment at export time and never logged or stored.
+  * The continuous subscriber runs in the emitter's dispatcher thread and is
+    fail-isolated, so an export error cannot affect the gateway.
 
-Each event is exported as a span carrying its recorded attributes (provider, model,
-tokens, duration, etc.). The timing/parent linkage captured in tel_spans
-(trace_id/span_id/parent_span_id/start_ns/end_ns) is not yet reconstructed into OTel
-SpanContexts here, so spans currently arrive as independent records rather than a
-connected trace tree; building the connected-trace projection is tracked separately.
-
-Spans carry structural telemetry by default. Message content is included only when
-trajectories is enabled, and always passes through the export redaction pipeline.
+Only monitoring events (gateway_health / gateway_diagnostic) exist on this
+plane; the ``event_filter`` seam is kept so future planes sharing the emitter
+cannot silently ride along on this exporter.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import sqlite3
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +83,9 @@ def _require_sdk(*, auto_install: bool = True, prompt: bool = True):
 def _resolve_headers(headers_env: Optional[Dict[str, str]]) -> Dict[str, str]:
     """Resolve {header_name: ENV_VAR_NAME} -> {header_name: value} from env.
 
-    The config stores environment variable names, not secret values; values are read
-    from the environment here. Missing variables are skipped (and noted at debug level
-    without the value).
+    The config stores environment variable names, not secret values; values are
+    read from the environment here. Missing variables are skipped (and noted at
+    debug level without the value).
     """
     resolved: Dict[str, str] = {}
     for header_name, env_name in (headers_env or {}).items():
@@ -105,8 +99,8 @@ def _resolve_headers(headers_env: Optional[Dict[str, str]]) -> Dict[str, str]:
 
 
 def _otlp_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    tel = (config or {}).get("telemetry") or {}
-    export = tel.get("export") or {}
+    mon = (config or {}).get("monitoring") or {}
+    export = mon.get("export") or {}
     return export.get("otlp") or {}
 
 
@@ -116,7 +110,7 @@ def build_exporter(config: Dict[str, Any]):
     otlp = _otlp_config(config)
     endpoint = otlp.get("endpoint")
     if not endpoint:
-        raise ValueError("telemetry.export.otlp.endpoint is not set")
+        raise ValueError("monitoring.export.otlp.endpoint is not set")
     headers = _resolve_headers(otlp.get("headers_env"))
     return sdk["OTLPSpanExporter"](endpoint=endpoint, headers=headers or None)
 
@@ -124,8 +118,8 @@ def build_exporter(config: Dict[str, Any]):
 def _make_provider(config: Dict[str, Any]):
     sdk = _require_sdk()
     resource = sdk["Resource"].create({
-        "service.name": "hermes-agent",
-        "telemetry.scope": "local",  # never aggregate metrics
+        "service.name": "hermes-gateway",
+        "telemetry.scope": "gateway_monitoring",
     })
     provider = sdk["TracerProvider"](resource=resource)
     processor = sdk["BatchSpanProcessor"](build_exporter(config))
@@ -133,21 +127,20 @@ def _make_provider(config: Dict[str, Any]):
     return provider, processor
 
 
-# ── event -> span attribute mapping (real values) ───────────────────────────
+# ── event -> span attribute mapping ──────────────────────────────────────────
 def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
-    """Span attributes for an event — the real recorded values (local telemetry)."""
+    """Span attributes for a monitoring event (content-free by construction)."""
     kind = ev.get("event")
     attrs: Dict[str, Any] = {"hermes.event": kind or "unknown"}
     keep_by_kind = {
-        "run": ("entrypoint", "platform", "end_reason",
-                "model_call_count", "tool_call_count", "error_count"),
-        "span": ("trace_id", "run_id", "parent_span_id", "name", "kind",
-                 "start_ns", "end_ns", "status"),
-        "model_call": ("provider", "model", "base_url",
-                       "input_tokens", "output_tokens", "cache_read_tokens",
-                       "cache_write_tokens", "reasoning_tokens", "latency_ms"),
-        "tool_call": ("tool_name", "duration_ms", "result_class"),
-        "error": ("error_class", "subsystem", "recovery"),
+        "gateway_health": ("name", "gateway_state", "old_state", "new_state",
+                           "exit_reason", "restart_requested", "active_agents",
+                           "gateway_busy", "gateway_drainable", "platform_count",
+                           "fatal_platform_count", "profile", "install_id", "version",
+                           "supervision_mode", "pid"),
+        "gateway_diagnostic": ("name", "subsystem", "error_class", "error_code",
+                               "redacted_message", "platform", "old_state", "new_state",
+                               "profile", "version", "severity"),
     }
     for col in keep_by_kind.get(kind, ()):  # type: ignore[arg-type]
         v = ev.get(col)
@@ -158,7 +151,7 @@ def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
 
 def export_batch(provider, batch: List[Dict[str, Any]]) -> int:
     """Map a batch of events to OTel spans. Returns spans created."""
-    tracer = provider.get_tracer("hermes.telemetry")
+    tracer = provider.get_tracer("hermes.monitoring")
     n = 0
     for ev in batch:
         try:
@@ -171,53 +164,6 @@ def export_batch(provider, batch: List[Dict[str, Any]]) -> int:
     return n
 
 
-# ── one-shot drain (export current local rows) ──────────────────────────────
-def export_once(
-    config: Dict[str, Any],
-    *,
-    db_path: Optional[Path] = None,
-    since_ns: Optional[int] = None,
-) -> int:
-    """Drain the local tel_* tables to the configured OTLP endpoint once."""
-    provider, processor = _make_provider(config)
-    try:
-        rows = _read_events(db_path, since_ns)
-        total = export_batch(provider, rows)
-        processor.force_flush()
-        return total
-    finally:
-        try:
-            provider.shutdown()
-        except Exception:
-            pass
-
-
-def _read_events(db_path: Optional[Path], since_ns: Optional[int]) -> List[Dict[str, Any]]:
-    if db_path is None:
-        from hermes_constants import get_hermes_home
-        db_path = get_hermes_home() / "state.db"
-    c = sqlite3.connect(str(db_path), timeout=5.0)
-    c.row_factory = sqlite3.Row
-    out: List[Dict[str, Any]] = []
-    try:
-        table_event = {
-            "tel_runs": "run", "tel_spans": "span",
-            "tel_model_calls": "model_call",
-            "tel_tool_calls": "tool_call", "tel_error_events": "error",
-        }
-        for table, evkind in table_event.items():
-            where = ""
-            if table == "tel_runs" and since_ns:
-                where = f" WHERE start_ns >= {int(since_ns)}"
-            for r in c.execute(f"SELECT * FROM {table}{where}").fetchall():
-                d = dict(r)
-                d["event"] = evkind
-                out.append(d)
-    finally:
-        c.close()
-    return out
-
-
 # ── continuous streaming subscriber ─────────────────────────────────────────
 class OTLPStreamer:
     """A live subscriber that pushes each emitter batch to OTLP as it lands.
@@ -225,14 +171,29 @@ class OTLPStreamer:
     Register with ``emitter.subscribe(streamer)``. Fail-isolated by the emitter.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        *,
+        event_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    ):
         self._provider, self._processor = _make_provider(config)
+        self._event_filter = event_filter
         self.exported = 0
 
     def __call__(self, batch: List[Dict[str, Any]]) -> None:
+        if self._event_filter is not None:
+            batch = [ev for ev in batch if self._event_filter(ev)]
+        if not batch:
+            return
         self.exported += export_batch(self._provider, batch)
 
     def shutdown(self) -> None:
+        try:
+            from agent.monitoring.emitter import get_emitter
+            get_emitter().unsubscribe(self)
+        except Exception:
+            pass
         try:
             self._processor.force_flush()
             self._provider.shutdown()
@@ -255,8 +216,15 @@ def is_enabled(config: Dict[str, Any]) -> bool:
     return bool(otlp.get("enabled") and otlp.get("endpoint"))
 
 
-def start_streaming(config: Dict[str, Any]) -> Optional[OTLPStreamer]:
+def start_streaming(
+    config: Dict[str, Any],
+    *,
+    event_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> Optional[OTLPStreamer]:
     """If OTLP is enabled, attach a streamer to the singleton emitter.
+
+    ``event_filter`` scopes the exporter to its plane, e.g. gateway-health
+    export, so enabling one plane cannot silently export unrelated events.
 
     Non-interactive context (startup): attempts a lazy install with prompt=False
     so a configured-but-missing SDK is installed once (gated by
@@ -268,11 +236,11 @@ def start_streaming(config: Dict[str, Any]) -> Optional[OTLPStreamer]:
     try:
         _require_sdk(prompt=False)
     except OTLPUnavailable:
-        logger.warning("telemetry.export.otlp.enabled but the OTel SDK could not "
+        logger.warning("monitoring.export.otlp.enabled but the OTel SDK could not "
                        "be installed/imported; install 'hermes-agent[otlp]'")
         return None
-    from agent.telemetry.emitter import get_emitter
-    streamer = OTLPStreamer(config)
+    from agent.monitoring.emitter import get_emitter
+    streamer = OTLPStreamer(config, event_filter=event_filter)
     get_emitter().subscribe(streamer)
     return streamer
 
@@ -281,7 +249,6 @@ __all__ = [
     "OTLPUnavailable",
     "OTLPStreamer",
     "build_exporter",
-    "export_once",
     "export_batch",
     "is_available",
     "is_enabled",

@@ -283,8 +283,9 @@ class TestWebServerEndpoints:
             def __init__(self, *args, **kwargs):
                 captured["read_only"] = kwargs.get("read_only")
 
-            def list_sessions_rich(self, limit):
+            def list_sessions_rich(self, limit, compact_rows=False):
                 captured["limit"] = limit
+                captured["compact_rows"] = compact_rows
                 return [
                     {"ended_at": None, "last_active": 95},
                     {"ended_at": 99, "last_active": 99},
@@ -298,7 +299,9 @@ class TestWebServerEndpoints:
         monkeypatch.setattr(web_server.time, "time", lambda: 100)
 
         assert web_server._count_status_active_sessions() == 1
-        assert captured == {"read_only": True, "limit": 50, "closed": True}
+        assert captured == {
+            "read_only": True, "limit": 50, "compact_rows": True, "closed": True
+        }
 
     def test_status_active_session_count_fresh_install_returns_zero(self, monkeypatch, tmp_path):
         """No state.db yet (fresh install): return 0 without attempting a
@@ -487,6 +490,55 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["kind"] == "secret"
         assert fields["api_key"]["url"] == "https://app.honcho.dev"
         assert fields["baseUrl"]["kind"] == "text"
+
+    def test_declared_surface_serves_curated_hindsight_schema(self):
+        resp = self.client.get("/api/memory/providers/hindsight/config?surface=declared")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        fields = self._provider_field_map(data)
+        assert set(fields) == {"mode", "api_key", "api_url", "bank_id", "recall_budget"}
+        assert fields["mode"]["kind"] == "select"
+        assert fields["api_key"]["kind"] == "secret"
+
+    def test_declared_surface_hides_undeclared_providers(self):
+        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
+
+        assert resp.status_code == 200
+        assert resp.json()["fields"] == []
+
+    def test_declared_surface_put_writes_config_and_secret(self):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config?surface=declared",
+            json={
+                "values": {
+                    "mode": "local_external",
+                    "api_url": "http://localhost:8888",
+                    "api_key": "hs-declared-key",
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert load_env()["HINDSIGHT_API_KEY"] == "hs-declared-key"
+
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        provider_config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert provider_config["mode"] == "local_external"
+        assert provider_config["api_url"] == "http://localhost:8888"
+        assert "api_key" not in provider_config
+
+    def test_declared_surface_put_rejects_undeclared_provider(self):
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"api_key": "x"}},
+        )
+
+        assert resp.status_code == 404
 
     def test_all_listed_memory_provider_configs_fetch(self):
         resp = self.client.get("/api/memory")
@@ -860,6 +912,107 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
+    # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
+
+    def test_chat_image_upload_writes_to_default_profile_images(self):
+        from hermes_constants import get_hermes_home
+
+        data_url = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": data_url, "filename": "../../clip.png"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        target = Path(data["path"])
+        assert data["ok"] is True
+        assert data["mime_type"] == "image/png"
+        assert target.parent == get_hermes_home() / "images"
+        assert target.name.startswith("dashboard_")
+        assert target.name.endswith("_clip.png")
+        assert target.is_file()
+        assert target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+    def test_chat_image_upload_writes_to_requested_profile_images(self):
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        resp = self.client.post(
+            "/api/chat/image-upload?profile=worker",
+            json={
+                "data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=",
+                "filename": "drop.gif",
+            },
+        )
+
+        assert resp.status_code == 200
+        target = Path(resp.json()["path"])
+        assert target.parent == worker_home / "images"
+        assert target.is_file()
+        assert target.read_bytes().startswith(b"GIF89a")
+
+    def test_chat_image_upload_rejects_non_image_payload(self):
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:text/plain;base64,aGVsbG8="},
+        )
+
+        assert resp.status_code == 400
+        assert "image" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_rejects_spoofed_image_payload(self):
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:image/png;base64,aGVsbG8=", "filename": "fake.png"},
+        )
+
+        assert resp.status_code == 400
+        assert "unsupported image type" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_rejects_unknown_profile(self):
+        resp = self.client.post(
+            "/api/chat/image-upload?profile=missing-profile",
+            json={"data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="},
+        )
+
+        assert resp.status_code == 404
+        assert "does not exist" in resp.json()["detail"]
+
+    def test_chat_image_upload_enforces_image_size_cap(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_CHAT_IMAGE_UPLOAD_MAX_BYTES", 4)
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={
+                "data_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAE=",
+                "filename": "large.png",
+            },
+        )
+
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+
+        assert resp.status_code == 401
+
     # ── Dashboard font override ─────────────────────────────────────────
 
     def test_get_dashboard_font_defaults_to_theme(self):
@@ -976,6 +1129,70 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def _create_session_with_heavy_fields(self, session_id: str) -> None:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id=session_id,
+                source="cli",
+                system_prompt="# SOUL.md\n" + ("prompt body " * 500),
+                model_config={"temperature": 0.7, "notes": "x" * 200},
+            )
+        finally:
+            db.close()
+
+    def test_get_sessions_strips_heavy_fields_by_default(self):
+        """List rows must omit system_prompt/model_config.
+
+        system_prompt is the fully rendered prompt (tens of KB per row) and
+        dominated the sidebar payload (96% of a 528KB response); no list UI
+        reads it. Detail reads (GET /api/sessions/{id}) stay complete.
+        """
+        self._create_session_with_heavy_fields("lean-list-row")
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "lean-list-row"]
+        assert rows, "created session missing from list"
+        row = rows[0]
+        assert "system_prompt" not in row
+        assert "model_config" not in row
+        # The light fields the sidebar actually renders must survive.
+        for key in ("id", "source", "started_at", "message_count", "is_active"):
+            assert key in row
+
+    def test_get_sessions_full_param_keeps_heavy_fields(self):
+        """?full=1 is the escape hatch for callers that need complete rows."""
+        self._create_session_with_heavy_fields("full-list-row")
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0&full=1")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "full-list-row"]
+        assert rows, "created session missing from list"
+        row = rows[0]
+        assert row["system_prompt"].startswith("# SOUL.md")
+        assert "temperature" in (row["model_config"] or "")
+
+    def test_profiles_sessions_strips_heavy_fields_by_default(self):
+        """The cross-profile aggregate applies the same list projection."""
+        self._create_session_with_heavy_fields("lean-profiles-row")
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "lean-profiles-row"]
+        assert rows, "created session missing from profiles list"
+        row = rows[0]
+        assert "system_prompt" not in row
+        assert "model_config" not in row
+        assert row["profile"] == "default"
+
+        full = self.client.get("/api/profiles/sessions?limit=20&offset=0&full=1")
+        assert full.status_code == 200
+        full_rows = [s for s in full.json()["sessions"] if s["id"] == "lean-profiles-row"]
+        assert full_rows and full_rows[0]["system_prompt"].startswith("# SOUL.md")
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""
@@ -1020,6 +1237,112 @@ class TestWebServerEndpoints:
     def test_rename_session_not_found(self):
         resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
         assert resp.status_code == 404
+
+    def test_import_sessions_endpoint_imports_exported_json(self):
+        from hermes_state import SessionDB
+
+        payload = {
+            "id": "imported-web-session",
+            "source": "cli",
+            "title": "Imported from dashboard",
+            "started_at": 100.0,
+            "ended_at": 110.0,
+            "end_reason": "complete",
+            "messages": [
+                {"role": "user", "content": "hello", "timestamp": 101.0},
+                {"role": "assistant", "content": "hi", "timestamp": 102.0},
+            ],
+        }
+
+        resp = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["imported"] == 1
+        assert data["skipped"] == 0
+
+        db = SessionDB()
+        try:
+            session = db.get_session("imported-web-session")
+            assert session["title"] == "Imported from dashboard"
+            assert session["message_count"] == 2
+            assert [m["content"] for m in db.get_messages("imported-web-session")] == [
+                "hello",
+                "hi",
+            ]
+        finally:
+            db.close()
+
+        duplicate = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        assert duplicate.status_code == 200
+        assert duplicate.json()["skipped_ids"] == ["imported-web-session"]
+
+        invalid = self.client.post(
+            "/api/sessions/import",
+            json={"sessions": [{"source": "cli", "messages": []}]},
+        )
+        assert invalid.status_code == 400
+        assert invalid.json()["detail"]["errors"] == [
+            {"index": 0, "error": "session id is required"}
+        ]
+
+    def test_import_sessions_endpoint_rejects_oversized_stream(self):
+        import hermes_cli.web_server as web_server
+
+        payload = b'{"sessions":[]}' + b" " * web_server._SESSION_IMPORT_MAX_BYTES
+        response = self.client.post(
+            "/api/sessions/import",
+            content=payload,
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == 413
+        assert response.json() == {"detail": "Session import payload is too large"}
+
+    def test_import_sessions_endpoint_rejects_metadata_that_would_break_session_list(self):
+        invalid = self.client.post(
+            "/api/sessions/import",
+            json={
+                "sessions": [
+                    {
+                        "id": "bad-model-config",
+                        "source": "cli",
+                        "model_config": "{not-json",
+                        "messages": [],
+                    }
+                ]
+            },
+        )
+
+        assert invalid.status_code == 400
+        assert invalid.json()["detail"]["errors"] == [
+            {
+                "index": 0,
+                "session_id": "bad-model-config",
+                "error": "model_config must be valid JSON",
+            }
+        ]
+        listed = self.client.get("/api/sessions")
+        assert listed.status_code == 200
+
+    @pytest.mark.parametrize(
+        "message",
+        [{"content": "missing role"}, {"role": None, "content": "null role"}],
+    )
+    def test_import_sessions_endpoint_rejects_missing_or_null_message_role(self, message):
+        response = self.client.post(
+            "/api/sessions/import",
+            json={"sessions": [{"id": "bad-message-role", "messages": [message]}]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["errors"] == [
+            {
+                "index": 0,
+                "session_id": "bad-message-role",
+                "error": "messages[0].role must be a non-empty string",
+            }
+        ]
+        assert self.client.get("/api/sessions").status_code == 200
 
     def test_archive_session_via_patch(self):
         """PATCH archived=true soft-hides a session; archived=false restores it."""
@@ -3370,6 +3693,54 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
+
+    def test_memory_provider_field_present_as_select(self):
+        """memory.provider must stay in the config schema.
+
+        Desktop's settings page builds its field list from /api/config/schema —
+        a key excluded here silently vanishes from Desktop's Memory section
+        (regression: the dashboard's dedicated memory-provider UI excluded the
+        key server-side, breaking Desktop's dropdown). The dashboard hides the
+        field client-side instead.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["memory.provider"]
+        assert entry["type"] == "select"
+        assert entry["category"] == "memory"
+        options = entry["options"]
+        # Built-in sentinel first, plus at least one discovered provider.
+        assert options[0] == ""
+        assert "builtin" in options
+        assert len(options) >= 3
+
+    def test_memory_provider_options_cover_discovered_providers(self):
+        """Every provider the /api/memory endpoint can activate is selectable."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        from plugins.memory import list_memory_provider_names
+
+        options = set(CONFIG_SCHEMA["memory.provider"]["options"])
+        missing = set(list_memory_provider_names()) - options
+        assert missing == set(), f"discovered providers missing from schema options: {missing}"
+
+    def test_approvals_mode_options_match_config_values(self):
+        """approvals.mode select options must match the values accepted by config.py.
+
+        Previously the dashboard showed ['ask', 'yolo', 'deny'] which are stale
+        names that don't correspond to any real config value. The correct values
+        are 'manual', 'smart', and 'off' (see hermes_cli/config.py).
+        'smart' was missing entirely, making it unreachable from the UI.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["approvals.mode"]
+        assert entry["type"] == "select"
+        options = entry["options"]
+        assert "manual" in options, "'manual' missing from approvals.mode options"
+        assert "smart" in options, "'smart' missing from approvals.mode options"
+        assert "off" in options, "'off' missing from approvals.mode options"
+        # Stale names that were previously shown but don't match config values
+        assert "ask" not in options, "stale option 'ask' should not appear"
+        assert "yolo" not in options, "stale option 'yolo' should not appear"
+        assert "deny" not in options, "stale option 'deny' should not appear"
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config

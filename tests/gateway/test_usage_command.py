@@ -245,6 +245,77 @@ class TestUsageAccountSection:
         assert "📈 **Account limits**" in result
 
 
+class TestUsageReset:
+    """`/usage reset [--force]` — banked Codex reset redemption via the gateway."""
+
+    def _event(self, args):
+        event = MagicMock()
+        event.get_command_args.return_value = args
+        return event
+
+    @pytest.mark.asyncio
+    async def test_reset_dispatches_redeem_for_codex_agent(self, monkeypatch):
+        agent = _make_mock_agent(provider="openai-codex",
+                                 base_url="https://chatgpt.com/backend-api/codex",
+                                 api_key="tok")
+        runner = _make_runner(SK, cached_agent=agent)
+
+        seen = {}
+
+        def fake_redeem(*, base_url=None, api_key=None, force=False):
+            seen.update(base_url=base_url, api_key=api_key, force=force)
+            from agent.account_usage import CodexResetRedeemResult
+            return CodexResetRedeemResult(status="reset", message="✅ redeemed", available_count=1)
+
+        monkeypatch.setattr("agent.account_usage.redeem_codex_reset_credit", fake_redeem)
+
+        result = await runner._handle_usage_command(self._event("reset"))
+
+        assert result == "✅ redeemed"
+        assert seen["force"] is False
+        assert seen["api_key"] == "tok"
+
+    @pytest.mark.asyncio
+    async def test_reset_force_flag_propagates(self, monkeypatch):
+        agent = _make_mock_agent(provider="openai-codex", api_key="tok")
+        runner = _make_runner(SK, cached_agent=agent)
+
+        seen = {}
+
+        def fake_redeem(*, base_url=None, api_key=None, force=False):
+            seen["force"] = force
+            from agent.account_usage import CodexResetRedeemResult
+            return CodexResetRedeemResult(status="reset", message="ok")
+
+        monkeypatch.setattr("agent.account_usage.redeem_codex_reset_credit", fake_redeem)
+
+        await runner._handle_usage_command(self._event("reset --force"))
+
+        assert seen["force"] is True
+
+    @pytest.mark.asyncio
+    async def test_reset_rejected_on_non_codex_provider(self, monkeypatch):
+        agent = _make_mock_agent(provider="openrouter")
+        runner = _make_runner(SK, cached_agent=agent)
+        monkeypatch.setattr(
+            "agent.account_usage.redeem_codex_reset_credit",
+            lambda **kw: (_ for _ in ()).throw(AssertionError("must not redeem")),
+        )
+
+        result = await runner._handle_usage_command(self._event("reset"))
+
+        assert "openai-codex" in result
+
+    @pytest.mark.asyncio
+    async def test_unknown_subcommand_rejected(self):
+        agent = _make_mock_agent(provider="openai-codex")
+        runner = _make_runner(SK, cached_agent=agent)
+
+        result = await runner._handle_usage_command(self._event("bogus"))
+
+        assert "Unknown /usage subcommand" in result
+
+
 class TestUsageContextBreakdown:
     """The /usage output includes the per-category context breakdown."""
 

@@ -595,12 +595,27 @@ class AIAgent:
             return
         source = _session_source_for_agent(self.platform)
         try:
+            route_state = getattr(self, "_pre_model_route_restore_state", None)
+            route_primary = (
+                route_state.get("primary_runtime", {})
+                if isinstance(route_state, dict)
+                else {}
+            )
+            session_model = route_primary.get("model") or self.model
+            session_system_prompt = (
+                route_state.get("cached_system_prompt")
+                if isinstance(route_state, dict)
+                and route_state.get("cached_system_prompt") is not None
+                else self._cached_system_prompt
+            )
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
-                model=self.model,
+                # A first-turn pre_model_route is ephemeral; the durable
+                # session row still belongs to the configured primary model.
+                model=session_model,
                 model_config=self._session_init_model_config,
-                system_prompt=self._cached_system_prompt,
+                system_prompt=session_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
@@ -811,6 +826,63 @@ class AIAgent:
             prune_fallback_chain=prune_fallback_chain,
         )
 
+    def _activate_pre_model_route(
+        self,
+        *,
+        new_model: str,
+        new_provider: str,
+        api_key: str,
+        base_url: str,
+        api_mode: str,
+    ) -> None:
+        """Activate a model route for one turn without replacing the primary.
+
+        ``switch_model()`` is intentionally persistent for explicit ``/model``
+        commands. A route hook needs the opposite contract: use the resolved
+        runtime now, but keep the primary runtime, prompt cache, credential
+        pool, and fallback bookkeeping ready for the next turn.
+        """
+        if getattr(self, "_pre_model_route_restore_state", None):
+            raise RuntimeError("previous pre_model_route runtime was not restored")
+
+        restore_state = {
+            "primary_runtime": dict(getattr(self, "_primary_runtime", {}) or {}),
+            "cached_system_prompt": getattr(self, "_cached_system_prompt", None),
+            "credential_pool": getattr(self, "_credential_pool", None),
+            "config_context_length": getattr(self, "_config_context_length", None),
+            "fallback_chain": list(getattr(self, "_fallback_chain", []) or []),
+            "fallback_model": getattr(self, "_fallback_model", None),
+            "fallback_activated": getattr(self, "_fallback_activated", False),
+            "fallback_index": getattr(self, "_fallback_index", 0),
+            "rate_limited_until": getattr(self, "_rate_limited_until", 0),
+        }
+
+        self._pre_model_route_restore_state = restore_state
+        try:
+            from agent.agent_runtime_helpers import activate_model_runtime
+
+            activate_model_runtime(
+                self,
+                new_model=new_model,
+                new_provider=new_provider,
+                api_key=api_key,
+                base_url=base_url,
+                api_mode=api_mode,
+                update_primary_runtime=False,
+                prune_fallback_chain=False,
+                persist_billing_route=False,
+            )
+        except Exception:
+            # switch_model rolls back client-build failures itself. For a later
+            # failure (for example context metadata refresh), reuse the same
+            # turn-boundary restore path so the agent cannot remain half-routed.
+            self._primary_runtime = restore_state["primary_runtime"]
+            self._restore_primary_runtime()
+            raise
+
+        # The route-specific activation leaves the durable primary snapshot
+        # untouched while the resolved runtime remains live for this turn.
+
     def _apply_pre_model_route_hook(
         self,
         user_message: str,
@@ -921,13 +993,12 @@ class AIAgent:
 
             old_model = getattr(self, "model", "") or ""
             old_provider = getattr(self, "provider", "") or ""
-            self.switch_model(
+            self._activate_pre_model_route(
                 new_model=result.new_model,
                 new_provider=result.target_provider,
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
-                prune_fallback_chain=False,
             )
             self._pre_model_route_switched_this_turn = True
             try:

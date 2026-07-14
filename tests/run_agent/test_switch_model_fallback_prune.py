@@ -122,7 +122,7 @@ def test_switch_can_preserve_fallback_chain_for_turn_scoped_routes():
     }
 
 
-def test_pre_model_route_switch_uses_non_pruning_model_switch(monkeypatch):
+def test_pre_model_route_uses_turn_scoped_runtime_activation(monkeypatch):
     agent = _make_agent([
         {"provider": "openrouter", "model": "x-ai/grok-4"},
         {"provider": "nous", "model": "hermes-4"},
@@ -137,14 +137,18 @@ def test_pre_model_route_switch_uses_non_pruning_model_switch(monkeypatch):
     setattr(agent, "_gateway_session_key", "")
     setattr(agent, "_content_has_image_parts", lambda content: False)
 
-    def _fake_switch_model(**kwargs):
+    def _fake_activate_runtime(_agent, **kwargs):
         agent.model = kwargs["new_model"]
         agent.provider = kwargs["new_provider"]
         agent.api_key = kwargs["api_key"]
         agent.base_url = kwargs["base_url"]
         agent.api_mode = kwargs["api_mode"]
 
-    agent.switch_model = MagicMock(side_effect=_fake_switch_model)
+    activate_runtime = MagicMock(side_effect=_fake_activate_runtime)
+    monkeypatch.setattr(
+        "agent.agent_runtime_helpers.activate_model_runtime",
+        activate_runtime,
+    )
 
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr(
@@ -187,15 +191,24 @@ def test_pre_model_route_switch_uses_non_pruning_model_switch(monkeypatch):
         is_first_turn=False,
     )
 
-    agent.switch_model.assert_called_once_with(
+    activate_runtime.assert_called_once_with(
+        agent,
         new_model="claude-sonnet-4-5",
         new_provider="anthropic",
         api_key="sk-ant-xyz",
         base_url="https://api.anthropic.com",
         api_mode="anthropic_messages",
+        update_primary_runtime=False,
         prune_fallback_chain=False,
+        persist_billing_route=False,
     )
     assert agent._pre_model_route_switched_this_turn is True
+    assert agent._primary_runtime == {}
+    assert agent._pre_model_route_restore_state["cached_system_prompt"] == "cached"
+    assert agent._pre_model_route_restore_state["fallback_chain"] == [
+        {"provider": "openrouter", "model": "x-ai/grok-4"},
+        {"provider": "nous", "model": "hermes-4"},
+    ]
     assert runtime_main["provider"] == "anthropic"
     assert runtime_main["model"] == "claude-sonnet-4-5"
 

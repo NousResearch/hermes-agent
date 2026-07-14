@@ -4,6 +4,7 @@ import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+<<<<<<< HEAD
 import {
   $connection,
   $currentCwd,
@@ -14,6 +15,14 @@ import {
 } from '@/store/session'
 import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
+=======
+import { group } from '@/components/pane-shell/tree/model'
+import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $activeSessionId, $selectedStoredSessionId, $sessions, $sessionStartedAt } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
+>>>>>>> 5c4eee88f4 (style(desktop): format runtime timer changes)
 
 import { useStatusbarItems } from './use-statusbar-items'
 

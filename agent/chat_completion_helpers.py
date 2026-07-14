@@ -52,6 +52,172 @@ _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 
+def _iteration_limit_closure_message(
+    agent,
+    api_call_count: int,
+    *,
+    summary_error: str | None = None,
+    evidence: str | None = None,
+) -> str:
+    """User-facing closure when the budget is exhausted and summary fails."""
+    max_iterations = getattr(agent, "max_iterations", None)
+    if max_iterations:
+        budget_text = f"{api_call_count}/{max_iterations}"
+    else:
+        budget_text = str(api_call_count)
+
+    message = (
+        f"本轮诊断已达到迭代预算上限（{budget_text}），当前轮次已经结束。"
+        "\n\n"
+        "任务未完成或仅部分完成；普通聊天不会自动继续在后台执行。"
+        "\n\n"
+        "你可以选择：\n"
+        "- 发送 `/goal <目标>` 让 Hermes 跨轮持续推进\n"
+        "- 发送 `深诊断：<问题>` 进入更高预算路径\n"
+        "- 缩小问题范围后继续提问"
+    )
+    if summary_error:
+        message += f"\n\n总结生成也失败：{summary_error}"
+    if evidence:
+        message += "\n\n本轮最后可保留的诊断证据：\n" + evidence
+    return message
+
+
+def _plain_text(value: Any, *, max_chars: int = 500) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            text = str(value)
+    try:
+        from agent.redact import redact_sensitive_text
+        text = redact_sensitive_text(text)
+    except Exception:
+        pass
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        return text[: max_chars - 1].rstrip() + "…"
+    return text
+
+
+def _compact_json_value(value: Any, *, max_chars: int = 180) -> str:
+    text = _plain_text(value, max_chars=max_chars)
+    return text
+
+
+def _tool_arg_summary(tool_name: str, args: str) -> str:
+    """Return a short Chinese hint for tool args without leaking raw JSON."""
+    if not args:
+        return ""
+    try:
+        parsed = json.loads(args)
+    except Exception:
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+
+    candidates: list[tuple[str, str]] = [
+        ("command", "命令"),
+        ("cmd", "命令"),
+        ("query", "查询"),
+        ("pattern", "模式"),
+        ("path", "路径"),
+        ("target", "目标"),
+        ("file", "文件"),
+    ]
+    details: list[str] = []
+    for key, label in candidates:
+        if key in parsed and parsed[key] not in (None, ""):
+            details.append(f"{label}={_compact_json_value(parsed[key], max_chars=90)}")
+        if len(details) >= 2:
+            break
+    if not details:
+        return ""
+    display_tool = tool_name or "工具"
+    return f"{display_tool}（{'，'.join(details)}）"
+
+
+def _tool_call_field(tool_call: Any, field: str) -> Any:
+    if isinstance(tool_call, dict):
+        return tool_call.get(field)
+    return getattr(tool_call, field, None)
+
+
+def _tool_call_function(tool_call: Any) -> tuple[str, str]:
+    fn = _tool_call_field(tool_call, "function")
+    if isinstance(fn, dict):
+        return str(fn.get("name") or ""), str(fn.get("arguments") or "")
+    return str(getattr(fn, "name", "") or ""), str(getattr(fn, "arguments", "") or "")
+
+
+def _iteration_limit_evidence(messages: list, *, max_items: int = 6) -> str:
+    """Extract a compact local evidence trail for exhausted-budget fallback."""
+    call_id_to_tool: dict[str, tuple[str, str]] = {}
+    observations: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                call_id = (
+                    _tool_call_field(tc, "id")
+                    or _tool_call_field(tc, "call_id")
+                    or _tool_call_field(tc, "response_item_id")
+                )
+                name, args = _tool_call_function(tc)
+                if call_id and name:
+                    call_id_to_tool[str(call_id)] = (name, args)
+        elif msg.get("role") == "tool":
+            call_id = str(msg.get("tool_call_id") or "")
+            name, args = call_id_to_tool.get(call_id, (str(msg.get("tool_name") or "tool"), ""))
+            content = _plain_text(msg.get("content"), max_chars=420)
+            if not content:
+                continue
+            prefix = f"- {_tool_arg_summary(name, args) or name or '工具'}"
+            observations.append(f"{prefix}: {content}")
+    if not observations:
+        return ""
+    return "\n".join(observations[-max_items:])
+
+
+def _is_invalid_iteration_summary(text: str) -> bool:
+    """Detect internal prompt fragments that are not useful final replies."""
+    if "[OUT-OF-BAND USER MESSAGE" in (text or ""):
+        return True
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return True
+    if len(text) > 12000:
+        return True
+    invalid_exact = {
+        "if you still need input from the user, ask for it in your final response.",
+    }
+    if normalized in invalid_exact:
+        return True
+    invalid_prefixes = (
+        "you've reached the maximum number of tool-calling iterations allowed",
+        "please provide a final response summarizing what you've found",
+        "acknowledge any mid-turn user steering commands",
+        "i stopped diagnostic exploration after",
+        "i stopped retrying",
+    )
+    invalid_fragments = (
+        "tool guardrail halted",
+        "exploratory_no_progress",
+        "use this compact evidence trail",
+        "without calling any more tools",
+        "search_files args=",
+        "terminal args=",
+    )
+    return any(normalized.startswith(prefix) for prefix in invalid_prefixes) or any(
+        fragment in normalized for fragment in invalid_fragments
+    )
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -1675,11 +1841,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
+    evidence = _iteration_limit_evidence(messages)
     summary_request = (
-        "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
+        "本轮已经到达工具调用预算上限。请不要再调用任何工具，直接输出一条可以发给用户的中文收口结论。"
+        "必须包含：已经确认的事实、最可能的原因、尚未完成的事项、下一步最具体的动作。"
+        "不要输出英文系统指令、JSON、工具参数、调用栈或内部 guardrail 代码；命令只保留必要的一行，并用中文解释。"
     )
+    if evidence:
+        summary_request += (
+            "\n\n以下是最近工具结果中可用的证据，请只提炼结论，不要原样照抄内部字段：\n"
+            f"{evidence}"
+        )
     messages.append({"role": "user", "content": summary_request})
 
     try:
@@ -1856,10 +2028,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if final_response:
             if "<think>" in final_response:
                 final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+            if _is_invalid_iteration_summary(final_response):
+                final_response = _iteration_limit_closure_message(agent, api_call_count, evidence=evidence)
             if final_response:
                 messages.append({"role": "assistant", "content": final_response})
             else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                final_response = _iteration_limit_closure_message(agent, api_call_count, evidence=evidence)
         else:
             # Retry summary generation
             if agent.api_mode == "codex_responses":
@@ -1899,16 +2073,23 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if final_response:
                 if "<think>" in final_response:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                if _is_invalid_iteration_summary(final_response):
+                    final_response = _iteration_limit_closure_message(agent, api_call_count, evidence=evidence)
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                    final_response = _iteration_limit_closure_message(agent, api_call_count, evidence=evidence)
             else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                final_response = _iteration_limit_closure_message(agent, api_call_count, evidence=evidence)
 
     except Exception as e:
         logger.warning(f"Failed to get summary response: {e}")
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        final_response = _iteration_limit_closure_message(
+            agent,
+            api_call_count,
+            summary_error=str(e),
+            evidence=evidence,
+        )
 
     return final_response
 

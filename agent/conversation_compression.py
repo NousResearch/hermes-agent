@@ -52,6 +52,13 @@ COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
 
+LOW_YIELD_COMPRESSION_MESSAGE = (
+    "本轮诊断已停止：上下文压缩收益不足，继续压缩和搜索会继续放大 token 消耗。"
+    "\n\n"
+    "当前不会在后台继续执行。请基于已有结论缩小问题范围，或发送 `深诊断：<明确问题>` "
+    "进入一次有上限的深诊断。"
+)
+
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
     """Whether the live in-memory SessionDB class structurally predates locks.
@@ -806,6 +813,28 @@ def compress_context(
                         f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
                         "check auxiliary.compression.model in config.yaml."
                     )
+
+        _platform = (getattr(agent, "platform", "") or "").strip().lower()
+        _compressed_msg_count = len(compressed)
+        _low_yield = _platform.startswith("feishu") and _compressed_msg_count >= _pre_msg_count
+        if _low_yield and not force:
+            agent._last_compression_low_yield = {
+                "before_messages": _pre_msg_count,
+                "after_messages": _compressed_msg_count,
+                "message": LOW_YIELD_COMPRESSION_MESSAGE,
+            }
+            if getattr(agent, "_last_low_yield_compression_sid", None) != (agent.session_id or ""):
+                agent._last_low_yield_compression_sid = agent.session_id or ""
+                agent._emit_warning(LOW_YIELD_COMPRESSION_MESSAGE)
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            logger.warning(
+                "compression low-yield stop: session=%s platform=%s messages=%d->%d",
+                agent.session_id or "none", _platform, _pre_msg_count, _compressed_msg_count,
+            )
+            return messages, _existing_sp
+        agent._last_compression_low_yield = None
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:

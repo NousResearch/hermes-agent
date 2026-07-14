@@ -9,13 +9,19 @@ duplicate agent.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from gateway.run import (
+    GatewayRunner,
+    _AGENT_PENDING_SENTINEL,
+    _max_iterations_for_platform_budget,
+    _platform_budget_key_for_message,
+)
 from gateway.session import SessionSource, build_session_key
 
 
@@ -75,6 +81,17 @@ def _make_event(text="hello", chat_id="12345"):
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
 
+def test_messaging_budget_modes_are_explicit():
+    assert _platform_budget_key_for_message("telegram", "查token") == "telegram"
+    assert _platform_budget_key_for_message("telegram", "UI验证：查token") == "telegram_ui"
+    assert _platform_budget_key_for_message("telegram", "深诊断：查token") == "telegram_deep"
+    assert _platform_budget_key_for_message("feishu", "/deep 查token") == "feishu_deep"
+
+    assert _max_iterations_for_platform_budget(90, "telegram") == 6
+    assert _max_iterations_for_platform_budget(90, "telegram_ui") == 6
+    assert _max_iterations_for_platform_budget(90, "telegram_deep") == 12
+
+
 # ------------------------------------------------------------------
 # Test 1: Sentinel is placed before _handle_message_with_agent runs
 # ------------------------------------------------------------------
@@ -101,6 +118,27 @@ async def test_sentinel_placed_before_agent_setup():
     assert sentinel_was_set, (
         "Sentinel must be in _running_agents when _handle_message_with_agent starts"
     )
+
+
+@pytest.mark.asyncio
+async def test_telegram_token_usage_fast_path_bypasses_agent(monkeypatch):
+    runner = _make_runner()
+    event = _make_event(text="请查昨天token的使用情况")
+    session_key = build_session_key(event.source)
+
+    def fake_known_ops(platform, text):
+        assert platform == "telegram"
+        assert text == "请查昨天token的使用情况"
+        return SimpleNamespace(task=SimpleNamespace(name="token_usage_report"), text="token report")
+
+    monkeypatch.setattr("gateway.run.render_known_ops_task", fake_known_ops)
+    runner._handle_message_with_agent = AsyncMock(return_value="should not run")
+
+    result = await runner._handle_message(event)
+
+    assert result == "token report"
+    runner._handle_message_with_agent.assert_not_awaited()
+    assert session_key not in runner._running_agents
 
 
 # ------------------------------------------------------------------

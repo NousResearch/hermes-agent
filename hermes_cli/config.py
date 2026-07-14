@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
+_CONFIG_DUPLICATE_KEYS_WARNED: set = set()
 
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
@@ -150,6 +151,84 @@ def _warn_config_parse_failure(
         sys.stderr.flush()
     except Exception:
         pass
+
+
+def _find_yaml_duplicate_keys(text: str) -> List[str]:
+    """Return duplicate mapping keys with dotted paths and source lines."""
+    try:
+        from yaml.nodes import MappingNode, ScalarNode, SequenceNode
+
+        root = yaml.compose(text)
+    except Exception:
+        return []
+    if root is None:
+        return []
+
+    duplicates: List[str] = []
+
+    def _node_label(node: Any) -> str:
+        if isinstance(node, ScalarNode):
+            return str(node.value)
+        return "<complex-key>"
+
+    def _walk(node: Any, path: str) -> None:
+        if isinstance(node, MappingNode):
+            seen: Dict[str, int] = {}
+            for key_node, value_node in node.value:
+                key = _node_label(key_node)
+                first_line = seen.get(key)
+                current_line = getattr(getattr(key_node, "start_mark", None), "line", -1) + 1
+                key_path = f"{path}.{key}" if path else key
+                if first_line is not None:
+                    duplicates.append(
+                        f"{key_path} (lines {first_line} and {current_line})"
+                    )
+                else:
+                    seen[key] = current_line
+                _walk(value_node, key_path)
+        elif isinstance(node, SequenceNode):
+            for idx, item in enumerate(node.value):
+                _walk(item, f"{path}[{idx}]" if path else f"[{idx}]")
+
+    _walk(root, "")
+    return duplicates
+
+
+def _warn_config_duplicate_keys(config_path: Path, duplicate_keys: List[str]) -> None:
+    """Warn once per file version when YAML duplicate keys shadow config."""
+    if not duplicate_keys:
+        return
+    try:
+        st = config_path.stat()
+        key = (str(config_path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (str(config_path), 0, 0)
+    if key in _CONFIG_DUPLICATE_KEYS_WARNED:
+        return
+    _CONFIG_DUPLICATE_KEYS_WARNED.add(key)
+
+    preview = ", ".join(duplicate_keys[:5])
+    if len(duplicate_keys) > 5:
+        preview += f", ... (+{len(duplicate_keys) - 5} more)"
+    msg = (
+        f"Duplicate keys detected in {config_path}: {preview}. "
+        "YAML keeps the last duplicate value, so earlier settings are ignored. "
+        "Merge duplicate sections and restart."
+    )
+    logger.warning(msg)
+    try:
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _load_config_yaml_mapping(config_path: Path) -> Dict[str, Any]:
+    text = config_path.read_text(encoding="utf-8")
+    _warn_config_duplicate_keys(config_path, _find_yaml_duplicate_keys(text))
+    data = fast_safe_load(text) or {}
+    return data if isinstance(data, dict) else {}
+
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -6697,14 +6776,11 @@ def read_raw_config() -> Dict[str, Any]:
             return copy.deepcopy(cached[2])
 
         try:
-            with open(config_path, encoding="utf-8") as f:
-                data = fast_safe_load(f) or {}
+            data = _load_config_yaml_mapping(config_path)
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
 
-        if not isinstance(data, dict):
-            data = {}
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
         return data
 
@@ -6970,8 +7046,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         if user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = fast_safe_load(f) or {}
+                user_config = _load_config_yaml_mapping(config_path)
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})

@@ -31,6 +31,7 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.install_success_stop import install_success_stop_response
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
@@ -159,6 +160,22 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _should_preemptively_summarize(agent, api_call_count: int) -> bool:
+    """Stop Feishu diagnostics before the last budget unit is spent searching."""
+    platform_key = (
+        getattr(agent, "_platform_budget_key", None)
+        or getattr(agent, "platform", "")
+        or ""
+    ).strip().lower()
+    if platform_key not in {"feishu", "feishu_deep"}:
+        return False
+    if api_call_count <= 0:
+        return False
+    remaining = getattr(agent.iteration_budget, "remaining", 0)
+    threshold = 2 if platform_key == "feishu_deep" else 1
+    return remaining <= threshold
 
 
 def _nous_entitlement_message(capability: str) -> str:
@@ -4801,6 +4818,28 @@ def run_conversation(
                                 pass
                     break
 
+                if getattr(agent, "_platform_task_mode", "") == "install":
+                    _install_stop_response = install_success_stop_response(
+                        messages,
+                        current_turn_user_idx,
+                    )
+                    if _install_stop_response:
+                        _turn_exit_reason = "success_stop_install_verified"
+                        final_response = _install_stop_response
+                        agent._emit_status(
+                            "安装已验证，已停止继续探测以控制 token 消耗。"
+                        )
+                        messages.append({"role": "assistant", "content": final_response})
+                        if final_response:
+                            agent._safe_print(f"\n{final_response}\n")
+                            if agent.stream_delta_callback:
+                                try:
+                                    agent.stream_delta_callback(final_response)
+                                    agent.stream_delta_callback(None)
+                                except Exception:
+                                    pass
+                        break
+
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.
@@ -4859,14 +4898,44 @@ def run_conversation(
 
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):
                     agent._safe_print("  ⟳ compacting context…")
+                    _pre_compress_len = len(messages)
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
                         task_id=effective_task_id,
                     )
+                    _low_yield = getattr(agent, "_last_compression_low_yield", None)
+                    if _low_yield and len(messages) >= _pre_compress_len:
+                        final_response = _low_yield.get("message") if isinstance(_low_yield, dict) else None
+                        if not final_response:
+                            final_response = (
+                                "本轮诊断已停止：上下文压缩收益不足，继续执行会放大 token 消耗。"
+                            )
+                        messages.append({"role": "assistant", "content": final_response})
+                        agent._session_messages = messages
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "final_response": final_response,
+                            "partial": True,
+                            "failed": False,
+                            "compression_low_yield": True,
+                        }
                     conversation_history = conversation_history_after_compression(
                         agent, messages
                     )
+
+                if _should_preemptively_summarize(agent, api_call_count):
+                    _turn_exit_reason = (
+                        f"budget_preemptive_summary({api_call_count}/{agent.max_iterations})"
+                    )
+                    agent._emit_status(
+                        "本轮诊断接近预算上限，已停止继续搜索，正在基于当前证据收口。"
+                    )
+                    final_response = agent._handle_max_iterations(messages, api_call_count)
+                    break
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

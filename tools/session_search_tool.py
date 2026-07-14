@@ -304,7 +304,7 @@ def _scroll(
     db,
     session_id: str,
     around_message_id: int,
-    window: int = 5,
+    window: int = 2,
     current_session_id: str = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
@@ -327,7 +327,7 @@ def _scroll(
         try:
             window = int(window)
         except (TypeError, ValueError):
-            window = 5
+            window = 2
     window = max(1, min(window, 20))
 
     # Reject scrolling inside the active session lineage — those messages are
@@ -502,6 +502,7 @@ def _discover(
     role_filter: Optional[List[str]],
     limit: int,
     sort: Optional[str],
+    detail: str = "summary",
     current_session_id: str = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
@@ -575,12 +576,6 @@ def _discover(
         hit_sid = match_info.get("session_id") or lineage_root
         msg_id = match_info.get("id")
         try:
-            view = db.get_anchored_view(hit_sid, msg_id, window=5, bookend=3)
-        except Exception as e:
-            logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
-            continue
-
-        try:
             session_meta = db.get_session(lineage_root) or {}
         except Exception:
             session_meta = {}
@@ -596,12 +591,24 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
-            "messages_before": view.get("messages_before", 0),
-            "messages_after": view.get("messages_after", 0),
+            "scroll_hint": {
+                "session_id": hit_sid,
+                "around_message_id": msg_id,
+            },
         }
+        if detail == "full":
+            try:
+                view = db.get_anchored_view(hit_sid, msg_id, window=1, bookend=1)
+            except Exception as e:
+                logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
+                continue
+            entry.update({
+                "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
+                "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
+                "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+                "messages_before": view.get("messages_before", 0),
+                "messages_after": view.get("messages_after", 0),
+            })
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
         results.append(entry)
@@ -609,6 +616,7 @@ def _discover(
     return json.dumps({
         "success": True,
         "mode": "discover",
+        "detail": detail,
         "query": query,
         "results": results,
         "count": len(results),
@@ -625,9 +633,10 @@ def session_search(
     # Scroll shape
     session_id: str = None,
     around_message_id: int = None,
-    window: int = 5,
+    window: int = 2,
     # Discovery shape
     sort: str = None,
+    detail: str = "summary",
     # Cross-profile (any shape)
     profile: str = None,
 ) -> str:
@@ -730,12 +739,17 @@ def session_search(
         if candidate in ("newest", "oldest"):
             sort_norm = candidate
 
+    detail_norm = "summary"
+    if isinstance(detail, str) and detail.strip().lower() == "full":
+        detail_norm = "full"
+
     return _discover(
         db=db,
         query=query.strip(),
         role_filter=role_list,
         limit=limit,
         sort=sort_norm,
+        detail=detail_norm,
         current_session_id=current_session_id,
     )
 
@@ -848,6 +862,16 @@ SESSION_SEARCH_SCHEMA = {
                     "and browse shapes."
                 ),
             },
+            "detail": {
+                "type": "string",
+                "enum": ["summary", "full"],
+                "description": (
+                    "Discovery shape only. Default 'summary' returns only hit "
+                    "metadata, snippet, and scroll_hint. Use 'full' when you need "
+                    "the anchored message window and bookends immediately."
+                ),
+                "default": "summary",
+            },
             "session_id": {
                 "type": "string",
                 "description": (
@@ -869,9 +893,9 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "integer",
                 "description": (
                     "Scroll shape only. Messages to return on each side of the anchor "
-                    "(anchor itself always included). Clamped to [1, 20]. Default 5."
+                    "(anchor itself always included). Clamped to [1, 20]. Default 2."
                 ),
-                "default": 5,
+                "default": 2,
             },
             "role_filter": {
                 "type": "string",
@@ -910,8 +934,9 @@ registry.register(
         limit=args.get("limit", 3),
         session_id=args.get("session_id"),
         around_message_id=args.get("around_message_id"),
-        window=args.get("window", 5),
+        window=args.get("window", 2),
         sort=args.get("sort"),
+        detail=args.get("detail", "summary"),
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),

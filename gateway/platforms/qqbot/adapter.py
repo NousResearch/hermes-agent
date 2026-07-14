@@ -265,7 +265,7 @@ class QQAdapter(BasePlatformAdapter):
         # register a custom handler.
         self._interaction_callback = self._default_interaction_dispatch
 
-    # ── Read-only token compat properties (delegate to _api) ──────────
+    # ── Token compat properties (delegate to _api) ──────────────────
 
     @property
     def _access_token(self) -> Optional[str]:
@@ -275,18 +275,8 @@ class QQAdapter(BasePlatformAdapter):
 
     @_access_token.setter
     def _access_token(self, value: Optional[str]) -> None:
-        # Backward compatibility: tests directly set _access_token before
-        # connect() creates _api.  Store in a fallback attribute.
-        if self._api is not None:
+        if self._api is not None and value is not None:
             self._api._access_token = value
-        else:
-            object.__setattr__(self, '_fallback_token', value)
-
-    @_access_token.getter
-    def _access_token(self) -> Optional[str]:
-        if self._api is not None:
-            return self._api.access_token
-        return getattr(self, '_fallback_token', None)
 
     @property
     def _token_expires_at(self) -> float:
@@ -438,17 +428,10 @@ class QQAdapter(BasePlatformAdapter):
 
         The QQApiClient handles singleflight, caching, and refresh.
         Must only be called after ``connect()`` has wired up ``_api``.
-
-        Falls back to the fallback token (set by tests via the
-        ``_access_token`` setter) when ``_api`` is None.
         """
-        if self._api is not None:
-            return await self._api.ensure_token()
-        # Backward compat: tests set _access_token before connect()
-        fallback = getattr(self, '_fallback_token', None)
-        if fallback:
-            return fallback
-        raise RuntimeError("QQApiClient not initialised — not connected?")
+        if self._api is None:
+            raise RuntimeError("QQApiClient not initialised — not connected?")
+        return await self._api.ensure_token()
 
     async def _get_gateway_url(self) -> str:
         """Fetch the WebSocket gateway URL from the REST API."""

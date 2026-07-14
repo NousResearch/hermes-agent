@@ -60,11 +60,11 @@ def classify_media_type(
     """Classify a file extension into a QQ Bot ``file_type`` constant.
 
     Args:
-        ext: File extension (e.g. ``.jpg``, ``.mp4``).  Case-insensitive.
-        is_voice: If ``True``, audio extensions are classified as
-            ``MEDIA_TYPE_VOICE`` even in the absence of explicit voice
-            markers.  Primarily set by the tool-layer ``_is_voice`` flag
-            from ``MEDIA:`` tag parsing.
+        ext: File extension (e.g. ``.jpg``, ``.mp3``).  Case-insensitive.
+        is_voice: If ``True`` AND the extension is a supported audio
+            format, classify as ``MEDIA_TYPE_VOICE`` (voice message).
+            Set by the ``[[audio_as_voice]]`` directive in the response
+            text.  Without this flag, audio files are sent as documents.
         force_document: If ``True``, ALL files are classified as
             ``MEDIA_TYPE_FILE``.  Highest priority.
 
@@ -80,8 +80,7 @@ def classify_media_type(
         return MEDIA_TYPE_VIDEO
     if is_voice and ext in _VOICE_EXTS:
         return MEDIA_TYPE_VOICE
-    if ext in _VOICE_EXTS:
-        return MEDIA_TYPE_VOICE
+    # Audio extensions without [[audio_as_voice]] → document
     return MEDIA_TYPE_FILE
 
 
@@ -244,7 +243,11 @@ class QQApiClient:
     ) -> Dict[str, Any]:
         """Make an authenticated REST API request.
 
-        Raises :class:`QQApiError` with ``status_code`` on HTTP ≥ 400.
+        Raises :class:`QQApiError` with ``.status_code`` on HTTP ≥ 400.
+        HTTP errors that return non-JSON bodies still produce a
+        ``QQApiError`` with the correct ``status_code``; only the
+        endpoint path (not token, secret, or full body) appears in the
+        message.
         """
         token = await self.ensure_token()
         headers = self._auth_headers(token)
@@ -255,11 +258,18 @@ class QQApiClient:
             json=body,
             timeout=timeout,
         )
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception:
+            # Non-JSON response body — still raise with correct status_code
+            raise QQApiError(
+                f"QQ Bot API error [{resp.status_code}] {path}",
+                status_code=resp.status_code,
+            )
         if resp.status_code >= 400:
             raise QQApiError(
                 f"QQ Bot API error [{resp.status_code}] {path}: "
-                f"{data.get('message', data)}",
+                f"{data.get('message', 'no message')}",
                 status_code=resp.status_code,
             )
         return data

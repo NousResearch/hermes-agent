@@ -1850,11 +1850,17 @@ class TestIdentifyIntents:
 
     @pytest.mark.asyncio
     async def test_intents_include_interaction_bit(self):
+        from gateway.platforms.qqbot.outbound import QQApiClient
+
         adapter = self._make_adapter()
 
-        # Mock token retrieval and WebSocket
-        adapter._access_token = "fake_token"
-        adapter._token_expires_at = 9999999999.0
+        # Wire up a mock QQApiClient with a pre-set token so _ensure_token()
+        # doesn't try to do real HTTP (the adapter always delegates to _api).
+        mock_api = QQApiClient.__new__(QQApiClient)
+        mock_api._access_token = "fake_token"
+        mock_api._token_expires_at = 9999999999.0
+        mock_api.ensure_token = mock.AsyncMock(return_value="fake_token")
+        adapter._api = mock_api
 
         sent_payloads = []
 

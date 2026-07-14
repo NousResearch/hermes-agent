@@ -287,6 +287,7 @@ def _extract_attachments(msg: dict) -> List[dict]:
 
 QUEUE_LIMIT = 1000
 POLL_INTERVAL = 0.2  # seconds between DB polls (200ms)
+EVENT_CURSOR_META_KEY = "mcp_event_cursor"
 
 
 @dataclass
@@ -308,17 +309,52 @@ class EventBridge:
 
     def __init__(self):
         self._queue: List[QueueEvent] = []
-        self._cursor = 0
+        self._db = _get_session_db()
+        self._startup_message_id_floor = self._load_db_message_high_water_mark()
+        self._cursor = max(
+            self._load_event_cursor(),
+            self._message_cursor(self._startup_message_id_floor),
+        )
         self._lock = threading.Lock()
         self._new_event = threading.Event()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
+        self._last_poll_ids: Dict[str, int] = {}
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
         # mtime cache — skip expensive work when state.db hasn't changed
         self._state_db_mtime: float = 0.0
         self._cached_sessions_index: dict = {}
+
+    @staticmethod
+    def _message_cursor(message_id: int) -> int:
+        return max(message_id, 0) * 2
+
+    def _load_db_message_high_water_mark(self) -> int:
+        try:
+            db = self._db
+            if db is None:
+                return 0
+            conn = getattr(db, "_conn", None)
+            lock = getattr(db, "_lock", None)
+            if conn is None:
+                return 0
+            if lock is not None:
+                with lock:
+                    row = conn.execute("SELECT MAX(id) FROM messages").fetchone()
+            else:
+                row = conn.execute("SELECT MAX(id) FROM messages").fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            logger.debug("EventBridge: could not read DB high-water mark", exc_info=True)
+            return 0
+
+    def _load_event_cursor(self) -> int:
+        try:
+            value = self._db.get_meta(EVENT_CURSOR_META_KEY) if self._db else None
+            return max(int(value), 0) if value is not None else 0
+        except (AttributeError, TypeError, ValueError):
+            return 0
 
     def start(self):
         """Start the background polling thread."""
@@ -419,6 +455,11 @@ class EventBridge:
         with self._lock:
             self._cursor += 1
             event.cursor = self._cursor
+            if self._db is not None:
+                try:
+                    self._db.set_meta(EVENT_CURSOR_META_KEY, str(self._cursor))
+                except AttributeError:
+                    pass
             self._queue.append(event)
             # Trim queue to limit
             while len(self._queue) > QUEUE_LIMIT:
@@ -427,7 +468,7 @@ class EventBridge:
 
     def _poll_loop(self):
         """Background loop: poll SessionDB for new messages."""
-        db = _get_session_db()
+        db = self._db
         if not db:
             logger.warning("EventBridge: SessionDB unavailable, event polling disabled")
             return
@@ -476,7 +517,10 @@ class EventBridge:
             if not session_id:
                 continue
 
-            last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            last_seen_id = self._last_poll_ids.get(
+                session_key,
+                self._startup_message_id_floor,
+            )
 
             try:
                 messages = db.get_messages(session_id)
@@ -486,36 +530,17 @@ class EventBridge:
             if not messages:
                 continue
 
-            # Normalize timestamps to float for comparison
-            def _ts_float(ts) -> float:
-                if isinstance(ts, (int, float)):
-                    return float(ts)
-                if isinstance(ts, str) and ts:
-                    try:
-                        return float(ts)
-                    except ValueError:
-                        # ISO string — parse to epoch
-                        try:
-                            from datetime import datetime
-                            return datetime.fromisoformat(ts).timestamp()
-                        except Exception:
-                            return 0.0
-                return 0.0
-
-            # Find messages newer than our last seen timestamp
-            new_messages = []
-            for msg in messages:
-                ts = _ts_float(msg.get("timestamp", 0))
-                role = msg.get("role", "")
-                if role not in {"user", "assistant"}:
-                    continue
-                if ts > last_seen:
-                    new_messages.append(msg)
+            new_messages = [
+                msg for msg in messages
+                if msg.get("role") in {"user", "assistant"}
+                and int(msg.get("id", 0)) > last_seen_id
+            ]
 
             for msg in new_messages:
                 content = _extract_message_content(msg)
                 if not content:
                     continue
+                message_id = int(msg.get("id", 0))
                 self._enqueue(QueueEvent(
                     cursor=0,
                     type="message",
@@ -524,16 +549,14 @@ class EventBridge:
                         "role": msg.get("role", ""),
                         "content": content[:500],
                         "timestamp": str(msg.get("timestamp", "")),
-                        "message_id": str(msg.get("id", "")),
+                        "message_id": str(message_id),
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp
-            all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
-            if all_ts:
-                latest = max(all_ts)
-                if latest > last_seen:
-                    self._last_poll_timestamps[session_key] = latest
+            if new_messages:
+                self._last_poll_ids[session_key] = max(
+                    int(msg.get("id", 0)) for msg in new_messages
+                )
 
 
 # ---------------------------------------------------------------------------

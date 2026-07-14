@@ -80,7 +80,6 @@ def test_substantive_tool_only_turn_invalidates_older_housekeeping_fallback():
 
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
     agent.valid_tool_names = {"todo", "web_search"}
@@ -147,7 +146,6 @@ def test_housekeeping_only_turn_still_sets_fallback():
 
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
     agent.valid_tool_names = {"memory"}

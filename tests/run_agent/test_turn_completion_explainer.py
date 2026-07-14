@@ -52,7 +52,6 @@ def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
     # No fallback chain so empty responses exhaust deterministically.

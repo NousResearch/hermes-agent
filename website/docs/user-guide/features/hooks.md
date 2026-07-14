@@ -382,6 +382,10 @@ def register(ctx):
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
+| [`on_stream_start`](#streaming-output-hooks) | A streaming LLM response starts | ignored |
+| [`on_stream_delta`](#streaming-output-hooks) | A normalized streaming text delta is produced | ignored |
+| [`on_stream_end`](#streaming-output-hooks) | A streaming LLM response finishes or errors | ignored |
+| [`on_interim_message`](#streaming-output-hooks) | A mid-loop assistant message is surfaced before the final answer | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
@@ -395,6 +399,52 @@ def register(ctx):
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
+
+---
+
+### Streaming output hooks
+
+These observer-only hooks let plugins consume streaming LLM output for telemetry, live dashboards, or TTS pipelines without changing the response. They are delivered through a host-owned bounded queue on a background worker, so plugin callbacks never run inline on the token path. If the queue fills, Hermes drops the oldest pending observer event rather than delaying user-visible streaming.
+
+Register them like any other plugin hook:
+
+```python
+def on_delta(delta, kind, model, provider, **kwargs):
+    if kind == "text":
+        print(delta, end="", flush=True)
+
+def register(ctx):
+    ctx.register_hook("on_stream_delta", on_delta)
+```
+
+Common fields for all four hooks:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `turn_id` | `str` | Opaque turn identifier, when available |
+| `iteration` | `int` | Current API-call/tool-loop iteration |
+| `session_id` | `str` | Current Hermes session id |
+| `model` | `str` | Active model identifier |
+| `provider` | `str` | Active provider name |
+| `surface` | `str` | Calling surface, e.g. `cli`, `discord`, `telegram` |
+
+Additional fields:
+
+| Hook | Extra fields |
+|------|--------------|
+| `on_stream_start` | none |
+| `on_stream_delta` | `delta: str`, `kind: "text" | "reasoning"` |
+| `on_stream_end` | `final_text: str`, `finished: bool`, `error: str | None` |
+| `on_interim_message` | `text: str`, `already_streamed: bool` |
+
+Reasoning deltas are not exposed to plugins by default. Opt in explicitly:
+
+```yaml
+plugins:
+  stream_reasoning_deltas: true
+```
+
+Return values are ignored. To keep the stream fast, callbacks should enqueue their own work and return quickly. Exceptions are logged and do not stop the stream.
 
 ---
 

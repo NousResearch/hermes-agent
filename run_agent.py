@@ -4676,8 +4676,7 @@ class AIAgent:
 
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer."""
-        cb = getattr(self, "interim_assistant_callback", None)
-        if cb is None or not isinstance(assistant_msg, dict):
+        if not isinstance(assistant_msg, dict):
             return
         content = assistant_msg.get("content")
         visible = self._strip_think_blocks(content or "").strip()
@@ -4685,9 +4684,60 @@ class AIAgent:
             return
         already_streamed = self._interim_content_was_streamed(visible)
         try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+
+            enqueue_plugin_stream_hook(
+                "on_interim_message",
+                turn_id=getattr(self, "_current_turn_id", "") or "",
+                iteration=int(getattr(self, "_api_call_count", 0) or 0),
+                session_id=self.session_id or "",
+                model=self.model or "",
+                provider=self.provider or "",
+                surface=self.platform or "cli",
+                text=visible,
+                already_streamed=already_streamed,
+            )
+        except Exception:
+            logger.debug("on_interim_message plugin hook enqueue failed", exc_info=True)
+        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is None:
+            return
+        try:
             cb(visible, already_streamed=already_streamed)
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
+
+    def _stream_hook_base_payload(self) -> Dict[str, Any]:
+        return {
+            "turn_id": getattr(self, "_current_turn_id", "") or "",
+            "iteration": int(getattr(self, "_api_call_count", 0) or 0),
+            "session_id": self.session_id or "",
+            "model": self.model or "",
+            "provider": self.provider or "",
+            "surface": self.platform or "cli",
+        }
+
+    def _emit_stream_start(self) -> None:
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+
+            enqueue_plugin_stream_hook("on_stream_start", **self._stream_hook_base_payload())
+        except Exception:
+            logger.debug("on_stream_start plugin hook enqueue failed", exc_info=True)
+
+    def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+
+            enqueue_plugin_stream_hook(
+                "on_stream_end",
+                **self._stream_hook_base_payload(),
+                final_text=final_text,
+                finished=finished,
+                error=error,
+            )
+        except Exception:
+            logger.debug("on_stream_end plugin hook enqueue failed", exc_info=True)
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
@@ -4739,6 +4789,17 @@ class AIAgent:
                 delivered = True
             except Exception:
                 pass
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+
+            enqueue_plugin_stream_hook(
+                "on_stream_delta",
+                **self._stream_hook_base_payload(),
+                delta=text,
+                kind="text",
+            )
+        except Exception:
+            logger.debug("on_stream_delta plugin hook enqueue failed", exc_info=True)
         if delivered:
             self._record_streamed_assistant_text(text)
 
@@ -4750,6 +4811,18 @@ class AIAgent:
                 cb(text)
             except Exception:
                 pass
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, stream_reasoning_deltas_enabled
+
+            if stream_reasoning_deltas_enabled():
+                enqueue_plugin_stream_hook(
+                    "on_stream_delta",
+                    **self._stream_hook_base_payload(),
+                    delta=text,
+                    kind="reasoning",
+                )
+        except Exception:
+            logger.debug("reasoning on_stream_delta plugin hook enqueue failed", exc_info=True)
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
@@ -4768,6 +4841,13 @@ class AIAgent:
 
     def _has_stream_consumers(self) -> bool:
         """Return True if any streaming consumer is registered."""
+        try:
+            from agent.plugin_stream_hooks import has_stream_observer_hooks
+
+            if has_stream_observer_hooks():
+                return True
+        except Exception:
+            logger.debug("plugin stream hook consumer check failed", exc_info=True)
         return (
             self.stream_delta_callback is not None
             or getattr(self, "_stream_callback", None) is not None

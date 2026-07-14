@@ -143,6 +143,13 @@ VALID_HOOKS: Set[str] = {
     "transform_llm_output",
     "pre_llm_call",
     "post_llm_call",
+    # Streaming LLM output observer hooks. Fired asynchronously off the token
+    # path by agent.plugin_stream_hooks; callbacks observe immutable normalized
+    # text/lifecycle payloads and cannot transform the stream.
+    "on_stream_start",
+    "on_stream_delta",
+    "on_stream_end",
+    "on_interim_message",
     # Verification-loop gate. Fired once per turn when the agent has edited code
     # and is about to verify/finish (after the verify-on-stop guard). A callback
     # may keep the agent going — run a check, defer it, tidy the diff — instead

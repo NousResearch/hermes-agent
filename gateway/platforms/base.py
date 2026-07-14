@@ -2375,10 +2375,16 @@ class MessageEvent:
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
+
+    # Whether this event may resolve gateway commands or pending control
+    # prompts. Kept last to preserve positional construction compatibility.
+    # Proactive plugin events set this to False so untrusted payload text
+    # remains conversational input.
+    allow_gateway_control: bool = True
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return (self.text or "").lstrip().startswith("/")
+        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
@@ -5958,7 +5964,8 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
 
-        coerce_plaintext_gateway_command(event)
+        if event.allow_gateway_control:
+            coerce_plaintext_gateway_command(event)
 
         # Telegram topic recovery only applies to private DM topic lanes. Do
         # not submit a no-op check for group/forum/channel traffic to the
@@ -5976,6 +5983,16 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+        expected_session_key = str(
+            (event.metadata or {}).get("gateway_session_key") or ""
+        ).strip()
+        if expected_session_key and session_key != expected_session_key:
+            logger.warning(
+                "Dropping internally routed event: expected session=%s derived=%s",
+                expected_session_key,
+                session_key,
+            )
+            return
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -6061,7 +6078,7 @@ class BasePlatformAdapter(ABC):
             # Same shape as the /approve deadlock fix (PR #4926) — both
             # cases are "agent thread blocked on Event.wait, message must
             # reach the resolver before being treated as a new turn."
-            if not cmd:
+            if not cmd and event.allow_gateway_control:
                 try:
                     from tools import clarify_gateway as _clarify_mod
                     _has_text_clarify = (

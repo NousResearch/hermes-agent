@@ -9048,7 +9048,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # semantics); everything else appends to the overflow tail.
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        if existing is not None and (
+        security_metadata_keys = (
+            "hermes_plugin_id",
+            "hermes_plugin_injection",
+            "gateway_session_key",
+            "gateway_session_id",
+            "gateway_session_strict",
+        )
+        same_security_context = existing is not None and (
+            getattr(existing, "internal", False) == getattr(event, "internal", False)
+            and getattr(existing, "allow_gateway_control", True)
+            == getattr(event, "allow_gateway_control", True)
+            and all(
+                (getattr(existing, "metadata", None) or {}).get(key)
+                == (getattr(event, "metadata", None) or {}).get(key)
+                for key in security_metadata_keys
+            )
+        )
+        if same_security_context and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
             or bool(getattr(existing, "media_urls", None))
@@ -9180,7 +9197,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # we deliver it ourselves (mirroring the draining-case send above).
         try:
             from tools.approval import has_blocking_approval
-            if has_blocking_approval(session_key):
+            if event.allow_gateway_control and has_blocking_approval(session_key):
                 _raw_text = (event.text or "").strip().lower()
                 _approve_words = {"approve", "yes", "ok", "okay", "confirm", "y", "👍"}
                 _deny_words = {"deny", "no", "reject", "cancel", "n", "👎"}
@@ -9245,9 +9262,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # (the default busy_text_mode) aborts the active turn AND sends a "⚡
         # Interrupting current task" ack — exactly the opposite of the design
         # invariant that a completion surfaces as a NEW turn only when idle and
-        # never splices into a running turn. Fall through to the base adapter,
-        # which queues internal events silently (no interrupt, no ack) so they
-        # cascade after the current turn finishes.
+        # never splices into a running turn. Plugin events carry untrusted
+        # payload text, so queue those through the gateway FIFO to keep their
+        # security metadata separate from pending user input.
+        if getattr(event, "internal", False) and not event.allow_gateway_control:
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
         if getattr(event, "internal", False):
             return False
 
@@ -15226,8 +15246,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        allow_gateway_control = event.allow_gateway_control
         _up_state = self._peek_session_state(_quick_key)
-        if _up_state is not None and _up_state.persistent.update_prompt_pending:
+        if (
+            allow_gateway_control
+            and _up_state is not None
+            and _up_state.persistent.update_prompt_pending
+        ):
             raw = (event.text or "").strip()
             # Accept /approve and /deny as shorthand for yes/no
             cmd = event.get_command()
@@ -15306,7 +15331,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             _pending_clarify = None
-        if _pending_clarify is not None and _clarify_mod is not None:
+        if (
+            allow_gateway_control
+            and _pending_clarify is not None
+            and _clarify_mod is not None
+        ):
             _clarify_has_audio = bool(self._pending_event_audio_paths(event))
             _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
             if _clarify_has_audio and not _raw_clarify_reply:
@@ -15368,7 +15397,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _tool_approval_live = has_blocking_approval(_quick_key)
         except Exception:
             _tool_approval_live = False
-        if _pending_confirm and not _tool_approval_live:
+        if allow_gateway_control and _pending_confirm and not _tool_approval_live:
             _raw_reply = (event.text or "").strip()
             # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim.
             # Slack/Matrix instruction text shows the `!` prefix (typed `/`
@@ -17153,11 +17182,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         plugin_id: str,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
+        if not getattr(self, "_running", False) or getattr(self, "_draining", False):
+            return False
+
         entry = await self.async_session_store.lookup_by_session_key(session_key)
         if entry is None or entry.origin is None:
             return False
+        if not getattr(self, "_running", False) or getattr(self, "_draining", False):
+            return False
 
         source = dataclasses.replace(entry.origin)
+        try:
+            if not self._is_user_authorized(
+                source,
+                allow_adapter_delegation=False,
+            ):
+                logger.warning(
+                    "Plugin message injection denied by current gateway authorization: "
+                    "plugin=%s session=%s",
+                    plugin_id,
+                    session_key,
+                )
+                return False
+        except Exception:
+            logger.warning(
+                "Plugin message injection authorization check failed: "
+                "plugin=%s session=%s",
+                plugin_id,
+                session_key,
+                exc_info=True,
+            )
+            return False
+
         adapter = self._adapter_for_source(source)
         if adapter is None:
             return False
@@ -17167,12 +17223,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message_type=MessageType.TEXT,
             source=source,
             internal=True,
+            allow_gateway_control=False,
             metadata={
                 "hermes_plugin_id": plugin_id,
                 "hermes_plugin_injection": True,
+                "gateway_session_key": session_key,
+                "gateway_session_id": entry.session_id,
+                "gateway_session_strict": True,
             },
         )
         await adapter.handle_message(event)
+        logger.info(
+            "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
+            plugin_id,
+            session_key,
+            entry.session_id,
+        )
         return True
 
     def _get_cached_session_source(self, session_key: str):
@@ -17218,12 +17284,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        session_entry = await self.async_session_store.get_or_create_session(source)
-        session_key = session_entry.session_key
-        pinned_session_id = str(
-            (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
+        event_metadata = getattr(event, "metadata", None) or {}
+        expected_session_key = str(
+            event_metadata.get("gateway_session_key") or ""
         ).strip()
-        if pinned_session_id:
+        if expected_session_key:
+            derived_session_key = self._session_key_for_source(source)
+            if derived_session_key != expected_session_key:
+                logger.warning(
+                    "Dropping internally routed event after route recovery: "
+                    "expected session=%s derived=%s",
+                    expected_session_key,
+                    derived_session_key,
+                )
+                return
+
+        strict_session = bool(event_metadata.get("gateway_session_strict"))
+        pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
+        if strict_session:
+            session_entry = await self.async_session_store.lookup_by_session_key(
+                expected_session_key
+            )
+            if (
+                session_entry is None
+                or not pinned_session_id
+                or session_entry.session_id != pinned_session_id
+            ):
+                logger.warning(
+                    "Dropping internally routed event: expected session id=%s is no "
+                    "longer current for key=%s",
+                    pinned_session_id or "missing",
+                    expected_session_key or "missing",
+                )
+                return
+        else:
+            session_entry = await self.async_session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+        if not strict_session and pinned_session_id:
             resolved_entry = await self._resolve_async_delegation_session(
                 session_entry,
                 pinned_session_id,

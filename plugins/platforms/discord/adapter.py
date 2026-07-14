@@ -5452,6 +5452,63 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
 
+    async def create_visible_fork_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a visible Discord forum post for ``/fork``.
+
+        Text-channel child threads are intentionally not created here: their
+        public/private audience and membership semantics differ. A forum post
+        inherits the forum channel's audience and is visible to the caller.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return None
+        try:
+            parent_id = int(parent_chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        parent = self._client.get_channel(parent_id)
+        if parent is None:
+            parent = await self._client.fetch_channel(parent_id)
+        if not isinstance(parent, getattr(discord, "ForumChannel", ())):
+            raise RuntimeError("Discord /fork currently requires a forum thread")
+
+        thread_name = (name or "fork").strip()[:80] or "fork"
+        created = await parent.create_thread(
+            name=thread_name,
+            content=f"⑂ Hermes visible fork: **{thread_name}**",
+            auto_archive_duration=1440,
+            reason="Hermes visible session fork",
+        )
+        thread = getattr(created, "thread", created)
+        return str(thread.id)
+
+    async def delete_visible_fork_thread(self, thread_id: str) -> bool:
+        """Best-effort deletion of an unbound Discord fork thread."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        try:
+            channel_id = int(thread_id)
+            thread = self._client.get_channel(channel_id)
+            if thread is None:
+                thread = await self._client.fetch_channel(channel_id)
+            delete = getattr(thread, "delete", None)
+            if delete is None:
+                return False
+            await delete(reason="Hermes visible fork setup failed")
+            return True
+        except Exception:
+            logger.warning(
+                "[%s] Failed to clean up visible fork thread %s",
+                self.name,
+                thread_id,
+                exc_info=True,
+            )
+            return False
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

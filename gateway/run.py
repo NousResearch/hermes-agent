@@ -10024,6 +10024,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
+        if canonical == "fork":
+            return await self._handle_visible_fork_command(event)
+
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 

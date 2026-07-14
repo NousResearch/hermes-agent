@@ -2938,6 +2938,22 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    async def create_visible_fork_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a visible child thread for a Gateway ``/fork`` command.
+
+        Adapters must preserve the source audience. The default is unsupported;
+        a concrete adapter should return the new thread/topic ID or ``None``.
+        """
+        return None
+
+    async def delete_visible_fork_thread(self, thread_id: str) -> bool:
+        """Best-effort cleanup for a fork thread whose session bind failed."""
+        return False
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

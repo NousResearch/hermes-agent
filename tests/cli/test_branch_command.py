@@ -212,12 +212,26 @@ class TestBranchCommandCLI:
         assert kwargs["reset"] is False
         assert kwargs["reason"] == "branch"
 
-    def test_fork_alias(self):
-        """The /fork alias should resolve to 'branch'."""
+    def test_fork_command_is_distinct_but_keeps_cli_branch_behavior(
+        self, cli_instance, session_db
+    ):
+        """CLI /fork still dispatches to the existing in-place branch flow."""
+        from cli import HermesCLI
         from hermes_cli.commands import resolve_command
+
         result = resolve_command("fork")
         assert result is not None
-        assert result.name == "branch"
+        assert result.name == "fork"
+
+        old_session_id = cli_instance.session_id
+        cli_instance._handle_branch_command = lambda cmd: HermesCLI._handle_branch_command(
+            cli_instance, cmd
+        )
+        handled = HermesCLI.process_command(cli_instance, "/fork CLI Fork")
+
+        assert handled is True
+        assert cli_instance.session_id != old_session_id
+        assert session_db.get_session_title(cli_instance.session_id) == "CLI Fork"
 
 
 class TestBranchCommandDef:
@@ -229,11 +243,12 @@ class TestBranchCommandDef:
         names = [c.name for c in COMMAND_REGISTRY]
         assert "branch" in names
 
-    def test_branch_has_fork_alias(self):
-        """The branch command should have 'fork' as an alias."""
+    def test_fork_in_registry(self):
+        """The fork command is distinct so gateway dispatch can differ."""
         from hermes_cli.commands import COMMAND_REGISTRY
-        branch = next(c for c in COMMAND_REGISTRY if c.name == "branch")
-        assert "fork" in branch.aliases
+        fork = next(c for c in COMMAND_REGISTRY if c.name == "fork")
+        assert fork.category == "Session"
+        assert fork.args_hint == "[name]"
 
     def test_branch_in_session_category(self):
         """The branch command should be in the Session category."""

@@ -2356,6 +2356,67 @@ class SessionStore:
 
         return new_entry
 
+    def bind_session(
+        self,
+        source: SessionSource,
+        target_session_id: str,
+        display_name: Optional[str] = None,
+    ) -> SessionEntry:
+        """Bind a new routing key directly to an existing session.
+
+        ``switch_session`` is for a key that already owns a live session: it
+        ends that row before pointing the key elsewhere. Newly-created visible
+        platform threads have no prior session, so manufacturing a throwaway
+        row just to switch away from it adds SQLite and routing-index churn.
+
+        This validates the target row when SQLite is available, records the
+        routing entry once, and persists the normal gateway peer metadata. It
+        refuses to replace an unrelated existing key; callers that intend a
+        real switch must use :meth:`switch_session`.
+        """
+        if not target_session_id:
+            raise ValueError("target_session_id is required")
+
+        if self._db and self._db.get_session(target_session_id) is None:
+            raise ValueError(f"target session does not exist: {target_session_id}")
+
+        session_key = self._generate_session_key(source)
+        now = _now()
+        entry = SessionEntry(
+            session_key=session_key,
+            session_id=target_session_id,
+            created_at=now,
+            updated_at=now,
+            origin=source,
+            display_name=display_name if display_name is not None else source.chat_name,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            existing = self._entries.get(session_key)
+            if existing is not None and existing.session_id != target_session_id:
+                raise ValueError(
+                    f"session key is already bound to {existing.session_id}: {session_key}"
+                )
+            self._entries[session_key] = entry
+            self._save()
+
+        if self._db:
+            try:
+                self._db.reopen_session(target_session_id)
+            except Exception as e:
+                logger.debug("Session DB reopen_session failed: %s", e)
+            self._record_gateway_session_peer(
+                target_session_id,
+                session_key,
+                source,
+                display_name=entry.display_name,
+            )
+
+        return entry
+
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""
         with self._lock:

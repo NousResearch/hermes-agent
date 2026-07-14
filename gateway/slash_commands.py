@@ -3768,6 +3768,249 @@ class GatewaySlashCommandsMixin:
             title=title,
         )
 
+    async def _handle_visible_fork_command(self, event: MessageEvent) -> str:
+        """Fork this conversation into a new visible Discord forum thread.
+
+        Unlike ``/branch``, the source thread remains bound to its current
+        session. The child transcript is copied in one SQLite transaction and
+        the new Discord routing key is bound directly, avoiding a throwaway
+        gateway session and per-message event-loop offloads.
+        """
+        import uuid as _uuid
+
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+
+            return format_session_db_unavailable(
+                prefix=t("gateway.shared.session_db_unavailable_prefix")
+            )
+
+        source = event.source
+        if source is None:
+            return "Visible fork failed: missing message source."
+        if source.platform != Platform.DISCORD:
+            return (
+                "Visible fork is currently supported only from a Discord forum "
+                "thread. Use /branch for an in-place session branch."
+            )
+        if not source.thread_id:
+            return (
+                "Visible fork only works from an existing Discord forum thread. "
+                "Use /branch for an in-place session branch."
+            )
+
+        parent_chat_id = (
+            getattr(source, "parent_chat_id", None)
+            or self._visible_fork_parent_chat_id(event)
+        )
+        if not parent_chat_id:
+            return "Visible fork failed: could not determine the thread parent."
+
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            platform_name = getattr(source.platform, "value", source.platform)
+            return f"Visible fork failed: platform {platform_name} is not active."
+
+        current_entry = await self.async_session_store.get_or_create_session(source)
+        parent_session_id = current_entry.session_id
+        history = await self.async_session_store.load_transcript(parent_session_id)
+        if not history:
+            return "No conversation to fork — send a message first."
+
+        requested_title = event.get_command_args().strip()
+        if requested_title:
+            branch_title = " ".join(requested_title.split()).strip()[:80]
+        else:
+            base_title = self._sanitize_visible_fork_title_base(source.chat_name)
+            if not base_title:
+                base_title = self._sanitize_visible_fork_title_base(
+                    await self._session_db.get_session_title(parent_session_id)
+                )
+            base_title = base_title or "Visible Fork"
+            suffix = " Fork"
+            branch_title = (
+                base_title[:80]
+                if base_title.lower().endswith(" fork") or base_title.lower() == "fork"
+                else f"{base_title[:80 - len(suffix)].rstrip()}{suffix}"
+            )
+
+        now = datetime.now()
+        new_session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+        platform_name = source.platform.value
+        try:
+            await self._session_db.create_session(
+                session_id=new_session_id,
+                source=platform_name,
+                user_id=source.user_id,
+                model=(self.config.get("model", {}) or {}).get("default")
+                if isinstance(self.config, dict)
+                else None,
+                model_config={"_branched_from": parent_session_id},
+                parent_session_id=parent_session_id,
+            )
+            # One async facade call -> one worker offload -> one SQLite write
+            # transaction, regardless of transcript length.
+            await self._session_db.replace_messages(new_session_id, history)
+            try:
+                await self._session_db.set_session_title(
+                    new_session_id, branch_title
+                )
+            except Exception:
+                logger.debug("Visible fork: title persistence failed", exc_info=True)
+        except Exception as exc:
+            logger.error("Visible fork: child session creation failed: %s", exc, exc_info=True)
+            try:
+                await self._session_db.end_session(new_session_id, "visible_fork_failed")
+            except Exception:
+                pass
+            return f"Visible fork failed: could not create child session ({exc})."
+
+        try:
+            new_thread_id = await adapter.create_visible_fork_thread(
+                str(parent_chat_id), branch_title
+            )
+        except Exception as exc:
+            logger.warning("Visible fork: thread creation failed: %s", exc, exc_info=True)
+            try:
+                await self._session_db.end_session(
+                    new_session_id, "visible_fork_thread_failed"
+                )
+            except Exception:
+                pass
+            return f"Visible fork failed: could not create thread ({exc})."
+        if not new_thread_id:
+            try:
+                await self._session_db.end_session(
+                    new_session_id, "visible_fork_thread_unsupported"
+                )
+            except Exception:
+                pass
+            return (
+                "Visible fork failed: Discord did not create a forum thread. "
+                "Run /fork from an existing Discord forum thread."
+            )
+        new_thread_id = str(new_thread_id)
+        new_thread_ref = self._visible_fork_thread_ref(source.platform, new_thread_id)
+        source_thread_ref = self._visible_fork_thread_ref(
+            source.platform, str(source.thread_id)
+        )
+
+        fork_source = SessionSource(
+            platform=source.platform,
+            chat_id=new_thread_id,
+            chat_name=branch_title,
+            chat_type="thread",
+            user_id=source.user_id,
+            user_name=source.user_name,
+            thread_id=new_thread_id,
+            chat_topic=source.chat_topic,
+            user_id_alt=getattr(source, "user_id_alt", None),
+            scope_id=getattr(source, "scope_id", None),
+            guild_id=getattr(source, "guild_id", None),
+            parent_chat_id=str(parent_chat_id),
+            role_authorized=getattr(source, "role_authorized", False),
+            profile=getattr(source, "profile", None),
+        )
+
+        try:
+            bound = await self.async_session_store.bind_session(
+                fork_source, new_session_id, display_name=branch_title
+            )
+        except Exception as exc:
+            logger.error("Visible fork: child routing bind failed: %s", exc, exc_info=True)
+            cleaned_up = False
+            try:
+                cleaned_up = await adapter.delete_visible_fork_thread(new_thread_id)
+            except Exception:
+                logger.warning(
+                    "Visible fork: child thread cleanup failed for %s",
+                    new_thread_id,
+                    exc_info=True,
+                )
+            try:
+                await self._session_db.end_session(
+                    new_session_id, "visible_fork_bind_failed"
+                )
+            except Exception:
+                pass
+            cleanup_note = (
+                " The unbound forum thread was removed."
+                if cleaned_up
+                else f" Unbound thread may remain: {new_thread_ref}."
+            )
+            return (
+                "Visible fork failed: could not bind child session "
+                f"({exc}).{cleanup_note}"
+            )
+
+        fork_session_key = bound.session_key
+        self._clear_session_boundary_security_state(fork_session_key)
+        self._evict_cached_agent(fork_session_key)
+        self._release_running_agent_state(fork_session_key)
+
+        await self.hooks.emit(
+            "session:fork",
+            {
+                "platform": platform_name,
+                "user_id": source.user_id,
+                "parent_session_id": parent_session_id,
+                "session_id": new_session_id,
+                "session_key": fork_session_key,
+                "source_chat_id": source.chat_id,
+                "source_thread_id": source.thread_id,
+                "thread_id": new_thread_id,
+                "parent_chat_id": str(parent_chat_id),
+                "title": branch_title,
+            },
+        )
+
+        seed = (
+            f"⑂ Visible fork of {source_thread_ref}\n"
+            f"Parent session: `{parent_session_id}`\n"
+            f"Fork session: `{new_session_id}`\n"
+            f"Copied messages: {len(history)}\n\n"
+            "Continue here; the parent thread remains unchanged."
+        )
+        try:
+            await adapter.send(
+                chat_id=str(parent_chat_id),
+                content=seed,
+                metadata={"thread_id": new_thread_id},
+            )
+        except Exception:
+            logger.debug("Visible fork: seed send failed", exc_info=True)
+
+        return (
+            f"⑂ Visible fork created: {new_thread_ref} **{branch_title}**\n"
+            f"Original session: `{parent_session_id}`\n"
+            f"Fork session: `{new_session_id}`\n"
+            f"Copied messages: {len(history)}\n"
+            "The original thread remains on its original session."
+        )
+
+    def _visible_fork_parent_chat_id(self, event: MessageEvent) -> Optional[str]:
+        """Best-effort parent channel extraction from platform raw objects."""
+        raw = getattr(event, "raw_message", None)
+        channel = getattr(raw, "channel", None)
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id:
+            return str(parent_id)
+        parent = getattr(channel, "parent", None)
+        parent_id = getattr(parent, "id", None)
+        return str(parent_id) if parent_id else None
+
+    def _sanitize_visible_fork_title_base(self, value: Any) -> str:
+        """Return a human thread title without breadcrumb/channel chrome."""
+        base = " ".join(str(value or "").split()).strip()
+        if " / " in base:
+            base = base.rsplit(" / ", 1)[-1].strip()
+        return base.strip(" -·—|/#")
+
+    def _visible_fork_thread_ref(self, platform: Any, thread_id: str) -> str:
+        """Format a destination reference without leaking Discord syntax."""
+        platform_name = getattr(platform, "value", platform)
+        return f"<#{thread_id}>" if platform_name == "discord" else f"`{thread_id}`"
+
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
 

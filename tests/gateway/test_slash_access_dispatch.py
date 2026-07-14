@@ -487,6 +487,41 @@ async def test_gate_uses_canonical_name_not_alias():
     assert "⛔" not in (result or "")
 
 
+@pytest.mark.asyncio
+async def test_fork_requires_explicit_group_allowlist_entry():
+    runner = _make_runner(
+        platform_extra={
+            "group_allow_admin_from": ["222"],
+            "group_user_allowed_commands": ["branch"],
+        }
+    )
+    runner._handle_visible_fork_command = AsyncMock(return_value="fork-handled")
+    source = _make_source(user_id="999", chat_type="group", chat_id="g1")
+
+    result = await runner._handle_message(_make_event("/fork Lane", source))
+
+    assert "⛔" in result
+    assert "/fork is admin-only here" in result
+    runner._handle_visible_fork_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fork_runs_when_explicitly_allowed():
+    runner = _make_runner(
+        platform_extra={
+            "group_allow_admin_from": ["222"],
+            "group_user_allowed_commands": ["fork"],
+        }
+    )
+    runner._handle_visible_fork_command = AsyncMock(return_value="fork-handled")
+    source = _make_source(user_id="999", chat_type="group", chat_id="g1")
+
+    result = await runner._handle_message(_make_event("/fork Lane", source))
+
+    assert result == "fork-handled"
+    runner._handle_visible_fork_command.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Unknown / unregistered command — gate must NOT intercept (let the existing
 # unknown-command path handle it normally).

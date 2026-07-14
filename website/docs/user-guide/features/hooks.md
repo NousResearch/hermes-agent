@@ -78,6 +78,7 @@ async def handle(event_type: str, context: dict):
 | `session:start` | New messaging session created | `platform`, `user_id`, `session_id`, `session_key` |
 | `session:end` | Session ended (before reset) | `platform`, `user_id`, `session_key` |
 | `session:reset` | User ran `/new` or `/reset` | `platform`, `user_id`, `session_key` |
+| `session:fork` | Gateway created and bound a visible thread fork | `platform`, `user_id`, `parent_session_id`, `session_id`, `session_key`, `source_chat_id`, `source_thread_id`, `thread_id`, `parent_chat_id`, `title` |
 | `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `message` |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
 | `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `message`, `response` |

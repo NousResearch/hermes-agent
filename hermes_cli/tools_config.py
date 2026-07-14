@@ -63,6 +63,7 @@ CONFIGURABLE_TOOLSETS = [
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
+    ("codex_exec",      "🧑‍💻 Codex Programming Engine", "delegate repo coding/debugging to codex exec"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),

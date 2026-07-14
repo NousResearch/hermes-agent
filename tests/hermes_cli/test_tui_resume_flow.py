@@ -729,6 +729,33 @@ def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
     assert "nope" in capsys.readouterr().err
 
 
+def test_oneshot_accepts_registry_toolset_after_discovery(monkeypatch):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+    from tools.registry import registry
+
+    def register_dynamic_toolset():
+        registry.register(
+            name="oneshot_dynamic_demo",
+            toolset="oneshot_dynamic",
+            schema={
+                "name": "oneshot_dynamic_demo",
+                "description": "demo dynamic tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda _args: "{}",
+        )
+
+    monkeypatch.setattr(oneshot_mod, "_discover_registry_toolsets", register_dynamic_toolset)
+    try:
+        valid, error = oneshot_mod._validate_explicit_toolsets("oneshot_dynamic")
+    finally:
+        registry.deregister("oneshot_dynamic_demo")
+
+    assert valid == ["oneshot_dynamic"]
+    assert error is None
+
+
 def test_oneshot_all_toolsets_means_all_not_configured_cli():
     from hermes_cli.oneshot import _validate_explicit_toolsets
 

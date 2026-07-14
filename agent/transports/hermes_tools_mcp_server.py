@@ -20,6 +20,7 @@ Scope (what we expose):
   - image_generate                       — image generation
   - skill_view, skills_list              — Hermes' skill library
   - text_to_speech                       — TTS
+  - codex_exec                           — guarded Codex exec delegation
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
     heartbeat/show/list/create/            handoff (stateless: read env var,
     unblock/link)                          write ~/.hermes/kanban.db)
@@ -48,6 +49,7 @@ import json
 import logging
 import os
 import sys
+from inspect import Parameter, Signature
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "skill_view",
     "skills_list",
     "text_to_speech",
+    "codex_exec",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
     # (set by the kanban dispatcher when spawning a worker). Without these
     # in the callback, a worker spawned with openai_runtime=codex_app_server
@@ -103,6 +106,43 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_unblock",
     "kanban_link",
 )
+
+
+def _annotation_for_json_schema(prop: dict) -> Any:
+    schema_type = prop.get("type") if isinstance(prop, dict) else None
+    if isinstance(schema_type, list):
+        schema_type = next((item for item in schema_type if item != "null"), None)
+    return {
+        "string": str,
+        "integer": int,
+        "number": float,
+        "boolean": bool,
+        "array": list,
+        "object": dict,
+    }.get(schema_type, Any)
+
+
+def _signature_from_parameters_schema(schema: dict) -> Signature:
+    if not isinstance(schema, dict):
+        return Signature()
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return Signature()
+    required = set(schema.get("required") or [])
+    parameters = []
+    for name, prop in properties.items():
+        if not isinstance(name, str) or not name.isidentifier():
+            continue
+        default = Parameter.empty if name in required else None
+        parameters.append(
+            Parameter(
+                name,
+                kind=Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=_annotation_for_json_schema(prop if isinstance(prop, dict) else {}),
+            )
+        )
+    return Signature(parameters)
 
 
 def _build_server() -> Any:
@@ -168,6 +208,7 @@ def _build_server() -> Any:
                     return json.dumps({"error": str(exc), "tool": tool_name})
             _dispatch.__name__ = tool_name
             _dispatch.__doc__ = description
+            _dispatch.__signature__ = _signature_from_parameters_schema(params_schema)
             return _dispatch
 
         try:

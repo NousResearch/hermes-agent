@@ -29,7 +29,6 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
-    _derive_chat_session_id,
     _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
@@ -1703,96 +1702,66 @@ class TestChatCompletionsEndpoint:
             assert "Provider failed" in data["error"]["message"]
 
     @pytest.mark.asyncio
-    async def test_stable_session_id_across_turns(self, adapter):
-        """Same conversation (same first user message) produces the same session_id."""
+    async def test_no_header_session_id_is_random_across_identical_requests(self, adapter):
+        """No-header chat completions get a fresh server-issued session_id."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        request_body = {
+            "model": "hermes-agent",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"},
+            ],
+        }
 
         app = _create_app(adapter)
         session_ids = []
+        response_session_ids = []
         async with TestClient(TestServer(app)) as cli:
-            # Turn 1: single user message
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
-                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-                await cli.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "hermes-agent",
-                        "messages": [{"role": "user", "content": "Hello"}],
-                    },
-                )
-                session_ids.append(mock_run.call_args.kwargs["session_id"])
+            for _ in range(2):
+                with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                    mock_run.return_value = (
+                        mock_result,
+                        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    )
+                    resp = await cli.post("/v1/chat/completions", json=request_body)
+                    assert resp.status == 200
+                    session_id = mock_run.call_args.kwargs["session_id"]
+                    session_ids.append(session_id)
+                    response_session_ids.append(resp.headers.get("X-Hermes-Session-Id"))
 
-            # Turn 2: same first message, conversation grew
+        assert session_ids[0] != session_ids[1]
+        assert all(sid.startswith("api-") for sid in session_ids)
+        assert response_session_ids == session_ids
+
+    @pytest.mark.asyncio
+    async def test_request_body_history_still_reaches_agent_without_session_header(self, adapter):
+        """Full-history clients still send request-body history on fresh sessions."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-                await cli.post(
+                resp = await cli.post(
                     "/v1/chat/completions",
                     json={
                         "model": "hermes-agent",
                         "messages": [
-                            {"role": "user", "content": "Hello"},
-                            {"role": "assistant", "content": "Hi there!"},
-                            {"role": "user", "content": "How are you?"},
+                            {"role": "user", "content": "First turn"},
+                            {"role": "assistant", "content": "First answer"},
+                            {"role": "user", "content": "Second turn"},
                         ],
                     },
                 )
-                session_ids.append(mock_run.call_args.kwargs["session_id"])
 
-        assert session_ids[0] == session_ids[1], "Session ID should be stable across turns"
-        assert session_ids[0].startswith("api-"), "Derived session IDs should have api- prefix"
-
-    @pytest.mark.asyncio
-    async def test_different_conversations_get_different_session_ids(self, adapter):
-        """Different first messages produce different session_ids."""
-        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
-
-        app = _create_app(adapter)
-        session_ids = []
-        async with TestClient(TestServer(app)) as cli:
-            for first_msg in ["Hello", "Goodbye"]:
-                with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
-                    mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-                    await cli.post(
-                        "/v1/chat/completions",
-                        json={
-                            "model": "hermes-agent",
-                            "messages": [{"role": "user", "content": first_msg}],
-                        },
-                    )
-                    session_ids.append(mock_run.call_args.kwargs["session_id"])
-
-        assert session_ids[0] != session_ids[1]
-
-
-# ---------------------------------------------------------------------------
-# _derive_chat_session_id unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestDeriveChatSessionId:
-    def test_deterministic(self):
-        """Same inputs always produce the same session ID."""
-        a = _derive_chat_session_id("sys", "hello")
-        b = _derive_chat_session_id("sys", "hello")
-        assert a == b
-
-    def test_prefix(self):
-        assert _derive_chat_session_id(None, "hi").startswith("api-")
-
-    def test_different_system_prompt(self):
-        a = _derive_chat_session_id("You are a pirate.", "Hello")
-        b = _derive_chat_session_id("You are a robot.", "Hello")
-        assert a != b
-
-    def test_different_first_message(self):
-        a = _derive_chat_session_id(None, "Hello")
-        b = _derive_chat_session_id(None, "Goodbye")
-        assert a != b
-
-    def test_none_system_prompt(self):
-        """None system prompt doesn't crash."""
-        sid = _derive_chat_session_id(None, "test")
-        assert isinstance(sid, str) and len(sid) > 4
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "Second turn"
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "First turn"},
+                {"role": "assistant", "content": "First answer"},
+            ]
+            assert call_kwargs["session_id"].startswith("api-")
 
 
 # ---------------------------------------------------------------------------
@@ -3574,7 +3543,44 @@ class TestSessionIdHeader:
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
                 )
             assert resp.status == 200
-            assert resp.headers.get("X-Hermes-Session-Id") is not None
+            assert resp.headers.get("X-Hermes-Session-Id", "").startswith("api-")
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_rejected_without_api_key_configured(self, adapter):
+        """Explicit continuation requires API key configuration."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "existing-session"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                )
+
+            assert resp.status == 403
+            mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_rejects_control_chars(self, auth_adapter):
+        """Explicit continuation rejects control characters before running the agent."""
+        request = MagicMock()
+        request.headers = {
+            "Authorization": "Bearer sk-secret",
+            "X-Hermes-Session-Id": "bad\nsession",
+        }
+        request.json = AsyncMock(
+            return_value={
+                "model": "hermes-agent",
+                "messages": [{"role": "user", "content": "Hi"}],
+            }
+        )
+
+        with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            resp = await auth_adapter._handle_chat_completions(request)
+
+        assert resp.status == 400
+        assert json.loads(resp.text)["error"]["message"] == "Invalid session ID"
+        mock_run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_provided_session_id_is_used_and_echoed(self, auth_adapter):

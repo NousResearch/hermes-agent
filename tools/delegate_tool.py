@@ -19,6 +19,9 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import subprocess
+import sys
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 import os
@@ -2366,6 +2369,63 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _classify_ai_dev_usage_route(creds: dict, parent_agent) -> tuple[str, str, str]:
+    """Return provider, model and cost route without exposing credentials."""
+    provider = str(creds.get("provider") or getattr(parent_agent, "provider", "") or "unknown")
+    model = str(creds.get("model") or getattr(parent_agent, "model", "") or "unknown")
+    base_url = str(creds.get("base_url") or getattr(parent_agent, "base_url", "") or "")
+    host = base_url_hostname(base_url)
+    if provider == "openai-codex" or host == "chatgpt.com":
+        route = "delegate"
+    elif provider.startswith("copilot"):
+        route = "copilot"
+    elif host in {"127.0.0.1", "localhost", "::1"}:
+        route = "local"
+    else:
+        route = "api_key"
+    return provider, model, route
+
+
+def _record_ai_dev_usage(
+    *,
+    provider: str,
+    model: str,
+    route: str,
+    task: str,
+    allow_variable_cost: bool,
+) -> int:
+    """Invoke the profile-local AI usage logger; API routes fail closed if unavailable."""
+    from hermes_constants import get_hermes_home
+
+    configured = os.environ.get("AI_DEV_USAGE_LOGGER", "").strip()
+    logger_path = Path(configured).expanduser() if configured else get_hermes_home() / "scripts/ai_dev_usage.py"
+    if not logger_path.is_file():
+        if route == "api_key" and os.environ.get("AI_DEV_USAGE_ENFORCE") == "1":
+            logger.error("AI dev usage logger missing; blocking variable-cost delegate: %s", logger_path)
+            return 42
+        logger.warning("AI dev usage logger missing; delegate telemetry skipped: %s", logger_path)
+        return 0
+    command = [
+        sys.executable,
+        str(logger_path),
+        "log",
+        "--tool",
+        "hermes_delegate",
+        "--provider",
+        provider,
+        "--model",
+        model,
+        "--route",
+        route,
+        "--task",
+        task,
+    ]
+    if allow_variable_cost:
+        command.append("--allow-variable-cost")
+    completed = subprocess.run(command, check=False)
+    return completed.returncode
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2373,6 +2433,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    allow_variable_cost: bool = False,
     parent_agent=None,
 ) -> str:
     """
@@ -2453,6 +2514,21 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    usage_provider, usage_model, usage_route = _classify_ai_dev_usage_route(creds, parent_agent)
+    usage_task = goal or f"Batch delegation ({len(tasks) if isinstance(tasks, list) else 0} tasks)"
+    usage_rc = _record_ai_dev_usage(
+        provider=usage_provider,
+        model=usage_model,
+        route=usage_route,
+        task=usage_task,
+        allow_variable_cost=bool(allow_variable_cost),
+    )
+    if usage_rc != 0:
+        return tool_error(
+            "Variable-cost delegate route blocked before child spawn. "
+            "Use allow_variable_cost=true only for an explicitly approved paid API run."
+        )
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -3447,6 +3523,13 @@ DELEGATE_TASK_SCHEMA = {
                     "compatibility."
                 ),
             },
+            "allow_variable_cost": {
+                "type": "boolean",
+                "description": (
+                    "Explicit approval for a paid API-key-backed delegate route. "
+                    "Without this, variable-cost routes are logged critically and blocked."
+                ),
+            },
         },
         "required": [],
     },
@@ -3506,6 +3589,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        allow_variable_cost=bool(args.get("allow_variable_cost", False)),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

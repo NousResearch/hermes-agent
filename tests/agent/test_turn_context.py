@@ -417,3 +417,168 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
 
+
+# ── _format_elapsed ──────────────────────────────────────────────────────
+
+
+def test_format_elapsed_sub_minute():
+    from agent.turn_context import _format_elapsed
+    assert _format_elapsed(0) == "a few seconds"
+    assert _format_elapsed(30) == "a few seconds"
+    assert _format_elapsed(59) == "a few seconds"
+
+
+def test_format_elapsed_minutes():
+    from agent.turn_context import _format_elapsed
+    assert _format_elapsed(60) == "1 minute"
+    assert _format_elapsed(120) == "2 minutes"
+    assert _format_elapsed(3540) == "59 minutes"
+
+
+def test_format_elapsed_hours():
+    from agent.turn_context import _format_elapsed
+    assert _format_elapsed(3600) == "1 hour"
+    assert _format_elapsed(7200) == "2 hours"
+    assert _format_elapsed(82800) == "23 hours"
+
+
+def test_format_elapsed_days():
+    from agent.turn_context import _format_elapsed
+    assert _format_elapsed(86400) == "1 day"
+    assert _format_elapsed(172800) == "2 days"
+    assert _format_elapsed(604800) == "7 days"
+
+
+# ── Time-awareness injection ─────────────────────────────────────────────
+
+
+def test_time_awareness_injects_when_threshold_exceeded(monkeypatch):
+    agent = _FakeAgent()
+    agent._time_awareness_enabled = True
+    agent._time_awareness_threshold = 3600.0  # 1 hour
+    agent._last_activity_ts = 1000.0  # far in the past
+
+    monkeypatch.setattr("time.time", lambda: 1000.0 + 7200.0)  # 2h gap
+    # Mock hermes_time.now() to return a fixed weekday datetime
+    mock_now = __import__("datetime").datetime(2026, 6, 16, 14, 30, 0)
+    monkeypatch.setattr(
+        "hermes_time.now", lambda: mock_now
+    )
+
+    ctx = _build(
+        agent,
+        conversation_history=[{"role": "assistant", "content": "prior"}],
+        persist_user_message=None,
+    )
+
+    msg = ctx.messages[-1]["content"]
+    assert "It is now" in msg
+    assert "Your last message was about" in msg
+    assert "2 hours" in msg
+
+
+def test_time_awareness_skips_when_threshold_not_exceeded():
+    agent = _FakeAgent()
+    agent._time_awareness_enabled = True
+    agent._time_awareness_threshold = 3600.0  # 1 hour
+    agent._last_activity_ts = 1000.0
+
+    with patch("time.time", return_value=1000.0 + 600.0):  # 10min gap
+        ctx = _build(
+            agent,
+            conversation_history=[{"role": "assistant", "content": "prior"}],
+        )
+
+    assert ctx.messages[-1]["content"] == "hello"
+
+
+def test_time_awareness_skips_when_disabled():
+    agent = _FakeAgent()
+    agent._time_awareness_enabled = False
+    agent._time_awareness_threshold = 3600.0
+    agent._last_activity_ts = 1000.0
+
+    with patch("time.time", return_value=1000.0 + 7200.0):  # 2h gap
+        ctx = _build(
+            agent,
+            conversation_history=[{"role": "assistant", "content": "prior"}],
+        )
+
+    assert ctx.messages[-1]["content"] == "hello"
+
+
+def test_time_awareness_skips_first_turn():
+    """No conversation_history means no prior turn to compute a gap from."""
+    agent = _FakeAgent()
+    agent._time_awareness_enabled = True
+    agent._time_awareness_threshold = 3600.0
+    agent._last_activity_ts = 1000.0
+
+    with patch("time.time", return_value=1000.0 + 7200.0):
+        ctx = _build(agent, conversation_history=None)
+
+    assert ctx.messages[-1]["content"] == "hello"
+
+
+def test_time_awareness_sets_persist_override_for_cli():
+    """CLI path (persist_user_message=None) must set the override so the
+    annotation doesn't leak into the session transcript."""
+    agent = _FakeAgent()
+    agent._time_awareness_enabled = True
+    agent._time_awareness_threshold = 3600.0
+    agent._last_activity_ts = 1000.0
+    agent._persist_user_message_override = None
+
+    with patch("time.time", return_value=1000.0 + 7200.0):
+        ctx = _build(
+            agent,
+            conversation_history=[{"role": "assistant", "content": "prior"}],
+            persist_user_message=None,
+        )
+
+    # The override should be set to the original clean message.
+    assert agent._persist_user_message_override == "hello"
+    # The model sees the annotation.
+    assert "It is now" in ctx.messages[-1]["content"]
+
+
+def test_time_awareness_does_not_override_gateway_persist():
+    """Gateway already provides persist_user_message; must not clobber it."""
+    agent = _FakeAgent()
+    agent._time_awareness_enabled = True
+    agent._time_awareness_threshold = 3600.0
+    agent._last_activity_ts = 1000.0
+    agent._persist_user_message_override = "gateway-clean-msg"
+
+    with patch("time.time", return_value=1000.0 + 7200.0):
+        ctx = _build(
+            agent,
+            conversation_history=[{"role": "assistant", "content": "prior"}],
+            persist_user_message="gateway-clean-msg",
+        )
+
+    # Gateway's persist override must be preserved.
+    assert agent._persist_user_message_override == "gateway-clean-msg"
+    # The model sees the annotation.
+    assert "It is now" in ctx.messages[-1]["content"]
+
+
+def test_time_awareness_safe_on_injection_failure():
+    """A failure in the injection logic (bad import, clock error) must not
+    crash the turn or lose the user message."""
+    agent = _FakeAgent()
+    agent._time_awareness_enabled = True
+    agent._time_awareness_threshold = 3600.0
+    agent._last_activity_ts = 1000.0
+
+    with patch("time.time", return_value=1000.0 + 7200.0):
+        # Force the hermes_time import to raise.
+        with patch("hermes_time.now", side_effect=ImportError):
+            ctx = _build(
+                agent,
+                conversation_history=[{"role": "assistant", "content": "prior"}],
+            )
+
+    # User message is preserved even though injection failed.
+    assert ctx.messages[-1]["content"] == "hello"
+

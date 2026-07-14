@@ -1500,6 +1500,8 @@ DEFAULT_CONFIG = {
         "auto_subscribe_on_create": True,
     },
 
+    # Context-awareness features for the per-turn context the model sees.
+    # All opt-in; none affect the cached system prompt.
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
@@ -2188,6 +2190,17 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Time awareness: when a user sends a message after a significant
+        # quiet gap, prepend a brief annotation so the agent knows how
+        # much time has passed since the last turn.  Opt-in (default off)
+        # because even a single-line annotation changes what the model
+        # sees on gap-crossing turns.
+        "time_awareness": {
+            "enabled": False,
+            # Threshold in minutes — inject annotation when the gap since
+            # the last user turn exceeds this value.
+            "threshold_minutes": 120,
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

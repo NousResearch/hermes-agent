@@ -1,0 +1,18 @@
+name: research-desk
+version: 0.1.0
+description: "Private-runner research reports from public evidence, bounded workers, and redacted receipts."
+author: "Hermes Agent"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+requires_plugins:
+  - openmanus
+provides_tools:
+  - research_desk_status
+  - research_desk_plan
+  - research_desk_run
+  - research_desk_export
+provides_cli:
+  - research-desk

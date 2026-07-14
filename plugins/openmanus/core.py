@@ -82,8 +82,10 @@ WIDE_RESEARCH_SCHEMA = {
             "allow_side_effects": {"type": "boolean", "description": "Must be true for live execution."},
             "acknowledge_side_effects": {"type": "boolean", "description": "Explicit confirmation for live execution."},
             "allow_network": {"type": "boolean", "description": "Request browser/network tools; config must also allow them."},
+            "network_scope": {"type": "string", "enum": ["none", "llm_only", "full"], "description": "Network scope: no network, only the configured LLM endpoint, or all enabled tools."},
             "max_parallel": {"type": "integer", "minimum": 1, "maximum": MAX_PARALLEL},
             "synthesize": {"type": "boolean", "description": "Use Hermes host LLM to combine worker outputs."},
+            "no_secret_env": {"type": "boolean", "description": "Do not pass the configured model secret to worker processes."},
         },
         "required": ["items"],
     },
@@ -180,14 +182,16 @@ def _runtime_command(entry: dict[str, Any]) -> list[str]:
         return [str(x) for x in configured]
     if isinstance(configured, str) and configured.strip():
         return shlex.split(configured, posix=False)
-    if shutil.which("uv"):
-        return ["uv", "run", "--with-requirements", str(source_root() / "requirements.txt")]
+    uv_path = shutil.which("uv")
+    if uv_path:
+        return [uv_path, "run", "--with-requirements", str(source_root() / "requirements.txt")]
     return [sys.executable]
 
 
 def _build_command(entry: dict[str, Any], workspace: Path, run_root: Path, args: dict[str, Any]) -> list[str]:
     llm = _llm_entry(entry)
-    return _runtime_command(entry) + [
+    network_scope = str(args.get("network_scope") or ("full" if args.get("allow_network") else "none"))
+    command = _runtime_command(entry) + [
         str(plugin_dir() / "runner.py"),
         "--source-root", str(source_root()),
         "--workspace-root", str(workspace),
@@ -198,31 +202,68 @@ def _build_command(entry: dict[str, Any], workspace: Path, run_root: Path, args:
         "--api-key-env", _api_key_env(entry),
         "--agent-mode", str(args.get("agent_mode") or "manus"),
         "--max-steps", str(max(1, min(int(args.get("max_steps") or 20), MAX_STEPS))),
-        "--allow-network" if bool(args.get("allow_network")) else "--no-network",
+        "--allow-network" if network_scope != "none" else "--no-network",
+        "--network-scope", network_scope,
     ]
+    if bool(args.get("no_secret_env")):
+        command.append("--no-secret-env")
+    return command
 
 
-def _safe_environment(entry: dict[str, Any]) -> dict[str, str]:
+def _safe_environment(
+    entry: dict[str, Any], *, include_secret: bool = True, isolated_root: Path | None = None
+) -> dict[str, str]:
     keep = {
         "PATH",
         "SystemRoot",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "HOME",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
         "LANG",
-        "APPDATA",
-        "LOCALAPPDATA",
         "ProgramFiles",
         "ProgramFiles(x86)",
     }
     env = {key: value for key, value in os.environ.items() if key in keep}
+    system_root = env.get("SystemRoot") or env.get("SYSTEMROOT") or env.get("WINDIR")
+    if system_root:
+        env["PATH"] = os.pathsep.join(
+            item
+            for item in (
+                str(Path(system_root) / "System32"),
+                str(Path(system_root)),
+                env.get("ProgramFiles"),
+                env.get("ProgramFiles(x86)"),
+            )
+            if item
+        )
+    else:
+        env["PATH"] = os.pathsep.join(
+            item for item in ("/usr/local/bin", "/usr/bin", "/bin") if item
+        )
+    env.pop("USERPROFILE", None)
+    env.pop("HOME", None)
+    env.pop("APPDATA", None)
+    env.pop("LOCALAPPDATA", None)
+    if isolated_root is not None:
+        process_home = isolated_root / "process-home"
+        process_temp = isolated_root / "process-temp"
+        process_home.mkdir(parents=True, exist_ok=True)
+        process_temp.mkdir(parents=True, exist_ok=True)
+        env["HOME"] = str(process_home)
+        env["TEMP"] = str(process_temp)
+        env["TMP"] = str(process_temp)
+        if os.name == "nt":
+            env["USERPROFILE"] = str(process_home)
+            env["APPDATA"] = str(process_home / "AppData" / "Roaming")
+            env["LOCALAPPDATA"] = str(process_home / "AppData" / "Local")
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
-    secret_name = _api_key_env(entry)
-    secret = os.environ.get(secret_name)
-    if secret:
-        env[secret_name] = secret
+    if include_secret:
+        secret_name = _api_key_env(entry)
+        secret = os.environ.get(secret_name)
+        if secret:
+            env[secret_name] = secret
     return env
 
 
@@ -255,18 +296,25 @@ def _validate_request(args: dict[str, Any]) -> tuple[dict[str, Any], Path]:
     dry_run = bool(args.get("dry_run", True))
     if not dry_run and not (args.get("allow_side_effects") and args.get("acknowledge_side_effects")):
         raise PermissionError("live OpenManus execution requires allow_side_effects and acknowledge_side_effects")
-    if bool(args.get("allow_network")) and not bool(entry.get("allow_network", False)):
-        raise PermissionError("network/browser execution is disabled; enable it explicitly in plugins.entries.openmanus")
+    network_scope = str(args.get("network_scope") or ("full" if args.get("allow_network") else "none"))
+    if network_scope not in {"none", "llm_only", "full"}:
+        raise ValueError("network_scope must be none, llm_only, or full")
+    if network_scope == "full" and not bool(entry.get("allow_network", False)):
+        raise PermissionError("full network/browser execution is disabled; enable it explicitly in plugins.entries.openmanus")
+    if network_scope == "llm_only" and not bool(entry.get("allow_llm_network", False)):
+        raise PermissionError("LLM network access is disabled; enable plugins.entries.openmanus.allow_llm_network")
     workspace = resolve_workspace(args.get("workspace"))
     llm = _llm_entry(entry)
     if not dry_run:
         if not llm.get("model") or not llm.get("base_url"):
             raise ValueError("configure plugins.entries.openmanus.llm.model and llm.base_url")
-        if not os.environ.get(_api_key_env(entry)):
+        if not bool(args.get("no_secret_env")) and not os.environ.get(_api_key_env(entry)):
             raise ValueError(f"secret environment variable {_api_key_env(entry)} is not set")
     normalized = dict(args)
     normalized["task"] = task
     normalized["dry_run"] = dry_run
+    normalized["network_scope"] = network_scope
+    normalized["allow_network"] = network_scope != "none"
     normalized["timeout_seconds"] = max(10, min(int(args.get("timeout_seconds") or 600), MAX_TIMEOUT_SECONDS))
     return normalized, workspace
 
@@ -299,8 +347,14 @@ def run_task(args: dict[str, Any] | None = None) -> dict[str, Any]:
                 input=normalized["task"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=str(source_root()),
-                env=_safe_environment(entry),
+                env=_safe_environment(
+                    entry,
+                    include_secret=not bool(normalized.get("no_secret_env")),
+                    isolated_root=run_root,
+                ),
                 timeout=normalized["timeout_seconds"],
                 check=False,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

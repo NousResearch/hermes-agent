@@ -12981,6 +12981,7 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+    from agent.skill_utils import parse_frontmatter
 
     keep_set = {s.strip() for s in keep if s and s.strip()}
     disabled_count = 0
@@ -12990,7 +12991,17 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
         skills_root = profile_dir / "skills"
         if skills_root.is_dir():
             for md in skills_root.rglob("SKILL.md"):
-                installed.append(md.parent.name)
+                # Use the frontmatter `name:` field so that skills whose
+                # directory name differs from their frontmatter name (e.g.
+                # "vllm" dir vs "serving-llms-vllm" frontmatter) are keyed
+                # consistently with what skills_list() and the runtime
+                # disabled-list check use.
+                try:
+                    fm, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+                    skill_name = fm.get("name") or md.parent.name
+                except Exception:
+                    skill_name = md.parent.name
+                installed.append(skill_name)
         cfg = load_config()
         disabled = get_disabled_skills(cfg)
         for name in installed:

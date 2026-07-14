@@ -4348,6 +4348,68 @@ class TestNewEndpoints:
         finally:
             reset_hermes_home_override(token)
 
+    def test_profiles_create_keep_skills_uses_frontmatter_name(self, monkeypatch):
+        """keep_skills matching uses frontmatter `name:` not the on-disk directory
+        name.  When a skill's directory is "vllm" but its frontmatter name is
+        "serving-llms-vllm", passing keep_skills=["serving-llms-vllm"] must keep
+        the skill active, and the disabled entry written for a *dropped* skill must
+        also use its frontmatter name so the runtime disabled-list check matches."""
+        from hermes_constants import (
+            get_hermes_home,
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+        from hermes_cli.config import load_config
+        from hermes_cli.skills_config import get_disabled_skills
+        import hermes_cli.profiles as profiles_mod
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        # Seed two skills whose directory names differ from frontmatter names.
+        def fake_seed(profile_dir, quiet=False):
+            for dir_name, fm_name in (
+                ("vllm", "serving-llms-vllm"),        # user keeps this
+                ("audiocraft", "audiocraft-audio"),    # user drops this
+            ):
+                d = profile_dir / "skills" / "mlops" / dir_name
+                d.mkdir(parents=True)
+                (d / "SKILL.md").write_text(
+                    f"---\nname: {fm_name}\n---\n", encoding="utf-8"
+                )
+            return {"copied": ["vllm", "audiocraft"]}
+
+        monkeypatch.setattr(profiles_mod, "seed_profile_skills", fake_seed)
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", lambda *a, **kw: type("P", (), {"pid": 1})())
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={
+                "name": "fm-name-test",
+                # keep only the vllm skill (by its frontmatter name)
+                "keep_skills": ["serving-llms-vllm"],
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["skills_disabled"] == 1  # only audiocraft dropped
+
+        prof_dir = get_hermes_home() / "profiles" / "fm-name-test"
+        token = set_hermes_home_override(str(prof_dir))
+        try:
+            cfg = load_config()
+            disabled = get_disabled_skills(cfg)
+            # Kept skill must NOT be in disabled list.
+            assert "serving-llms-vllm" not in disabled
+            assert "vllm" not in disabled
+            # Dropped skill must be disabled by its frontmatter name so the
+            # runtime disabled-list check (which also uses frontmatter name) works.
+            assert "audiocraft-audio" in disabled
+            assert "audiocraft" not in disabled
+        finally:
+            reset_hermes_home_override(token)
+
     def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.web_server as web_server

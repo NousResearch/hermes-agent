@@ -24,11 +24,14 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.codex_responses_adapter import _format_responses_error
@@ -155,6 +158,27 @@ _OAUTH_REFRESH_FAILURE_HINTS = (
 )
 
 
+_HERMES_TOOLS_MCP_MODULE = "agent.transports.hermes_tools_mcp_server"
+
+_HERMES_TOOLS_MCP_ENV_KEYS: tuple[str, ...] = (
+    "HOME",
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "HERMES_HOME",
+    "HERMES_PROFILE",
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_CLAIM_LOCK",
+    "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+    "HERMES_KANBAN_BOARD",
+    "HERMES_TENANT",
+)
+
+
 def _classify_oauth_failure(*parts: str) -> Optional[str]:
     """Return a user-friendly re-auth hint if any of the provided strings
     look like a codex OAuth/token-refresh failure; otherwise None.
@@ -176,6 +200,77 @@ def _classify_oauth_failure(*parts: str) -> Optional[str]:
                 "`/codex-runtime auto` if the issue persists.)"
             )
     return None
+
+
+def _kanban_worker_mcp_enabled() -> bool:
+    """Whether to inject the Hermes MCP bridge into Codex worker sessions.
+
+    Defaults on. Operators can disable it at runtime with
+    ``HERMES_KANBAN_WORKER_MCP=0`` (also accepts false/no/off) — an escape hatch
+    if the injected bridge ever misbehaves, without requiring a code change.
+    """
+    return os.getenv("HERMES_KANBAN_WORKER_MCP", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _kanban_worker_hermes_tools_mcp_args() -> list[str]:
+    """Register Hermes' MCP bridge for dispatcher-spawned Codex workers.
+
+    The persisted ``~/.codex/config.toml`` entry intentionally cannot contain
+    per-task Kanban env vars. Codex app-server may also spawn MCP servers with
+    a narrower environment than the parent process, so we inject a dynamic
+    config override for worker sessions to make ``kanban_show`` /
+    ``kanban_complete`` / ``kanban_block`` visible inside the turn.
+    """
+    if not os.getenv("HERMES_KANBAN_TASK"):
+        return []
+    if not _kanban_worker_mcp_enabled():
+        return []
+
+    args: list[str] = [
+        "-c",
+        f"mcp_servers.hermes-tools.command={json.dumps(sys.executable)}",
+        "-c",
+        "mcp_servers.hermes-tools.args="
+        + json.dumps(["-m", _HERMES_TOOLS_MCP_MODULE], separators=(",", ":")),
+        "-c",
+        "mcp_servers.hermes-tools.startup_timeout_sec=30.0",
+        "-c",
+        "mcp_servers.hermes-tools.tool_timeout_sec=600.0",
+    ]
+    for key, value in sorted(_hermes_tools_mcp_env().items()):
+        args.extend(
+            [
+                "-c",
+                f"mcp_servers.hermes-tools.env.{key}={json.dumps(value)}",
+            ]
+        )
+    return args
+
+
+def _hermes_tools_mcp_env() -> dict[str, str]:
+    repo_root = str(Path(__file__).resolve().parents[2])
+    existing_pythonpath = os.getenv("PYTHONPATH", "")
+    pythonpath = (
+        repo_root
+        if not existing_pythonpath
+        else f"{repo_root}{os.pathsep}{existing_pythonpath}"
+    )
+
+    env: dict[str, str] = {
+        "PYTHONPATH": pythonpath,
+        "HERMES_QUIET": "1",
+        "HERMES_REDACT_SECRETS": "true",
+    }
+    for key in _HERMES_TOOLS_MCP_ENV_KEYS:
+        value = os.getenv(key)
+        if value:
+            env[key] = value
+    return env
 
 
 @dataclass
@@ -245,7 +340,9 @@ class CodexAppServerSession:
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(
-                codex_bin=self._codex_bin, codex_home=self._codex_home
+                codex_bin=self._codex_bin,
+                codex_home=self._codex_home,
+                extra_args=self._codex_extra_args(),
             )
         self._client.initialize(
             client_name="hermes",
@@ -296,6 +393,9 @@ class CodexAppServerSession:
             self._cwd,
         )
         return self._thread_id
+
+    def _codex_extra_args(self) -> list[str]:
+        return _kanban_worker_hermes_tools_mcp_args()
 
     def close(self) -> None:
         if self._closed:

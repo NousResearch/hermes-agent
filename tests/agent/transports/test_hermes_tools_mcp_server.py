@@ -8,6 +8,11 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import inspect
+import sys
+import types
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 
@@ -96,6 +101,80 @@ class TestModuleSurface:
                 f"{orch_tool!r} missing from codex callback"
             )
 
+    def test_build_server_preserves_tool_argument_schema(self, monkeypatch):
+        """FastMCP must see Hermes' real argument names.
+
+        Regression coverage for Codex app-server sessions where skill_view
+        was exposed but calls like skill_view(name="hermes-agent") arrived as
+        an empty argument dict, producing "Skill '' not found".
+        """
+        import agent.transports.hermes_tools_mcp_server as m
+
+        fake_schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name"},
+                "file_path": {"type": "string"},
+            },
+            "required": ["name"],
+        }
+
+        monkeypatch.setattr(
+            "model_tools.get_tool_definitions",
+            lambda quiet_mode=True: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "description": "Load a skill",
+                        "parameters": fake_schema,
+                    },
+                }
+            ],
+        )
+
+        class FakeToolManager:
+            def __init__(self):
+                self._tools = {}
+
+            def add_tool(self, fn, name=None, description=None, **kwargs):
+                signature = inspect.signature(fn)
+                tool = SimpleNamespace(
+                    name=name,
+                    description=description,
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            key: {} for key in signature.parameters
+                        },
+                    },
+                )
+                self._tools[name] = tool
+                return tool
+
+        class FakeFastMCP:
+            def __init__(self, *args, **kwargs):
+                self._tool_manager = FakeToolManager()
+
+            def add_tool(self, fn, **kwargs):
+                self._tool_manager.add_tool(fn, **kwargs)
+
+        mcp_mod = types.ModuleType("mcp")
+        server_mod = types.ModuleType("mcp.server")
+        fastmcp_mod = types.ModuleType("mcp.server.fastmcp")
+        fastmcp_mod.FastMCP = FakeFastMCP
+        monkeypatch.setitem(sys.modules, "mcp", mcp_mod)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_mod)
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_mod)
+
+        server = m._build_server()
+        tool = server._tool_manager._tools["skill_view"]
+
+        assert "name" in tool.parameters["properties"]
+        assert "file_path" in tool.parameters["properties"]
+        assert tool.parameters["required"] == ["name"]
+        assert "kwargs" not in tool.parameters["properties"]
+
 
 class TestMain:
     def test_main_returns_2_when_mcp_unavailable(self, monkeypatch):
@@ -131,3 +210,43 @@ class TestMain:
         monkeypatch.setattr(m, "_build_server", lambda: CrashingServer())
         rc = m.main([])
         assert rc == 1
+
+
+class TestSignatureFromJsonSchema:
+    """The synthetic signature is the mechanism that fixes Codex sending empty
+    argument dicts; test it directly, not just the resulting tool schema."""
+
+    def test_builds_keyword_only_signature_required_first(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "opt": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["name"],
+        }
+
+        sig = m._signature_from_json_schema(schema)
+
+        assert sig is not None
+        params = list(sig.parameters.values())
+        # Required arg ordered first; every arg keyword-only; no **kwargs.
+        assert [p.name for p in params] == ["name", "opt"]
+        assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params)
+        assert sig.parameters["name"].default is inspect.Parameter.empty
+        assert sig.parameters["opt"].default is None
+
+    def test_returns_none_for_non_identifier_property(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        # All-or-nothing: a property name that is not a valid Python identifier
+        # disables the synthetic signature (handler falls back to **kwargs).
+        schema = {"type": "object", "properties": {"bad-name": {"type": "string"}}}
+        assert m._signature_from_json_schema(schema) is None
+
+    def test_returns_none_without_properties(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        assert m._signature_from_json_schema({"type": "object"}) is None

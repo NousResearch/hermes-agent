@@ -44,7 +44,9 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 
 from __future__ import annotations
 
+import inspect
 import json
+import keyword
 import logging
 import os
 import sys
@@ -156,9 +158,7 @@ def _build_server() -> Any:
 
         # FastMCP wants a Python callable. Build a closure that takes the
         # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
+        # the result string.
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
@@ -170,19 +170,13 @@ def _build_server() -> Any:
             _dispatch.__doc__ = description
             return _dispatch
 
-        try:
-            mcp.add_tool(
-                _make_handler(name),
-                name=name,
-                description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
-            )
-        except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style.
-            handler = _make_handler(name)
-            handler = mcp.tool(name=name, description=description)(handler)
+        _add_schema_backed_tool(
+            mcp,
+            _make_handler(name),
+            name=name,
+            description=description,
+            params_schema=params_schema,
+        )
 
         exposed_count += 1
 
@@ -192,6 +186,105 @@ def _build_server() -> Any:
         len(EXPOSED_TOOLS),
     )
     return mcp
+
+
+def _add_schema_backed_tool(
+    mcp: Any,
+    handler: Any,
+    *,
+    name: str,
+    description: str,
+    params_schema: dict[str, Any],
+) -> None:
+    """Register a Hermes JSON-schema tool with FastMCP.
+
+    Current FastMCP builds the MCP input schema from the Python callable
+    signature and does not accept an explicit JSON schema in ``add_tool``.
+    A plain ``def tool(**kwargs)`` therefore advertises a single ``kwargs``
+    field and Codex sends empty argument dicts for calls like
+    ``skill_view(name="hermes-agent")``. We give the dynamic handler a
+    synthetic signature based on Hermes' schema, then preserve the original
+    schema on the Tool object for MCP clients that display descriptions.
+    """
+    signature = _signature_from_json_schema(params_schema)
+    if signature is not None:
+        handler.__signature__ = signature
+
+    # FastMCP (mcp SDK, tested against the 1.x line) builds a tool's input
+    # schema from the callable signature and exposes no public API to register
+    # a tool with an explicit JSON schema. The synthetic signature above already
+    # makes the PUBLIC add_tool advertise correct argument names; when the
+    # private tool manager is present we additionally restore Hermes' exact JSON
+    # schema (types/descriptions/required) on the returned Tool. This private
+    # access is intentional and guarded — if a future SDK drops `_tool_manager`,
+    # we degrade to the public path (correct names, reduced schema fidelity)
+    # rather than break.
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    if tool_manager is not None and hasattr(tool_manager, "add_tool"):
+        tool = tool_manager.add_tool(
+            handler,
+            name=name,
+            description=description,
+        )
+        try:
+            tool.parameters = params_schema
+        except Exception as exc:  # pragma: no cover - SDK compatibility guard
+            logger.debug(
+                "hermes-tools: could not pin JSON schema on tool %s: %r", name, exc
+            )
+        return
+
+    # Fallback for SDKs/fakes without the private manager. The synthetic
+    # signature still gives FastMCP the right argument names, but the exact
+    # JSON schema (types/descriptions) is not restored.
+    logger.debug(
+        "hermes-tools: FastMCP _tool_manager unavailable; registering %s via "
+        "public add_tool (reduced schema fidelity)",
+        name,
+    )
+    mcp.add_tool(handler, name=name, description=description)
+
+
+def _signature_from_json_schema(
+    params_schema: dict[str, Any],
+) -> Optional[inspect.Signature]:
+    properties = params_schema.get("properties")
+    if not isinstance(properties, dict):
+        return None
+
+    required = params_schema.get("required") or []
+    required_names = {
+        str(name) for name in required if isinstance(name, str)
+    }
+    ordered_names = [
+        name for name in properties if name in required_names
+    ] + [
+        name for name in properties if name not in required_names
+    ]
+
+    parameters: list[inspect.Parameter] = []
+    for name in ordered_names:
+        if (
+            not isinstance(name, str)
+            or not name.isidentifier()
+            or keyword.iskeyword(name)
+        ):
+            return None
+        default = (
+            inspect.Parameter.empty
+            if name in required_names
+            else None
+        )
+        parameters.append(
+            inspect.Parameter(
+                name,
+                kind=inspect.Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=Any,
+            )
+        )
+
+    return inspect.Signature(parameters=parameters)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

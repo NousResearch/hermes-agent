@@ -101,6 +101,44 @@ What also works because the MCP callback exposes them:
 
 The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets — that var is propagated to the codex subprocess (codex inherits env) and from there to the spawned `hermes-tools` MCP server subprocess. So the tools see the right task id and gate correctly. For Codex app-server workers, Hermes also passes narrow app-server sandbox overrides when `HERMES_KANBAN_TASK` is present: keep `workspace-write` sandboxing, add the **board DB directory plus every Kanban path the dispatcher pinned** as extra writable roots (`HERMES_KANBAN_WORKSPACES_ROOT`, `HERMES_KANBAN_WORKSPACE`, legacy `HERMES_KANBAN_ROOT` — deduplicated, DB-dir first), and keep network disabled by default. This avoids the brittle `:danger-no-sandbox` workaround while letting `kanban_complete` / `kanban_block` update the board DB **and** letting workers write reports/artifacts under workspace mounts that live outside the DB directory (e.g. `/media/.../kanban-workspaces/...` on a separate drive — [issue #27941](https://github.com/NousResearch/hermes-agent/issues/27941)).
 
+The injected MCP bridge is on by default for Kanban workers. To disable it at runtime without a code change (e.g. to isolate a regression), set `HERMES_KANBAN_WORKER_MCP=0` (also accepts `false`/`no`/`off`); the worker then comes up with only Codex's built-in tools and no `hermes-tools` server. The env allowlist forwarded to the MCP subprocess is fixed — only Kanban/runtime vars plus `PYTHONPATH`, with `HERMES_REDACT_SECRETS=true` and `HERMES_QUIET=1` set — so arbitrary parent-process secrets are not propagated into the bridge.
+
+#### Post-update Kanban worker smoke
+
+Any Hermes upgrade or PR that touches `agent/transports/codex_app_server_session.py`, `agent/transports/hermes_tools_mcp_server.py`, Codex app-server migration, or Kanban dispatch should prove the worker bridge before real tasks are redispatched.
+
+Run the focused regression tests:
+
+```bash
+python -m pytest \
+  tests/agent/transports/test_codex_app_server_session.py \
+  tests/agent/transports/test_hermes_tools_mcp_server.py \
+  tests/run_agent/test_codex_app_server_integration.py \
+  -q -o addopts=''
+```
+
+Then run a live canary on a disposable board/task:
+
+```bash
+TASK_ID="$(
+  hermes kanban --board smoke create \
+    "Codex app-server Kanban MCP bridge smoke" \
+    --assignee ops-agent \
+    --workspace "dir:$PWD" \
+    --max-runtime 8m \
+    --max-retries 1 \
+    --body 'Smoke only. Call kanban_show(), then call kanban_block(reason="bridge-smoke: Codex app-server can access Hermes kanban tools") and stop. Do not edit files.' \
+    --json |
+  python -c 'import json,sys; print(json.load(sys.stdin)["id"])'
+)"
+hermes kanban --board smoke dispatch --max 1
+hermes kanban --board smoke show "$TASK_ID"
+hermes kanban --board smoke log "$TASK_ID"
+hermes kanban --board smoke archive "$TASK_ID"
+```
+
+The canary must close through a real `kanban_block` event with the `bridge-smoke` reason. Do not redispatch expensive/project tasks if the worker only writes prose, if the tool list lacks `kanban_show` / `kanban_complete` / `kanban_block`, or if `skill_view(name=...)` reports `Skill '' not found`.
+
 ### Cron jobs
 
 **Not specifically tested.** Cron jobs run via `cronjob` → `AIAgent.run_conversation`, the same code path as the CLI. If the cron job's config has `openai_runtime: codex_app_server` it'll run on codex. The same tool-availability rules apply — codex built-ins + plugins + MCP callback work, agent-loop tools (delegate_task, memory, session_search, todo) don't. If your cron job relies on those, scope the cron to a profile that uses the default runtime.

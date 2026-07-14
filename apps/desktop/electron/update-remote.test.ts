@@ -2,8 +2,8 @@
  * Tests for electron/update-remote.ts — the remote-detection helpers that
  * keep passive update checks off the SSH origin for official installs.
  *
- * Run with: node --test electron/update-remote.test.ts
- * (Wired into npm test:desktop:platforms in package.json.)
+ * Run with: npx vitest run electron/update-remote.test.ts
+ * (Covered by the desktop test suite.)
  *
  * Why this matters: a public install can carry
  * origin=git@github.com:NousResearch/hermes-agent.git. A background

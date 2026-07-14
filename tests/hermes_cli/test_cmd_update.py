@@ -446,10 +446,6 @@ class TestCmdUpdateBranchFallback:
         assert any("fetch upstream main" in c for c in commands), commands
         assert any("rev-list HEAD..upstream/main --count" in c for c in commands), commands
         sync_mock.assert_not_called()
-        expected_git_cmd = (
-            ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
-        )
-        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 

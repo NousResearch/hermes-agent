@@ -396,11 +396,18 @@ class HolographicMemoryProvider(MemoryProvider):
                 None,
             ),
             (
-                re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
-                1,
+                # Capture the preference kind and its subject so the stored
+                # fact keeps what the value applies to: "my default shell is
+                # zsh" must become "User's default shell is zsh.", not
+                # "User prefers zsh."
+                re.compile(
+                    r'\bmy\s+(favorite|preferred|default)\s+(\w+(?:\s+\w+)*?)\s+is\s+(.+)',
+                    re.IGNORECASE,
+                ),
+                3,
                 {},
                 0,
-                "User prefers",
+                lambda m: f"User's {m.group(1).lower()} {' '.join(m.group(2).split())} is",
             ),
             (
                 re.compile(r'\bI\s+(always|never|usually)\s+(.+)', re.IGNORECASE),
@@ -453,6 +460,8 @@ class HolographicMemoryProvider(MemoryProvider):
                 prefix = prefixes.get(action, default_prefix)
                 if not prefix:
                     continue
+                if callable(prefix):
+                    prefix = prefix(match)
                 fact = self._format_auto_extracted_fact(prefix, match.group(fragment_group))
                 if fact:
                     try:

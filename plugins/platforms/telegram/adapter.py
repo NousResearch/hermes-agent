@@ -457,6 +457,14 @@ class TelegramAdapter(BasePlatformAdapter):
     # edit and the final edit, skipping the plain-text → MarkdownV2 conversion.
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
+    # Retrying a turn-final edit consumes more of the same Telegram flood
+    # budget while the completed answer remains undelivered. Move directly to
+    # the final fallback path instead.
+    FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True
+    # A failed final edit can leave Telegram clients with only a partial or
+    # non-durable preview. Commit empty-tail fallbacks as a fresh final message
+    # instead of trusting the preview as completed delivery.
+    RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True
 
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
@@ -4067,7 +4075,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, wait,
                 )
                 if wait > 5.0:
-                    return SendResult(success=False, error=f"flood_control:{wait}")
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{wait}",
+                        retry_after=float(wait),
+                    )
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(
@@ -4556,6 +4568,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
@@ -4572,6 +4586,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )
+            if smart_denied:
+                text += "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
@@ -4584,16 +4600,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._approval_counter = itertools.count(1)
             approval_id = next(self._approval_counter)
 
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
-                ],
-                [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
-                ],
-            ])
+            buttons = [
+                InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")
+            ]
+            if not smart_denied:
+                buttons.append(
+                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}")
+                )
+                if allow_permanent:
+                    buttons.append(
+                        InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
+                    )
+            buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
+            keyboard = InlineKeyboardMarkup([buttons])
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),

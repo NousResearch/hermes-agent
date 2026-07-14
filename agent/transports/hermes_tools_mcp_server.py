@@ -128,8 +128,10 @@ def _build_server() -> Any:
             "Hermes Agent's tool surface, exposed for use inside a Codex "
             "session. Use these for capabilities Codex's built-in toolset "
             "doesn't cover: web search/extract, browser automation, "
-            "subagent delegation, vision, image generation, persistent "
-            "memory, skills, and cross-session search."
+            "vision, image generation, skills, text-to-speech, and kanban "
+            "worker/orchestrator handoff tools. This stateless MCP surface "
+            "excludes Hermes features that require a live agent loop "
+            "context."
         ),
     )
 

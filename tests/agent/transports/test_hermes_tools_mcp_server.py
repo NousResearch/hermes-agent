@@ -60,6 +60,59 @@ class TestModuleSurface:
                 "and can't be reached through a stateless MCP callback"
             )
 
+    def test_instructions_do_not_advertise_excluded_agent_loop_tools(self, monkeypatch):
+        import builtins
+
+        from agent.transports import hermes_tools_mcp_server as m
+
+        captured: dict[str, object] = {}
+
+        class FakeFastMCP:
+            def __init__(self, name, instructions):
+                captured["name"] = name
+                captured["instructions"] = instructions
+
+            def add_tool(self, *args, **kwargs):
+                return None
+
+        def fake_defs(quiet_mode=True):
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+
+        real_import = builtins.__import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "mcp.server.fastmcp":
+                class _FastMCPModule:
+                    FastMCP = FakeFastMCP
+
+                return _FastMCPModule()
+            if name == "model_tools":
+                class _ModelToolsModule:
+                    get_tool_definitions = staticmethod(fake_defs)
+                    handle_function_call = staticmethod(lambda tool_name, args: "{}")
+
+                return _ModelToolsModule()
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        server = m._build_server()
+
+        assert server is not None
+        instructions = str(captured["instructions"])
+        assert "delegate" not in instructions.lower()
+        assert "persistent memory" not in instructions.lower()
+        assert "cross-session search" not in instructions.lower()
+        assert "live agent loop context" in instructions.lower()
+
     def test_kanban_worker_tools_exposed(self):
         """Kanban workers run as `hermes chat -q` subprocesses; if they
         come up on the codex_app_server runtime, the worker can do the

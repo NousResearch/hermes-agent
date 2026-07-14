@@ -121,7 +121,12 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
         _run_disconnect(
             monkeypatch,
             lambda t: server._sessions.update(
-                plain={"transport": t, "close_on_disconnect": False, "session_key": "k"}
+                plain={
+                    "transport": t,
+                    "close_on_disconnect": False,
+                    "session_key": "k",
+                    "history_lock": threading.Lock(),
+                }
             ),
         )
         assert server._sessions["plain"]["transport"] is server._detached_ws_transport

@@ -555,6 +555,124 @@ class _RecordingTransport:
         self._closed = True
 
 
+def test_session_activate_rehomes_dead_queue_item_and_preserves_live_tail(
+    monkeypatch,
+):
+    dead_head_transport = _RecordingTransport()
+    dead_head_transport.close()
+    current_live_transport = _RecordingTransport()
+    live_tail_transport = _RecordingTransport()
+    activated_transport = _RecordingTransport()
+    session = _session(
+        transport=current_live_transport,
+        queued_prompt={
+            "text": "dead head",
+            "transport": dead_head_transport,
+            "message_id": "desktop-dead",
+        },
+        queued_prompts=[
+            {
+                "text": "live tail",
+                "transport": live_tail_transport,
+                "message_id": "desktop-live",
+            }
+        ],
+    )
+    monkeypatch.setattr(server, "_sess_nowait", lambda *_a, **_k: (session, None))
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {})
+    monkeypatch.setattr(server, "current_transport", lambda: activated_transport)
+
+    response = server.handle_request(
+        {
+            "id": "rpc-activate",
+            "method": "session.activate",
+            "params": {"session_id": "sid"},
+        }
+    )
+
+    assert response["result"]["session_id"] == "sid"
+    assert session["transport"] is activated_transport
+    assert session["queued_prompt"]["transport"] is activated_transport
+    assert session["queued_prompts"][0]["transport"] is live_tail_transport
+
+
+def test_disconnect_snapshot_cannot_overwrite_inflight_duplicate_retry(
+    monkeypatch,
+):
+    snapshot_taken = threading.Event()
+    finish_snapshot = threading.Event()
+    old_transport = _RecordingTransport()
+    new_transport = _RecordingTransport()
+    old_transport.close()
+    sid = "race-ui"
+    session = _session(
+        running=True,
+        transport=old_transport,
+        inflight_turn={
+            "message_id": "desktop-race-1",
+            "user": "survive disconnect race",
+        },
+    )
+
+    class _SnapshotBarrierSessions(dict):
+        def items(self):
+            snapshot = list(super().items())
+            snapshot_taken.set()
+            finish_snapshot.wait(10)
+            return snapshot
+
+    sessions = _SnapshotBarrierSessions({sid: session})
+    disconnect_result = {}
+    disconnect_errors = []
+
+    def _disconnect():
+        try:
+            disconnect_result["value"] = server._close_sessions_for_transport(
+                old_transport
+            )
+        except BaseException as exc:
+            disconnect_errors.append(exc)
+
+    monkeypatch.setattr(server, "_sessions", sessions)
+    monkeypatch.setattr(server, "_sess_nowait", lambda *_a, **_k: (session, None))
+    monkeypatch.setattr(server, "current_transport", lambda: new_transport)
+    monkeypatch.setattr(server, "_schedule_ws_orphan_reap", lambda *_a, **_k: None)
+    disconnect_thread = threading.Thread(target=_disconnect)
+    disconnect_thread.start()
+
+    try:
+        assert snapshot_taken.wait(10), "disconnect did not snapshot the old owner"
+        duplicate = server.handle_request(
+            {
+                "id": "rpc-retry",
+                "method": "prompt.submit",
+                "params": {
+                    "message_id": "desktop-race-1",
+                    "session_id": sid,
+                    "text": "survive disconnect race",
+                },
+            }
+        )
+        assert duplicate["result"]["status"] == "duplicate"
+        assert session["transport"] is new_transport
+    finally:
+        finish_snapshot.set()
+        disconnect_thread.join(10)
+
+    assert not disconnect_thread.is_alive()
+    assert disconnect_errors == []
+    assert disconnect_result["value"] == (0, 0)
+    assert session["transport"] is new_transport
+
+    server._emit("message.start", sid)
+    server._emit("message.delta", sid, {"text": "delta"})
+    server._emit("message.complete", sid, {"text": "complete"})
+    assert old_transport.frames == []
+    assert [
+        (frame.get("params") or {}).get("type") for frame in new_transport.frames
+    ] == ["message.start", "message.delta", "message.complete"]
+
+
 def _model_response(text):
     message = types.SimpleNamespace(
         content=text,

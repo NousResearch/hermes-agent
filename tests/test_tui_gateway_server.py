@@ -11336,7 +11336,11 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     transport = object()  # the disconnecting transport
     server._sessions.clear()
     server._sessions["a"] = {"transport": transport, "close_on_disconnect": True}
-    server._sessions["b"] = {"transport": transport, "close_on_disconnect": False}
+    server._sessions["b"] = {
+        "transport": transport,
+        "close_on_disconnect": False,
+        "history_lock": threading.Lock(),
+    }
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed

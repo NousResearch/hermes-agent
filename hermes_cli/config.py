@@ -1407,11 +1407,13 @@ DEFAULT_CONFIG = {
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,
+            "cross_tool_failure": 4,
             "idempotent_no_progress": 2,
         },
         "hard_stop_after": {
             "exact_failure": 5,
             "same_tool_failure": 8,
+            "cross_tool_failure": 6,
             "idempotent_no_progress": 5,
         },
     },

@@ -75,6 +75,8 @@ class ToolCallGuardrailConfig:
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
     same_tool_failure_halt_after: int = 8
+    cross_tool_failure_warn_after: int = 4
+    cross_tool_failure_halt_after: int = 6
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
@@ -116,6 +118,14 @@ class ToolCallGuardrailConfig:
             same_tool_failure_halt_after=_positive_int(
                 hard_stop_after.get("same_tool_failure", data.get("same_tool_failure_halt_after")),
                 defaults.same_tool_failure_halt_after,
+            ),
+            cross_tool_failure_warn_after=_positive_int(
+                warn_after.get("cross_tool_failure", data.get("cross_tool_failure_warn_after")),
+                defaults.cross_tool_failure_warn_after,
+            ),
+            cross_tool_failure_halt_after=_positive_int(
+                hard_stop_after.get("cross_tool_failure", data.get("cross_tool_failure_halt_after")),
+                defaults.cross_tool_failure_halt_after,
             ),
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
@@ -231,6 +241,7 @@ class ToolCallGuardrailController:
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
+        self._cross_tool_failure_count: int = 0
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
@@ -303,6 +314,9 @@ class ToolCallGuardrailController:
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
 
+            cross_count = self._cross_tool_failure_count + 1
+            self._cross_tool_failure_count = cross_count
+
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(
                     action="halt",
@@ -313,6 +327,22 @@ class ToolCallGuardrailController:
                     ),
                     tool_name=tool_name,
                     count=same_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+
+            if self.config.hard_stop_enabled and cross_count >= self.config.cross_tool_failure_halt_after:
+                decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="cross_tool_failure_halt",
+                    message=(
+                        f"Stopped: {cross_count} tool failures across multiple tools this turn. "
+                        "The current approach is not working — reassess the task and "
+                        "try a fundamentally different strategy."
+                    ),
+                    tool_name=tool_name,
+                    count=cross_count,
                     signature=signature,
                 )
                 self._halt_decision = decision
@@ -342,10 +372,26 @@ class ToolCallGuardrailController:
                     signature=signature,
                 )
 
+            if self.config.warnings_enabled and cross_count >= self.config.cross_tool_failure_warn_after:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="cross_tool_failure_warning",
+                    message=(
+                        f"{cross_count} tool failures across multiple tools this turn. "
+                        "The current approach is not working — stop and reassess before "
+                        "trying more tools. Read the errors carefully and change strategy."
+                    ),
+                    tool_name=tool_name,
+                    count=cross_count,
+                    signature=signature,
+                )
+
             return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
 
+        # Success path — reset failure counters
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        self._cross_tool_failure_count = 0
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)

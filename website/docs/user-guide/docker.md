@@ -78,6 +78,7 @@ tool_loop_guardrails:
   hard_stop_enabled: true
   hard_stop_after:
     exact_failure: 5
+    cross_tool_failure: 6
     idempotent_no_progress: 5
 ```
 :::

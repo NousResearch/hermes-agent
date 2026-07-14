@@ -256,3 +256,101 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_cross_tool_failure_warns_when_alternating_failing_tools():
+    """Alternating between different failing tools should trigger cross-tool warning."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=True,
+            exact_failure_warn_after=99,  # suppress exact-failure warnings
+            same_tool_failure_warn_after=99,  # suppress same-tool warnings
+            cross_tool_failure_warn_after=4,
+            cross_tool_failure_halt_after=6,
+        )
+    )
+
+    # Fail read_file, then search_files, then read_file, then search_files
+    d1 = controller.after_call("read_file", {"path": "/big.json"}, '{"error":"safety limit"}', failed=True)
+    assert d1.action == "allow"
+    d2 = controller.after_call("search_files", {"pattern": "*"}, '{"error":"timeout"}', failed=True)
+    assert d2.action == "allow"
+    d3 = controller.after_call("read_file", {"path": "/big.json"}, '{"error":"safety limit"}', failed=True)
+    assert d3.action == "allow"
+    d4 = controller.after_call("search_files", {"pattern": "*"}, '{"error":"timeout"}', failed=True)
+    assert d4.action == "warn"
+    assert d4.code == "cross_tool_failure_warning"
+    assert d4.count == 4
+
+
+def test_cross_tool_failure_halts_when_hard_stop_enabled():
+    """With hard stop, cross-tool failures halt the turn."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            cross_tool_failure_warn_after=4,
+            cross_tool_failure_halt_after=6,
+            same_tool_failure_halt_after=99,
+        )
+    )
+
+    tools = ["read_file", "search_files", "terminal", "read_file", "search_files", "terminal"]
+    for i, tool in enumerate(tools):
+        d = controller.after_call(tool, {"x": i}, '{"error":"fail"}', failed=True)
+        if i < 5:
+            assert d.action != "halt", f"unexpected halt at step {i}"
+        else:
+            assert d.action == "halt"
+            assert d.code == "cross_tool_failure_halt"
+            assert d.count == 6
+            assert controller.halt_decision is not None
+
+
+def test_cross_tool_failure_counter_resets_on_success():
+    """A successful tool call resets the cross-tool failure counter."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=True,
+            exact_failure_warn_after=99,  # suppress exact-failure warnings
+            cross_tool_failure_warn_after=3,
+        )
+    )
+
+    controller.after_call("read_file", {"path": "/a"}, '{"error":"fail"}', failed=True)
+    controller.after_call("search_files", {"pattern": "*"}, '{"error":"fail"}', failed=True)
+    # Success resets the counter
+    controller.after_call("terminal", {"command": "ls"}, '{"output":"ok"}', failed=False)
+    # Counter is back to 0, need 3 more failures to warn
+    d = controller.after_call("read_file", {"path": "/a"}, '{"error":"fail"}', failed=True)
+    assert d.action == "allow"
+
+
+def test_cross_tool_failure_reset_for_turn_clears_counter():
+    """reset_for_turn clears the cross-tool failure counter."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            cross_tool_failure_warn_after=2,
+            cross_tool_failure_halt_after=3,
+        )
+    )
+
+    controller.after_call("read_file", {"path": "/a"}, '{"error":"fail"}', failed=True)
+    controller.after_call("search_files", {"pattern": "*"}, '{"error":"fail"}', failed=True)
+
+    controller.reset_for_turn()
+
+    d = controller.after_call("terminal", {"command": "ls"}, '{"error":"fail"}', failed=True)
+    assert d.action == "allow"
+    assert controller.halt_decision is None
+
+
+def test_cross_tool_failure_config_from_mapping():
+    """Cross-tool thresholds parse from config.yaml mapping."""
+    cfg = ToolCallGuardrailConfig.from_mapping({
+        "warn_after": {"cross_tool_failure": 5},
+        "hard_stop_after": {"cross_tool_failure": 10},
+    })
+    assert cfg.cross_tool_failure_warn_after == 5
+    assert cfg.cross_tool_failure_halt_after == 10
+

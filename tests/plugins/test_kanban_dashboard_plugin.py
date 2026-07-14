@@ -2533,3 +2533,41 @@ def test_board_profile_allowlist_api_enforces_create_and_patch(client):
         json={"title": "works again", "assignee": "goggins"},
     )
     assert accepted.status_code == 200, accepted.text
+
+
+def test_bulk_disallowed_assignee_does_not_apply_status_first(client):
+    created = client.post(
+        "/api/plugins/kanban/boards",
+        json={"slug": "guarded", "allowed_profiles": ["alex"]},
+    )
+    assert created.status_code == 200, created.text
+    task = client.post(
+        "/api/plugins/kanban/tasks?board=guarded",
+        json={"title": "keep running safely", "assignee": "alex"},
+    ).json()["task"]
+
+    bulk = client.post(
+        "/api/plugins/kanban/tasks/bulk?board=guarded",
+        json={
+            "ids": [task["id"]],
+            "status": "blocked",
+            "assignee": "goggins",
+        },
+    )
+
+    assert bulk.status_code == 200
+    assert bulk.json()["results"] == [
+        {
+            "id": task["id"],
+            "ok": False,
+            "error": (
+                "profile 'goggins' is not allowed on board 'guarded' "
+                "for bulk task assignment"
+            ),
+        }
+    ]
+    unchanged = client.get(
+        f"/api/plugins/kanban/tasks/{task['id']}?board=guarded"
+    ).json()["task"]
+    assert unchanged["status"] == "ready"
+    assert unchanged["assignee"] == "alex"

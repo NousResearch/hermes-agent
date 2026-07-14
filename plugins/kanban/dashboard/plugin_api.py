@@ -1199,6 +1199,14 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     entry.update(ok=False, error="not found")
                     results.append(entry)
                     continue
+                if payload.assignee is not None:
+                    # Validate policy before status/archive/priority writes so
+                    # a rejected destination cannot leave a partial mutation.
+                    kanban_db.require_profile_allowed(
+                        board,
+                        payload.assignee or None,
+                        operation="bulk task assignment",
+                    )
                 if payload.archive:
                     if not kanban_db.archive_task(conn, tid):
                         entry.update(ok=False, error="archive refused")

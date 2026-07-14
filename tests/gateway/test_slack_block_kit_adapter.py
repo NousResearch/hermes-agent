@@ -79,7 +79,7 @@ class TestSendMessageBlocks:
 
     @pytest.mark.asyncio
     async def test_feedback_buttons_opt_in_appended_to_blocks(self):
-        adapter, client = _make_adapter({"feedback_buttons": True})
+        adapter, client = _make_adapter({"rich_blocks": True, "feedback_buttons": True})
 
         await adapter.send("C1", "final answer")
 
@@ -88,6 +88,15 @@ class TestSendMessageBlocks:
         assert feedback["type"] == "context_actions"
         assert feedback["elements"][0]["type"] == "feedback_buttons"
         assert feedback["elements"][0]["action_id"] == "hermes_feedback"
+
+    @pytest.mark.asyncio
+    async def test_feedback_buttons_require_rich_blocks(self):
+        """feedback_buttons alone must not implicitly enable Block Kit rendering."""
+        adapter, client = _make_adapter({"feedback_buttons": True})
+
+        await adapter.send("C1", "final answer")
+
+        assert "blocks" not in client.chat_postMessage.await_args.kwargs
 
 
 class TestEditMessageBlocks:

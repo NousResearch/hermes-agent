@@ -557,9 +557,11 @@ def build_turn_context(
 
     # External memory provider: prefetch once before the tool loop.
     #
-    # Security: for customer-facing gateways (Telegram, WhatsApp, Discord, etc.)
-    # skip auto-injection so operator-level memory context is not leaked to
-    # customers via indirect prompt injection (see #40170). Memory tools stay
+    # Security: auto-recall is gated to operator-scoped turns so operator-level
+    # memory is not leaked to customers via indirect prompt injection (#40170).
+    # The gateway derives the decision from the requester's identity (not a
+    # platform-name list) and sets ``_skip_memory_injection`` per turn; local
+    # operator surfaces (CLI/TUI/desktop) leave it off. Memory tools stay
     # available for explicit use; only the automatic prefetch is suppressed.
     ext_prefetch_cache = ""
     skip_memory_injection = getattr(agent, "_skip_memory_injection", False)

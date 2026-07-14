@@ -418,6 +418,11 @@ def init_agent(
     agent._chat_type = chat_type
     agent._thread_id = thread_id
     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
+    # Identity-derived gate for auto-injected memory recall (#40170). Default
+    # off (recall injected) for the operator's own local/CLI sessions; the
+    # gateway flips it per-turn via _apply_memory_recall_gate() for
+    # non-operator-scoped turns. Enforced in build_turn_context().
+    agent._skip_memory_injection = False
     # Pluggable print function — CLI replaces this with _cprint so that
     # raw ANSI status lines are routed through prompt_toolkit's renderer
     # instead of going directly to stdout where patch_stdout's StdoutProxy

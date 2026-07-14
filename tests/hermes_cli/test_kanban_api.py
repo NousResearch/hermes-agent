@@ -153,9 +153,19 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
 
     runs = client.get(f"/api/plugins/kanban/tasks/{parent_id}/runs")
     assert runs.status_code == 200
-    run = runs.json()["runs"][-1]
-    assert set(run) == {"id", "status", "outcome", "started_at", "ended_at"}
-    assert "private-profile" not in runs.text
+    # ``profile`` is part of the external contract (execution attribution —
+    # profile names already travel on task.assignee); summary, metadata,
+    # error, and claim/PID machinery stay private.
+    matching = [
+        r for r in runs.json()["runs"] if r["profile"] == "private-profile"
+    ]
+    assert len(matching) == 1, runs.text
+    run = matching[0]
+    assert set(run) == {
+        "id", "profile", "status", "outcome", "started_at", "ended_at",
+    }
+    assert "raw private summary" not in runs.text
+    assert "secret error" not in runs.text
     assert "/srv/private/work" not in runs.text
 
     log_path = kanban_db.worker_log_path(parent_id, board="default")
@@ -370,3 +380,77 @@ def test_error_detail_is_sanitized(client: TestClient) -> None:
     )
     assert unknown_parent.status_code == 400, unknown_parent.text
     assert "unknown parent task" in unknown_parent.json()["detail"]
+
+
+def test_task_dto_carries_created_by_attribution(client: TestClient) -> None:
+    """created_by lets an external control plane attribute fan-out: it names
+    the creating profile/surface, not just the assigned executor."""
+    created = _create(client, idempotency_key="attribution-key")
+    assert created["task"]["created_by"] == "external-api"
+
+
+def test_runs_expose_executing_profile(client: TestClient) -> None:
+    task_id = _create(
+        client, idempotency_key="run-profile-key", assignee="worker-a"
+    )["task"]["id"]
+    with kanban_db.connect(board="default") as conn:
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs "
+                "(task_id, profile, status, started_at, ended_at, outcome) "
+                "VALUES (?, 'worker-a', 'done', 1, 2, 'completed')",
+                (task_id,),
+            )
+    runs = client.get(f"/api/plugins/kanban/tasks/{task_id}/runs")
+    assert runs.status_code == 200
+    assert runs.json()["runs"][0]["profile"] == "worker-a"
+
+
+def test_profiles_roster_is_sanitized_and_sorted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from hermes_cli import profiles as profiles_mod
+
+    fake = [
+        SimpleNamespace(
+            name="zeta",
+            description="  Runs deploys.  ",
+            model="secret-model",
+            path="/private/profile/dir",
+        ),
+        SimpleNamespace(name="alpha", description="", model=None, path="/x"),
+    ]
+    monkeypatch.setattr(profiles_mod, "list_profiles", lambda: fake)
+
+    resp = client.get("/api/plugins/kanban/profiles")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 2
+    # Name + description only, sorted by name; model/path never leak.
+    assert body["profiles"] == [
+        {"name": "alpha", "description": "", "has_description": False},
+        {"name": "zeta", "description": "Runs deploys.", "has_description": True},
+    ]
+    assert "secret-model" not in resp.text
+    assert "/private/profile/dir" not in resp.text
+
+    caps = client.get("/api/plugins/kanban/capabilities").json()
+    assert caps["profiles_api"] is True
+    assert caps["profile_execution"] is False
+
+
+def test_profiles_roster_unavailable_is_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles as profiles_mod
+
+    def boom():
+        raise RuntimeError("disk exploded at /private/some/path")
+
+    monkeypatch.setattr(profiles_mod, "list_profiles", boom)
+    resp = client.get("/api/plugins/kanban/profiles")
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "profiles unavailable"
+    assert "disk exploded" not in resp.text

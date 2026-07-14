@@ -246,6 +246,11 @@ class TestGatedEndToEnd:
         assert health.status_code == 200, health.text
         assert health.json()["service"] == "hermes-kanban"
 
+        # The roster endpoint sits under the same token-guarded prefix.
+        roster = client.get("/api/plugins/kanban/profiles", headers=auth)
+        assert roster.status_code == 200, roster.text
+        assert set(roster.json()) == {"profiles", "count"}
+
         created = client.post(
             "/api/plugins/kanban/tasks",
             headers={**auth, "Idempotency-Key": "e2e-op-1"},

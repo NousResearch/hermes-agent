@@ -6357,6 +6357,100 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _aggregate_stream_response(stream: Any, task: str = None) -> Any:
+    """Consume a streaming response and aggregate it into a completion object.
+
+    Some custom providers return SSE streams even when stream=False is not
+    honored. This function detects that case and aggregates the chunks into
+    a standard .choices[0].message shape so downstream code works unchanged.
+
+    Handles both OpenAI SDK Stream objects (iterable of ChatCompletionChunk)
+    and raw string/generator responses from non-compliant endpoints.
+    """
+    logger.info(
+        "Auxiliary %s: provider returned streaming response; aggregating into completion",
+        task or "call",
+    )
+
+    collected_content = []
+    collected_reasoning = []
+    finish_reason = None
+    chunk_id = ""
+    chunk_model = ""
+
+    try:
+        for chunk in stream:
+            # OpenAI SDK ChatCompletionChunk shape
+            if hasattr(chunk, "choices") and chunk.choices:
+                delta = chunk.choices[0].delta
+                if hasattr(delta, "content") and delta.content:
+                    collected_content.append(delta.content)
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    collected_reasoning.append(delta.reasoning_content)
+                if hasattr(chunk.choices[0], "finish_reason") and chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+                if hasattr(chunk, "id") and chunk.id:
+                    chunk_id = chunk.id
+                if hasattr(chunk, "model") and chunk.model:
+                    chunk_model = chunk.model
+            # Raw SSE string line (e.g. 'data: {...}')
+            elif isinstance(chunk, str):
+                line = chunk.strip()
+                if line.startswith("data: "):
+                    line = line[6:]
+                if line == "[DONE]":
+                    break
+                try:
+                    import json as _json
+                    data = _json.loads(line)
+                    choices = data.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        reasoning = delta.get("reasoning_content", "")
+                        if content:
+                            collected_content.append(content)
+                        if reasoning:
+                            collected_reasoning.append(reasoning)
+                        fr = choices[0].get("finish_reason")
+                        if fr:
+                            finish_reason = fr
+                    if not chunk_id:
+                        chunk_id = data.get("id", "")
+                    if not chunk_model:
+                        chunk_model = data.get("model", "")
+                except (ValueError, KeyError):
+                    # Not valid JSON — accumulate as raw text
+                    collected_content.append(line)
+    except Exception as exc:
+        logger.warning(
+            "Auxiliary %s: error while aggregating stream response: %s",
+            task or "call", exc,
+        )
+
+    full_content = "".join(collected_content)
+    full_reasoning = "".join(collected_reasoning) or None
+
+    # Build a SimpleNamespace matching the expected .choices[0].message shape
+    message = SimpleNamespace(
+        role="assistant",
+        content=full_content,
+        reasoning=full_reasoning,
+        tool_calls=None,
+    )
+    choice = SimpleNamespace(
+        index=0,
+        message=message,
+        finish_reason=finish_reason or "stop",
+    )
+    return SimpleNamespace(
+        id=chunk_id or "aggregated-stream",
+        object="chat.completion",
+        model=chunk_model or "",
+        choices=[choice],
+    )
+
+
 def _validate_llm_response(response: Any, task: str = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -6364,12 +6458,34 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     propagate to downstream consumers where they crash with misleading
     AttributeError (e.g. "'str' object has no attribute 'choices'").
 
+    If the response looks like a streaming iterator/generator (has __iter__
+    but no .choices), transparently aggregates it into a completion object.
+    This handles custom providers that ignore stream=False and return SSE
+    chunks regardless of the request parameter.
+
     See #7264.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+
+    # Detect streaming responses: iterables without .choices are likely
+    # SSE generators from providers that don't honor stream=False.
+    # Exclude bytes and dict from stream detection.
+    # Strings ARE included — some custom providers return the entire SSE
+    # payload as a single raw string (type=str) instead of an iterator of
+    # chunks.  We detect this by checking for "data:" prefix which is the
+    # SSE wire format marker.
+    if isinstance(response, str) and "data:" in response:
+        response = _aggregate_stream_response(iter(response.splitlines()), task)
+    elif (
+        not isinstance(response, (str, bytes, dict))
+        and not hasattr(response, "choices")
+        and hasattr(response, "__iter__")
+    ):
+        response = _aggregate_stream_response(response, task)
+
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:

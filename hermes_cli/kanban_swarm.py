@@ -90,6 +90,7 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> SwarmCreated:
     """Create a durable Kanban swarm graph.
 
@@ -108,6 +109,20 @@ def create_swarm(
         _require_text(spec.profile, f"workers[{i}].profile")
         _require_text(spec.title, f"workers[{i}].title")
 
+    # Validate the complete topology before the first INSERT. Otherwise a
+    # disallowed verifier or late worker could leave a partial swarm behind.
+    kb.require_profile_allowed(board, created_by, operation="swarm root assignment")
+    for spec in worker_specs:
+        kb.require_profile_allowed(
+            board, spec.profile, operation="swarm worker assignment"
+        )
+    kb.require_profile_allowed(
+        board, verifier_assignee, operation="swarm verifier assignment"
+    )
+    kb.require_profile_allowed(
+        board, synthesizer_assignee, operation="swarm synthesizer assignment"
+    )
+
     root = kb.create_task(
         conn,
         title=root_title or f"Swarm: {goal.splitlines()[0][:80]}",
@@ -124,6 +139,7 @@ def create_swarm(
         idempotency_key=idempotency_key,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
+        board=board,
     )
 
     # If idempotency returned an existing non-archived root, do not duplicate the
@@ -169,6 +185,7 @@ def create_swarm(
             workspace_path=workspace_path,
             skills=spec.skills or None,
             max_runtime_seconds=spec.max_runtime_seconds,
+            board=board,
         )
         worker_ids.append(worker_id)
 
@@ -190,6 +207,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["requesting-code-review"],
+        board=board,
     )
 
     synthesizer_body = (
@@ -209,6 +227,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["humanizer"],
+        board=board,
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

@@ -557,3 +557,83 @@ class TestCLI:
         res = _cli(["boards", "list", "--json"], env_extra=env)
         slugs = [b["slug"] for b in json.loads(res.stdout)]
         assert "rmme" not in slugs
+
+    def test_board_profile_allowlist_cli_round_trip(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        created = _cli(
+            [
+                "boards", "create", "guarded",
+                "--allowed-profile", "Alex",
+                "--allowed-profile", "kitt",
+            ],
+            env_extra=env,
+        )
+        assert created.returncode == 0, created.stderr
+
+        listed = _cli(["boards", "list", "--json"], env_extra=env)
+        guarded = next(b for b in json.loads(listed.stdout) if b["slug"] == "guarded")
+        assert guarded["allowed_profiles"] == ["alex", "kitt"]
+
+        denied = _cli(
+            ["--board", "guarded", "create", "wrong", "--assignee", "goggins"],
+            env_extra=env,
+        )
+        assert "not allowed on board 'guarded'" in denied.stderr
+
+        allowed = _cli(
+            ["--board", "guarded", "create", "right", "--assignee", "alex"],
+            env_extra=env,
+        )
+        assert "Created" in allowed.stdout
+
+    def test_set_allowed_profiles_can_freeze_and_restore_unrestricted(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "guarded"], env_extra=env).returncode == 0
+
+        frozen = _cli(
+            ["boards", "set-allowed-profiles", "guarded"], env_extra=env
+        )
+        assert "execution is frozen" in frozen.stdout
+        denied = _cli(
+            ["--board", "guarded", "create", "wrong", "--assignee", "alex"],
+            env_extra=env,
+        )
+        assert "not allowed" in denied.stderr
+
+        restored = _cli(
+            ["boards", "set-allowed-profiles", "guarded", "--unrestricted"],
+            env_extra=env,
+        )
+        assert "unrestricted" in restored.stdout
+        accepted = _cli(
+            ["--board", "guarded", "create", "works", "--assignee", "goggins"],
+            env_extra=env,
+        )
+        assert "Created" in accepted.stdout
+
+    def test_cli_dispatch_enforces_named_board_profile_allowlist(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        for profile in ("alex", "goggins"):
+            (tmp_path / "profiles" / profile).mkdir(parents=True, exist_ok=True)
+        assert _cli(["boards", "create", "guarded"], env_extra=env).returncode == 0
+        assert "Created" in _cli(
+            ["--board", "guarded", "create", "legacy", "--assignee", "goggins"],
+            env_extra=env,
+        ).stdout
+        assert _cli(
+            ["boards", "set-allowed-profiles", "guarded", "alex"],
+            env_extra=env,
+        ).returncode == 0
+        assert "Created" in _cli(
+            ["--board", "guarded", "create", "allowed", "--assignee", "alex"],
+            env_extra=env,
+        ).stdout
+
+        dispatched = _cli(
+            ["--board", "guarded", "dispatch", "--dry-run", "--json"],
+            env_extra=env,
+        )
+        assert dispatched.returncode == 0, dispatched.stderr
+        data = json.loads(dispatched.stdout)
+        assert [entry["assignee"] for entry in data["spawned"]] == ["alex"]
+        assert len(data["skipped_disallowed"]) == 1

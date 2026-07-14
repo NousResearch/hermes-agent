@@ -94,12 +94,21 @@ Per-board isolation is absolute:
 # See what's on disk. Fresh installs show only "default".
 hermes kanban boards list
 
-# Create a new board.
+# Create a new board. Repeat --allowed-profile to opt into a strict
+# board-level profile allowlist; omit it for legacy unrestricted routing.
 hermes kanban boards create atm10-server \
     --name "ATM10 Server" \
     --description "Minecraft modded server ops" \
     --icon 🎮 \
+    --allowed-profile ops \
+    --allowed-profile security \
     --switch                   # optional: make it the active board
+
+# Change a board's execution allowlist. Supplying no profiles freezes execution;
+# --unrestricted removes the policy and restores legacy routing.
+hermes kanban boards set-allowed-profiles atm10-server ops security
+hermes kanban boards set-allowed-profiles atm10-server
+hermes kanban boards set-allowed-profiles atm10-server --unrestricted
 
 # Operate on a specific board without switching.
 hermes kanban --board atm10-server list
@@ -133,6 +142,27 @@ Slugs are validated: lowercase alphanumerics + hyphens + underscores, 1-64
 chars, must start with alphanumeric. Uppercase input is auto-downcased.
 Anything else (slashes, spaces, dots, `..`) is rejected at the CLI layer
 so path-traversal tricks can't name a board.
+
+### Board profile allowlists
+
+`allowed_profiles` is stored in the board's `board.json` and read live on every
+dispatch/decomposition pass:
+
+- Missing or `null` preserves the historical unrestricted behavior.
+- A non-empty list restricts task creation, assignment, triage decomposition,
+  ready/review claims, and dispatcher spawning to those normalized profile names.
+- An explicit empty list freezes profile execution for the board.
+- Existing tasks assigned to an excluded profile remain visible and keep their
+  status, but the dispatcher reports them under `skipped_disallowed` and will
+  not spawn or claim them. Reassign them to an allowed profile explicitly.
+- The gateway process that owns the machine-wide dispatcher may belong to any
+  profile. It can still service the board, but decomposition fallbacks and child
+  routing are constrained to the board allowlist, so gateway startup order does
+  not leak its profile into the board.
+
+This is an execution/routing boundary, not an authorization system for humans
+with filesystem or database access. An operator who can edit `board.json` or the
+SQLite database can also change the policy.
 
 ### Managing boards from the dashboard
 

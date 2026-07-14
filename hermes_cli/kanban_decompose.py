@@ -290,12 +290,30 @@ def decompose_task(
             task_id, False, f"task is not in triage (status={task.status!r})"
         )
 
+    board = kb.get_current_board()
+    allowed_profiles = kb.get_board_allowed_profiles(board)
+    if allowed_profiles == ():
+        return DecomposeOutcome(task_id, False, "board profile allowlist is empty")
+
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
     roster, valid_names = _build_roster()
+    if allowed_profiles is not None:
+        by_name = {entry["name"]: entry for entry in roster}
+        roster = [by_name[name] for name in allowed_profiles if name in by_name]
+        valid_names = {entry["name"] for entry in roster}
+    if not valid_names:
+        return DecomposeOutcome(
+            task_id, False, "no installed profiles satisfy the board profile allowlist"
+        )
+    fallback = roster[0]["name"]
+    if orchestrator not in valid_names:
+        orchestrator = fallback
+    if default_assignee not in valid_names:
+        default_assignee = fallback
 
     try:
         from agent.auxiliary_client import (  # type: ignore
@@ -360,7 +378,7 @@ def decompose_task(
         title_val = new_title.strip() if isinstance(new_title, str) and new_title.strip() else None
         body_val = new_body if isinstance(new_body, str) and new_body.strip() else None
         assignee_val = None
-        if not task.assignee:
+        if not task.assignee or task.assignee not in valid_names:
             assignee_val = _normalize_assignee_choice(
                 parsed.get("assignee"),
                 default_assignee=default_assignee,
@@ -378,6 +396,7 @@ def decompose_task(
                 body=body_val,
                 assignee=assignee_val,
                 author=audit_author,
+                board=board,
             )
         if not ok:
             return DecomposeOutcome(
@@ -447,6 +466,7 @@ def decompose_task(
                 children=children,
                 author=audit_author,
                 auto_promote=auto_promote,
+                board=board,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")

@@ -2486,3 +2486,50 @@ def test_dashboard_parent_notice_and_child_results_use_detail_links():
     assert "t.link_counts" not in detail
     assert "Child Results" in detail
     assert "props.data.child_results" in detail
+
+def test_board_profile_allowlist_api_enforces_create_and_patch(client):
+    created = client.post(
+        "/api/plugins/kanban/boards",
+        json={"slug": "guarded", "allowed_profiles": ["alex", "kitt"]},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["board"]["allowed_profiles"] == ["alex", "kitt"]
+
+    denied = client.post(
+        "/api/plugins/kanban/tasks?board=guarded",
+        json={"title": "wrong", "assignee": "goggins"},
+    )
+    assert denied.status_code == 400
+    assert "not allowed on board 'guarded'" in denied.json()["detail"]
+
+    allowed = client.post(
+        "/api/plugins/kanban/tasks?board=guarded",
+        json={"title": "right", "assignee": "alex"},
+    )
+    assert allowed.status_code == 200, allowed.text
+
+    frozen = client.patch(
+        "/api/plugins/kanban/boards/guarded",
+        json={"allowed_profiles": []},
+    )
+    assert frozen.status_code == 200, frozen.text
+    assert frozen.json()["board"]["allowed_profiles"] == []
+
+    denied_after_freeze = client.post(
+        "/api/plugins/kanban/tasks?board=guarded",
+        json={"title": "still wrong", "assignee": "alex"},
+    )
+    assert denied_after_freeze.status_code == 400
+
+    unrestricted = client.patch(
+        "/api/plugins/kanban/boards/guarded",
+        json={"allowed_profiles": None},
+    )
+    assert unrestricted.status_code == 200, unrestricted.text
+    assert unrestricted.json()["board"]["allowed_profiles"] is None
+
+    accepted = client.post(
+        "/api/plugins/kanban/tasks?board=guarded",
+        json={"title": "works again", "assignee": "goggins"},
+    )
+    assert accepted.status_code == 200, accepted.text

@@ -614,12 +614,39 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
 def board_metadata_path(board: Optional[str] = None) -> Path:
     """Return the path to ``board.json`` for ``board``.
 
-    Stores display metadata (display name, description, icon, color,
-    created_at). The on-disk slug is the canonical identity; this file
-    is purely for presentation in the CLI / dashboard.
+    Stores display metadata plus board-scoped execution policy. The on-disk
+    slug is the canonical identity.
     """
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
     return board_dir(slug) / "board.json"
+
+
+_BOARD_METADATA_UNSET = object()
+
+
+def _normalize_allowed_profiles(value: Any) -> Optional[list[str]]:
+    """Normalize a board profile allowlist while preserving order.
+
+    ``None`` means unrestricted. An explicit empty list denies every profile.
+    Malformed values raise for writes; reads convert them to a fail-closed list.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
+        raise ValueError("allowed_profiles must be a list of profile names or null")
+    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, str):
+            raise ValueError("allowed_profiles entries must be profile names")
+        name = normalize_profile_name(raw)
+        validate_profile_name(name)
+        if name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    return normalized
 
 
 def _default_board_display_name(slug: str) -> str:
@@ -648,6 +675,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "allowed_profiles": None,
         "created_at": None,
         "archived": False,
     }
@@ -661,9 +689,53 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 raw["slug"] = slug
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
-        pass
+        # Missing metadata is handled by the defaults above, but an existing
+        # unreadable/malformed policy file must fail closed rather than erase
+        # an allowlist and reopen the board to every profile.
+        meta["allowed_profiles"] = []
+    try:
+        meta["allowed_profiles"] = _normalize_allowed_profiles(
+            meta.get("allowed_profiles")
+        )
+    except ValueError:
+        # A malformed security policy must not silently become unrestricted.
+        meta["allowed_profiles"] = []
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
+
+
+def get_board_allowed_profiles(board: Optional[str] = None) -> Optional[tuple[str, ...]]:
+    """Return the normalized allowlist, or ``None`` when unrestricted."""
+    effective_board = (
+        _normalize_board_slug(board) if board is not None else get_current_board()
+    )
+    value = read_board_metadata(effective_board).get("allowed_profiles")
+    if value is None:
+        return None
+    return tuple(value)
+
+
+def is_profile_allowed(board: Optional[str], profile: Optional[str]) -> bool:
+    """Return whether ``profile`` may own or execute work on ``board``."""
+    if profile is None:
+        return True
+    allowed = get_board_allowed_profiles(board)
+    if allowed is None:
+        return True
+    return _canonical_assignee(profile) in set(allowed)
+
+
+def require_profile_allowed(
+    board: Optional[str], profile: Optional[str], *, operation: str = "assign"
+) -> None:
+    """Raise when a configured board allowlist excludes ``profile``."""
+    if profile is None or is_profile_allowed(board, profile):
+        return
+    slug = _normalize_board_slug(board) or get_current_board()
+    raise ValueError(
+        f"profile {_canonical_assignee(profile)!r} is not allowed on board "
+        f"{slug!r} for {operation}"
+    )
 
 
 def write_board_metadata(
@@ -675,6 +747,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    allowed_profiles: Any = _BOARD_METADATA_UNSET,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -698,6 +771,8 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if allowed_profiles is not _BOARD_METADATA_UNSET:
+        meta["allowed_profiles"] = _normalize_allowed_profiles(allowed_profiles)
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -718,6 +793,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    allowed_profiles: Any = _BOARD_METADATA_UNSET,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -735,6 +811,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        allowed_profiles=allowed_profiles,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -2433,6 +2510,7 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    require_profile_allowed(board, assignee, operation="task creation")
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2774,13 +2852,20 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
-def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
+def assign_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    board: Optional[str] = None,
+) -> bool:
     """Assign or reassign a task.  Returns True on success.
 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
     """
     profile = _canonical_assignee(profile)
+    require_profile_allowed(board, profile, operation="task assignment")
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
@@ -3376,6 +3461,7 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -3386,6 +3472,26 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        allowed_row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ? AND status = 'ready'",
+            (task_id,),
+        ).fetchone()
+        if (
+            allowed_row is not None
+            and allowed_row["assignee"] is not None
+            and not is_profile_allowed(board, allowed_row["assignee"])
+        ):
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {
+                    "reason": "profile_not_allowed",
+                    "assignee": allowed_row["assignee"],
+                    "board": _normalize_board_slug(board) or get_current_board(),
+                },
+            )
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3498,6 +3604,7 @@ def claim_review_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``review -> running``.
 
@@ -3515,6 +3622,27 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        allowed_row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ? AND status = 'review'",
+            (task_id,),
+        ).fetchone()
+        if (
+            allowed_row is not None
+            and allowed_row["assignee"] is not None
+            and not is_profile_allowed(board, allowed_row["assignee"])
+        ):
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {
+                    "reason": "profile_not_allowed",
+                    "assignee": allowed_row["assignee"],
+                    "board": _normalize_board_slug(board) or get_current_board(),
+                    "source_status": "review",
+                },
+            )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3820,6 +3948,7 @@ def reassign_task(
     *,
     reclaim_first: bool = False,
     reason: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> bool:
     """Reassign a task, optionally reclaiming a stuck running worker first.
 
@@ -3837,7 +3966,7 @@ def reassign_task(
         reclaim_task(conn, task_id, reason=reason or "reassign")
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile)
+        return assign_task(conn, task_id, profile, board=board)
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
@@ -5122,6 +5251,7 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
@@ -5142,6 +5272,7 @@ def specify_triage_task(
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
+    require_profile_allowed(board, assignee, operation="triage specification")
     with write_txn(conn):
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
@@ -5213,6 +5344,7 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    board: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -5244,6 +5376,7 @@ def decompose_triage_task(
         return None
     if root_assignee is not None:
         root_assignee = _canonical_assignee(root_assignee)
+    require_profile_allowed(board, root_assignee, operation="triage decomposition")
 
     # Pre-validate the children list shape outside the txn. Cheap checks
     # that don't need DB access. Bad input aborts before we touch the DB.
@@ -5253,6 +5386,11 @@ def decompose_triage_task(
         title = child.get("title")
         if not isinstance(title, str) or not title.strip():
             raise ValueError(f"child[{idx}].title is required")
+        require_profile_allowed(
+            board,
+            _canonical_assignee(child.get("assignee")),
+            operation=f"triage decomposition child[{idx}]",
+        )
         parents_idx = child.get("parents") or []
         if not isinstance(parents_idx, list):
             raise ValueError(f"child[{idx}].parents must be a list")
@@ -5934,6 +6072,10 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_disallowed: list[str] = field(default_factory=list)
+    """Ready task ids not dispatched because the board's ``allowed_profiles``
+    policy excludes their current assignee. The rows remain visible and ready
+    for an operator to reassign; they are never silently rewritten."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """Tasks deferred this tick because their assignee is already at
     ``kanban.max_in_progress_per_profile`` (#21582). Each entry is
@@ -7268,7 +7410,9 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def has_spawnable_ready(
+    conn: sqlite3.Connection, *, board: Optional[str] = None
+) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
 
@@ -7295,12 +7439,16 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
     for row in rows:
+        if not is_profile_allowed(board, row["assignee"]):
+            continue
         if profile_exists(row["assignee"]):
             return True
     return False
 
 
-def has_spawnable_review(conn: sqlite3.Connection) -> bool:
+def has_spawnable_review(
+    conn: sqlite3.Connection, *, board: Optional[str] = None
+) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
 
@@ -7320,6 +7468,8 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     except Exception:
         return True
     for row in rows:
+        if not is_profile_allowed(board, row["assignee"]):
+            continue
         if profile_exists(row["assignee"]):
             return True
     return False
@@ -7438,6 +7588,8 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    _allowed_profiles = get_board_allowed_profiles(board)
+    _allowed_set = set(_allowed_profiles) if _allowed_profiles is not None else None
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -7521,6 +7673,12 @@ def _dispatch_once_locked(
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
     _default_assignee = (default_assignee or "").strip() or None
+    if (
+        _default_assignee is not None
+        and _allowed_set is not None
+        and _canonical_assignee(_default_assignee) not in _allowed_set
+    ):
+        _default_assignee = None
     _default_assignee_resolved = False
     if _default_assignee:
         try:
@@ -7580,6 +7738,12 @@ def _dispatch_once_locked(
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
+        if (
+            _allowed_set is not None
+            and _canonical_assignee(row_assignee) not in _allowed_set
+        ):
+            result.skipped_disallowed.append(row["id"])
+            continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -7648,7 +7812,9 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_task(
+            conn, row["id"], ttl_seconds=ttl_seconds, board=board
+        )
         if claimed is None:
             continue
         try:
@@ -7730,6 +7896,12 @@ def _dispatch_once_locked(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        if (
+            _allowed_set is not None
+            and _canonical_assignee(row["assignee"]) not in _allowed_set
+        ):
+            result.skipped_disallowed.append(row["id"])
+            continue
         try:
             from hermes_cli.profiles import profile_exists
         except Exception:
@@ -7740,7 +7912,9 @@ def _dispatch_once_locked(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
-        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_review_task(
+            conn, row["id"], ttl_seconds=ttl_seconds, board=board
+        )
         if claimed is None:
             continue
         try:

@@ -1,4 +1,6 @@
 
+import pytest
+
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_swarm import (
     SwarmWorkerSpec,
@@ -115,3 +117,33 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert kb.get_task(conn, created.synthesizer_id).status == "ready"
     finally:
         conn.close()
+
+
+def test_create_swarm_rejects_disallowed_worker_profile(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    kb._INITIALIZED_PATHS.clear()
+    kb.create_board("guarded", allowed_profiles=["alex"])
+    conn = kb.connect(board="guarded")
+    try:
+        with pytest.raises(ValueError, match="not allowed on board 'guarded'"):
+            create_swarm(
+                conn,
+                goal="Use only authorized workers.",
+                workers=[
+                    SwarmWorkerSpec(
+                        profile="goggins",
+                        title="Unauthorized worker",
+                        body="Must be rejected",
+                    )
+                ],
+                verifier_assignee="alex",
+                synthesizer_assignee="alex",
+                created_by="alex",
+                board="guarded",
+            )
+    finally:
+        assert kb.list_tasks(conn) == []
+        conn.close()
+        kb._INITIALIZED_PATHS.clear()

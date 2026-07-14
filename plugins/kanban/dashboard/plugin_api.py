@@ -632,6 +632,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            board=board,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -847,8 +848,10 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if payload.assignee is not None:
             try:
                 ok = kanban_db.assign_task(
-                    conn, task_id, payload.assignee or None,
+                    conn, task_id, payload.assignee or None, board=board,
                 )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             except RuntimeError as e:
                 raise HTTPException(status_code=409, detail=str(e))
             if not ok:
@@ -1242,10 +1245,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             ok = kanban_db.reassign_task(
                                 conn, tid, payload.assignee or None,
                                 reclaim_first=True,
+                                board=board,
                             )
                         else:
                             ok = kanban_db.assign_task(
                                 conn, tid, payload.assignee or None,
+                                board=board,
                             )
                         if not ok:
                             entry.update(ok=False, error="assign refused")
@@ -1685,6 +1690,7 @@ def reassign_task_endpoint(
             payload.profile or None,
             reclaim_first=bool(payload.reclaim_first),
             reason=payload.reason,
+            board=board,
         )
         if not ok:
             raise HTTPException(
@@ -1695,6 +1701,8 @@ def reassign_task_endpoint(
                 ),
             )
         return {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     finally:
         conn.close()
 
@@ -1999,6 +2007,7 @@ class CreateBoardBody(BaseModel):
     icon: Optional[str] = None
     color: Optional[str] = None
     default_workdir: Optional[str] = None
+    allowed_profiles: Optional[list[str]] = None
     switch: bool = False
 
 
@@ -2007,6 +2016,7 @@ class RenameBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    allowed_profiles: Optional[list[str]] = None
 
 
 def _board_counts(slug: str) -> dict[str, int]:
@@ -2069,6 +2079,14 @@ def create_board_endpoint(payload: CreateBoardBody):
             )
         default_workdir = str(requested.resolve())
     try:
+        payload_fields = getattr(
+            payload, "model_fields_set", getattr(payload, "__fields_set__", set())
+        )
+        policy_kwargs: dict[str, Any] = (
+            {"allowed_profiles": payload.allowed_profiles}
+            if "allowed_profiles" in payload_fields
+            else {}
+        )
         meta = kanban_db.create_board(
             payload.slug,
             name=payload.name,
@@ -2076,6 +2094,7 @@ def create_board_endpoint(payload: CreateBoardBody):
             icon=payload.icon,
             color=payload.color,
             default_workdir=default_workdir,
+            **policy_kwargs,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2097,13 +2116,25 @@ def rename_board(slug: str, payload: RenameBoardBody):
         raise HTTPException(status_code=400, detail=str(exc))
     if not normed or not kanban_db.board_exists(normed):
         raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
-    meta = kanban_db.write_board_metadata(
-        normed,
-        name=payload.name,
-        description=payload.description,
-        icon=payload.icon,
-        color=payload.color,
+    payload_fields = getattr(
+        payload, "model_fields_set", getattr(payload, "__fields_set__", set())
     )
+    policy_kwargs: dict[str, Any] = (
+        {"allowed_profiles": payload.allowed_profiles}
+        if "allowed_profiles" in payload_fields
+        else {}
+    )
+    try:
+        meta = kanban_db.write_board_metadata(
+            normed,
+            name=payload.name,
+            description=payload.description,
+            icon=payload.icon,
+            color=payload.color,
+            **policy_kwargs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"board": meta}
 
 

@@ -323,6 +323,12 @@ def _run_agent_tool_execution_middleware(
     return result, observed_args
 
 
+# Machine-readable marker embedded in tool-result content when a concurrent
+# tool times out. Allows downstream guards to detect dangling workers without
+# relying on human-readable message wording.
+_CONCURRENT_TIMEOUT_MARKER = "__concurrent_tool_timed_out__"
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -836,7 +842,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         effect_disposition = None
         if i in timed_out_indices and r is None:
             suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
-            function_result = f"Error executing tool '{name}': timed out after {suffix}"
+            function_result = f"Error executing tool '{name}': timed out after {suffix} {_CONCURRENT_TIMEOUT_MARKER}"
             effect_disposition = "unknown"
             _emit_terminal_post_tool_call(
                 agent,
@@ -1762,17 +1768,73 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     tool_call_id.
     """
     from types import SimpleNamespace
+    from agent.tool_result_classification import (
+        FILE_MUTATING_TOOL_NAMES,
+        file_mutation_result_landed,
+    )
 
     if segments is None:
         segments = _plan_tool_batch_segments(assistant_message.tool_calls)
 
+    # Track whether a timed-out mutating worker may still be running detached.
+    # If so, refuse to execute later segments that contain file mutations —
+    # the detached worker could overwrite their results.
+    _dangling_mutating_worker = False
+
     for kind, calls in segments:
+        # If a previous parallel segment left a detached mutating worker,
+        # check whether this segment contains file mutations. If it does,
+        # drain it with blocked results rather than risk a late overwrite.
+        if _dangling_mutating_worker:
+            segment_tool_names = {tc.function.name for tc in calls}
+            if segment_tool_names & FILE_MUTATING_TOOL_NAMES:
+                for tc in calls:
+                    if tc.function.name in FILE_MUTATING_TOOL_NAMES:
+                        _blocked_result = json.dumps({
+                            "error": (
+                                f"{tc.function.name} blocked: a prior timed-out "
+                                "concurrent write may still be running; retry "
+                                "this operation in a new turn."
+                            )
+                        })
+                    else:
+                        _blocked_result = json.dumps({
+                            "error": "skipped: segment blocked due to dangling mutating worker"
+                        })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": getattr(tc, "id", "") or "",
+                        "content": _blocked_result,
+                    })
+                continue
+
         segment_message = SimpleNamespace(tool_calls=list(calls))
+        _pre_len = len(messages)
         if kind == "parallel":
             execute_tool_calls_concurrent(
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
             )
+            # After a parallel segment, check if any timed-out mutating tool
+            # left a detached worker. Detect via "timed out" in the result
+            # content for FILE_MUTATING_TOOL_NAMES.
+            _segment_results = messages[_pre_len:]
+            _call_name_by_id = {
+                getattr(tc, "id", "") or "": tc.function.name
+                for tc in calls
+            }
+            for _msg in _segment_results:
+                _tid = _msg.get("tool_call_id", "")
+                _tname = _call_name_by_id.get(_tid, "")
+                _tcontent = _msg.get("content", "")
+                if (
+                    _tname in FILE_MUTATING_TOOL_NAMES
+                    and isinstance(_tcontent, str)
+                    and _CONCURRENT_TIMEOUT_MARKER in _tcontent
+                    and not file_mutation_result_landed(_tname, _tcontent)
+                ):
+                    _dangling_mutating_worker = True
+                    break
         else:
             execute_tool_calls_sequential(
                 agent, segment_message, messages, effective_task_id, api_call_count,

@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -1585,13 +1586,15 @@ class TestEnsureClientReloadsEnv:
     ):
         from hermes_cli import config as hermes_config
 
-        for key in (
+        known_hermes_env = set(hermes_config.OPTIONAL_ENV_VARS) | hermes_config._EXTRA_ENV_KEYS
+        openviking_tenant_env = {
             "OPENVIKING_ENDPOINT",
             "OPENVIKING_API_KEY",
             "OPENVIKING_ACCOUNT",
             "OPENVIKING_USER",
             "OPENVIKING_AGENT",
-        ):
+        }
+        for key in known_hermes_env | openviking_tenant_env:
             monkeypatch.delenv(key, raising=False)
 
         hermes_home = tmp_path / "hermes-home"
@@ -1655,6 +1658,108 @@ class TestEnsureClientReloadsEnv:
         assert provider._client is None
         assert start_calls == ["http://127.0.0.1:31933"]
         assert len(waiter_calls) == 1
+
+    def test_repeated_access_while_local_runtime_starts_does_not_spawn_again(self, monkeypatch):
+        class _AliveThread:
+            def is_alive(self):
+                return True
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                return False
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:31933")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+
+        start_calls = []
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_start_local_openviking_server",
+            lambda endpoint: start_calls.append(endpoint) or (True, "started"),
+        )
+        monkeypatch.setattr(
+            provider,
+            "_start_runtime_openviking_waiter",
+            lambda **kwargs: setattr(provider, "_runtime_start_thread", _AliveThread()),
+            raising=False,
+        )
+
+        assert provider._ensure_client() is None
+        assert provider._ensure_client() is None
+
+        assert start_calls == ["http://127.0.0.1:31933"]
+
+    def test_concurrent_local_runtime_recovery_starts_once(self, monkeypatch):
+        class _AliveThread:
+            def is_alive(self):
+                return True
+
+        health_barrier = threading.Barrier(2)
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                health_barrier.wait(timeout=2)
+                return False
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:31933")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        start_calls = []
+        start_lock = threading.Lock()
+        first_start_entered = threading.Event()
+        release_start = threading.Event()
+
+        def start_local(endpoint):
+            with start_lock:
+                start_calls.append(endpoint)
+            first_start_entered.set()
+            release_start.wait(timeout=2)
+            return True, "started"
+
+        monkeypatch.setattr(openviking_plugin, "_start_local_openviking_server", start_local)
+        monkeypatch.setattr(
+            provider,
+            "_start_runtime_openviking_waiter",
+            lambda **kwargs: setattr(provider, "_runtime_start_thread", _AliveThread()),
+            raising=False,
+        )
+
+        errors = []
+
+        def access_client():
+            try:
+                provider._ensure_client()
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=access_client, name=f"openviking-access-{index}")
+            for index in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+
+        assert first_start_entered.wait(timeout=2)
+        time.sleep(0.05)
+        release_start.set()
+        for thread in threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+        assert errors == []
+        assert start_calls == ["http://127.0.0.1:31933"]
 
     def test_handle_tool_call_uses_ensure_client(self, monkeypatch):
         provider = OpenVikingMemoryProvider()

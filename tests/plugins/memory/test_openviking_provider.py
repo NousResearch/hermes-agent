@@ -952,6 +952,39 @@ def test_initialize_autostarts_local_openviking_in_background_when_runtime_healt
     assert any("starting in the background" in message for message in statuses)
 
 
+def test_initialize_emits_starting_status_before_runtime_waiter_can_attach(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1934")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://127.0.0.1:1934"
+
+        def health(self):
+            return False
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        lambda endpoint: (True, "started"),
+    )
+
+    provider = OpenVikingMemoryProvider()
+    statuses = []
+
+    def start_waiter(*, status_callback=None, warning_callback=None):
+        assert callable(status_callback)
+        status_callback("Local OpenViking server is reachable; OpenViking memory is active.")
+
+    monkeypatch.setattr(provider, "_start_runtime_openviking_waiter", start_waiter, raising=False)
+
+    provider.initialize("session-1", platform="cli", status_callback=statuses.append)
+
+    assert "starting in the background" in statuses[0]
+    assert "memory is active" in statuses[1]
+
+
 def test_runtime_openviking_waiter_attaches_client_after_health_recovers(monkeypatch):
     _clear_openviking_env(monkeypatch)
     wait_calls = []

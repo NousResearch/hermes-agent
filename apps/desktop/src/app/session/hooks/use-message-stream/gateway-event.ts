@@ -50,6 +50,19 @@ import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
 
+const COMPACTION_RESUME_EVENT_TYPES = new Set([
+  'message.delta',
+  'thinking.delta',
+  'reasoning.delta',
+  'reasoning.available',
+  'moa.reference',
+  'moa.aggregating',
+  'tool.start',
+  'tool.progress',
+  'tool.generating',
+  'tool.complete'
+])
+
 interface GatewayEventDeps {
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
@@ -117,6 +130,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const sessionId = route.sessionId
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+
+      // Mid-turn compaction does not emit another message.start. The first
+      // model output or tool event proves summarization has finished and the
+      // turn has resumed, so retire the phase label without waiting for the
+      // whole turn to complete.
+      if (
+        sessionId &&
+        COMPACTION_RESUME_EVENT_TYPES.has(event.type) &&
+        compactedTurnRef.current.has(sessionId)
+      ) {
+        setSessionCompacting(sessionId, false)
+      }
 
       if (event.type === 'gateway.ready') {
         return

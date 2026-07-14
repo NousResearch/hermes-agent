@@ -739,7 +739,8 @@ class CredentialPool:
             # another process means our entry's pair is consumed/stale.
             entry_access = entry.access_token or ""
             entry_refresh = entry.refresh_token or ""
-            if store_access and (
+            store_access_valid = bool(store_access) and not _codex_access_token_is_expiring(store_access, 0)
+            if store_access_valid and (
                 store_access != entry_access
                 or (store_refresh and store_refresh != entry_refresh)
             ):
@@ -760,6 +761,45 @@ class CredentialPool:
                 }
                 if state.get("last_refresh"):
                     field_updates["last_refresh"] = state["last_refresh"]
+                updated = replace(entry, **field_updates)
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+            recovered = auth_mod._recover_codex_tokens_from_shared_sources(
+                current_auth_store=auth_store,
+                include_current=False,
+                sibling_pool_entry_id=entry.id,
+                sibling_pool_entry_source=entry.source,
+                sibling_last_refresh=entry.last_refresh,
+            )
+            if not isinstance(recovered, dict):
+                return entry
+            recovered_tokens = recovered.get("tokens")
+            if not isinstance(recovered_tokens, dict):
+                return entry
+            recovered_access = recovered_tokens.get("access_token", "")
+            recovered_refresh = recovered_tokens.get("refresh_token", "")
+            if recovered_access and (
+                recovered_access != entry_access
+                or (recovered_refresh and recovered_refresh != entry_refresh)
+            ):
+                logger.debug(
+                    "Pool entry %s: syncing Codex tokens from recovered %s source",
+                    entry.id,
+                    recovered.get("source") or "shared",
+                )
+                field_updates = {
+                    "access_token": recovered_access,
+                    "refresh_token": recovered_refresh or entry.refresh_token,
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
+                }
+                if recovered.get("last_refresh"):
+                    field_updates["last_refresh"] = recovered["last_refresh"]
                 updated = replace(entry, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()

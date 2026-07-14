@@ -50,6 +50,63 @@ def _jwt_with_exp(exp_epoch: int) -> str:
     return f"h.{encoded}.s"
 
 
+def _setup_profile_codex_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    active = root / "profiles" / "coder"
+    active.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(active))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
+    return root, active
+
+
+def _write_codex_profile_auth(
+    auth_dir: Path,
+    *,
+    access_token: str,
+    refresh_token: str,
+    last_refresh: str,
+    pool_entries: list[dict] | None = None,
+) -> None:
+    auth_store = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                },
+                "last_refresh": last_refresh,
+                "auth_mode": "chatgpt",
+            },
+        },
+    }
+    if pool_entries is not None:
+        auth_store["credential_pool"] = {"openai-codex": pool_entries}
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "auth.json").write_text(json.dumps(auth_store, indent=2))
+
+
+def _codex_pool_entry(
+    *,
+    entry_id: str,
+    access_token: str,
+    refresh_token: str,
+    last_refresh: str,
+    source: str = "device_code",
+) -> dict:
+    return {
+        "id": entry_id,
+        "label": source,
+        "source": source,
+        "auth_type": "oauth",
+        "priority": 0,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "last_refresh": last_refresh,
+    }
+
+
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home)
@@ -66,6 +123,7 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     # Empty auth store
     (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     with pytest.raises(AuthError) as exc:
         _read_codex_tokens()
@@ -76,7 +134,7 @@ def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkey
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
@@ -89,6 +147,7 @@ def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, mo
     expiring_token = _jwt_with_exp(int(time.time()) - 10)
     _setup_hermes_auth(hermes_home, access_token=expiring_token, refresh_token="refresh-old")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     called = {"count": 0}
 
@@ -102,6 +161,153 @@ def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, mo
 
     assert called["count"] == 1
     assert resolved["api_key"] == "access-new"
+
+
+def test_resolve_codex_runtime_credentials_recovers_stale_current_from_fresher_sibling(tmp_path, monkeypatch):
+    root, active = _setup_profile_codex_env(tmp_path, monkeypatch)
+    copied_id = "copied-device"
+    expired_current = _jwt_with_exp(int(time.time()) - 10)
+    older_sibling = _jwt_with_exp(int(time.time()) + 1800)
+    fresher_sibling = _jwt_with_exp(int(time.time()) + 3600)
+
+    _write_codex_profile_auth(
+        active,
+        access_token=expired_current,
+        refresh_token="refresh-stale",
+        last_refresh="2026-01-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=expired_current,
+            refresh_token="refresh-stale",
+            last_refresh="2026-01-01T00:00:00Z",
+        )],
+    )
+    _write_codex_profile_auth(
+        root / "profiles" / "alpha",
+        access_token=older_sibling,
+        refresh_token="refresh-older",
+        last_refresh="2026-02-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id="other-device",
+            access_token=older_sibling,
+            refresh_token="refresh-older",
+            last_refresh="2026-02-01T00:00:00Z",
+        )],
+    )
+    _write_codex_profile_auth(
+        root / "profiles" / "writer",
+        access_token=fresher_sibling,
+        refresh_token="refresh-fresher",
+        last_refresh="2026-05-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=fresher_sibling,
+            refresh_token="refresh-fresher",
+            last_refresh="2026-05-01T00:00:00Z",
+        )],
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._refresh_codex_auth_tokens",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network refresh should not run")),
+    )
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == fresher_sibling
+    active_auth = json.loads((active / "auth.json").read_text())
+    assert active_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-fresher"
+
+
+def test_resolve_codex_runtime_credentials_does_not_reuse_current_token_inside_refresh_skew(tmp_path, monkeypatch):
+    root, active = _setup_profile_codex_env(tmp_path, monkeypatch)
+    copied_id = "copied-device"
+    now = int(time.time())
+    soon_expiring_current = _jwt_with_exp(now + 60)
+    sibling_token = _jwt_with_exp(now + 3600)
+
+    _write_codex_profile_auth(
+        active,
+        access_token=soon_expiring_current,
+        refresh_token="refresh-soon",
+        last_refresh="2026-01-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=soon_expiring_current,
+            refresh_token="refresh-soon",
+            last_refresh="2026-01-01T00:00:00Z",
+        )],
+    )
+    _write_codex_profile_auth(
+        root / "profiles" / "writer",
+        access_token=sibling_token,
+        refresh_token="refresh-sibling",
+        last_refresh="2026-05-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id=copied_id,
+            access_token=sibling_token,
+            refresh_token="refresh-sibling",
+            last_refresh="2026-05-01T00:00:00Z",
+        )],
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._refresh_codex_auth_tokens",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network refresh should not run")),
+    )
+
+    resolved = resolve_codex_runtime_credentials(refresh_skew_seconds=300)
+
+    assert resolved["api_key"] == sibling_token
+    active_auth = json.loads((active / "auth.json").read_text())
+    assert active_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-sibling"
+
+
+def test_resolve_codex_runtime_credentials_does_not_adopt_unrelated_sibling_account(tmp_path, monkeypatch):
+    root, active = _setup_profile_codex_env(tmp_path, monkeypatch)
+    now = int(time.time())
+    soon_expiring_current = _jwt_with_exp(now + 60)
+    sibling_token = _jwt_with_exp(now + 3600)
+
+    _write_codex_profile_auth(
+        active,
+        access_token=soon_expiring_current,
+        refresh_token="refresh-soon",
+        last_refresh="2026-01-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id="active-device",
+            access_token=soon_expiring_current,
+            refresh_token="refresh-soon",
+            last_refresh="2026-01-01T00:00:00Z",
+        )],
+    )
+    _write_codex_profile_auth(
+        root / "profiles" / "writer",
+        access_token=sibling_token,
+        refresh_token="refresh-sibling",
+        last_refresh="2026-05-01T00:00:00Z",
+        pool_entries=[_codex_pool_entry(
+            entry_id="other-device",
+            access_token=sibling_token,
+            refresh_token="refresh-sibling",
+            last_refresh="2026-05-01T00:00:00Z",
+        )],
+    )
+
+    called = {"count": 0}
+
+    def _fake_refresh(tokens, timeout_seconds):
+        called["count"] += 1
+        return {"access_token": "access-network", "refresh_token": "refresh-network"}
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _fake_refresh)
+
+    resolved = resolve_codex_runtime_credentials(refresh_skew_seconds=300)
+
+    assert called["count"] == 1
+    assert resolved["api_key"] == "access-network"
+    active_auth = json.loads((active / "auth.json").read_text())
+    assert active_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-soon"
 
 
 def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
@@ -154,6 +360,7 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     resolved = resolve_codex_runtime_credentials()
     assert resolved["api_key"] == "pool-fallback-token"
@@ -188,6 +395,7 @@ def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted(tmp_pat
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     resolved = resolve_codex_runtime_credentials()
     assert resolved["api_key"] == "usable-token"
@@ -209,9 +417,45 @@ def test_resolve_codex_runtime_credentials_pool_fallback_no_usable_entry(tmp_pat
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
+    assert exc.value.code == "codex_auth_missing"
+
+
+def test_read_codex_tokens_ignores_malformed_sibling_profile(tmp_path, monkeypatch):
+    root, active = _setup_profile_codex_env(tmp_path, monkeypatch)
+    (active / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    sibling = root / "profiles" / "writer"
+    sibling.mkdir(parents=True)
+    (sibling / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": "not-a-token-dict",
+                "last_refresh": "2026-05-01T00:00:00Z",
+            },
+        },
+    }))
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
+    assert exc.value.code == "codex_auth_missing"
+
+
+def test_read_codex_tokens_ignores_expired_sibling_profile(tmp_path, monkeypatch):
+    root, active = _setup_profile_codex_env(tmp_path, monkeypatch)
+    (active / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    _write_codex_profile_auth(
+        root / "profiles" / "writer",
+        access_token=_jwt_with_exp(int(time.time()) - 10),
+        refresh_token="refresh-expired",
+        last_refresh="2026-05-01T00:00:00Z",
+    )
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
     assert exc.value.code == "codex_auth_missing"
 
 

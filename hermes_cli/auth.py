@@ -3229,6 +3229,395 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
+_CODEX_POOL_RECOVERY_SOURCES = frozenset({"device_code", "manual:device_code"})
+
+
+@dataclass(frozen=True)
+class _CodexTokenCandidate:
+    tokens: Dict[str, str]
+    last_refresh: Optional[str]
+    source: str
+    source_rank: int
+    source_order: int
+    last_refresh_ts: Optional[float]
+
+
+@dataclass(frozen=True)
+class _CodexSiblingRecoveryAnchor:
+    id: str
+    source: str
+    last_refresh: str
+    last_refresh_ts: float
+
+
+def _parse_codex_last_refresh(value: Any) -> Optional[float]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _valid_codex_token_pair(
+    tokens: Any,
+    *,
+    refresh_skew_seconds: float = 0,
+) -> Optional[Dict[str, str]]:
+    if not isinstance(tokens, dict):
+        return None
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        return None
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        return None
+    access_token = access_token.strip()
+    refresh_token = refresh_token.strip()
+    if _codex_access_token_is_expiring(access_token, refresh_skew_seconds):
+        return None
+    candidate = {
+        key: tokens[key]
+        for key in ("access_token", "refresh_token", "id_token")
+        if key in tokens
+    }
+    candidate["access_token"] = access_token
+    candidate["refresh_token"] = refresh_token
+    return candidate
+
+
+def _codex_provider_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    providers = auth_store.get("providers")
+    if not isinstance(providers, dict):
+        return None
+    state = providers.get("openai-codex")
+    if isinstance(state, dict):
+        return dict(state)
+    return None
+
+
+def _append_codex_candidates_from_store(
+    candidates: List[_CodexTokenCandidate],
+    auth_store: Dict[str, Any],
+    *,
+    source_prefix: str,
+    source_rank: int,
+    refresh_skew_seconds: float = 0,
+) -> None:
+    state = _codex_provider_state_from_store(auth_store)
+    if isinstance(state, dict):
+        tokens = _valid_codex_token_pair(
+            state.get("tokens"),
+            refresh_skew_seconds=refresh_skew_seconds,
+        )
+        if tokens is not None:
+            last_refresh = state.get("last_refresh")
+            candidates.append(_CodexTokenCandidate(
+                tokens=tokens,
+                last_refresh=last_refresh if isinstance(last_refresh, str) else None,
+                source=f"{source_prefix}:provider",
+                source_rank=source_rank,
+                source_order=len(candidates),
+                last_refresh_ts=_parse_codex_last_refresh(last_refresh),
+            ))
+
+    pool = auth_store.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        source = str(entry.get("source") or "").strip()
+        if source and source not in _CODEX_POOL_RECOVERY_SOURCES:
+            continue
+        tokens = _valid_codex_token_pair(
+            entry,
+            refresh_skew_seconds=refresh_skew_seconds,
+        )
+        if tokens is None:
+            continue
+        last_refresh = entry.get("last_refresh")
+        candidates.append(_CodexTokenCandidate(
+            tokens=tokens,
+            last_refresh=last_refresh if isinstance(last_refresh, str) else None,
+            source=f"{source_prefix}:pool:{source or idx}",
+            source_rank=source_rank + 1,
+            source_order=len(candidates),
+            last_refresh_ts=_parse_codex_last_refresh(last_refresh),
+        ))
+
+
+def _codex_sibling_recovery_anchor(
+    *,
+    entry_id: Any,
+    entry_source: Any,
+    last_refresh: Any,
+) -> Optional[_CodexSiblingRecoveryAnchor]:
+    source = str(entry_source or "").strip()
+    anchor_id = str(entry_id or "").strip()
+    if not anchor_id or source != "device_code":
+        return None
+    last_refresh_ts = _parse_codex_last_refresh(last_refresh)
+    if last_refresh_ts is None:
+        return None
+    return _CodexSiblingRecoveryAnchor(
+        id=anchor_id,
+        source=source,
+        last_refresh=str(last_refresh).strip(),
+        last_refresh_ts=last_refresh_ts,
+    )
+
+
+def _codex_sibling_recovery_anchor_from_store(
+    auth_store: Dict[str, Any]
+) -> Optional[_CodexSiblingRecoveryAnchor]:
+    pool = auth_store.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        anchor = _codex_sibling_recovery_anchor(
+            entry_id=entry.get("id"),
+            entry_source=entry.get("source"),
+            last_refresh=entry.get("last_refresh"),
+        )
+        if anchor is not None:
+            return anchor
+    return None
+
+
+def _append_matching_sibling_codex_candidate(
+    candidates: List[_CodexTokenCandidate],
+    auth_store: Dict[str, Any],
+    *,
+    profile_name: str,
+    source_rank: int,
+    refresh_skew_seconds: float,
+    anchor: _CodexSiblingRecoveryAnchor,
+) -> None:
+    pool = auth_store.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("id") or "").strip() != anchor.id:
+            continue
+        if str(entry.get("source") or "").strip() != anchor.source:
+            continue
+        last_refresh = entry.get("last_refresh")
+        last_refresh_ts = _parse_codex_last_refresh(last_refresh)
+        if last_refresh_ts is None or last_refresh_ts <= anchor.last_refresh_ts:
+            return
+        tokens = _valid_codex_token_pair(
+            entry,
+            refresh_skew_seconds=refresh_skew_seconds,
+        )
+        if tokens is None:
+            return
+        candidates.append(_CodexTokenCandidate(
+            tokens=tokens,
+            last_refresh=last_refresh if isinstance(last_refresh, str) else None,
+            source=f"sibling:{profile_name}:pool:{anchor.source}",
+            source_rank=source_rank,
+            source_order=len(candidates),
+            last_refresh_ts=last_refresh_ts,
+        ))
+        return
+
+
+def _read_auth_store_readonly(auth_path: Path) -> Dict[str, Any]:
+    try:
+        raw = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    raw.setdefault("providers", {})
+    return raw
+
+
+def _iter_sibling_codex_auth_stores() -> List[Tuple[str, Dict[str, Any]]]:
+    try:
+        from hermes_constants import get_default_hermes_root
+        root = get_default_hermes_root()
+    except Exception:
+        return []
+
+    profiles_dir = root / "profiles"
+    if not profiles_dir.is_dir():
+        return []
+
+    active_auth_path = _auth_file_path()
+    stores: List[Tuple[str, Dict[str, Any]]] = []
+    try:
+        profile_dirs = sorted(
+            (p for p in profiles_dir.iterdir() if p.is_dir()),
+            key=lambda p: (p.name.casefold(), str(p)),
+        )
+    except Exception:
+        return []
+
+    for profile_dir in profile_dirs:
+        auth_path = profile_dir / "auth.json"
+        if not auth_path.is_file():
+            continue
+        try:
+            if auth_path.resolve(strict=False) == active_auth_path.resolve(strict=False):
+                continue
+        except Exception:
+            if auth_path == active_auth_path:
+                continue
+        store = _read_auth_store_readonly(auth_path)
+        if store:
+            stores.append((profile_dir.name, store))
+    return stores
+
+
+def _choose_codex_candidate(candidates: List[_CodexTokenCandidate]) -> Optional[_CodexTokenCandidate]:
+    if not candidates:
+        return None
+    timestamped = [candidate for candidate in candidates if candidate.last_refresh_ts is not None]
+    if timestamped:
+        return max(
+            timestamped,
+            key=lambda candidate: (
+                candidate.last_refresh_ts or 0.0,
+                -candidate.source_rank,
+                -candidate.source_order,
+            ),
+        )
+    return min(candidates, key=lambda candidate: (candidate.source_rank, candidate.source_order))
+
+
+def _find_codex_token_candidate(
+    *,
+    current_auth_store: Optional[Dict[str, Any]] = None,
+    include_current: bool = True,
+    include_codex_cli: bool = True,
+    refresh_skew_seconds: float = 0,
+    sibling_pool_entry_id: Optional[str] = None,
+    sibling_pool_entry_source: Optional[str] = None,
+    sibling_last_refresh: Optional[str] = None,
+) -> Optional[_CodexTokenCandidate]:
+    """Find a valid Codex token pair without mutating any source store."""
+    current_store: Optional[Dict[str, Any]] = current_auth_store
+    if current_store is None and (
+        include_current
+        or sibling_pool_entry_id is None
+        or sibling_pool_entry_source is None
+        or sibling_last_refresh is None
+    ):
+        current_store = _load_auth_store()
+
+    current_candidates: List[_CodexTokenCandidate] = []
+    if include_current:
+        _append_codex_candidates_from_store(
+            current_candidates,
+            current_store or {},
+            source_prefix="current",
+            source_rank=0,
+            refresh_skew_seconds=refresh_skew_seconds,
+        )
+        current = _choose_codex_candidate(current_candidates)
+        if current is not None:
+            return current
+
+    candidates: List[_CodexTokenCandidate] = []
+    global_store = _load_global_auth_store()
+    if global_store:
+        _append_codex_candidates_from_store(
+            candidates,
+            global_store,
+            source_prefix="global",
+            source_rank=10,
+            refresh_skew_seconds=refresh_skew_seconds,
+        )
+
+    sibling_anchor = _codex_sibling_recovery_anchor(
+        entry_id=sibling_pool_entry_id,
+        entry_source=sibling_pool_entry_source,
+        last_refresh=sibling_last_refresh,
+    )
+    if sibling_anchor is None and current_store is not None:
+        sibling_anchor = _codex_sibling_recovery_anchor_from_store(current_store)
+    if sibling_anchor is not None:
+        for index, (profile_name, store) in enumerate(_iter_sibling_codex_auth_stores()):
+            _append_matching_sibling_codex_candidate(
+                candidates,
+                store,
+                profile_name=profile_name,
+                source_rank=100 + (index * 10),
+                refresh_skew_seconds=refresh_skew_seconds,
+                anchor=sibling_anchor,
+            )
+
+    if include_codex_cli:
+        cli_tokens = _import_codex_cli_tokens()
+        if cli_tokens:
+            tokens = _valid_codex_token_pair(
+                cli_tokens,
+                refresh_skew_seconds=refresh_skew_seconds,
+            )
+            if tokens is not None:
+                candidates.append(_CodexTokenCandidate(
+                    tokens=tokens,
+                    last_refresh=None,
+                    source="codex-cli",
+                    source_rank=100000,
+                    source_order=len(candidates),
+                    last_refresh_ts=None,
+                ))
+
+    return _choose_codex_candidate(candidates)
+
+
+def _recover_codex_tokens_from_shared_sources(
+    *,
+    current_auth_store: Optional[Dict[str, Any]] = None,
+    include_current: bool = True,
+    refresh_skew_seconds: float = 0,
+    sibling_pool_entry_id: Optional[str] = None,
+    sibling_pool_entry_source: Optional[str] = None,
+    sibling_last_refresh: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    candidate = _find_codex_token_candidate(
+        current_auth_store=current_auth_store,
+        include_current=include_current,
+        refresh_skew_seconds=refresh_skew_seconds,
+        sibling_pool_entry_id=sibling_pool_entry_id,
+        sibling_pool_entry_source=sibling_pool_entry_source,
+        sibling_last_refresh=sibling_last_refresh,
+    )
+    if candidate is None:
+        return None
+    _save_codex_tokens(candidate.tokens, last_refresh=candidate.last_refresh)
+    return {
+        "tokens": dict(candidate.tokens),
+        "last_refresh": candidate.last_refresh,
+        "source": candidate.source,
+    }
+
+
+def _raise_codex_auth_error(message: str, *, code: str) -> None:
+    raise AuthError(
+        message,
+        provider="openai-codex",
+        code=code,
+        relogin_required=True,
+    )
+
+
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
     
@@ -3240,37 +3629,53 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
             auth_store = _load_auth_store()
     else:
         auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "openai-codex")
+    state = _codex_provider_state_from_store(auth_store)
     if not state:
-        raise AuthError(
+        recovered = _recover_codex_tokens_from_shared_sources(
+            current_auth_store=auth_store,
+            include_current=False,
+        )
+        if recovered is not None:
+            return {"tokens": recovered["tokens"], "last_refresh": recovered.get("last_refresh")}
+        _raise_codex_auth_error(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
-            provider="openai-codex",
             code="codex_auth_missing",
-            relogin_required=True,
         )
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
-        raise AuthError(
+        recovered = _recover_codex_tokens_from_shared_sources(
+            current_auth_store=auth_store,
+            include_current=False,
+        )
+        if recovered is not None:
+            return {"tokens": recovered["tokens"], "last_refresh": recovered.get("last_refresh")}
+        _raise_codex_auth_error(
             "Codex auth state is missing tokens. Run `hermes auth` to re-authenticate.",
-            provider="openai-codex",
             code="codex_auth_invalid_shape",
-            relogin_required=True,
         )
     access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
     if not isinstance(access_token, str) or not access_token.strip():
-        raise AuthError(
+        recovered = _recover_codex_tokens_from_shared_sources(
+            current_auth_store=auth_store,
+            include_current=False,
+        )
+        if recovered is not None:
+            return {"tokens": recovered["tokens"], "last_refresh": recovered.get("last_refresh")}
+        _raise_codex_auth_error(
             "Codex auth is missing access_token. Run `hermes auth` to re-authenticate.",
-            provider="openai-codex",
             code="codex_auth_missing_access_token",
-            relogin_required=True,
         )
     if not isinstance(refresh_token, str) or not refresh_token.strip():
-        raise AuthError(
+        recovered = _recover_codex_tokens_from_shared_sources(
+            current_auth_store=auth_store,
+            include_current=False,
+        )
+        if recovered is not None:
+            return {"tokens": recovered["tokens"], "last_refresh": recovered.get("last_refresh")}
+        _raise_codex_auth_error(
             "Codex auth is missing refresh_token. Run `hermes auth` to re-authenticate.",
-            provider="openai-codex",
             code="codex_auth_missing_refresh_token",
-            relogin_required=True,
         )
     return {
         "tokens": tokens,
@@ -3733,7 +4138,36 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                recovered = None
+                if not force_refresh:
+                    recovered = _recover_codex_tokens_from_shared_sources(
+                        current_auth_store=_load_auth_store(),
+                        include_current=True,
+                        refresh_skew_seconds=refresh_skew_seconds,
+                    )
+                if recovered is not None:
+                    data = {
+                        "tokens": recovered["tokens"],
+                        "last_refresh": recovered.get("last_refresh"),
+                    }
+                    tokens = dict(data["tokens"])
+                else:
+                    try:
+                        tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                    except AuthError as exc:
+                        if not _is_terminal_codex_oauth_refresh_error(exc):
+                            raise
+                        recovered = _recover_codex_tokens_from_shared_sources(
+                            current_auth_store=_load_auth_store(),
+                            include_current=False,
+                        )
+                        if recovered is None:
+                            raise
+                        data = {
+                            "tokens": recovered["tokens"],
+                            "last_refresh": recovered.get("last_refresh"),
+                        }
+                        tokens = dict(data["tokens"])
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (
@@ -3839,9 +4273,21 @@ def _pool_codex_access_token() -> str:
             auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
+            recovered = _recover_codex_tokens_from_shared_sources(
+                current_auth_store=auth_store,
+                include_current=False,
+            )
+            if recovered is not None:
+                return str(recovered["tokens"].get("access_token", "")).strip()
             return ""
         entries = pool.get("openai-codex")
         if not isinstance(entries, list):
+            recovered = _recover_codex_tokens_from_shared_sources(
+                current_auth_store=auth_store,
+                include_current=False,
+            )
+            if recovered is not None:
+                return str(recovered["tokens"].get("access_token", "")).strip()
             return ""
 
         def _entry_usable(entry: Dict[str, Any]) -> bool:
@@ -3859,6 +4305,12 @@ def _pool_codex_access_token() -> str:
         for entry in entries:
             if _entry_usable(entry):
                 return str(entry.get("access_token", "")).strip()
+        recovered = _recover_codex_tokens_from_shared_sources(
+            current_auth_store=auth_store,
+            include_current=False,
+        )
+        if recovered is not None:
+            return str(recovered["tokens"].get("access_token", "")).strip()
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
     return ""

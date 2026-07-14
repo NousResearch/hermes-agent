@@ -4,4 +4,4 @@ description: "inference.sh video generation backend. Multi-model — Veo 3.1, Se
 author: inference.sh
 kind: backend
 requires_env:
-  - INFERENCE_API_KEY
+  - INFSH_API_KEY

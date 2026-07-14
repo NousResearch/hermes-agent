@@ -25,7 +25,7 @@ Selection precedence for the active family:
     4. ``video_gen.model`` in ``config.yaml`` (when it's one of our family IDs)
     5. ``DEFAULT_MODEL``
 
-Authentication via ``INFERENCE_API_KEY``. Output is an HTTPS URL;
+Authentication via ``INFSH_API_KEY`` (or ``INFERENCE_API_KEY``). Output is an HTTPS URL;
 the gateway downloads and delivers it.
 """
 
@@ -231,7 +231,7 @@ def _get_client() -> Any:
         return _client
     from inferencesh import inference  # type: ignore
 
-    api_key = os.environ.get("INFERENCE_API_KEY", "").strip()
+    api_key = os.environ.get("INFSH_API_KEY", os.environ.get("INFERENCE_API_KEY", "")).strip()
     _client = inference(api_key=api_key)
     return _client
 
@@ -260,7 +260,7 @@ class InferenceShVideoGenProvider(VideoGenProvider):
     def is_available(self) -> bool:
         # Only check for the API key — the inferencesh SDK is lazy-installed
         # on first generate() call via tools/lazy_deps.py.
-        return bool(os.environ.get("INFERENCE_API_KEY", "").strip())
+        return bool(os.environ.get("INFSH_API_KEY", os.environ.get("INFERENCE_API_KEY", "")).strip())
 
     def list_models(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -294,7 +294,7 @@ class InferenceShVideoGenProvider(VideoGenProvider):
             ),
             "env_vars": [
                 {
-                    "key": "INFERENCE_API_KEY",
+                    "key": "INFSH_API_KEY",
                     "prompt": "inference.sh API key",
                     "url": "https://app.inference.sh/settings/keys",
                 },
@@ -328,10 +328,10 @@ class InferenceShVideoGenProvider(VideoGenProvider):
         seed: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        if not os.environ.get("INFERENCE_API_KEY", "").strip():
+        if not os.environ.get("INFSH_API_KEY", os.environ.get("INFERENCE_API_KEY", "")).strip():
             return error_response(
                 error=(
-                    "INFERENCE_API_KEY not set. Run `hermes tools` -> Video "
+                    "INFSH_API_KEY not set. Run `hermes tools` -> Video "
                     "Generation -> inference.sh to configure, or sign up at "
                     "https://inference.sh"
                 ),

@@ -4,4 +4,4 @@ description: "inference.sh image generation backend. Multi-model — FLUX, Seedr
 author: inference.sh
 kind: backend
 requires_env:
-  - INFERENCE_API_KEY
+  - INFSH_API_KEY

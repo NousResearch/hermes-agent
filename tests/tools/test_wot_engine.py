@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -585,6 +586,145 @@ class EdgeCaseTests(unittest.IsolatedAsyncioTestCase):
             task="x", mode="parallel", max_rounds=1,
         )
         self.assertEqual(result["backend"]["kind"], "vllm")
+        self.assertIn("endpoint_source", result["backend"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Option B: routing (@name / #tags) + Hermes endpoint resolution
+# ─────────────────────────────────────────────────────────────────────────────
+class MessageRoutingParseTests(unittest.TestCase):
+    def test_at_mention_resolves_known_agent(self):
+        to_agent, tags = wot_engine.parse_message_routing(
+            "@bob: please review this", known_agents={"alice", "bob"}
+        )
+        self.assertEqual(to_agent, "bob")
+        self.assertEqual(tags, [])
+
+    def test_at_mention_case_insensitive_maps_to_canonical(self):
+        to_agent, tags = wot_engine.parse_message_routing(
+            "Hey @Bob check this", known_agents={"alice", "bob"}
+        )
+        self.assertEqual(to_agent, "bob")
+
+    def test_unknown_mention_ignored_when_known_set(self):
+        to_agent, tags = wot_engine.parse_message_routing(
+            "@eve: secret", known_agents={"alice", "bob"}
+        )
+        self.assertIsNone(to_agent)
+
+    def test_hashtags_extracted(self):
+        to_agent, tags = wot_engine.parse_message_routing(
+            "Discuss #math and #code please", known_agents={"a"}
+        )
+        self.assertIsNone(to_agent)
+        self.assertEqual(tags, ["math", "code"])
+
+    def test_combined_dm_and_tags(self):
+        to_agent, tags = wot_engine.parse_message_routing(
+            "@alice #security please audit", known_agents={"alice", "bob"}
+        )
+        self.assertEqual(to_agent, "alice")
+        self.assertEqual(tags, ["security"])
+
+
+class DirectMentionRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dm_only_lands_in_target_inbox(self):
+        scripts = {
+            "alice": ["@bob: only for you\nDONE"],
+            "bob": ["got it\nDONE"],
+            "carol": ["untouched\nDONE"],
+        }
+        engine = WoTEngine()
+        engine.client = MockLLMClient(scripts)
+        result = await engine.run(
+            [AgentSpec(name=n, system_prompt="...") for n in ("alice", "bob", "carol")],
+            task="dm", mode="sequential", max_rounds=1,
+        )
+        dm = next(m for m in result["transcript"] if m["from"] == "alice")
+        self.assertEqual(dm.get("to"), "bob")
+        # Carol's payload must not contain alice's DM body (sequential: alice first)
+        carol_payloads = [
+            p for p in engine.client.payloads
+            if "agent 'carol'" in p["messages"][0]["content"]
+        ]
+        self.assertTrue(carol_payloads)
+        flat = " ".join(m.get("content", "") for m in carol_payloads[0]["messages"])
+        self.assertNotIn("only for you", flat)
+
+
+class QueueInterestsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_interest_agent_wakes_on_matching_tag(self):
+        # Round 1: broadcaster emits #math; math_agent wakes round 2; code_agent stays quiet
+        scripts = {
+            "broadcaster": ["Looking at #math problem\nDONE", "still done"],
+            "math_agent": ["I handle math\nDONE", "noop"],
+            "code_agent": ["I only care about code", "still idle"],
+        }
+        engine = WoTEngine()
+        engine.client = MockLLMClient(scripts)
+        result = await engine.run(
+            [
+                AgentSpec(name="broadcaster", system_prompt="..."),
+                AgentSpec(name="math_agent", system_prompt="...", interests=["math"]),
+                AgentSpec(name="code_agent", system_prompt="...", interests=["code"]),
+            ],
+            task="queue", mode="queue", max_rounds=2,
+        )
+        speakers = [m["from"] for m in result["transcript"]]
+        # broadcaster + both agents speak round 1; round 2 only math_agent (and maybe broadcaster if not DONE)
+        self.assertIn("math_agent", speakers)
+        # After round 1 DONE, code_agent with interests=["code"] should not get a round-2 turn
+        # Count turns via mock call log
+        code_calls = [c for c in engine.client.calls if c["agent"] == "code_agent"]
+        math_calls = [c for c in engine.client.calls if c["agent"] == "math_agent"]
+        self.assertEqual(len(code_calls), 1, "code_agent should only speak round 1")
+        self.assertGreaterEqual(len(math_calls), 1)
+
+    async def test_dm_wakes_interest_filtered_agent(self):
+        scripts = {
+            "alice": ["@bob: direct wake\nDONE"],
+            # bob must NOT DONE in round 1 so he can be woken by the DM in round 2
+            "bob": ["listening", "woken by DM\nDONE"],
+            "carol": ["I am done too\nDONE"],
+        }
+        engine = WoTEngine()
+        engine.client = MockLLMClient(scripts)
+        result = await engine.run(
+            [
+                AgentSpec(name="alice", system_prompt="..."),
+                AgentSpec(name="bob", system_prompt="...", interests=["security"]),
+                AgentSpec(name="carol", system_prompt="...", interests=["other"]),
+            ],
+            task="dm-wake", mode="queue", max_rounds=2,
+        )
+        bob_calls = [c for c in engine.client.calls if c["agent"] == "bob"]
+        # bob: round 1 always, round 2 because of DM
+        self.assertGreaterEqual(len(bob_calls), 2)
+        self.assertIn("bob", result["agents_done"])
+
+
+class HermesEndpointResolutionTests(unittest.TestCase):
+    def test_llm_base_url_env_wins(self):
+        with patch.dict(os.environ, {
+            "LLM_BASE_URL": "http://lab.example:8080",
+            "LLM_API_KEY": "sk-lab",
+            "LLM_DEFAULT_MODEL": "lab-model",
+        }, clear=False):
+            base, key, model, meta = wot_engine.resolve_hermes_endpoint()
+        self.assertEqual(base, "http://lab.example:8080")
+        self.assertEqual(key, "sk-lab")
+        self.assertEqual(model, "lab-model")
+        self.assertEqual(meta["source"], "env:LLM_BASE_URL")
+
+    def test_engine_records_endpoint_meta(self):
+        with patch.dict(os.environ, {
+            "LLM_BASE_URL": "http://only-for-test:9",
+            "LLM_API_KEY": "k",
+            "LLM_DEFAULT_MODEL": "m",
+        }, clear=False):
+            engine = WoTEngine()
+        self.assertEqual(engine.endpoint_meta.get("source"), "env:LLM_BASE_URL")
+        self.assertEqual(engine.default_model, "m")
 
 
 if __name__ == "__main__":

@@ -232,6 +232,8 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
+    # kanban worker stop-guard: narrated exit without kanban_complete/block
+    "_kanban_stop_synthetic",
 )
 
 
@@ -1663,14 +1665,14 @@ class AIAgent:
             msg = messages[idx]
             if isinstance(msg, dict) and msg.get("role") == "user":
                 # Text-only call paths may pass a synthetic API-facing prompt
-                # and a cleaner transcript string separately. Multimodal
-                # turns, however, keep image/audio blocks in the live
-                # messages list that is still used for the API request after
-                # early crash-resilience persistence. Do not replace those
-                # blocks with the text-only persistence override before the
-                # model call is built. The paired timestamp override still
-                # applies — it is metadata, not content.
-                if override is not None and not isinstance(msg.get("content"), list):
+                # and a cleaner transcript string separately. Before the API
+                # call, a plain-text override must not replace native image/audio
+                # blocks. A list override, however, is the original clean
+                # multimodal payload (for example before a queued /model note)
+                # and must replace the API-local list once the turn is final.
+                if override is not None and (
+                    not isinstance(msg.get("content"), list) or isinstance(override, list)
+                ):
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
@@ -1689,10 +1691,22 @@ class AIAgent:
         """
         # Scaffolding removal mutates the live list (desired — ephemeral
         # retry/failure sentinels must not survive into the real transcript).
-        self._drop_trailing_empty_response_scaffolding(messages)
-        self._session_messages = messages
-        self._save_session_log(messages)
-        self._flush_messages_to_session_db(messages, conversation_history)
+        # Close and turn-start persistence can run on separate CLI threads; the
+        # marker test-and-append below must be one critical section or both can
+        # observe the same unmarked dict and write duplicate durable rows.
+        persist_lock = getattr(self, "_session_persist_lock", None)
+        if persist_lock is None:
+            self._drop_trailing_empty_response_scaffolding(messages)
+            self._session_messages = messages
+            self._save_session_log(messages)
+            self._flush_messages_to_session_db(messages, conversation_history)
+            return
+
+        with persist_lock:
+            self._drop_trailing_empty_response_scaffolding(messages)
+            self._session_messages = messages
+            self._save_session_log(messages)
+            self._flush_messages_to_session_db(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -1752,7 +1766,23 @@ class AIAgent:
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _flush_messages_to_session_db(
+        self,
+        messages: List[Dict],
+        conversation_history: Optional[List[Dict]] = None,
+    ):
+        """Serialize direct and turn-boundary session flushes per agent."""
+        persist_lock = getattr(self, "_session_persist_lock", None)
+        if persist_lock is None:
+            return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
+        with persist_lock:
+            return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
+
+    def _flush_messages_to_session_db_unlocked(
+        self,
+        messages: List[Dict],
+        conversation_history: Optional[List[Dict]] = None,
+    ):
         """Persist any un-flushed messages to the SQLite session store.
 
         Deduplicates via an intrinsic ``_DB_PERSISTED_MARKER`` stamped on each
@@ -1859,11 +1889,22 @@ class AIAgent:
                 content = msg.get("content")
                 _row_timestamp = msg.get("timestamp")
                 # Apply the persist override to THIS row's written values only
-                # (never to the live dict). Match the original guard: text-only
-                # content is replaced; multimodal (list) content is left intact
-                # so image/audio blocks aren't clobbered by the text override.
-                if _ov_idx == _msg_idx and msg.get("role") == "user":
-                    if _ov_content is not None and not isinstance(content, list):
+                # (never to the live dict). A multimodal override is a complete
+                # clean replacement for an API-local noted payload. Preserve the
+                # historical text-only guard for a list payload, though: a plain
+                # text override must not erase its image/audio transcript summary.
+                # The close safety-net may flush a shortened snapshot while
+                # turn setup still owns its staged CLI dict. In that shape the
+                # normal turn index refers to the full history, not this list;
+                # preserve the API-local override by recognizing the same dict.
+                pending_cli_message = getattr(self, "_pending_cli_user_message", None)
+                is_current_turn_user = (
+                    _ov_idx == _msg_idx or msg is pending_cli_message
+                )
+                if is_current_turn_user and msg.get("role") == "user":
+                    if _ov_content is not None and (
+                        not isinstance(content, list) or isinstance(_ov_content, list)
+                    ):
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
@@ -5786,12 +5827,12 @@ class AIAgent:
 
     def run_conversation(
         self,
-        user_message: str,
+        user_message: Any,
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,
         stream_callback: Optional[callable] = None,
-        persist_user_message: Optional[str] = None,
+        persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:

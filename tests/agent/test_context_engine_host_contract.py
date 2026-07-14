@@ -165,6 +165,7 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
     db.create_session("old-sid", source="cli")
     db.create_session("new-sid", source="cli")
     db.record_compression_failure_cooldown("old-sid", 4_000_000_000.0, "old-timeout")
+    db.set_compression_fallback_streak("old-sid", 2)
 
     monkeypatch.setattr(
         "agent.context_compressor.get_model_context_length",
@@ -188,7 +189,9 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
 
     assert compressor._session_id == "new-sid"
     assert compressor.get_active_compression_failure_cooldown() is None
+    assert compressor._fallback_compression_streak == 0
     assert db.get_compression_failure_cooldown("old-sid") is not None
+    assert db.get_compression_fallback_streak("old-sid") == 2
 
     compressor._record_compression_failure_cooldown(30.0, "new-timeout")
 

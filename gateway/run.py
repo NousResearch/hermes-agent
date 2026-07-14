@@ -6942,20 +6942,38 @@ class GatewayRunner:
 
         # Plugin-registered slash commands
         if command:
+            plugin_handler = None
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
+            except Exception as e:
+                logger.debug("Plugin command lookup failed (non-fatal): %s", e)
+            if plugin_handler:
+                # Once we know the command resolves to a registered plugin
+                # handler, a failure here must short-circuit with a sanitized
+                # error instead of falling through — letting it fall through
+                # would either mis-report a real plugin command as unknown
+                # (the guard below only understands built-ins) or, once that
+                # guard is plugin-aware, leak the failed command on into
+                # normal agent handling as free text.
+                try:
                     user_args = event.get_command_args().strip()
                     result = plugin_handler(user_args)
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None
-            except Exception as e:
-                logger.debug("Plugin command dispatch failed (non-fatal): %s", e)
+                except Exception as e:
+                    logger.warning(
+                        "Plugin command /%s handler raised: %s", command, e
+                    )
+                    from agent.redact import redact_sensitive_text
+                    return (
+                        f"⚠️ Plugin command `/{command}` failed: "
+                        f"{redact_sensitive_text(str(e))}"
+                    )
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
         # resolve_skill_command_key() handles the Telegram underscore/hyphen

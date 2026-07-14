@@ -23,19 +23,21 @@ This skill sets up authentication so the agent can work with GitHub repositories
 When a user asks you to work with GitHub, run this check first:
 
 ```bash
+# Source the env detection helper — exports GH_AUTH_METHOD, GITHUB_TOKEN, GH_USER
+_skill_dir="$(dirname "$(realpath "${BASH_SOURCE[0]:-$0}")")"
+source "${_skill_dir}/scripts/gh-env.sh" 2>/dev/null || true
+unset _skill_dir
+
 # Check what's available
 git --version
 gh --version 2>/dev/null || echo "gh not installed"
-
-# Check if already authenticated
-gh auth status 2>/dev/null || echo "gh not authenticated"
-git config --global credential.helper 2>/dev/null || echo "no git credential helper"
 ```
 
 **Decision tree:**
 1. If `gh auth status` shows authenticated → you're good, use `gh` for everything
-2. If `gh` is installed but not authenticated → use "gh auth" method below
-3. If `gh` is not installed → use "git-only" method below (no sudo needed)
+2. If `GH_AUTH_METHOD` is "curl" → `GITHUB_TOKEN` and `GH_USER` are set, use curl for API calls
+3. If `gh` is installed but not authenticated → use "gh auth" method below
+4. If neither → use "git-only" method below (no sudo needed)
 
 ---
 

@@ -5,9 +5,13 @@
 manifest_version: 1
 
 name: govee
-description: Control Govee smart lights and devices (LAN-first, cloud fallback) over stdio.
+description: Control Govee smart lights and devices (LAN-first, cloud fallback) over stdio. macOS/Linux only.
 source: https://github.com/evefromwayback/govee-mcp
 
+# POSIX-only entry: the launch command and bootstrap below use .venv/bin paths
+# and python3, which do not exist on native Windows. The manifest schema has no
+# per-platform fields today, so this entry is constrained to macOS/Linux rather
+# than claiming platform neutrality. Windows users can run it under WSL.
 transport:
   type: stdio
   command: "${INSTALL_DIR}/.venv/bin/python"
@@ -18,7 +22,7 @@ transport:
 install:
   type: git
   url: https://github.com/evefromwayback/govee-mcp.git
-  ref: v0.2.1            # pinned release tag
+  ref: 9847417047eba8e3149c0f84daa28627853e3349   # v0.2.1
   bootstrap:
     - "python3 -m venv .venv"
     - ".venv/bin/pip install ."
@@ -50,4 +54,5 @@ post_install: |
   govee-mcp controls your own Govee devices. Provide a Govee Developer API key for
   cloud control and for any device without LAN control; LAN-capable lights also work
   locally with no key. The free Govee API is for non-commercial use only.
+  This entry supports macOS and Linux only (Windows via WSL).
   Start a new Hermes session to load the tools.

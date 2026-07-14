@@ -2378,8 +2378,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        # This bypasses _fire_stream_delta(), so lone
+                        # surrogates from byte-level tokenizers must be
+                        # scrubbed here too before reaching UTF-8 consumers.
+                        suppressed = _sanitize_surrogates(delta.content)
+                        agent.stream_delta_callback(suppressed)
+                        agent._record_streamed_assistant_text(suppressed)
                     except Exception:
                         pass
 

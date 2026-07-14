@@ -6849,12 +6849,17 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         subprocess.run(
             git_cmd + ["pull", "--ff-only", "upstream", "main"],
             cwd=cwd,
+            capture_output=True,
             check=True,
+            timeout=60,
         )
     except subprocess.CalledProcessError:
         print(
             "  ✗ Failed to pull from upstream. You may need to resolve conflicts manually."
         )
+        return
+    except subprocess.TimeoutExpired:
+        print("  ✗ Upstream pull timed out. Skipping upstream sync.")
         return
 
     print("  ✓ Updated from upstream")

@@ -213,18 +213,18 @@ export function usePet(): PetRender {
       try {
         const res = (await rpc('pet.cells', { graphics: IS_TTY, state })) as PetCellsResult | null
 
-        // Count BOTH a null response AND a fail-open {enabled:false} as a
-        // failure. Otherwise the server's defensive swallow
-        // (tui_gateway/server.py:6530) makes us poll forever — the original
-        // MAX_CONSECUTIVE_FAILURES cap only fired on `!res`, which the
-        // fail-open path never produces.
-        const failed = !res || (res.enabled === false && !res.slug)
-        if (failed) {
+        // Only count a genuinely null response (RPC layer failure) as a
+        // failure.  {enabled:false} without a slug is the server's normal
+        // disabled-pet payload (tui_gateway/server.py:6802) — it must NOT
+        // count toward the backoff cap, otherwise three consecutive polls
+        // of the disabled state permanently suppress live pet adoption.
+        if (!res) {
           globalPetFailCount += 1
           return
         }
 
-        // Success — reset the failure counter.
+        // Any non-null response (even disabled) resets the failure counter,
+        // so the backoff only triggers on genuine RPC outages.
         globalPetFailCount = 0
 
         if (!res.enabled) {

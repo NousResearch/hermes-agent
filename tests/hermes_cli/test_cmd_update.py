@@ -954,3 +954,73 @@ def test_install_deps_no_build_isolation_off_by_default(monkeypatch):
     assert "--no-build-isolation" not in captured["cmd"], (
         f"--no-build-isolation should NOT be in default install cmd, got: {captured['cmd']}"
     )
+
+
+def test_cmd_update_impl_sets_no_build_isolation_on_proot(monkeypatch):
+    """_cmd_update_impl should set no_build_isolation=True when PRoot is detected."""
+    from hermes_cli import main as hm
+
+    # Patch managed_uv to return a uv binary
+    monkeypatch.setattr(hm, "ensure_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(hm, "_ensure_uv_for_termux", lambda pip_cmd: None)
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: False)
+    monkeypatch.setattr(hm, "_is_proot_env", lambda env=None: True)
+    monkeypatch.setattr(hm, "_is_android_python", lambda: False)
+
+    captured = {}
+
+    def fake_install(cmd_prefix, *, env=None, group="all", no_build_isolation=False):
+        captured["no_build_isolation"] = no_build_isolation
+        captured["group"] = group
+        captured["env"] = env
+
+    monkeypatch.setattr(
+        hm, "_install_python_dependencies_with_optional_fallback", fake_install
+    )
+    # Prevent _run_quarantined_install side effects
+    monkeypatch.setattr(hm, "_write_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(hm, "_update_node_dependencies", lambda: None)
+    monkeypatch.setattr(hm, "_build_web_ui", lambda path: None)
+    monkeypatch.setattr(hm, "_refresh_active_lazy_features", lambda: None)
+    monkeypatch.setattr(hm, "_recover_from_interrupted_install", lambda: None)
+
+    args = SimpleNamespace()
+    hm._cmd_update_impl(args, gateway_mode=False)
+
+    assert captured.get("no_build_isolation") is True, (
+        f"no_build_isolation should be True on PRoot, got: {captured}"
+    )
+
+
+def test_cmd_update_impl_no_build_isolation_off_for_normal_env(monkeypatch):
+    """_cmd_update_impl should NOT set no_build_isolation on a normal env."""
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(hm, "ensure_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(hm, "_ensure_uv_for_termux", lambda pip_cmd: None)
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: False)
+    monkeypatch.setattr(hm, "_is_proot_env", lambda env=None: False)
+    monkeypatch.setattr(hm, "_is_android_python", lambda: False)
+
+    captured = {}
+
+    def fake_install(cmd_prefix, *, env=None, group="all", no_build_isolation=False):
+        captured["no_build_isolation"] = no_build_isolation
+
+    monkeypatch.setattr(
+        hm, "_install_python_dependencies_with_optional_fallback", fake_install
+    )
+    monkeypatch.setattr(hm, "_write_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(hm, "_update_node_dependencies", lambda: None)
+    monkeypatch.setattr(hm, "_build_web_ui", lambda path: None)
+    monkeypatch.setattr(hm, "_refresh_active_lazy_features", lambda: None)
+    monkeypatch.setattr(hm, "_recover_from_interrupted_install", lambda: None)
+
+    args = SimpleNamespace()
+    hm._cmd_update_impl(args, gateway_mode=False)
+
+    assert captured.get("no_build_isolation") is False, (
+        f"no_build_isolation should be False on normal env, got: {captured}"
+    )

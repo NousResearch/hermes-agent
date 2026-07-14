@@ -7408,14 +7408,9 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
     The normal path (``ensure_uv()`` in managed_uv) installs the managed
     standalone uv into ``$HERMES_HOME/bin/uv``, but on Termux the official
-    installer may not work (glibc vs bionic).  Fall back to ``pip install uv``
-    which gets a Termux-compatible binary.
-
-    On ARM64 (common Termux target), no prebuilt uv wheel exists on PyPI, so
-    ``pip install uv`` triggers ``cargo build --release`` of uv's entire Rust
-    codebase (jemalloc, OpenSSL, zstd-sys).  On memory-constrained phones this
-    exhausts swap and freezes the machine -- set a generous timeout so the
-    attempt fails gracefully and the update path falls back to pip instead.
+    installer may not work (glibc vs bionic).  Prefer a uv already on PATH
+    (e.g. ``pkg install uv``); only if there is none do we fall back to a
+    wheel-only ``pip install uv`` so we never source-build the Rust crate.
     """
     from hermes_cli.managed_uv import resolve_uv
 
@@ -7424,16 +7419,21 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         return existing
     if not _is_termux_env():
         return None
+    # A Termux-packaged uv lands on PATH but not in the managed bin dir, so
+    # resolve_uv() misses it. Use it before pip, which has no Android wheel and
+    # would otherwise build uv from source on a low-memory device.
+    system_uv = shutil.which("uv")
+    if system_uv:
+        return system_uv
     try:
         print("  → Termux detected: trying to install uv for faster dependency updates...")
-        subprocess.run(
-            pip_cmd + ["install", "uv"],
+        result = subprocess.run(
+            pip_cmd + ["install", "uv", "--only-binary", ":all:"],
             cwd=PROJECT_ROOT,
             check=False,
-            timeout=120,
         )
-    except subprocess.TimeoutExpired:
-        print("    ↻ uv install timed out (Rust compile on ARM64 is too slow) — falling back to pip")
+        if result.returncode != 0:
+            return None
     except Exception:
         pass
     # After pip install, check managed path first, then PATH
@@ -8568,12 +8568,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if uv_bin:
             uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
             no_build_isolation = False
-            if _is_termux_env(uv_env):
+            if _is_termux_env(uv_env) or _is_proot_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
                 install_group = "termux-all"
                 no_build_isolation = True
-                print("  → Termux detected: using uv + curated termux-all optional profile...")
+                if _is_proot_env(uv_env):
+                    print("  → PRoot detected: using uv + no-build-isolation...")
+                else:
+                    print("  → Termux detected: using uv + curated termux-all optional profile...")
             if _is_termux_env(uv_env) and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
@@ -8600,10 +8603,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     check=True,
                 )
             no_build_isolation = False
-            if _is_termux_env():
+            if _is_termux_env() or _is_proot_env():
                 install_group = "termux-all"
                 no_build_isolation = True
-                print("  → Termux detected: using curated termux-all optional profile...")
+                if _is_proot_env():
+                    print("  → PRoot detected: using no-build-isolation...")
+                else:
+                    print("  → Termux detected: using curated termux-all optional profile...")
             if _is_termux_env() and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)

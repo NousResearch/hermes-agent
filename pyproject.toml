@@ -1,6 +1,12 @@
 # PEP 639 SPDX license expression (`license = "MIT"` below) requires
 # setuptools>=77. Keep this floor in lockstep with the `license` form in
 # [project]; an older build backend rejects the string form.
+#
+# more_itertools is listed alongside setuptools because setuptools>=81
+# internally imports jaraco.text (→ more_itertools) during its build
+# process.  Under an isolated PEP 517 build (uv's default), only packages
+# in build-system.requires are available — without it, the build fails
+# with "build backend failed to produce a valid sdist or wheel".
 [build-system]
 requires = ["setuptools>=77.0,<83", "more_itertools>=10.0,<12"]
 build-backend = "setuptools.build_meta"

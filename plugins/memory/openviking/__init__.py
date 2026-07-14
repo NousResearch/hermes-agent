@@ -1894,6 +1894,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._pending_marked_sids: Set[str] = set()
         self._runtime_start_lock = threading.Lock()
         self._runtime_start_thread: Optional[threading.Thread] = None
+        self._runtime_start_pending = False
         self._memory_write_lock = threading.Lock()
         self._memory_write_threads: Set[threading.Thread] = set()
         self._profile_prefetched_sessions: Set[str] = set()
@@ -2112,19 +2113,20 @@ class OpenVikingMemoryProvider(MemoryProvider):
         status_callback=None,
         warning_callback=None,
     ) -> None:
-        with self._runtime_start_lock:
-            if self._runtime_start_thread and self._runtime_start_thread.is_alive():
-                return
-            self._runtime_start_thread = threading.Thread(
-                target=self._finish_runtime_openviking_start,
-                kwargs={
-                    "status_callback": status_callback,
-                    "warning_callback": warning_callback,
-                },
-                daemon=True,
-                name="openviking-runtime-start",
-            )
-            self._runtime_start_thread.start()
+        # Precondition: caller holds _runtime_start_lock. Local process start
+        # ownership is reserved with _runtime_start_pending before callbacks run.
+        if self._runtime_start_thread and self._runtime_start_thread.is_alive():
+            return
+        self._runtime_start_thread = threading.Thread(
+            target=self._finish_runtime_openviking_start,
+            kwargs={
+                "status_callback": status_callback,
+                "warning_callback": warning_callback,
+            },
+            daemon=True,
+            name="openviking-runtime-start",
+        )
+        self._runtime_start_thread.start()
 
     def _finish_runtime_openviking_start(
         self,
@@ -2194,25 +2196,48 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._client = None
             return
 
-        started, start_message = _start_local_openviking_server(endpoint)
-        if not started:
+        warning_message = ""
+        status_message = ""
+        should_start_waiter = False
+        with self._runtime_start_lock:
+            if (
+                self._runtime_start_pending
+                or (self._runtime_start_thread and self._runtime_start_thread.is_alive())
+            ):
+                self._client = None
+                return
+
+            self._runtime_start_pending = True
+            started, start_message = _start_local_openviking_server(endpoint)
+            if not started:
+                self._runtime_start_pending = False
+                warning_message = (
+                    f"Local OpenViking server at {endpoint} is not reachable. {start_message} "
+                    "OpenViking memory disabled for this Hermes run."
+                )
+                self._client = None
+            else:
+                self._client = None
+                status_message = (
+                    f"{start_message} OpenViking memory is starting in the background and will attach when ready."
+                )
+                should_start_waiter = True
+
+        if warning_message:
             _emit_runtime_warning(
-                f"Local OpenViking server at {endpoint} is not reachable. {start_message} "
-                "OpenViking memory disabled for this Hermes run.",
+                warning_message,
                 warning_callback,
             )
-            self._client = None
             return
-
-        self._client = None
-        _emit_runtime_status(
-            f"{start_message} OpenViking memory is starting in the background and will attach when ready.",
-            status_callback,
-        )
-        self._start_runtime_openviking_waiter(
-            status_callback=status_callback,
-            warning_callback=warning_callback,
-        )
+        if status_message:
+            _emit_runtime_status(status_message, status_callback)
+        if should_start_waiter:
+            with self._runtime_start_lock:
+                self._runtime_start_pending = False
+                self._start_runtime_openviking_waiter(
+                    status_callback=status_callback,
+                    warning_callback=warning_callback,
+                )
 
     def initialize(self, session_id: str, **kwargs) -> None:
         settings = _resolve_connection_settings(_load_hermes_openviking_config())
@@ -2309,6 +2334,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
         if config_unchanged and self._client is not None:
             return self._client
+        if config_unchanged:
+            with self._runtime_start_lock:
+                if (
+                    self._runtime_start_pending
+                    or (self._runtime_start_thread and self._runtime_start_thread.is_alive())
+                ):
+                    return self._client
 
         self._endpoint = endpoint
         self._api_key = api_key

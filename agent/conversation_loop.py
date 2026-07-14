@@ -4925,8 +4925,32 @@ def run_conversation(
                     # likely mid-task narration ("I'll scan the directory...") and
                     # the empty follow-up means the model choked — let the
                     # post-tool nudge below handle that instead of exiting early.
+                    # A kanban worker that hasn't called kanban_complete/kanban_block
+                    # yet must not take this shortcut: a `todo`-only housekeeping
+                    # turn followed by silence would otherwise `break` here and
+                    # exit clean (rc=0) without a terminal board tool — exactly
+                    # the protocol_violation the kanban-stop guard further down
+                    # exists to prevent, which this shortcut bypasses entirely
+                    # since it `break`s before ever reaching that check.
                     fallback = getattr(agent, '_last_content_with_tools', None)
-                    if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
+                    _kanban_awaiting_terminal = False
+                    try:
+                        from agent.kanban_stop import (
+                            kanban_stop_nudge_enabled,
+                            session_called_kanban_terminal,
+                        )
+
+                        _kanban_awaiting_terminal = (
+                            kanban_stop_nudge_enabled()
+                            and not session_called_kanban_terminal(messages)
+                        )
+                    except Exception:
+                        logger.debug("kanban shortcut-gate check failed", exc_info=True)
+                    if (
+                        fallback
+                        and getattr(agent, '_last_content_tools_all_housekeeping', False)
+                        and not _kanban_awaiting_terminal
+                    ):
                         _turn_exit_reason = "fallback_prior_turn_content"
                         logger.info("Empty follow-up after tool calls — using prior turn content as final response")
                         agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")

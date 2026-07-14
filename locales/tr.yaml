@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [b]ir kez  |  [o]turum  |  [r]eddet"
   prompt_long:     "      Seçim [b/o/h/R]: "
   prompt_short:    "      Seçim [b/o/R]: "
+  choose_smart_deny: "      [b]ir kez  |  [r]eddet"
+  prompt_smart_deny: "      Seçim [b/R]: "
+  smart_deny_once_inputs: "b,bir kez"
+  smart_deny_deny_inputs: "r,reddet"
   timeout:         "      ⏱ Zaman aşımı — komut reddedildi"
   allowed_once:    "      ✓ Bir kez izin verildi"
   allowed_session: "      ✓ Bu oturum için izin verildi"
@@ -107,6 +111,8 @@ gateway:
     no_pending:            "Reddedilecek bekleyen komut yok."
     denied_singular:       "❌ Komut reddedildi."
     denied_plural:         "❌ Komutlar reddedildi ({count} komut)."
+    denied_reason_singular: "❌ Komut reddedildi. Gerekçe ajana iletildi: \"{reason}\""
+    denied_reason_plural:  "❌ Komutlar reddedildi ({count} komut). Gerekçe ajana iletildi: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast yalnızca Priority Processing destekleyen OpenAI modellerinde kullanılabilir."
@@ -358,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Tahmini bağlam: ~{count} token"
     detailed_after_first:     "_(Ayrıntılı kullanım, ilk ajan yanıtından sonra kullanılabilir)_"
     no_data:                  "Bu oturum için kullanım verisi yok."
+    unknown_subcommand:       "Bilinmeyen /usage alt komutu: `{args}`. `/usage` veya `/usage reset [--force]` deneyin."
+    reset_wrong_provider:     "Biriktirilen limit sıfırlamaları yalnızca openai-codex sağlayıcısında kullanılabilir. Önce `/model` ile geçiş yapın."
 
   credits:
     not_logged_in:            "Nous Portal'a giriş yapılmadı. Bakiyenizi görmek ve yükleme yapmak için giriş yapın."

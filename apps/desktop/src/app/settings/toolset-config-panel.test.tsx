@@ -66,6 +66,12 @@ function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
 }
 
 beforeEach(() => {
+  // Radix menus/selects call these on open; jsdom implements neither, so the
+  // dropdown never opens without the stubs (mirrors model-settings.test.tsx).
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+
   getToolsetConfig.mockResolvedValue(config())
   getToolsetModels.mockResolvedValue({
     name: 'tts',
@@ -165,8 +171,10 @@ describe('ToolsetConfigPanel', () => {
     const elevenlabs = await screen.findByRole('button', { name: /ElevenLabs/ })
     fireEvent.click(elevenlabs)
 
-    // Click "Set" to reveal the input for the unset key.
-    fireEvent.click(await screen.findByRole('button', { name: 'Set' }))
+    // Open the credential actions menu (Radix opens on pointerdown), then "Set".
+    const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
 
     const input = await screen.findByPlaceholderText('ElevenLabs API key')
     fireEvent.change(input, { target: { value: 'sk-test-123' } })

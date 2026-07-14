@@ -220,8 +220,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "starlette==1.3.1",  # CVE-2026-48710 (BadHost) + GHSA-82w8/wqp7/x746/jp82 + PYSEC-2026-248/249 — keep lazy-install in sync with pyproject [web]
+        "python-multipart==0.0.31",  # GHSA-5rvq/6jv3/vffw/v9pg; FastAPI UploadFile/Form for streaming uploads (NS-501) — keep in sync with pyproject [web]
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
@@ -236,7 +236,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==1.26.0",
-        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+        "starlette==1.3.1",  # CVE-2026-48710 + GHSA-82w8/wqp7/x746/jp82 + PYSEC-2026-248/249 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
     "tool.trace_upload": ("huggingface-hub==1.2.3",),

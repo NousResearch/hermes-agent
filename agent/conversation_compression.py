@@ -426,10 +426,16 @@ def compress_context(
             _lock_acquired = _lock_db.try_acquire_compression_lock(
                 _lock_sid, _lock_holder
             )
-        except Exception as _lock_err:
-            # Broken/absent lock subsystem (version skew, etc.).  Log once
-            # per session and proceed WITHOUT the lock rather than letting
-            # the exception spin the outer loop.
+        except (AttributeError, TypeError) as _lock_err:
+            # Structural absence / version skew (#34475). The lock method
+            # is missing (AttributeError) or its signature predates the
+            # ``ttl_seconds=`` kwarg (TypeError). Either way the lock
+            # subsystem is structurally unavailable; skip locking and
+            # proceed with compression rather than spinning the outer
+            # loop forever. Both AttributeError AND TypeError are
+            # expected: since ``ttl_seconds=`` was added, a stale
+            # SessionDB raises TypeError instead of AttributeError on
+            # the kwargs mismatch.
             _lock_holder = None  # we don't own anything to release
             if getattr(agent, "_last_compression_lock_error_sid", None) != _lock_sid:
                 agent._last_compression_lock_error_sid = _lock_sid
@@ -440,27 +446,70 @@ def compress_context(
                     "process (or `hermes update`) to resync.",
                     _lock_sid, type(_lock_err).__name__, _lock_err,
                 )
-            _lock_acquired = True  # treat as acquired-but-unlocked; proceed
+            _lock_acquired = True  # structural absence → fail OPEN
+        except Exception as _lock_err:
+            # Genuine transient / unexpected error (#63129). The DB
+            # layer (``hermes_state.py``) already catches ``sqlite3.Error``
+            # internally and returns False, so anything that reaches this
+            # except is a real anomaly. Failing OPEN here risks two
+            # compactors running concurrently on the same session and
+            # forking it (Damien's 2026-05-28 incident shape). Fail
+            # CLOSED instead: skip compression this cycle and let the
+            # auto-compress loop retry next time. The session is NOT
+            # corrupted — we just sit out this round.
+            _lock_holder = None  # we don't own anything to release
+            if getattr(agent, "_last_compression_lock_error_sid", None) != _lock_sid:
+                agent._last_compression_lock_error_sid = _lock_sid
+                logger.warning(
+                    "compression lock raised an unexpected error for session=%s "
+                    "(%s: %s) — skipping compression this cycle to avoid "
+                    "concurrent fork. Will retry on next turn. If this "
+                    "persists, check the lock subsystem health.",
+                    _lock_sid, type(_lock_err).__name__, _lock_err,
+                )
+            _lock_acquired = False  # transient error → fail CLOSED
         if not _lock_acquired:
+            # Two distinct paths land here:
+            #   (a) Try returned False — another path genuinely holds the
+            #       lock; the standard "another path is compressing"
+            #       message applies.
+            #   (b) Try raised a transient error and the except-Exception
+            #       handler above set _lock_acquired=False (fail closed,
+            #       #63129). The standard message would be misleading
+            #       here because there may be no concurrent compactor.
             try:
                 existing = _lock_db.get_compression_lock_holder(_lock_sid)
             except Exception:
                 existing = None
-            logger.warning(
-                "compression skipped: another path is compressing session=%s "
-                "(holder=%s) — returning messages unchanged to avoid session fork",
-                _lock_sid, existing,
-            )
+            if existing is not None:
+                logger.warning(
+                    "compression skipped: another path is compressing session=%s "
+                    "(holder=%s) — returning messages unchanged to avoid session fork",
+                    _lock_sid, existing,
+                )
+                _skip_message = (
+                    "⚠ Skipping concurrent compression — another path "
+                    "is already compressing this session. Will retry "
+                    "after it finishes."
+                )
+            else:
+                logger.warning(
+                    "compression skipped: lock could not be acquired for session=%s "
+                    "and no other holder is recorded — likely a transient lock "
+                    "subsystem error (#63129). Returning messages unchanged; will "
+                    "retry on next turn.",
+                    _lock_sid,
+                )
+                _skip_message = (
+                    "⚠ Skipping compression — lock subsystem error. Will retry "
+                    "on next turn. If this persists, check the lock subsystem."
+                )
             _lock_holder = None  # don't release a lock we don't own
             # Surface to the user once — quiet for downstream auto-compress loops
             if getattr(agent, "_last_compression_lock_warning_sid", None) != _lock_sid:
                 agent._last_compression_lock_warning_sid = _lock_sid
                 try:
-                    agent._emit_warning(
-                        "⚠ Skipping concurrent compression — another path "
-                        "is already compressing this session. Will retry "
-                        "after it finishes."
-                    )
+                    agent._emit_warning(_skip_message)
                 except Exception:
                     pass
             _existing_sp = getattr(agent, "_cached_system_prompt", None)

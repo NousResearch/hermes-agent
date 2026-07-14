@@ -3497,6 +3497,46 @@ class TestConversationParameter:
                 assert adapter._response_store.get_conversation("conv-a") != adapter._response_store.get_conversation("conv-b")
 
     @pytest.mark.asyncio
+    async def test_conversation_names_are_scoped_by_session_key(self, auth_adapter):
+        """The same conversation name should not chain across different session keys."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "Key A first", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "channel-a",
+                    },
+                    json={"input": "hello", "conversation": "shared-room"},
+                )
+
+                mock_run.return_value = (
+                    {"final_response": "Key B first", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "channel-b",
+                    },
+                    json={"input": "hello", "conversation": "shared-room"},
+                )
+
+                assert mock_run.call_count == 2
+                second_call = mock_run.call_args_list[1]
+                history = second_call.kwargs.get(
+                    "conversation_history",
+                    second_call[1].get("conversation_history", []) if len(second_call) > 1 else [],
+                )
+                assert history == []
+
+    @pytest.mark.asyncio
     async def test_conversation_store_false_no_mapping(self, adapter):
         """If store=false, conversation mapping is not updated."""
         app = _create_app(adapter)

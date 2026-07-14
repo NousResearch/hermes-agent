@@ -1293,6 +1293,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    @staticmethod
+    def _conversation_store_key(
+        conversation: Optional[str],
+        gateway_session_key: Optional[str],
+    ) -> Optional[str]:
+        """Return the storage key for a conversation name.
+
+        Conversation names stay global for callers without a session key.
+        When a session key is present, scope the conversation name to that
+        key so another client can't reuse the same name to chain into a
+        different client's history.
+        """
+        if not conversation:
+            return None
+        if not gateway_session_key:
+            return conversation
+        return f"{gateway_session_key}\x1f{conversation}"
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -2884,7 +2902,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_id": session_id,
             })
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation(
+                    self._conversation_store_key(conversation, gateway_session_key),
+                    response_id,
+                )
 
         def _persist_incomplete_if_needed() -> None:
             """Persist an ``incomplete`` snapshot if no terminal one was written.
@@ -3391,7 +3412,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Resolve conversation name to latest response_id
         if conversation:
-            previous_response_id = self._response_store.get_conversation(conversation)
+            previous_response_id = self._response_store.get_conversation(
+                self._conversation_store_key(conversation, gateway_session_key)
+            )
             # No error if conversation doesn't exist yet — it's a new conversation
 
         # Normalize input to message list
@@ -3634,7 +3657,10 @@ class APIServerAdapter(BasePlatformAdapter):
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation(
+                    self._conversation_store_key(conversation, gateway_session_key),
+                    response_id,
+                )
 
         response_headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:

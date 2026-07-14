@@ -711,7 +711,7 @@ def sync_skills(quiet: bool = False, link: bool = False) -> dict:
                 elif link:
                     # ── Symlink install ──
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    os.symlink(skill_src, dest)
+                    os.symlink(skill_src, dest, target_is_directory=True)
                     manifest[skill_name] = SYMLINK_SENTINEL
                     copied.append(skill_name)
                     if not quiet:
@@ -724,6 +724,14 @@ def sync_skills(quiet: bool = False, link: bool = False) -> dict:
                     manifest[skill_name] = bundled_hash
                     if not quiet:
                         print(f"  + {skill_name}")
+            except PermissionError:
+                if not quiet:
+                    print(
+                        f"  ! Failed to symlink {skill_name}: "
+                        f"permission denied.  On Windows this requires "
+                        f"Administrator privileges or Developer Mode.  "
+                        f"Re-run without --link to use copy mode."
+                    )
             except (OSError, IOError) as e:
                 if not quiet:
                     print(f"  ! Failed to install {skill_name}: {e}")
@@ -736,7 +744,7 @@ def sync_skills(quiet: bool = False, link: bool = False) -> dict:
                 try:
                     dest.unlink()
                     if link:
-                        os.symlink(skill_src, dest)
+                        os.symlink(skill_src, dest, target_is_directory=True)
                         if not quiet:
                             print(f"  ↻ {skill_name} (symlink recreated)")
                     else:
@@ -744,6 +752,13 @@ def sync_skills(quiet: bool = False, link: bool = False) -> dict:
                         manifest[skill_name] = bundled_hash
                         if not quiet:
                             print(f"  ↻ {skill_name} (broken symlink → copy)")
+                except PermissionError:
+                    if not quiet:
+                        print(
+                            f"  ! Failed to repair symlink {skill_name}: "
+                            f"permission denied (Windows: needs Administrator "
+                            f"or Developer Mode)."
+                        )
                 except (OSError, IOError) as e:
                     if not quiet:
                         print(f"  ! Failed to repair {skill_name}: {e}")
@@ -769,6 +784,13 @@ def sync_skills(quiet: bool = False, link: bool = False) -> dict:
                         print(
                             f"  ↑ {skill_name} (external target, "
                             f"promoted from symlink to copy)"
+                        )
+                except PermissionError:
+                    if not quiet:
+                        print(
+                            f"  ! Failed to promote {skill_name}: "
+                            f"symlink permission denied (Windows: needs "
+                            f"Administrator or Developer Mode)."
                         )
                 except (OSError, IOError) as e:
                     if not quiet:

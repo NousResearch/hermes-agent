@@ -12,6 +12,8 @@ New modules:
     - ``utils`` — User-Agent builder, config helpers
     - ``crypto`` — AES-256-GCM key generation and decryption
     - ``onboard`` — QR-code scan-to-configure flow
+    - ``outbound`` — shared REST API client (QQApiClient)
+    - ``standalone`` — out-of-process sender
 """
 
 # -- Adapter (original qqbot.py) ------------------------------------------
@@ -41,6 +43,9 @@ from .chunked_upload import (  # noqa: F401
     UploadFileTooLargeError,
 )
 
+# -- Shared outbound (QQApiClient) -----------------------------------------
+from .outbound import QQApiClient, classify_media_type, resolve_target, split_for_qq  # noqa: F401
+
 # -- Standalone (out-of-process) sender ------------------------------------
 from .standalone import _standalone_send  # noqa: F401
 
@@ -48,29 +53,31 @@ from .standalone import _standalone_send  # noqa: F401
 # Register QQBot in the platform_registry so tools/send_message_tool.py can
 # find the standalone_sender_fn when no live adapter is present.  This is a
 # transitional step toward the bundled-plugin migration in PR #41065.
-# Registry writes are idempotent — calling this more than once is harmless.
+# Uses the real QQAdapter factory and check from adapter.py so the
+# entry is valid and won't be shadowed by a future plugin registration.
 
 
 def _register_qqbot_in_registry() -> None:
-    """Register QQBot in the platform_registry (idempotent)."""
-    try:
-        from gateway.platform_registry import PlatformEntry, platform_registry
+    """Register QQBot in the platform_registry (idempotent).
 
-        if platform_registry.is_registered("qqbot"):
-            return
+    Raises on failure so missing registration is noticed at startup,
+    not silently swallowed until a standalone send fails 10 minutes later.
+    """
+    from gateway.platform_registry import PlatformEntry, platform_registry
 
-        platform_registry.register(
-            PlatformEntry(
-                name="qqbot",
-                label="QQBot",
-                adapter_factory=lambda cfg: None,
-                check_fn=lambda: True,
-                standalone_sender_fn=_standalone_send,
-                cron_deliver_env_var="QQBOT_HOME_CHANNEL",
-            )
+    if platform_registry.is_registered("qqbot"):
+        return
+
+    platform_registry.register(
+        PlatformEntry(
+            name="qqbot",
+            label="QQBot",
+            adapter_factory=lambda cfg: QQAdapter(cfg),
+            check_fn=check_qq_requirements,
+            standalone_sender_fn=_standalone_send,
+            cron_deliver_env_var="QQBOT_HOME_CHANNEL",
         )
-    except Exception:
-        pass  # Non-fatal — standalone path will surface a clear error.
+    )
 
 
 _register_qqbot_in_registry()
@@ -111,6 +118,11 @@ __all__ = [
     "ChunkedUploader",
     "UploadDailyLimitExceededError",
     "UploadFileTooLargeError",
+    # outbound
+    "QQApiClient",
+    "classify_media_type",
+    "resolve_target",
+    "split_for_qq",
     # standalone
     "_standalone_send",
     # keyboards

@@ -498,6 +498,67 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
+async def _dispatch_live_media(adapter, chat_id, chunk, *, media_files, force_document):
+    """Send text + media through a live adapter, dispatching to
+    platform-native send_image_file / send_voice / send_video / send_document.
+
+    Text is sent once (via adapter.send), then each media file is sent
+    via the appropriate specialised method.  On any failure the error is
+    returned immediately — no standalone fallback.
+
+    Returns a dict ``{"success": True, "message_id": ...}`` or
+    ``{"error": "..."}``.
+    """
+    import os
+
+    # ── Text (once) ─────────────────────────────────────────────────
+    last_msg_id = None
+    if chunk and chunk.strip():
+        result = await adapter.send(chat_id=chat_id, content=chunk)
+        if not result.success:
+            return {"error": f"Adapter text send failed: {result.error}"}
+        last_msg_id = result.message_id
+
+    # ── Media ───────────────────────────────────────────────────────
+    for media_path, _is_voice in (media_files or []):
+        ext = os.path.splitext(media_path)[1].lower()
+        is_image = ext in _IMAGE_EXTS
+        is_voice = _is_voice or ext in _VOICE_EXTS
+        is_video = ext in _VIDEO_EXTS
+
+        if force_document:
+            result = await adapter.send_document(
+                chat_id=chat_id,
+                file_path=media_path,
+            )
+        elif is_voice:
+            result = await adapter.send_voice(
+                chat_id=chat_id,
+                audio_path=media_path,
+            )
+        elif is_video:
+            result = await adapter.send_video(
+                chat_id=chat_id,
+                video_path=media_path,
+            )
+        elif is_image:
+            result = await adapter.send_image_file(
+                chat_id=chat_id,
+                image_path=media_path,
+            )
+        else:
+            result = await adapter.send_document(
+                chat_id=chat_id,
+                file_path=media_path,
+            )
+
+        if not result.success:
+            return {"error": f"Adapter media send failed ({os.path.basename(media_path)}): {result.error}"}
+        last_msg_id = result.message_id
+
+    return {"success": True, "message_id": last_msg_id}
+
+
 async def _send_via_adapter(
     platform,
     pconfig,
@@ -512,8 +573,11 @@ async def _send_via_adapter(
     for out-of-process callers (e.g. cron running separately from the gateway).
 
     Order of attempts:
-      1. Live in-process adapter via ``_gateway_runner_ref()`` (the path that
-         existed before this change).
+      1. **Live in-process adapter** via ``_gateway_runner_ref()``.
+         - Text is sent via ``adapter.send()``.
+         - Media are dispatched to ``send_image_file / send_voice / send_video /
+           send_document``.
+         - Failure is returned immediately — **no standalone fallback**.
       2. The plugin's ``standalone_sender_fn`` registered on its
          ``PlatformEntry`` (used when the gateway is not in this process, so
          the runner weakref is ``None``).
@@ -527,6 +591,9 @@ async def _send_via_adapter(
     except Exception:
         runner = None
 
+    media_files = media_files or []
+
+    # ── Live adapter ───────────────────────────────────────────────────
     if runner is not None:
         try:
             adapter = runner.adapters.get(platform)
@@ -534,22 +601,35 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {}
-                if thread_id:
-                    metadata["thread_id"] = thread_id
-                if platform_name == "ntfy" and chat_id:
-                    metadata["publish_topic"] = chat_id
-                if not metadata:
-                    metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                if not media_files:
+                    # Text-only: use adapter.send()
+                    metadata = {}
+                    if thread_id:
+                        metadata["thread_id"] = thread_id
+                    if platform_name == "ntfy" and chat_id:
+                        metadata["publish_topic"] = chat_id
+                    if not metadata:
+                        metadata = None
+                    result = await adapter.send(
+                        chat_id=chat_id, content=chunk, metadata=metadata
+                    )
+                    if result.success:
+                        return {"success": True, "message_id": result.message_id}
+                    return {"error": f"Adapter send failed: {result.error}"}
+
+                # Media: dispatch via adapter's native methods
+                result = await _dispatch_live_media(
+                    adapter, chat_id, chunk,
+                    media_files=media_files,
+                    force_document=force_document,
+                )
+                return result
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 return {"error": f"Plugin platform send failed: {e}"}
-            if result.success:
-                return {"success": True, "message_id": result.message_id}
-            return {"error": f"Adapter send failed: {result.error}"}
 
+    # ── Standalone fallback ────────────────────────────────────────────
     entry = None
     try:
         from gateway.platform_registry import platform_registry

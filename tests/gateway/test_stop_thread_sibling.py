@@ -8,6 +8,8 @@ nothing and reply "no active task to stop".  Authorized users should be able to
 stop any run in the same thread.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
@@ -102,6 +104,7 @@ class _StoreEntry:
 class _FakeStore:
     def __init__(self, session_key):
         self._key = session_key
+        self.suspend_session = MagicMock()
 
     def get_or_create_session(self, source):
         return _StoreEntry(self._key)
@@ -131,6 +134,7 @@ async def test_stop_interrupts_sibling_thread_run_when_authorized(monkeypatch):
     assert interrupted == [(key_b, _INTERRUPT_REASON_STOP, "stop_command_thread_sibling")]
     # EphemeralReply or str — both carry the "stopped" message, not "no_active".
     assert "no active" not in str(getattr(result, "text", result)).lower()
+    runner.session_store.suspend_session.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -155,4 +159,6 @@ async def test_stop_does_not_interrupt_sibling_when_unauthorized(monkeypatch):
     result = await runner._handle_stop_command(event)
 
     assert interrupted == []
-    assert "no active" in str(getattr(result, "text", result)).lower()
+    result_text = str(getattr(result, "text", result)).lower().replace(" ", "_")
+    assert "no_active" in result_text
+    runner.session_store.suspend_session.assert_not_called()

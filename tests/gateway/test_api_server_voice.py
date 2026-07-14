@@ -112,8 +112,8 @@ class TestVoiceModeInRuns:
         mock_tts.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_non_voice_run_skips_tts_and_no_audio_path(self):
-        """Normal run (no voice flag) → TTS not called, no audio_path in event."""
+    async def test_non_voice_run_skips_tts_and_no_audio_base64(self):
+        """Normal run (no voice flag) → TTS not called, no audio_base64 in event."""
         adapter = _make_adapter()
 
         with (

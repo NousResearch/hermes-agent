@@ -1583,7 +1583,25 @@ def _ensure_session_db_row(session: dict) -> None:
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
     except Exception:
-        logger.debug("failed to persist desktop session row", exc_info=True)
+        # #63474: was logger.debug at exc_info=True, which is invisible in
+        # production deployments (default WARN level). The original code
+        # silently dropped the row, leaving sessions that exist in the TUI
+        # gateway's in-memory dict but never land in state.db.
+        #
+        # Promote to WARNING so operators scanning logs can see the failure.
+        # We deliberately do NOT re-raise here: the 4 call sites
+        # (lines 2225, 5877, 6030, 8062 — system-message append, /title RPC,
+        # watcher setup, prompt.submit) all call this lazily to *create* a
+        # row before continuing other work. Re-raising would surface a
+        # benign "couldn't pre-create the row" as a hard error to the user
+        # in those paths. Logging at WARNING keeps the user-facing flow
+        # alive while making the failure operator-visible — the original
+        # goal of #63474. If the failure becomes recurring, the operator
+        # can grep WARNING logs and root-cause the underlying db issue.
+        logger.warning(
+            "failed to persist desktop session row — see traceback",
+            exc_info=True,
+        )
     finally:
         if close_db:
             try:

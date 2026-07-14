@@ -19,6 +19,10 @@ export interface TerminalEntry {
    *  (the project root if opened in one, else the backend's default). Switching
    *  sessions never moves or recreates a terminal. */
   cwd: string
+  /** Last observed working directory of the live shell (tracked via the PTY
+   *  cwd probe / OSC 7). Used to reopen the tab where the user last `cd`'d
+   *  rather than the original launch dir. User tabs only. */
+  restoreCwd?: string
   /** Serialized xterm scrollback from the last session, replayed on relaunch so
    *  the tab reopens with its recent history (VS Code parity). Processes are NOT
    *  revived — a fresh shell starts beneath the restored buffer. Captured live
@@ -34,6 +38,7 @@ interface PersistedTerminalEntry {
   auto: boolean
   cwd: string
   id: string
+  restoreCwd?: string
   reviveBuffer?: string
   title: string
 }
@@ -59,6 +64,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
   const id = typeof record.id === 'string' ? record.id.trim() : ''
   const title = typeof record.title === 'string' ? record.title.trim() : ''
   const cwd = typeof record.cwd === 'string' ? record.cwd : ''
+  const restoreCwd = typeof record.restoreCwd === 'string' && record.restoreCwd ? record.restoreCwd : undefined
   const reviveBuffer = typeof record.reviveBuffer === 'string' ? record.reviveBuffer : undefined
 
   if (!id) {
@@ -69,6 +75,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
     auto: typeof record.auto === 'boolean' ? record.auto : true,
     cwd,
     id,
+    ...(restoreCwd ? { restoreCwd } : {}),
     ...(reviveBuffer ? { reviveBuffer } : {}),
     title: title || 'Terminal'
   }
@@ -116,6 +123,7 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
       auto: term.auto,
       cwd: term.cwd,
       id: term.id,
+      ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
       title: term.title
     }))
@@ -306,6 +314,27 @@ export function updateTerminalReviveBuffer(id: string, reviveBuffer: string): vo
 
   $terminals.set(
     $terminals.get().map(term => (term.id === id && term.kind === 'user' ? { ...term, reviveBuffer: capped } : term))
+  )
+}
+
+/** Record the shell's latest working directory for a tab so the next launch can
+ *  restart the PTY there instead of the original launch dir. User tabs only;
+ *  no-ops when the value is empty or unchanged to avoid redundant persistence. */
+export function updateTerminalRestoreCwd(id: string, restoreCwd: string): void {
+  const next = restoreCwd.trim()
+
+  if (!next) {
+    return
+  }
+
+  $terminals.set(
+    $terminals.get().map(term => {
+      if (term.id !== id || term.kind !== 'user' || term.restoreCwd === next) {
+        return term
+      }
+
+      return { ...term, restoreCwd: next }
+    })
   )
 }
 

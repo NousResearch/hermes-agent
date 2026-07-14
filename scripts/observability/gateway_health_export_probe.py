@@ -45,7 +45,6 @@ def main() -> None:
                     "service.name": "hermes-gateway-smoke",
                     "deployment.environment": "local-smoke",
                 },
-                "redaction": {"enabled": True, "include_raw_stack": False},
             },
             "export": {
                 "otlp": {

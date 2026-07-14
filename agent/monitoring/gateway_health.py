@@ -9,7 +9,6 @@ session history, audit records, or product analytics belong here.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -29,12 +28,6 @@ class GatewayHealthSnapshot:
     events: List[GatewayHealthEvent | GatewayDiagnosticEvent]
 
 
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
-_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/]+=*", re.IGNORECASE)
-_TOKEN_RE = re.compile(r"\b(xox[baprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,})\b")
-_SECRET_LITERAL_RE = re.compile(r"\*{3,}")
-_PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{2,4}\)[\s.\-]?)?\d{3}[\s.\-]?\d{3,4}(?:[\s.\-]?\d{2,4})?(?!\w)")
-
 _RUNNING_PLATFORM_STATES = {"running", "connected", "ok", "ready"}
 _FATAL_PLATFORM_STATES = {"fatal", "degraded", "error", "failed"}
 
@@ -44,19 +37,17 @@ def _allowed_logger(name: str) -> bool:
 
 
 def redact_gateway_message(message: Any) -> str:
-    """Redact gateway diagnostic free text for customer-owned export."""
-    text = str(message or "")
+    """Redact gateway diagnostic free text for operator-owned export.
+
+    Single scrub path: everything goes through
+    ``agent.monitoring.redaction.redact_for_export`` (unconditional
+    secrets + PII), then is length-bounded.
+    """
     try:
         from agent.monitoring.redaction import redact_for_export
-        redacted = redact_for_export(text, content_mode="pii") or ""
+        redacted = redact_for_export(str(message or "")) or ""
     except Exception:
         redacted = "[redaction-unavailable]"
-    redacted = _BEARER_RE.sub("[redacted]", redacted)
-    redacted = _TOKEN_RE.sub("[redacted]", redacted)
-    redacted = _SECRET_LITERAL_RE.sub("[redacted]", redacted)
-    redacted = re.sub(r"\bBearer\s+\[[^\]]+\]", "[redacted]", redacted, flags=re.IGNORECASE)
-    redacted = _EMAIL_RE.sub("[email]", redacted)
-    redacted = _PHONE_RE.sub("[phone]", redacted)
     return redacted[:500]
 
 

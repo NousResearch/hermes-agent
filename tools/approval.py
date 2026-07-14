@@ -3076,6 +3076,7 @@ def check_all_command_guards(command: str, env_type: str,
         pattern_keys=list(all_keys),
         session_key=session_key,
         surface="cli",
+    )
     risk_level = _derive_risk_level(tirith_result, is_dangerous, is_hardline)
     choice = prompt_dangerous_approval(
         command,

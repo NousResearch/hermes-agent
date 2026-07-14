@@ -13,11 +13,11 @@ Store layout
 
 Concurrency
 -----------
-A module-level :class:`threading.Lock` guards every read-modify-write so the
-store is consistent *within* a process. Cross-process safety relies on the
-atomicity of :func:`os.replace` (write temp file, then rename over the final
-path) — good enough for this phase where a single CLI process owns its
-pending interventions and the gateway only flips decision flags.
+Cross-process safety is enforced via exclusive file locking (fcntl.flock on
+POSIX, msvcrt.locking on Windows) on a dedicated .lock file. Every
+read-modify-write acquires the lock, loads, mutates, and saves atomically.
+This handles concurrent CLI processes and gateway commands racing to update
+the same intervention record.
 
 Time
 ----
@@ -27,11 +27,13 @@ can monkeypatch it for deterministic expiry / cleanup behaviour.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
+import platform
 import random
-import threading
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 
@@ -55,7 +57,42 @@ DEFAULT_APPROVE_TOKEN_LEN = 4
 # of _REMOTE_ACTIONS and stays opt-in per intervention).
 _REMOTE_ACTIONS = ("deny", "extend")
 
-_STORE_LOCK = threading.Lock()
+
+# Cross-process locking via a dedicated .lock file
+@contextlib.contextmanager
+def _store_lock():
+    """Acquire exclusive cross-process lock on the intervention store.
+
+    Uses fcntl.flock on POSIX and msvcrt.locking on Windows. Blocks until
+    the lock is acquired. Ensures atomic read-modify-write across concurrent
+    CLI and gateway processes.
+    """
+    lock_path = _store_path().with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Open lock file in append mode so it's created if missing
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_APPEND | os.O_RDWR, 0o600)
+    try:
+        if platform.system() == "Windows":
+            import msvcrt
+            # Lock first byte of the file
+            msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        yield
+
+    finally:
+        # Release lock (closing the fd releases flock automatically on POSIX,
+        # but explicitly unlock on Windows)
+        if platform.system() == "Windows":
+            try:
+                import msvcrt
+                msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+            except Exception:
+                pass
+        os.close(lock_fd)
 
 
 def _now() -> float:
@@ -271,6 +308,7 @@ def create_pending_intervention(
     risk_level: str = "",
     approve_tier: str = "none",
     approve_token: str | None = None,
+    approve_token_len: int = DEFAULT_APPROVE_TOKEN_LEN,
 ) -> PendingIntervention:
     """Create and persist a new pending intervention, returning the record.
 
@@ -279,10 +317,15 @@ def create_pending_intervention(
       * ``"one_tap"``      — a remote approve needs no token.
       * ``"typed_confirm"``— a remote approve must echo ``approve_token``.
                              When no token is supplied one is generated
-                             (``DEFAULT_APPROVE_TOKEN_LEN`` digits, distinct
-                             from the addressing ``code``).
+                             (``approve_token_len`` digits, distinct from the
+                             addressing ``code``).
+
+    Args:
+        approve_token_len: Number of digits for auto-generated typed-confirm
+            tokens (default: DEFAULT_APPROVE_TOKEN_LEN). Wire from config's
+            remote_control.approve_token_len.
     """
-    with _STORE_LOCK:
+    with _store_lock():
         records = _load_records()
         if code is None:
             code = _generate_code(records)
@@ -294,7 +337,7 @@ def create_pending_intervention(
         # Resolve the approve token according to the tier.
         if approve_tier == "typed_confirm":
             token = approve_token if approve_token is not None else _generate_token(
-                DEFAULT_APPROVE_TOKEN_LEN, avoid=code
+                approve_token_len, avoid=code
             )
         else:
             token = ""
@@ -329,7 +372,7 @@ def create_pending_intervention(
 
 def get_pending_intervention(code: str) -> PendingIntervention | None:
     """Return the record for ``code`` or ``None``. Does not mutate state."""
-    with _STORE_LOCK:
+    with _store_lock():
         records = _load_records()
         raw = records.get(code)
         if raw is None:
@@ -354,20 +397,27 @@ def set_remote_decision(
     minutes: int | None = None,
     token: str | None = None,
     source: str = "",
+    max_extend_minutes: int | None = None,
 ) -> tuple[bool, str, PendingIntervention | None]:
     """Apply a remote ``deny``/``extend``/``approve`` decision.
 
     Returns ``(ok, reason, record_or_None)``. On failure ``reason`` is one of
     ``not_found`` / ``expired`` / ``action_not_allowed`` / ``already_resolved``
-    / ``approve_not_allowed`` / ``bad_token`` / ``invalid_minutes``.
+    / ``approve_not_allowed`` / ``bad_token`` / ``invalid_minutes`` /
+    / ``exceeds_max_extend``.
 
     ``deny`` and ``extend`` keep the phase-1 ``_action_allowed`` gate.
     ``approve`` is gated separately on the record's ``approve_tier`` (it is
     never a member of ``_REMOTE_ACTIONS``): the ``one_tap`` tier needs no
     token, while ``typed_confirm`` requires ``token`` to match the stored
     ``approve_token``.
+
+    Args:
+        max_extend_minutes: Maximum allowed extension in minutes. Wire from
+            config's remote_control.max_extend_minutes. When None, no cap is
+            enforced beyond the record's max_deadline_ts.
     """
-    with _STORE_LOCK:
+    with _store_lock():
         records = _load_records()
         raw = records.get(code)
         if raw is None:
@@ -429,6 +479,9 @@ def set_remote_decision(
                 return (False, "invalid_minutes", rec)
             if mins <= 0:
                 return (False, "invalid_minutes", rec)
+            # Enforce max_extend_minutes cap if provided (wired from config)
+            if max_extend_minutes is not None and mins > max_extend_minutes:
+                return (False, "exceeds_max_extend", rec)
             new_deadline = rec.deadline_ts + mins * 60
             if new_deadline >= rec.max_deadline_ts:
                 new_deadline = rec.max_deadline_ts
@@ -464,7 +517,7 @@ def consume_remote_decision(code: str) -> PendingIntervention | None:
                         waiting. Repeated extends are therefore each consumed
                         exactly once.
     """
-    with _STORE_LOCK:
+    with _store_lock():
         records = _load_records()
         raw = records.get(code)
         if raw is None:
@@ -513,7 +566,7 @@ def cleanup_expired() -> int:
 
     Returns the number of records removed.
     """
-    with _STORE_LOCK:
+    with _store_lock():
         records = _load_records()
         now = _now()
         to_remove = []

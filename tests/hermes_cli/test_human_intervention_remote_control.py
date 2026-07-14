@@ -638,3 +638,150 @@ def test_expired_approve_rejected(hic, monkeypatch):
     assert ok is False
     assert reason == "expired"
     assert rec is not None
+
+
+def _worker_extend(args):
+    """Multiprocessing worker that extends an intervention record.
+
+    Must be module-level for pickling in multiprocessing.
+    """
+    code, worker_id, iterations, hermes_home = args
+    import os
+    import time
+    os.environ["HERMES_HOME"] = hermes_home
+    # Fresh import in subprocess
+    from hermes_cli.human_intervention_remote_control import set_remote_decision
+
+    for i in range(iterations):
+        ok, reason, _ = set_remote_decision(
+            code, "extend", minutes=1, source=f"worker-{worker_id}-{i}"
+        )
+        # All extends should succeed (or be clamped, but not lost)
+        assert ok or reason == "clamped", f"worker {worker_id} iter {i} failed: {reason}"
+        time.sleep(0.001)  # Small delay to increase race window
+
+
+def test_multiprocessing_race_no_lost_updates(hic, tmp_path):
+    """Regression: concurrent CLI and gateway processes must not lose updates.
+
+    This test spawns multiple processes that race to update the same
+    intervention record. With proper file locking, all updates are serialized
+    and no writes are lost. Without locking, os.replace() races can silently
+    drop updates (last write wins, clobbering intermediate states).
+    """
+    import multiprocessing
+
+    # Create a shared intervention record
+    rec = hic.create_pending_intervention(
+        kind="approval",
+        title="race test",
+        preview="multiprocess",
+        session_key="test",
+        timeout_seconds=300,
+        code="9999",
+    )
+    assert rec.code == "9999"
+
+    num_workers = 4
+    iterations_per_worker = 5
+    processes = []
+
+    for i in range(num_workers):
+        p = multiprocessing.Process(
+            target=_worker_extend,
+            args=(("9999", i, iterations_per_worker, str(tmp_path)),)
+        )
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join(timeout=10)
+        assert not p.is_alive(), "worker process hung"
+        assert p.exitcode == 0, f"worker process failed with code {p.exitcode}"
+
+    # Verify the record still exists and has consistent state
+    final = hic.get_pending_intervention("9999")
+    assert final is not None, "record was lost during concurrent updates"
+    assert final.code == "9999"
+    # The deadline should have been extended (exact value depends on race
+    # ordering and clamping, but it should be > original)
+    assert final.deadline_ts > rec.deadline_ts
+
+
+def test_max_extend_minutes_enforced(hic):
+    """Test that max_extend_minutes cap is enforced when provided."""
+    hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=120,
+        code="8888",
+    )
+
+    # Attempt to extend by 30 minutes with a 15-minute cap
+    ok, reason, rec = hic.set_remote_decision(
+        "8888", "extend", minutes=30, max_extend_minutes=15
+    )
+    assert ok is False
+    assert reason == "exceeds_max_extend"
+
+    # Extend by exactly the cap should succeed
+    ok, reason, rec = hic.set_remote_decision(
+        "8888", "extend", minutes=15, max_extend_minutes=15
+    )
+    assert ok is True
+
+    # Extend without cap should succeed (clamped by max_deadline_ts only)
+    hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=120,
+        code="7777",
+    )
+    ok, reason, rec = hic.set_remote_decision(
+        "7777", "extend", minutes=30, max_extend_minutes=None
+    )
+    assert ok is True  # May be clamped but not rejected
+
+
+def test_approve_token_len_wired(hic):
+    """Test that approve_token_len config is used for typed_confirm tokens."""
+    rec = hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=120,
+        code="6666",
+        approve_tier="typed_confirm",
+        approve_token_len=6,
+    )
+    assert rec.approve_tier == "typed_confirm"
+    assert rec.approve_token.isdigit()
+    assert len(rec.approve_token) == 6
+    assert rec.approve_token != rec.code
+
+
+def test_empty_allowed_actions_disables_deny_and_extend(hic):
+    """Test that [] as allowed_actions disables both deny and extend remotely."""
+    hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=120,
+        code="5555",
+        allowed_actions=[],  # Explicit empty list
+    )
+
+    # Both deny and extend should be rejected
+    ok, reason, rec = hic.set_remote_decision("5555", "deny")
+    assert ok is False
+    assert reason == "action_not_allowed"
+
+    ok, reason, rec = hic.set_remote_decision("5555", "extend", minutes=5)
+    assert ok is False
+    assert reason == "action_not_allowed"

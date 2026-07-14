@@ -2608,9 +2608,8 @@ DEFAULT_CONFIG = {
                 "approve_high_typed_confirm": True,  # high needs a confirm token
                 "approve_token_len": 4,            # typed-confirm token length
                 "never_approve_levels": ["critical"],  # never remotely approvable
-                "code_ttl_seconds": 90,
-                "max_extend_minutes": 15,
-                "max_total_wait_minutes": 15,
+                "max_extend_minutes": 15,          # cap on single /iv extend request
+                "max_total_wait_minutes": 15,      # absolute wait ceiling
                 "allowed_targets": ["telegram", "weixin"],
                 "risk_explanation": {
                     "enabled": True,

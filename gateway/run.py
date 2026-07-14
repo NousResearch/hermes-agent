@@ -14616,6 +14616,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "already_resolved": "该等待项已处理。",
                 "action_not_allowed": "该操作不被允许。",
                 "invalid_minutes": "延长分钟必须是正整数。",
+                "exceeds_max_extend": f"延长分钟超过最大限制 ({rc.get('max_extend_minutes', 15)} 分钟)。",
             }.get(reason, f"操作失败：{reason}。")
 
         try:
@@ -14661,8 +14662,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return "延长分钟必须是正整数。"
                 if minutes <= 0:
                     return "延长分钟必须是正整数。"
+
+            max_extend_minutes = rc.get("max_extend_minutes")
+            if max_extend_minutes is not None:
+                max_extend_minutes = int(max_extend_minutes)
+
             ok, reason, _rec = set_remote_decision(
-                code, "extend", minutes=minutes, source=platform_name or "mobile"
+                code, "extend", minutes=minutes, source=platform_name or "mobile",
+                max_extend_minutes=max_extend_minutes
             )
             if ok:
                 msg = f"已延长 CLI 等待项 {code}：{minutes} 分钟。"

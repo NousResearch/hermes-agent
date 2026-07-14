@@ -11643,7 +11643,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     kind=kind, title=kind, preview=preview,
                     session_key=getattr(self, "session_id", ""), timeout_seconds=timeout,
                     max_total_wait_minutes=int(rc.get("max_total_wait_minutes", 15)),
-                    allowed_actions=allowed or None)
+                    allowed_actions=allowed if allowed else [],
+                    approve_token_len=int(rc.get("approve_token_len", 4)))
                 remote_code = rec.code
                 remote_actions = (allowed + ["status"]) if allowed else ["status"]
             except Exception:
@@ -11914,7 +11915,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "approve_high_typed_confirm": True,
             "approve_token_len": 4,
             "never_approve_levels": ["critical"],
-            "code_ttl_seconds": 90,
             "max_extend_minutes": 15,
             "max_total_wait_minutes": 15,
             "allowed_targets": [],
@@ -12100,9 +12100,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         session_key=getattr(self, "session_id", ""),
                         timeout_seconds=timeout,
                         max_total_wait_minutes=int(rc.get("max_total_wait_minutes", 15)),
-                        allowed_actions=allowed or None,
+                        allowed_actions=allowed if allowed else [],
                         risk_level=risk_level,
                         approve_tier=approve_tier,
+                        approve_token_len=int(rc.get("approve_token_len", 4)),
                     )
                     remote_code = rec.code
                     # The store generates the typed-confirm token (if any).

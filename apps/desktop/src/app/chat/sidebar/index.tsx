@@ -794,8 +794,8 @@ export function ChatSidebar({
   )
 
   const visibleMessagingSessions = useMemo(
-    () => filterSessionsByProfileScope(messagingSessions, profileScope, showAllProfiles),
-    [messagingSessions, profileScope, showAllProfiles]
+    () => filterSessionsByProfileScope(messagingSessions, profileScope),
+    [messagingSessions, profileScope]
   )
 
   // Reveal another batch of a platform's rows; fetch from the backend too if we

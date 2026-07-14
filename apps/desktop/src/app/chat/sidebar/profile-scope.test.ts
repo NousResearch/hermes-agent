@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { ALL_PROFILES } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
 import { filterSessionsByProfileScope } from './profile-scope'
@@ -27,19 +28,19 @@ describe('filterSessionsByProfileScope', () => {
   it('keeps only messaging rows from the selected profile', () => {
     const rows = [session('default-row', 'default'), session('research-row', 'research')]
 
-    expect(filterSessionsByProfileScope(rows, 'research', false).map(s => s.id)).toEqual(['research-row'])
+    expect(filterSessionsByProfileScope(rows, 'research').map(s => s.id)).toEqual(['research-row'])
   })
 
   it('treats missing profiles as default', () => {
     const rows = [session('legacy-row'), session('research-row', 'research')]
 
-    expect(filterSessionsByProfileScope(rows, 'default', false).map(s => s.id)).toEqual(['legacy-row'])
+    expect(filterSessionsByProfileScope(rows, 'default').map(s => s.id)).toEqual(['legacy-row'])
   })
 
-  it('keeps every messaging row in All profiles mode', () => {
+  it('keeps every messaging row when persisted All profiles mode outlives the profile switcher', () => {
     const rows = [session('default-row', 'default'), session('research-row', 'research')]
 
-    expect(filterSessionsByProfileScope(rows, 'research', true).map(s => s.id)).toEqual([
+    expect(filterSessionsByProfileScope(rows, ALL_PROFILES).map(s => s.id)).toEqual([
       'default-row',
       'research-row'
     ])

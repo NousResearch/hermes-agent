@@ -102,7 +102,6 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
-from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -162,15 +161,26 @@ def _openai_http_client_kwargs(
     async_mode: bool = False,
 ) -> Dict[str, Any]:
     """Inject keepalive httpx client with env-only proxy (not macOS system proxy)."""
-    client = build_keepalive_http_client(
-        str(base_url or ""),
-        async_mode=async_mode,
-        verify=_resolve_aux_verify(base_url),
-    )
+    try:
+        from agent.process_bootstrap import build_keepalive_http_client
+        client = build_keepalive_http_client(
+            str(base_url or ""),
+            async_mode=async_mode,
+            verify=_resolve_aux_verify(base_url),
+        )
+    except (ImportError, AttributeError):
+        # Fallback for older hermes-agent versions without build_keepalive_http_client.
+        # This can happen when Desktop users run with stale code (#64333).
+        # Without the keepalive client, auxiliary calls use the OpenAI SDK's default
+        # httpx client, which respects macOS system proxy (less predictable for env-only
+        # proxy use) and has no pool-level keepalive expiry (connections may live longer).
+        # This is a graceful degradation — functionality still works, just with slightly
+        # different proxy/keepalive behavior.
+        client = None
+    
     if client is None:
         return {}
     return {"http_client": client}
-
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}

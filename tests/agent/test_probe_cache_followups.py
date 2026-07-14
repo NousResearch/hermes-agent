@@ -110,6 +110,35 @@ class TestOllamaApiShowCaching:
 class TestDetectLocalServerTypeCache:
     """#29988: detect_local_server_type memoized with a bounded TTL."""
 
+    def test_llamacpp_compat_tags_do_not_misclassify_as_ollama(self):
+        """Modern llama.cpp also exposes /api/tags for Ollama compatibility."""
+        miss = MagicMock(status_code=404)
+        tags = MagicMock(status_code=200)
+        tags.json.return_value = {"models": [{"name": "local.gguf"}]}
+        props = MagicMock(status_code=200)
+        props.text = '{"default_generation_settings": {}, "is_sleeping": false}'
+
+        client = MagicMock()
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/api/tags"):
+                return tags
+            if url.endswith("/v1/props"):
+                return props
+            return miss
+
+        client.get.side_effect = _get
+
+        from agent.model_metadata import detect_local_server_type
+
+        with patch("httpx.Client", return_value=client):
+            detected = detect_local_server_type("http://127.0.0.1:8080/v1")
+
+        assert detected == "llamacpp"
+        assert any(call.args[0].endswith("/v1/props") for call in client.get.call_args_list)
+
     def _get_client(self, server_type="ollama"):
         ollama_resp = MagicMock()
         ollama_resp.status_code = 200

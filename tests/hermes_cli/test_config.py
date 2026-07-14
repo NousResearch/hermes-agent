@@ -1328,6 +1328,13 @@ class TestCliRefreshIntervalConfig:
         assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
 
 
+class TestLocalModelStatusConfig:
+    def test_default_config_enables_local_probe_without_guessing_idle_timeout(self):
+        status = DEFAULT_CONFIG["display"]["local_model_status"]
+        assert status["enabled"] is True
+        assert status["idle_timeout_seconds"] is None
+
+
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}

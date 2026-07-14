@@ -1205,8 +1205,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 for file_path, entry_idx, entry in all_entries
             ]
             
-            # Run all tasks concurrently (semaphore limits actual concurrency)
-            await asyncio.gather(*tasks)
+            # Run all tasks concurrently (semaphore limits actual concurrency).
+            # return_exceptions=True isolates per-entry failures so one bad
+            # trajectory doesn't abort the entire batch.
+            await asyncio.gather(*tasks, return_exceptions=True)
             
             # Remove status task
             progress.remove_task(status_task)

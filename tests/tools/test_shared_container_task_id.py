@@ -199,3 +199,51 @@ def test_no_session_key_still_defaults(monkeypatch):
     # CLI mode: no session key -> unchanged "default" behaviour.
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     assert terminal_tool._resolve_container_task_id(None) == "default"
+
+
+# --- Production gateway path: session key bound via ContextVars ---------------
+#
+# The tests above set HERMES_SESSION_KEY through os.environ, which only
+# exercises the os.getenv() *fallback* branch of the scoping logic. Real
+# gateway turns never write this process-global env var — they bind the
+# identity through gateway.session_context.set_session_vars(), which stores it
+# in a ContextVar, and _resolve_container_task_id reads it back via
+# get_session_env(). These companion tests cover that production path with
+# HERMES_SESSION_KEY absent from os.environ.
+
+
+def test_session_key_from_contextvar_without_environ(monkeypatch):
+    # Prove the fix works on the gateway path: HERMES_SESSION_KEY is NOT in
+    # os.environ; the key lives only in the ContextVar bound by the gateway.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    tokens = set_session_vars(session_key="sess-ctx")
+    try:
+        assert (
+            terminal_tool._resolve_container_task_id(None) == "session:sess-ctx"
+        )
+        # Subagents inherit the same ContextVar and collapse onto the parent.
+        assert (
+            terminal_tool._resolve_container_task_id("subagent-1-cafe")
+            == "session:sess-ctx"
+        )
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_contextvar_session_key_wins_over_environ(monkeypatch):
+    # Two concurrent gateway sessions in one process must not cross-contaminate:
+    # the ContextVar is authoritative even when a *different* value lingers in
+    # os.environ (e.g. a CLI-set or previously-leaked global). The container
+    # slot must follow the ContextVar-bound session, not the process global.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-ENV")
+    tokens = set_session_vars(session_key="sess-CTX")
+    try:
+        assert (
+            terminal_tool._resolve_container_task_id(None) == "session:sess-CTX"
+        )
+    finally:
+        clear_session_vars(tokens)

@@ -1507,8 +1507,15 @@ class TelegramAdapter(BasePlatformAdapter):
     def _should_attempt_rich(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
+        meta = metadata or {}
+        # For the final message (notify=True), we want to attempt rich regardless of expect_edits
+        # because the final message should not be edited later.
+        if meta.get("notify"):
+            return bool(self._rich_eligible(content))
+        # For non-final messages, respect the expect_edits flag to avoid using rich
+        # when the message is expected to be edited later.
         return bool(
-            not (metadata or {}).get("expect_edits")
+            not meta.get("expect_edits")
             and self._rich_eligible(content)
         )
 

@@ -4419,11 +4419,12 @@ class APIServerAdapter(BasePlatformAdapter):
         stored_session_id = None
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
-            if stored and self._response_visible_to_session_key(stored, gateway_session_key):
-                conversation_history = list(stored.get("conversation_history", []))
-                stored_session_id = stored.get("session_id")
-                if instructions is None:
-                    instructions = stored.get("instructions")
+            if stored is None or not self._response_visible_to_session_key(stored, gateway_session_key):
+                return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
+            conversation_history = list(stored.get("conversation_history", []))
+            stored_session_id = stored.get("session_id")
+            if instructions is None:
+                instructions = stored.get("instructions")
 
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).

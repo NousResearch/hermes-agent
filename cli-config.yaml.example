@@ -998,6 +998,14 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
+  # Show the welcome banner at startup and on /new.
+  # Set to false for a minimal startup experience — the screen is still
+  # cleared, and diagnostic warnings (disabled tools, low context) still
+  # appear, but the ASCII-art / tool / skill summary panel is skipped.
+  #   true:  Render the welcome banner (default)
+  #   false: Skip the banner for a clean startup
+  show_banner: true
+
   # Tool progress display level (CLI and gateway)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)

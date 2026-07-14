@@ -444,6 +444,7 @@ def load_cli_config() -> Dict[str, Any]:
 
         "display": {
             "compact": False,
+            "show_banner": True,
             "resume_display": "full",
             # Recap tuning for /resume — see hermes_cli/config.py DEFAULT_CONFIG.
             "resume_exchanges": 10,
@@ -3468,6 +3469,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
+        # show_banner: when False, suppress the ASCII-art / compact welcome
+        # banner at startup and on /new for a minimal "Ctrl+L" feel.
+        # Diagnostic warnings (disabled tools, low context) are still shown.
+        self.show_startup_banner = CLI_CONFIG["display"].get("show_banner", True)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
@@ -5855,33 +5860,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
-        
-        # Auto-compact for narrow terminals — the full banner with caduceus
-        # + tool list needs ~80 columns minimum to render without wrapping.
-        term_width = shutil.get_terminal_size().columns
-        use_compact = self.compact or term_width < 80
-        
-        if use_compact:
-            self._console_print(_build_compact_banner())
-            self._show_status()
-        else:
-            # Get tools for display
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            
-            # Get terminal working directory (where commands will execute)
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            
-            # Build and display the banner
-            build_welcome_banner(
-                console=self.console,
-                model=self.model,
-                cwd=cwd,
-                tools=tools,
-                enabled_toolsets=self.enabled_toolsets,
-                session_id=self.session_id,
-                context_length=ctx_len,
-                provider=self.provider,
-            )
+
+        # display.show_banner: false opts into a minimal startup — skip the
+        # visual banner entirely. Diagnostic warnings further below still run.
+        if self.show_startup_banner:
+            # Auto-compact for narrow terminals — the full banner with caduceus
+            # + tool list needs ~80 columns minimum to render without wrapping.
+            term_width = shutil.get_terminal_size().columns
+            use_compact = self.compact or term_width < 80
+
+            if use_compact:
+                self._console_print(_build_compact_banner())
+                self._show_status()
+            else:
+                # Get tools for display
+                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+
+                # Get terminal working directory (where commands will execute)
+                cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+
+                # Build and display the banner
+                build_welcome_banner(
+                    console=self.console,
+                    model=self.model,
+                    cwd=cwd,
+                    tools=tools,
+                    enabled_toolsets=self.enabled_toolsets,
+                    session_id=self.session_id,
+                    context_length=ctx_len,
+                    provider=self.provider,
+                )
         
         # Tool discovery is intentionally deferred on the Termux bare prompt
         # path; availability warnings are shown once tools are initialized.
@@ -8132,25 +8140,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # and gets mangled by patch_stdout).
             if self._app:
                 cc = ChatConsole()
-                term_w = shutil.get_terminal_size().columns
-                if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
-                else:
-                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-                    ctx_len = None
-                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-                        ctx_len = self.agent.context_compressor.context_length
-                    build_welcome_banner(
-                        console=cc,
-                        model=self.model,
-                        cwd=cwd,
-                        tools=tools,
-                        enabled_toolsets=self.enabled_toolsets,
-                        session_id=self.session_id,
-                        context_length=ctx_len,
-                        provider=self.provider,
-                    )
+                if self.show_startup_banner:
+                    term_w = shutil.get_terminal_size().columns
+                    if self.compact or term_w < 80:
+                        cc.print(_build_compact_banner())
+                    else:
+                        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+                        ctx_len = None
+                        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
+                            ctx_len = self.agent.context_compressor.context_length
+                        build_welcome_banner(
+                            console=cc,
+                            model=self.model,
+                            cwd=cwd,
+                            tools=tools,
+                            enabled_toolsets=self.enabled_toolsets,
+                            session_id=self.session_id,
+                            context_length=ctx_len,
+                            provider=self.provider,
+                        )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:

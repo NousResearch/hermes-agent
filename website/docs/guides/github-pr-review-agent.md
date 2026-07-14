@@ -34,7 +34,7 @@ If you have a public endpoint available, check out [Automated GitHub PR Comments
 
 ## Prerequisites
 
-- **Hermes Agent installed** — see the [Installation guide](/docs/getting-started/installation)
+- **Hermes Agent installed** — see the [Installation guide](/getting-started/installation)
 - **Gateway running** for cron jobs:
   ```bash
   hermes gateway install   # Install as a service
@@ -50,7 +50,7 @@ If you have a public endpoint available, check out [Automated GitHub PR Comments
   # Authenticate
   gh auth login
   ```
-- **Messaging configured** (optional) — [Telegram](/docs/user-guide/messaging/telegram) or [Discord](/docs/user-guide/messaging/discord)
+- **Messaging configured** (optional) — [Telegram](/user-guide/messaging/telegram) or [Discord](/user-guide/messaging/discord)
 
 :::tip No messaging? No problem
 Use `deliver: "local"` to save reviews to `~/.hermes/cron/output/`. Great for testing before wiring up notifications.
@@ -297,7 +297,7 @@ GitHub allows 5,000 API requests/hour for authenticated users. Each PR review us
 ## What's Next?
 
 - **[Webhook-Based PR Reviews](./webhook-github-pr-review.md)** — get instant reviews when PRs are opened (requires a public endpoint)
-- **[Daily Briefing Bot](/docs/guides/daily-briefing-bot)** — combine PR reviews with your morning news digest
-- **[Build a Plugin](/docs/guides/build-a-hermes-plugin)** — wrap the review logic into a shareable plugin
-- **[Profiles](/docs/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config
-- **[Fallback Providers](/docs/user-guide/features/fallback-providers)** — ensure reviews run even when one provider is down
+- **[Daily Briefing Bot](/guides/daily-briefing-bot)** — combine PR reviews with your morning news digest
+- **[Build a Plugin](/developer-guide/plugins)** — wrap the review logic into a shareable plugin
+- **[Profiles](/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config
+- **[Fallback Providers](/user-guide/features/fallback-providers)** — ensure reviews run even when one provider is down

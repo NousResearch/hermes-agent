@@ -384,6 +384,20 @@ class TestDMTopicFallbackReplyToMode:
         )
         assert result == {"message_thread_id": 42}
 
+    def test_synthetic_guest_thread_is_not_sent_as_telegram_topic(self):
+        """Guest-mode routing lanes are Hermes IDs, not numeric Telegram topics."""
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "guest:5323706597086656603", metadata=None,
+        )
+        assert result == {"message_thread_id": None}
+
+    def test_synthetic_guest_thread_is_not_used_for_typing(self):
+        """Typing indicators must also omit synthetic guest-mode lane IDs."""
+        result = TelegramAdapter._message_thread_id_for_typing(
+            "guest:5323706597086656603"
+        )
+        assert result is None
+
     # -- send() integration test --
 
     @pytest.mark.asyncio

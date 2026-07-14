@@ -1933,8 +1933,10 @@ def _setup_webhooks():
     print_success("Webhooks enabled! Next steps:")
     from hermes_constants import display_hermes_home as _dhh
     print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
-    print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
-    print_info("      http://your-server:8644/webhooks/<route-name>")
+    print_info("   2. Test the loopback-only default at:")
+    print_info("      http://127.0.0.1:8644/webhooks/<route-name>")
+    print_warning("   Direct public ingress is opt-in: set extra.host to 0.0.0.0")
+    print_warning("   and extra.allow_public_bind to true in config.yaml.")
     print()
     print_info("   Route configuration guide:")
     print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")

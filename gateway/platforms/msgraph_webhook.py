@@ -30,7 +30,7 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/msgraph/webhook"
 DEFAULT_MAX_SEEN_RECEIPTS = 5000

@@ -46,6 +46,7 @@ def _make_config(
     rate_limit=30,
     max_body_bytes=1_048_576,
     host="0.0.0.0",
+    allow_public_bind=False,
     port=0,  # let OS pick a free port in tests
 ):
     """Build a PlatformConfig suitable for WebhookAdapter."""
@@ -55,6 +56,7 @@ def _make_config(
         "routes": routes or {},
         "rate_limit": rate_limit,
         "max_body_bytes": max_body_bytes,
+        "allow_public_bind": allow_public_bind,
     }
     if secret:
         extra["secret"] = secret
@@ -65,6 +67,11 @@ def _make_adapter(routes=None, **kwargs):
     """Create a WebhookAdapter with sensible defaults for testing."""
     config = _make_config(routes=routes, **kwargs)
     return WebhookAdapter(config)
+
+
+def test_default_bind_is_loopback_only():
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={}))
+    assert adapter._host == "127.0.0.1"
 
 
 def _create_app(adapter: WebhookAdapter) -> web.Application:
@@ -1515,10 +1522,31 @@ class TestInsecureNoAuthSafetyRail:
         assert _is_loopback_host(host) is False
 
     @pytest.mark.asyncio
-    async def test_connect_allows_real_secret_on_public_bind(self):
-        """A real HMAC secret bound to 0.0.0.0 is the normal production case."""
+    async def test_connect_rejects_real_secret_without_public_bind_consent(self):
         routes = {"r1": {"secret": "real-secret-abc123", "prompt": "x"}}
         adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        with pytest.raises(ValueError, match="allow_public_bind=true"):
+            await adapter.connect()
+
+    @pytest.mark.parametrize(
+        "configured_value",
+        [False, "false", "False", "0", "no", "off", "", None, "unexpected"],
+    )
+    def test_public_bind_consent_rejects_false_like_values(self, configured_value):
+        adapter = _make_adapter(allow_public_bind=configured_value)
+        assert adapter._allow_public_bind is False
+
+    @pytest.mark.parametrize("configured_value", [True, "true", "1", "yes", "on"])
+    def test_public_bind_consent_accepts_explicit_truthy_values(self, configured_value):
+        adapter = _make_adapter(allow_public_bind=configured_value)
+        assert adapter._allow_public_bind is True
+
+    @pytest.mark.asyncio
+    async def test_connect_allows_real_secret_with_public_bind_consent(self):
+        routes = {"r1": {"secret": "real-secret-abc123", "prompt": "x"}}
+        adapter = _make_adapter(
+            routes=routes, host="0.0.0.0", port=0, allow_public_bind=True
+        )
         try:
             with patch.object(adapter, "_reload_dynamic_routes"):
                 result = await adapter.connect()

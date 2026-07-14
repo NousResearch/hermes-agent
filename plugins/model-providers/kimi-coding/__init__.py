@@ -62,7 +62,7 @@ kimi = KimiProfile(
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
     default_headers={"User-Agent": "hermes-agent/1.0"},
-    default_aux_model="kimi-k2-turbo-preview",
+    default_aux_model="kimi-k.3.0",
 )
 
 kimi_cn = KimiProfile(
@@ -73,7 +73,7 @@ kimi_cn = KimiProfile(
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
     default_headers={"User-Agent": "hermes-agent/1.0"},
-    default_aux_model="kimi-k2-turbo-preview",
+    default_aux_model="kimi-k.3.0",
 )
 
 register_provider(kimi)

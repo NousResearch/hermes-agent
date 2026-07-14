@@ -45,6 +45,20 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
+    def test_k3_model_id_present_in_provider_catalog(self):
+        """The pre-release K3.0 model id is available for selection."""
+        from hermes_cli.models import provider_model_ids
+
+        assert "kimi-k.3.0" in provider_model_ids("kimi-coding")
+
+    def test_k3_model_validation_accepts(self):
+        """``validate_requested_model`` recognizes the pre-release K3.0 id."""
+        from hermes_cli.models import validate_requested_model
+
+        result = validate_requested_model("kimi-k.3.0", "kimi-coding")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
     @pytest.mark.parametrize("effort", ["low", "medium", "high"])
     def test_explicit_effort_sends_effort_only(self, kimi_profile, effort):
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(

@@ -69,6 +69,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.7-plus",                      ""),
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
+    ("moonshotai/kimi-k.3.0",                  ""),
     ("moonshotai/kimi-k2.6",                   "recommended"),
     ("moonshotai/kimi-k2.7-code",              ""),
     # MiniMax
@@ -220,6 +221,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3.7-plus",
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
+        "moonshotai/kimi-k.3.0",
         "moonshotai/kimi-k2.6",
         "moonshotai/kimi-k2.7-code",
         # MiniMax
@@ -316,10 +318,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # Third-party agentic models hosted on build.nvidia.com
         # (map to OpenRouter defaults — users get familiar picks on NIM)
         "z-ai/glm-5.2",
+        "moonshotai/kimi-k.3.0",
         "moonshotai/kimi-k2.6",
         "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
+        "kimi-k.3.0",
         "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
@@ -330,6 +334,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
+        "kimi-k.3.0",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -341,6 +346,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "step-3.5-flash-2603",
     ],
     "moonshot": [
+        "kimi-k.3.0",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -408,6 +414,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4",
     ],
     "opencode-zen": [
+        "kimi-k.3.0",
         "kimi-k2.5",
         "kimi-k2.6",
         "gpt-5.5",
@@ -460,6 +467,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
     ],
     "opencode-go": [
+        "kimi-k.3.0",
         "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
@@ -495,6 +503,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "alibaba": [
         "qwen3.7-max",
         "qwen3.6-plus",
+        "kimi-k.3.0",
         "kimi-k2.5",
         "qwen3.5-plus",
         "qwen3-coder-plus",
@@ -549,6 +558,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],
     "novita": [
+        "moonshotai/kimi-k.3.0",
         "moonshotai/kimi-k2.5",
         "minimax/minimax-m2.7",
         "zai-org/glm-5",

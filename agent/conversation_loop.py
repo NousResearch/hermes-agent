@@ -793,6 +793,18 @@ def run_conversation(
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
 
+            # Safety net: normalize invalid content types to valid strings.
+            # Some providers (DeepSeek V4 Flash thinking mode) reject content
+            # that is not a string or a list.  Catches:
+            #   - None (from old session DB records)
+            #   - dict (from tool handlers returning raw dicts)
+            #   - int / bool / other unexpected types
+            _c = api_msg.get("content")
+            if _c is None:
+                api_msg["content"] = ""
+            elif not isinstance(_c, (str, list)):
+                api_msg["content"] = json.dumps(_c, ensure_ascii=False)
+
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
             # with target="user_message" (the default).  Both are

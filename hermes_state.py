@@ -4471,6 +4471,13 @@ class SessionDB:
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
+            # Normalize invalid content types — strict providers (DeepSeek
+            # V4 Flash thinking mode) reject non-string/non-list content.
+            # Refs #<tbd>.
+            if content is None:
+                content = ""
+            elif not isinstance(content, (str, list)):
+                content = json.dumps(content, ensure_ascii=False)
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}

@@ -1921,7 +1921,7 @@ class AIAgent:
                             _txt.append(str(p.get("text", "")))
                         elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
                             _txt.append("[screenshot]")
-                    content = "\n".join(_txt) if _txt else None
+                    content = "\n".join(_txt) if _txt else ""
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [

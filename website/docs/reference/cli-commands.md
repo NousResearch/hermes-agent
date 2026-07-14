@@ -49,6 +49,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
+| `hermes worktree` | Manage task worktrees, single-writer handoff, inventory, cleanup quarantine, and PDCA reports. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |

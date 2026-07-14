@@ -10457,6 +10457,9 @@ def main():
     from hermes_cli.work_closeout import register_work_subparser
     register_work_subparser(subparsers)
 
+    from hermes_cli.worktree_lifecycle import register_worktree_subparser
+    register_worktree_subparser(subparsers)
+
     # =========================================================================
     # login command
     # =========================================================================

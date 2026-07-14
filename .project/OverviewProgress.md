@@ -1,5 +1,5 @@
 > memory-schema: v1.2
-> อ่านตามลำดับ: plan.md (plan_id: QAQC — active · shortcut Use QA QC) → plan-grd.md (แผน GRD จบแล้ว + คิว GRD-P5..P9) → decisions.md → hermes-standard/REQUIREMENTS.md (บัญชีความต้องการ 66 ข้อ)
+> อ่านตามลำดับ: plan-wtl.md (plan_id: WTL — active · Worktree Lifecycle) → plan.md (plan_id: QAQC/MW) → plan-grd.md (แผน GRD จบแล้ว + คิว GRD-P5..P9) → decisions.md → hermes-standard/REQUIREMENTS.md (บัญชีความต้องการ 66 ข้อ)
 
 # Overview & Progress — Hermes Agent
 อัปเดตล่าสุด: 2026-07-14 (Use Migrate Web P3 ครบ 7/7 + §13 + P4 installer · merged main) · branch งานถัดไป: แตกใหม่จาก `main` · ป้าย: [fact] เว้นแต่ระบุ

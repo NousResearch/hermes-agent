@@ -179,6 +179,10 @@ def main() -> int:
     parser.add_argument("--staff", required=True, help="Staff id, e.g. nat.")
     parser.add_argument("--project", required=True, help="Project, e.g. lotto-reward.")
     parser.add_argument("--task", required=True, help="Short task, e.g. dashboard-fix.")
+    parser.add_argument("--task-id", help="Use WTL Manager with this stable task id instead of the legacy creator.")
+    parser.add_argument("--root", default=WORKTREE_ROOT, help="Registered worktree root for WTL Manager.")
+    parser.add_argument("--registry", help="Worktree Lifecycle registry JSON.")
+    parser.add_argument("--machine-id", help="Stable Notebook/VPS machine id for WTL Manager.")
     parser.add_argument("--base", help="Base branch override (default: repo default).")
     parser.add_argument("--apply", action="store_true", help="Make changes (default dry-run).")
     args = parser.parse_args()
@@ -192,6 +196,23 @@ def main() -> int:
         report["searched"] = list(REFERENCE_ROOTS)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 2
+
+    if args.task_id:
+        # Compatibility bridge: existing callers may keep using this script,
+        # while all new creation/state is delegated to the central Manager.
+        from argparse import Namespace
+        from hermes_cli.worktree_lifecycle import command_open
+
+        managed = command_open(Namespace(
+            project_id=plan["project"], staff_id=plan["staff"], task_id=args.task_id,
+            slug=plan["task"], repo=ref_repo, root=args.root, registry=args.registry,
+            machine_id=args.machine_id, remote="origin", base_branch=args.base or default_branch(ref_repo),
+            lease_hours=12, allow_over_limit=False, apply=args.apply, as_json=True,
+        ))
+        managed["compatibility_entrypoint"] = "scripts/hermes_newchat.py"
+        managed["manager"] = "hermes worktree open"
+        print(json.dumps(managed, ensure_ascii=False, indent=2))
+        return 0 if managed.get("ok") else 2
 
     base = args.base or default_branch(ref_repo)
     report["base_branch"] = base

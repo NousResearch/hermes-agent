@@ -59,6 +59,39 @@ def normal_paths(values: list[str]) -> list[str]:
     return sorted(set(result))
 
 
+def validate_wtl_registry(
+    cwd: Path, task_id: str | None, branch: str | None, *, require_writer: bool = True
+) -> dict | None:
+    """Validate the lifecycle registry when one is configured.
+
+    Existing projects without WTL keep the legacy permit behavior. Once
+    HERMES_WORKTREE_REGISTRY is set, a legacy permit cannot bypass task/path/
+    branch/writer state from the central lifecycle registry.
+    """
+    configured = os.environ.get("HERMES_WORKTREE_REGISTRY")
+    if not configured:
+        return None
+    path = Path(configured).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"WTL registry ไม่มีอยู่: {path}")
+    registry = json.loads(path.read_text(encoding="utf-8"))
+    task = (registry.get("tasks") or {}).get(task_id or "")
+    if not task:
+        raise ValueError(f"WTL registry ไม่พบ task: {task_id}")
+    checks = {
+        "path_match": Path(task.get("worktree_path", "")).resolve() == cwd.resolve(),
+        "branch_match": task.get("branch") == branch,
+    }
+    if require_writer:
+        checks.update({
+            "active": task.get("state") == "ACTIVE",
+            "writer_lease": bool(task.get("lease_id")),
+        })
+    if not all(checks.values()):
+        raise ValueError("WTL_BLOCKED: task/path/branch/writer ไม่ตรงทะเบียน {}".format(checks))
+    return {"registry": str(path), "task_id": task_id, "checks": checks}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("acquire", "check", "release", "status"))
@@ -77,6 +110,14 @@ def main() -> int:
         cwd = actual_root
     actual_branch = git(cwd, "branch", "--show-current")
     actual_sha = git(cwd, "rev-parse", "HEAD")
+    wtl_check = (
+        validate_wtl_registry(
+            cwd, args.task_id, args.branch or actual_branch,
+            require_writer=args.action in {"acquire", "check"},
+        )
+        if args.action != "status" or args.task_id
+        else None
+    )
     state_path, lock_path = state_paths(cwd)
 
     with lock_path.open("a+") as lock:
@@ -84,7 +125,7 @@ def main() -> int:
         active = load(state_path)
 
         if args.action == "status":
-            print(json.dumps({"ok": True, "active": active}, ensure_ascii=False))
+            print(json.dumps({"ok": True, "active": active, "wtl": wtl_check}, ensure_ascii=False))
             return 0
 
         if args.action == "release":
@@ -92,7 +133,7 @@ def main() -> int:
                 print(json.dumps({"ok": False, "reason": "owned_by_other_task", "active": active}, ensure_ascii=False))
                 return 2
             state_path.unlink(missing_ok=True)
-            print(json.dumps({"ok": True, "released": args.task_id}, ensure_ascii=False))
+            print(json.dumps({"ok": True, "released": args.task_id, "wtl": wtl_check}, ensure_ascii=False))
             return 0
 
         required = (args.task_id, args.branch, args.base_sha)
@@ -106,7 +147,7 @@ def main() -> int:
         if args.action == "check":
             expected = {"task_id": args.task_id, "branch": args.branch, "base_sha": args.base_sha, "allowed_paths": paths}
             ok = bool(active) and all(active.get(k) == v for k, v in expected.items())
-            print(json.dumps({"ok": ok, "active": active}, ensure_ascii=False))
+            print(json.dumps({"ok": ok, "active": active, "wtl": wtl_check}, ensure_ascii=False))
             return 0 if ok else 2
 
         if not args.approval:
@@ -123,6 +164,7 @@ def main() -> int:
             "approval": args.approval,
             "acquired_at": now().isoformat(),
             "expires_at": (now() + dt.timedelta(minutes=args.ttl_minutes)).isoformat(),
+            "wtl": wtl_check,
         }
         write(state_path, data)
         print(json.dumps({"ok": True, "permit": data}, ensure_ascii=False))

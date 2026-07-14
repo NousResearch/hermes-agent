@@ -502,6 +502,12 @@ def main() -> int:
     )
     parser.add_argument("--staff-id", required=True, help="Staff id, e.g. nat, may, mind.")
     parser.add_argument("--project", required=True, help="Project slug/name, e.g. hermes-agent.")
+    parser.add_argument("--task-id", help="WTL task id; when supplied, resolve exact task from lifecycle registry first.")
+    parser.add_argument(
+        "--registry",
+        default=os.getenv("HERMES_WORKTREE_REGISTRY"),
+        help="Worktree Lifecycle registry JSON (or HERMES_WORKTREE_REGISTRY).",
+    )
     parser.add_argument(
         "--host",
         default=os.getenv("HERMES_VPS_HOST", DEFAULT_HOST),
@@ -519,6 +525,49 @@ def main() -> int:
         help="Remote root to scan. Can be passed multiple times.",
     )
     args = parser.parse_args()
+
+    if args.registry:
+        registry_path = Path(args.registry).expanduser().resolve()
+        if not registry_path.is_file():
+            print(json.dumps({
+                "ok": False, "error": "wtl_registry_not_found", "registry": str(registry_path),
+                "owner_action": "ตรวจตำแหน่งสมุดทะเบียนกลาง; ห้าม fallback ไป Worktree คนอื่น",
+            }, ensure_ascii=False, indent=2))
+            return 2
+        try:
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(json.dumps({"ok": False, "error": "wtl_registry_invalid", "detail": str(exc)}, ensure_ascii=False, indent=2))
+            return 2
+        matches = []
+        for task in (registry.get("tasks") or {}).values():
+            if _project_norm(task.get("project_id", "")) != _project_norm(args.project):
+                continue
+            if str(task.get("staff_id", "")).lower() != args.staff_id.lower():
+                continue
+            if args.task_id and task.get("task_id") != args.task_id:
+                continue
+            matches.append(task)
+        if len(matches) == 1:
+            task = matches[0]
+            selected = {
+                "path": task.get("worktree_path"), "branch": task.get("branch"),
+                "task_id": task.get("task_id"), "machine_id": task.get("machine_id"),
+                "state": task.get("state"), "writer_lease": bool(task.get("lease_id")),
+            }
+            selected["cd_command"] = "cd {}".format(shlex.quote(selected["path"] or ""))
+            print(json.dumps({
+                "ok": True, "source": "wtl_registry", "registry": str(registry_path),
+                "staff_id": args.staff_id, "project": args.project, "selected": selected,
+            }, ensure_ascii=False, indent=2))
+            return 0
+        if args.task_id or len(matches) > 1:
+            print(json.dumps({
+                "ok": False, "error": "wtl_task_not_unique", "match_count": len(matches),
+                "task_ids": [task.get("task_id") for task in matches],
+                "owner_action": "ระบุ --task-id ที่ตรงทะเบียน; ห้ามเดาเลือก Worktree",
+            }, ensure_ascii=False, indent=2))
+            return 2
 
     roots = args.roots or list(DEFAULT_ROOTS)
     remote = _remote_probe_script(args.staff_id, args.project, roots)

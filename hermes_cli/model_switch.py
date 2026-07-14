@@ -1394,6 +1394,25 @@ import threading as _threading  # noqa: E402
 _picker_prewarm_done = _threading.Event()
 
 
+def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
+    """Return whether *provider* has a credential that can be selected now.
+
+    ``auth.json`` historically allowed opaque token-style pool values that do
+    not deserialize into ``PooledCredential`` entries. Preserve visibility for
+    those legacy values, but when a real pool exists its availability state is
+    authoritative: an all-exhausted/dead pool is not authenticated.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider)
+        if pool.has_credentials():
+            return pool.has_available()
+    except Exception:
+        pass
+    return raw_pool_present
+
+
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     if not isinstance(entry, dict):
         return {}
@@ -1683,6 +1702,12 @@ def list_authenticated_providers(
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
             continue
+        # models.dev catalogs include providers Hermes may not route yet.
+        # Gate on runtime capability rather than registry membership: special
+        # providers and plugin aliases can be routable without a registry row.
+        from hermes_cli.auth import is_runtime_provider_routable
+        if not is_runtime_provider_routable(hermes_id):
+            continue
         if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
@@ -1696,8 +1721,13 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and store.get("credential_pool", {}).get(hermes_id):
-                    has_creds = True
+                raw_pool_present = bool(
+                    store and store.get("credential_pool", {}).get(hermes_id)
+                )
+                if raw_pool_present:
+                    has_creds = _credential_pool_is_usable(
+                        hermes_id, raw_pool_present=True
+                    )
             except Exception:
                 pass
         if not has_creds:
@@ -1712,6 +1742,15 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        # A providers.<built-in>.models block extends the provider's discovered
+        # catalog. Section 3 cannot emit it later because this built-in row owns
+        # the slug, so merge declarations here before applying max_models.
+        configured_models: list[str] = []
+        if isinstance(user_providers, dict):
+            configured = user_providers.get(hermes_id)
+            if isinstance(configured, dict):
+                configured_models = _declared_model_ids(configured.get("models"))
+        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
         total = len(model_ids)
         if hermes_id in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models
@@ -1786,9 +1825,7 @@ def list_authenticated_providers(
         # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
             try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(hermes_slug)
-                if pool.has_credentials():
+                if _credential_pool_is_usable(hermes_slug):
                     has_creds = True
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
@@ -1927,9 +1964,7 @@ def list_authenticated_providers(
                 pass
         if not _cp_has_creds:
             try:
-                from agent.credential_pool import load_pool
-                _cp_pool = load_pool(_cp.slug)
-                if _cp_pool.has_credentials():
+                if _credential_pool_is_usable(_cp.slug):
                     _cp_has_creds = True
             except Exception:
                 pass
@@ -2213,6 +2248,7 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "api_key": api_key,
                     "models": [],
+                    "has_explicit_models": False,
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
                 }
@@ -2235,7 +2271,10 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            for model_id in _declared_model_ids(entry.get("models", {})):
+            declared_models = _declared_model_ids(entry.get("models", {}))
+            if declared_models:
+                groups[group_key]["has_explicit_models"] = True
+            for model_id in declared_models:
                 if model_id not in groups[group_key]["models"]:
                     groups[group_key]["models"].append(model_id)
 
@@ -2298,11 +2337,13 @@ def list_authenticated_providers(
             #   the (possibly partial) ``models:`` subset configured for
             #   context-length overrides with the full live catalog.
             #   This is the Bifrost / aggregator-gateway case.
-            # - Without an api_key but with an explicit ``models:`` list
-            #   (or top-level ``model:``), the user is narrowing a public
-            #   endpoint to a specific subset (e.g. ollama.com /v1/models
-            #   returns 35 models but the user only wants 4). Preserve the
-            #   explicit list and skip live discovery.
+            # - Without an api_key but with an explicit ``models:`` list,
+            #   the user is narrowing a public endpoint to a specific subset
+            #   (e.g. ollama.com /v1/models returns 35 models but the user
+            #   only wants 4). Preserve the explicit list and skip live
+            #   discovery. The singular ``model:`` field is only the current
+            #   active selection and must not suppress discovery on local
+            #   no-key endpoints.
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
@@ -2320,7 +2361,7 @@ def list_authenticated_providers(
             should_probe = (
                 _can_probe_custom_provider(row_is_current=_grp_is_current)
                 and bool(api_url)
-                and (bool(api_key) or not grp["models"])
+                and (bool(api_key) or not grp.get("has_explicit_models"))
                 and grp.get("discover_models", True)
             )
             if should_probe:

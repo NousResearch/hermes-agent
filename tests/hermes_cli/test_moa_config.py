@@ -6,7 +6,9 @@ from hermes_cli.moa_config import (
     decode_moa_turn,
     exact_moa_preset_name,
     normalize_moa_config,
+    preferred_moa_preset_name,
     resolve_moa_preset,
+    split_moa_command_payload,
     set_active_moa_preset,
 )
 
@@ -281,3 +283,21 @@ def test_reference_max_tokens_in_flattened_view():
     active preset's reference_max_tokens."""
     cfg = normalize_moa_config(_preset(reference_max_tokens=750))
     assert cfg["reference_max_tokens"] == 750
+
+
+def test_split_moa_command_payload_defaults_to_full_moa():
+    prompt, aggregator_only = split_moa_command_payload("document this chapter")
+    assert prompt == "document this chapter"
+    assert aggregator_only is False
+
+
+def test_split_moa_command_payload_detects_aggregator_only_alias():
+    prompt, aggregator_only = split_moa_command_payload("aggregate document this chapter")
+    assert prompt == "document this chapter"
+    assert aggregator_only is True
+
+
+def test_preferred_moa_preset_uses_current_moa_model_when_available():
+    cfg = normalize_moa_config({"default_preset": "default", "presets": {"default": {}, "review": {}}})
+    assert preferred_moa_preset_name(cfg, current_provider="moa", current_model="review") == "review"
+    assert preferred_moa_preset_name(cfg, current_provider="openrouter", current_model="review") == "default"

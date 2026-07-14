@@ -39,6 +39,15 @@ Configured presets therefore show up wherever you would pick any other model.
 
 Hermes temporarily switches to the default MoA preset for that one turn, sends the prompt, then restores your previous model afterward. The whole argument is the prompt — `/moa` no longer interprets it as a preset name.
 
+For cheap follow-up turns where you only need the preset aggregator to summarize or document the previous answer, use an aggregator-only one-shot:
+
+```bash
+/moa aggregate turn the analysis above into an Obsidian chapter
+/moa summarize write a concise project note from the previous answer
+```
+
+Aggregator-only one-shots use the current MoA preset when the session is already on provider `moa`; otherwise they use the configured default preset. They route directly to that preset's aggregator model and do **not** run reference-model fan-out. Aliases: `aggregate`, `aggregator`, `summarize`, `summarise`, `summary`, `solo`, `direct`.
+
 ```bash
 /moa
 ```

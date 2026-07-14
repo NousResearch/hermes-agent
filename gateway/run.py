@@ -10063,30 +10063,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from hermes_cli.moa_config import (
                 moa_usage,
                 normalize_moa_config,
+                preferred_moa_preset_name,
+                split_moa_command_payload,
             )
             from hermes_cli.config import load_config
 
             moa_payload = event.get_command_args().strip()
-            if not moa_payload:
+            prompt, aggregator_only = split_moa_command_payload(moa_payload)
+            if not prompt:
                 return moa_usage()
             try:
                 cfg = load_config()
                 moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
             except Exception:
                 moa_cfg = normalize_moa_config({})
-            preset = moa_cfg["default_preset"]
+            current_override = self._session_model_overrides.get(_quick_key) or {}
+            preset = preferred_moa_preset_name(
+                moa_cfg,
+                current_provider=current_override.get("provider"),
+                current_model=current_override.get("model"),
+            )
             try:
-                event.text = moa_payload
+                event.text = prompt
                 event._moa_restore_override = self._session_model_overrides.get(_quick_key)
-                self._session_model_overrides[_quick_key] = {
-                    "provider": "moa",
-                    "model": preset,
-                    "base_url": "moa://local",
-                    "api_key": "moa-virtual-provider",
-                    "api_mode": "chat_completions",
-                }
+                if aggregator_only:
+                    aggregator = moa_cfg["presets"][preset]["aggregator"]
+                    self._session_model_overrides[_quick_key] = {
+                        "provider": aggregator["provider"],
+                        "model": aggregator["model"],
+                    }
+                else:
+                    self._session_model_overrides[_quick_key] = {
+                        "provider": "moa",
+                        "model": preset,
+                        "base_url": "moa://local",
+                        "api_key": "moa-virtual-provider",
+                        "api_mode": "chat_completions",
+                    }
                 self._evict_cached_agent(_quick_key)
                 event._moa_disable_after_turn = True
+                event._moa_aggregator_only = aggregator_only
+                event._moa_preset = preset
             except Exception:
                 return "Failed to prepare MoA turn."
 

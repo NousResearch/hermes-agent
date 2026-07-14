@@ -8883,16 +8883,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from hermes_cli.moa_config import (
                 moa_usage,
                 normalize_moa_config,
+                preferred_moa_preset_name,
+                split_moa_command_payload,
             )
 
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
-            if not payload:
+            prompt, aggregator_only = split_moa_command_payload(payload)
+            if not prompt:
                 _cprint(f"  {moa_usage()}")
                 return True
             moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
             normalized = normalize_moa_config(moa_cfg)
-            preset = normalized["default_preset"]
+            preset = preferred_moa_preset_name(
+                moa_cfg,
+                current_provider=getattr(self, "provider", None),
+                current_model=getattr(self, "model", None),
+            )
             self._pending_moa_restore_model = {
                 "requested_provider": getattr(self, "requested_provider", None),
                 "provider": getattr(self, "provider", None),
@@ -8900,7 +8907,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "api_key": getattr(self, "api_key", None),
                 "base_url": getattr(self, "base_url", None),
                 "api_mode": getattr(self, "api_mode", None),
+                "_explicit_api_key": getattr(self, "_explicit_api_key", None),
+                "_explicit_base_url": getattr(self, "_explicit_base_url", None),
             }
+            if aggregator_only:
+                aggregator = normalized["presets"][preset]["aggregator"]
+                from hermes_cli.model_switch import switch_model
+
+                result = switch_model(
+                    raw_input=aggregator["model"],
+                    current_provider=getattr(self, "provider", None) or "",
+                    current_model=getattr(self, "model", None) or "",
+                    current_base_url=getattr(self, "base_url", None) or "",
+                    current_api_key=getattr(self, "api_key", None) or "",
+                    is_global=False,
+                    explicit_provider=aggregator["provider"],
+                    user_providers=(self.config or {}).get("providers") if isinstance(self.config, dict) else None,
+                    custom_providers=(self.config or {}).get("custom_providers") if isinstance(self.config, dict) else None,
+                )
+                if not result.success:
+                    self._pending_moa_restore_model = None
+                    _cprint(f"  ✗ {result.error_message}")
+                    return True
+                self.requested_provider = result.target_provider
+                self.provider = result.target_provider
+                self.model = result.new_model
+                self._explicit_api_key = result.api_key
+                self._explicit_base_url = result.base_url
+                self.api_key = result.api_key
+                self.base_url = result.base_url
+                self.api_mode = result.api_mode or "chat_completions"
+                self.agent = None
+                self._pending_moa_disable_after_turn = True
+                self._pending_agent_seed = prompt
+                _cprint(
+                    f"  MoA aggregator-only one-shot queued with preset {preset} "
+                    f"({result.target_provider}:{result.new_model}); previous model will be restored after this turn."
+                )
+                return True
+
             self.requested_provider = "moa"
             self.provider = "moa"
             self.model = preset
@@ -8909,7 +8954,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.api_mode = "chat_completions"
             self.agent = None
             self._pending_moa_disable_after_turn = True
-            self._pending_agent_seed = payload
+            self._pending_agent_seed = prompt
             _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)

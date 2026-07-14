@@ -12057,37 +12057,77 @@ def _(rid, params: dict) -> dict:
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
     if name == "moa":
-        # /moa is one-shot sugar only: run a single prompt through the default
-        # MoA preset, then restore the prior model. To *switch* to a MoA preset
-        # for the rest of the session, pick it from the model picker (MoA
-        # presets surface as a virtual "Mixture of Agents" provider).
+        # /moa is one-shot sugar only. Default form runs a prompt through the
+        # selected MoA preset, then restores the prior model. The
+        # ``aggregate``/``summarize`` subcommands run the selected preset's
+        # aggregator directly for cheap follow-up documentation/synthesis turns
+        # without re-running reference fan-out.
         try:
-            from hermes_cli.moa_config import moa_usage, normalize_moa_config
+            from hermes_cli.moa_config import (
+                moa_usage,
+                normalize_moa_config,
+                preferred_moa_preset_name,
+                split_moa_command_payload,
+            )
 
-            if not arg:
+            prompt, aggregator_only = split_moa_command_payload(arg)
+            if not prompt:
                 return _err(rid, 4004, moa_usage())
             if not session:
                 return _err(rid, 4001, "no active session")
             sid = params.get("session_id", "")
             moa_cfg = normalize_moa_config(_load_cfg().get("moa") or {})
-            preset = moa_cfg["default_preset"]
+            current_override = session.get("model_override") or {}
+            preset = preferred_moa_preset_name(
+                moa_cfg,
+                current_provider=current_override.get("provider"),
+                current_model=current_override.get("model"),
+            )
+            agent = session.get("agent")
+            if agent is not None and getattr(agent, "provider", None) == "moa":
+                preset = preferred_moa_preset_name(
+                    moa_cfg,
+                    current_provider=getattr(agent, "provider", None),
+                    current_model=getattr(agent, "model", None),
+                )
             # Record the live model identity so it can be restored after the
             # one-shot turn, then swap the agent's client in place (#53444:
             # setting session["model_override"] alone never switched the
             # already-built agent, so the turn silently ran on the old model).
-            agent = session.get("agent")
             session["moa_one_shot_restore"] = {
                 "override": session.get("model_override"),
                 "model": getattr(agent, "model", None) if agent else None,
                 "provider": getattr(agent, "provider", None) if agent else None,
             }
+            if aggregator_only:
+                aggregator = moa_cfg["presets"][preset]["aggregator"]
+                switch_expr = f"{aggregator['model']} --provider {aggregator['provider']}"
+                lazy_override = {
+                    "provider": aggregator["provider"],
+                    "model": aggregator["model"],
+                }
+                notice = (
+                    f"MoA aggregator-only one-shot queued with preset {preset} "
+                    f"({aggregator['provider']}:{aggregator['model']}); previous model will be restored after this turn."
+                )
+            else:
+                switch_expr = f"{preset} --provider moa"
+                lazy_override = {
+                    "provider": "moa",
+                    "model": preset,
+                    "base_url": "moa://local",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                }
+                notice = f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn."
             if agent is not None:
-                # Live agent: swap its client in place so THIS turn runs MoA.
+                # Live agent: swap its client in place so THIS turn uses the
+                # requested temporary route.
                 try:
                     _apply_model_switch(
                         sid,
                         session,
-                        f"{preset} --provider moa",
+                        switch_expr,
                         confirm_expensive_model=False,
                         pin_session_override=True,
                         # One-shot turn-scoped swap — never persist the MoA
@@ -12099,21 +12139,15 @@ def _(rid, params: dict) -> dict:
                     return _err(rid, 5030, f"moa unavailable: {exc}")
             else:
                 # No agent built yet (lazy/fresh session): the override is
-                # consumed by the first build, so the turn runs MoA without an
-                # in-place switch.
-                session["model_override"] = {
-                    "provider": "moa",
-                    "model": preset,
-                    "base_url": "moa://local",
-                    "api_key": "moa-virtual-provider",
-                    "api_mode": "chat_completions",
-                }
+                # consumed by the first build, so the turn uses the temporary
+                # route without an in-place switch.
+                session["model_override"] = lazy_override
             return _ok(
                 rid,
                 {
                     "type": "send",
-                    "notice": f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn.",
-                    "message": arg,
+                    "notice": notice,
+                    "message": prompt,
                 },
             )
         except Exception as exc:

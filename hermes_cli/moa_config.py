@@ -9,6 +9,17 @@ from typing import Any
 
 MOA_MARKER_PREFIX = "__HERMES_MOA_TURN_V1__"
 DEFAULT_MOA_PRESET_NAME = "default"
+MOA_AGGREGATOR_ONLY_SUBCOMMANDS = frozenset({
+    "aggregate",
+    "aggregator",
+    "summarize",
+    "summarise",
+    "summary",
+    "solo",
+    "direct",
+    "just-aggregate",
+    "just_aggregate",
+})
 
 DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = [
     {"provider": "openai-codex", "model": "gpt-5.5"},
@@ -242,6 +253,37 @@ def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
     return cfg
 
 
+def split_moa_command_payload(payload: str) -> tuple[str, bool]:
+    """Return ``(prompt, aggregator_only)`` for a /moa command payload.
+
+    ``/moa <prompt>`` keeps the existing full MoA one-shot behavior.
+    ``/moa aggregate <prompt>`` (plus a few spelling aliases) is a cheap
+    one-shot escape hatch: route the prompt through the selected preset's
+    aggregator model directly, without running reference-model fan-out.
+    """
+    text = str(payload or "").strip()
+    if not text:
+        return "", False
+    head, sep, rest = text.partition(" ")
+    normalized_head = head.strip().lower().replace("_", "-")
+    if normalized_head in MOA_AGGREGATOR_ONLY_SUBCOMMANDS:
+        return rest.strip() if sep else "", True
+    return text, False
+
+
+def preferred_moa_preset_name(config: Any, current_provider: str = "", current_model: str = "") -> str:
+    """Resolve the preset a one-shot /moa helper should use.
+
+    If the current session is already on provider ``moa`` and its model is a
+    configured preset, keep that preset. Otherwise use the configured default.
+    """
+    cfg = normalize_moa_config(config)
+    current = str(current_model or "").strip()
+    if str(current_provider or "").strip().lower() == "moa" and current in cfg["presets"]:
+        return current
+    return cfg["default_preset"]
+
+
 def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) -> str:
     """Encode a /moa one-shot turn for frontends that can only send text."""
     payload = {
@@ -273,4 +315,7 @@ def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | No
 
 
 def moa_usage() -> str:
-    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
+    return (
+        "Usage: /moa <prompt>  (full MoA one-shot, then restore your model); "
+        "/moa aggregate <prompt>  (aggregator-only one-shot, no reference fan-out)"
+    )

@@ -1153,7 +1153,7 @@ See [Curator](../user-guide/features/curator.md) for behavior and config.
 
 ## `hermes moa`
 
-Configure named Mixture of Agents presets. Presets appear as selectable models under a `Mixture of Agents` provider in every model picker; `/moa <prompt>` runs one prompt through the default preset.
+Configure named Mixture of Agents presets. Presets appear as selectable models under a `Mixture of Agents` provider in every model picker; `/moa <prompt>` runs one prompt through the default preset, and `/moa aggregate <prompt>` runs the preset aggregator only.
 
 ```bash
 hermes moa list

@@ -292,6 +292,49 @@ class TestResolveToolsetIncludeRegistry:
     def test_registry_only_toolset_static_view_is_empty(self):
         assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []
 
+class TestGetAllToolsetsAliasBranches:
+    """Cover the alias-display-name loop and duplicate-skip guard in get_all_toolsets."""
+
+    def test_plugin_toolset_shown_under_alias_name(self, monkeypatch):
+        # Lines 739-743: canonical name is mcp-srv2; alias is "srv2";
+        # get_all_toolsets should expose it as "srv2", not "mcp-srv2".
+        reg = ToolRegistry()
+        reg.register(
+            name="srv2_op",
+            toolset="mcp-srv2",
+            schema=_make_schema("srv2_op", "Op"),
+            handler=_dummy_handler,
+        )
+        reg.register_toolset_alias("srv2", "mcp-srv2")
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        all_ts = get_all_toolsets()
+        assert "srv2" in all_ts
+        assert "mcp-srv2" not in all_ts  # canonical hidden behind alias
+
+    def test_duplicate_display_name_skipped(self, monkeypatch):
+        # Lines 741-742: alias display name matches an already-added plugin toolset.
+        reg = ToolRegistry()
+        reg.register(
+            name="alpha_op",
+            toolset="alpha",
+            schema=_make_schema("alpha_op", "Alpha"),
+            handler=_dummy_handler,
+        )
+        reg.register(
+            name="srv2_op",
+            toolset="mcp-srv2",
+            schema=_make_schema("srv2_op", "Op"),
+            handler=_dummy_handler,
+        )
+        reg.register_toolset_alias("alpha", "mcp-srv2")
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        all_ts = get_all_toolsets()
+        assert "alpha" in all_ts
+        assert set(all_ts["alpha"]["tools"]) == {"alpha_op"}
+        assert "mcp-srv2" not in all_ts
+
 class TestGetToolsetRegistryFailure:
     """Cover get_toolset branches that require registry import or alias wiring."""
 
@@ -463,43 +506,6 @@ class TestPrivateHelperExceptionPaths:
         monkeypatch.setattr(builtins, "__import__", patched_import)
         result = ts_mod._get_registry_toolset_aliases()
         assert result == {}
-
-
-class TestGetAllToolsetsAliasBranches:
-    """Cover the alias-display-name loop and duplicate-skip guard in get_all_toolsets."""
-
-    def test_plugin_toolset_shown_under_alias_name(self, monkeypatch):
-        # Lines 739-743: canonical name is mcp-srv2; alias is "srv2";
-        # get_all_toolsets should expose it as "srv2", not "mcp-srv2".
-        reg = ToolRegistry()
-        reg.register(
-            name="srv2_op",
-            toolset="mcp-srv2",
-            schema=_make_schema("srv2_op", "Op"),
-            handler=_dummy_handler,
-        )
-        reg.register_toolset_alias("srv2", "mcp-srv2")
-        monkeypatch.setattr("tools.registry.registry", reg)
-
-        all_ts = get_all_toolsets()
-        assert "srv2" in all_ts
-        assert "mcp-srv2" not in all_ts  # canonical hidden behind alias
-
-    def test_duplicate_display_name_skipped(self, monkeypatch):
-        # Lines 741-742: display_name matches an existing static toolset; must be skipped.
-        reg = ToolRegistry()
-        reg.register(
-            name="web_extra",
-            toolset="web",  # same name as the static "web" toolset
-            schema=_make_schema("web_extra", "Extra web"),
-            handler=_dummy_handler,
-        )
-        monkeypatch.setattr("tools.registry.registry", reg)
-
-        all_ts = get_all_toolsets()
-        # "web" is in TOOLSETS; the plugin entry should not overwrite it.
-        assert "web" in all_ts
-        assert "web_search" in all_ts["web"]["tools"]
 
 
 class TestGetToolsetNamesForElse:

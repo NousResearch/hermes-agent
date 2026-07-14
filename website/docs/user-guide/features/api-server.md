@@ -227,7 +227,15 @@ Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** f
 
 ### GET /health/detailed
 
-Extended health check that also reports active sessions, running agents, and resource usage. Useful for monitoring/observability tooling.
+Authenticated readiness check for monitoring and control planes. It reports
+bounded status for the active profile's config, state database, configured
+model, disk space, gateway/platform state, active API runs, pending process
+completions, and active delegations. The response exposes status and counts,
+not config values, credentials, paths, commands, queue payloads, or raw errors.
+
+The public `/health` route remains a cheap liveness probe and does not run
+readiness checks. A degraded readiness result still uses HTTP 200; inspect the
+top-level `status` and `readiness.checks` fields.
 
 ## Runs API (streaming-friendly alternative)
 
@@ -268,9 +276,22 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
+Unconsumed event buffers expire after five minutes so a detached client cannot
+grow memory indefinitely. This expires transport state only: a run that is
+still executing remains visible to status polling, approval, stop control, and
+concurrency accounting until its executor work actually exits. A connected SSE
+subscriber continues draining normally.
+
 ### POST /v1/runs/\{run_id\}/stop
 
 Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.
+The run stays tracked as `stopping` until the executor-backed work exits, then
+settles as `cancelled`; requesting stop never hides a worker that is still
+running.
+
+### POST /v1/runs/\{run_id\}/approval
+
+Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
 
 ## Jobs API (background scheduled work)
 

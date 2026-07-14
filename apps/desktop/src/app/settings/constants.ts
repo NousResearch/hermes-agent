@@ -1,4 +1,5 @@
 import {
+  Box,
   Brain,
   type IconComponent,
   Lock,
@@ -7,14 +8,13 @@ import {
   Monitor,
   Moon,
   Palette,
-  Sparkles,
   Sun,
   Wrench
 } from '@/lib/icons'
 import type { ThemeMode } from '@/themes/context'
 
-import type { DesktopConfigSection } from './types'
 import { defineFieldCopy } from './field-copy'
+import type { DesktopConfigSection } from './types'
 
 // Provider group definitions used to fold raw env-var names like
 // ``XAI_API_KEY`` into a single "xAI" card with a friendly label, short
@@ -74,7 +74,6 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 4
   },
   { prefix: 'GEMINI_', name: 'Gemini', priority: 4 },
-  { prefix: 'HERMES_GEMINI_', name: 'Gemini', priority: 4 },
   {
     prefix: 'DEEPSEEK_',
     name: 'DeepSeek',
@@ -238,11 +237,39 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
-  'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-  'memory.provider': ['', 'builtin', 'honcho'],
+  'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  'memory.provider': ['', 'builtin', 'hindsight', 'honcho'],
+  // Terminal execution backends — kept in sync with the dispatch ladder in
+  // tools/terminal_tool.py::_create_environment (local/docker/singularity/
+  // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
+  'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
+  // Speech-to-text backends — kept in sync with the stt block in
+  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
   'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+  // Text-to-speech backends — kept in sync with the built-in source of truth
+  // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
+  // BUILTIN_TTS_PROVIDERS). 'xai' is Grok TTS.
+  'tts.provider': [
+    'edge',
+    'elevenlabs',
+    'openai',
+    'xai',
+    'minimax',
+    'mistral',
+    'gemini',
+    'neutts',
+    'kittentts',
+    'piper'
+  ],
+  'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
+  'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
+  'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
+  'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
+  // NeuTTS local inference device.
+  'tts.neutts.device': ['cpu', 'cuda', 'mps'],
   'updates.non_interactive_local_changes': ['stash', 'discard']
 }
 
@@ -268,7 +295,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     backend: 'Execution Backend',
     timeout: 'Command Timeout',
     persistentShell: 'Persistent Shell',
-    envPassthrough: 'Environment Passthrough'
+    envPassthrough: 'Environment Passthrough',
+    dockerImage: 'Docker Image',
+    singularityImage: 'Singularity Image',
+    modalImage: 'Modal Image',
+    daytonaImage: 'Daytona Image'
   },
   fileReadMaxChars: 'File Read Limit',
   toolOutput: {
@@ -304,10 +335,20 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   stt: {
     enabled: 'Speech To Text',
+    echoTranscripts: 'Echo Transcripts',
     provider: 'Speech-To-Text Provider',
     local: {
       model: 'Local Transcription Model',
       language: 'Transcription Language'
+    },
+    openai: {
+      model: 'OpenAI STT Model'
+    },
+    groq: {
+      model: 'Groq STT Model'
+    },
+    mistral: {
+      model: 'Mistral STT Model'
     },
     elevenlabs: {
       modelId: 'ElevenLabs STT Model',
@@ -328,6 +369,33 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     elevenlabs: {
       voiceId: 'ElevenLabs Voice',
       modelId: 'ElevenLabs Model'
+    },
+    xai: {
+      voiceId: 'xAI (Grok) Voice',
+      language: 'xAI Language'
+    },
+    minimax: {
+      model: 'MiniMax TTS Model',
+      voiceId: 'MiniMax Voice'
+    },
+    mistral: {
+      model: 'Mistral TTS Model',
+      voiceId: 'Mistral Voice'
+    },
+    gemini: {
+      model: 'Gemini TTS Model',
+      voice: 'Gemini Voice'
+    },
+    neutts: {
+      model: 'NeuTTS Model',
+      device: 'NeuTTS Device'
+    },
+    kittentts: {
+      model: 'KittenTTS Model',
+      voice: 'KittenTTS Voice'
+    },
+    piper: {
+      voice: 'Piper Voice'
     }
   },
   memory: {
@@ -375,7 +443,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',
     persistentShell: 'Keep shell state between commands when the backend supports it.',
-    envPassthrough: 'Environment variables to pass into tool execution.'
+    envPassthrough: 'Environment variables to pass into tool execution.',
+    dockerImage: 'Container image used when the execution backend is Docker.',
+    singularityImage: 'Image used when the execution backend is Singularity.',
+    modalImage: 'Image used when the execution backend is Modal.',
+    daytonaImage: 'Image used when the execution backend is Daytona.'
   },
   codeExecution: {
     mode: 'How strictly code execution is scoped to the current project.'
@@ -404,8 +476,18 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   voice: {
     autoTts: 'Automatically speak assistant responses.'
   },
+  tts: {
+    xai: {
+      voiceId: 'xAI voice ID (e.g. eve) or a custom voice ID.',
+      language: 'Spoken language code, e.g. en.'
+    },
+    neutts: {
+      device: 'Local inference device for NeuTTS.'
+    }
+  },
   stt: {
     enabled: 'Enable local or provider-backed speech transcription.',
+    echoTranscripts: 'Post the raw 🎙️ transcript of voice messages back to the chat.',
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
@@ -421,7 +503,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   {
     id: 'model',
     label: 'Model',
-    icon: Sparkles,
+    icon: Box,
     keys: ['model_context_length', 'fallback_providers']
   },
   {
@@ -488,6 +570,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     keys: [
       'tts.provider',
       'stt.enabled',
+      'stt.echo_transcripts',
       'stt.provider',
       'voice.auto_tts',
       'tts.edge.voice',
@@ -495,8 +578,24 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.openai.voice',
       'tts.elevenlabs.voice_id',
       'tts.elevenlabs.model_id',
+      'tts.xai.voice_id',
+      'tts.xai.language',
+      'tts.minimax.model',
+      'tts.minimax.voice_id',
+      'tts.mistral.model',
+      'tts.mistral.voice_id',
+      'tts.gemini.model',
+      'tts.gemini.voice',
+      'tts.neutts.model',
+      'tts.neutts.device',
+      'tts.kittentts.model',
+      'tts.kittentts.voice',
+      'tts.piper.voice',
       'stt.local.model',
       'stt.local.language',
+      'stt.openai.model',
+      'stt.groq.model',
+      'stt.mistral.model',
       'stt.elevenlabs.model_id',
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
@@ -513,6 +612,10 @@ export const SECTIONS: DesktopConfigSection[] = [
       'toolsets',
       'terminal.backend',
       'terminal.timeout',
+      'terminal.docker_image',
+      'terminal.singularity_image',
+      'terminal.modal_image',
+      'terminal.daytona_image',
       'tool_output.max_bytes',
       'tool_output.max_lines',
       'tool_output.max_line_length',

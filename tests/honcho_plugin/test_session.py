@@ -1,5 +1,7 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
+import time
+
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -211,6 +213,39 @@ class TestPeerLookupHelpers:
 
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
         assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
+
+    def test_get_peer_card_falls_back_to_target_peer_own_card(self):
+        # When the observer-target card slot is empty (returns None/[]), fall
+        # back to the target peer's own card. Self-hosted Honcho v3 stores the
+        # peer card on the peer itself; the observer-target slot is only
+        # populated when writes also go through that path.
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.get_card.return_value = None  # observer-target slot empty
+        user_peer = MagicMock()
+        user_peer.get_card.return_value = ["Prefers: dark mode"]
+
+        def _peer(peer_id: str) -> MagicMock:
+            return assistant_peer if peer_id == session.assistant_peer_id else user_peer
+
+        mgr._get_or_create_peer = MagicMock(side_effect=_peer)
+
+        assert mgr.get_peer_card(session.key) == ["Prefers: dark mode"]
+        assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
+        user_peer.get_card.assert_called_once_with()
+
+    def test_set_peer_card_uses_observer_target_in_ai_observe_others_mode(self):
+        # Writes must go to the same observer-target slot that reads check,
+        # so that a subsequent honcho_profile read returns what was written.
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.set_card.return_value = ["Role: user"]
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        result = mgr.set_peer_card(session.key, ["Role: user"])
+
+        assert result == ["Role: user"]
+        assistant_peer.set_card.assert_called_once_with(["Role: user"], target=session.user_peer_id)
 
     def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
@@ -573,7 +608,7 @@ class TestToolsModeInitBehavior:
     """Verify initOnSessionStart controls session init timing in tools mode."""
 
     def _make_provider_with_config(self, recall_mode="tools", init_on_session_start=False,
-                                    peer_name=None, user_id=None):
+                                    peer_name=None, user_id=None, user_id_alt=None):
         """Create a HonchoMemoryProvider with mocked config and dependencies."""
         from plugins.memory.honcho.client import HonchoClientConfig
 
@@ -598,6 +633,8 @@ class TestToolsModeInitBehavior:
         init_kwargs = {}
         if user_id:
             init_kwargs["user_id"] = user_id
+        if user_id_alt:
+            init_kwargs["user_id_alt"] = user_id_alt
 
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
@@ -678,12 +715,10 @@ class TestToolsModeInitBehavior:
             recall_mode="tools", init_on_session_start=False,
         )
         mock_manager = MagicMock()
-        error = BootstrapError("workspace bootstrap failed")
-        mock_manager.get_or_create.side_effect = [error, error]
+        mock_manager.get_or_create.side_effect = BootstrapError("workspace bootstrap failed")
 
         with patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
              patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
-             patch("plugins.memory.honcho.time.sleep") as sleep_mock, \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             result = provider.handle_tool_call("honcho_profile", {})
 
@@ -691,8 +726,39 @@ class TestToolsModeInitBehavior:
         assert "Honcho memory unavailable for this operation" in parsed["error"]
         assert "workspace bootstrap failed" in parsed["error"]
         assert "HTTP 500" in parsed["error"]
-        assert mock_manager.get_or_create.call_count == 2
-        sleep_mock.assert_called_once_with(1.0)
+        assert provider._init_error == parsed["error"]
+        assert provider._manager is None
+        assert provider._session_initialized is False
+
+    def test_background_init_failure_surfaces_through_tool_call(self):
+        """A failed background init followed by a tool call returns the preserved error."""
+        import json
+        from unittest.mock import patch
+
+        class BootstrapError(Exception):
+            status = 503
+
+        provider, _, _ = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=False,
+        )
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.side_effect = BootstrapError("backend down")
+
+        with patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider._start_session_init_background(wait_timeout=5.0)
+            if provider._init_thread is not None:
+                provider._init_thread.join(timeout=5.0)
+
+            assert "Honcho memory unavailable for this operation" in provider._init_error
+            assert "HTTP 503" in provider._init_error
+
+            result = provider.handle_tool_call("honcho_profile", {})
+
+        parsed = json.loads(result)
+        assert "Honcho memory unavailable for this operation" in parsed["error"]
+        assert "backend down" in parsed["error"]
 
     def test_explicit_peer_name_not_overridden_by_user_id(self):
         """Explicit peerName in config must not be replaced by gateway user_id."""
@@ -710,6 +776,15 @@ class TestToolsModeInitBehavior:
         )
         assert cfg.peer_name is None
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "8439114563"
+
+    def test_user_id_alt_is_passed_to_session_manager(self):
+        """Gateway alternate user IDs are available for Honcho alias matching."""
+        _, _, mock_manager_cls = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=True,
+            peer_name=None, user_id="open-id", user_id_alt="union-id",
+        )
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "open-id"
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name_alt"] == "union-id"
 
 
 class TestPerSessionMigrateGuard:
@@ -1249,7 +1324,6 @@ class TestDialecticCadenceAdvancesOnSuccess:
         return provider
 
     def test_empty_dialectic_result_does_not_advance_cadence(self):
-        import time as _time
         provider = self._make_provider()
         provider._session_key = "test"
         provider._manager.dialectic_query.return_value = ""  # silent failure
@@ -1551,8 +1625,27 @@ class TestDialecticLifecycleSmoke:
             return provider, mock_manager, cfg
 
     def _await_thread(self, provider):
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=3.0)
+        """Block until the in-flight prefetch/prewarm thread has fully finished.
+
+        The earlier version did a single ``join(timeout=3.0)`` and then
+        proceeded regardless of whether the thread had actually finished. On a
+        loaded CI runner (6 parallel test slices), the background dialectic
+        thread's completion can slip past that 3s window, so the join times out
+        silently and the test reads ``_prefetch_result`` before the worker wrote
+        it — a flaky ``session-start prewarm must land`` failure. We instead join
+        in a loop up to a generous ceiling and assert the thread is dead, so a
+        genuine hang surfaces as a clear, non-flaky failure instead of a race.
+        """
+        thread = provider._prefetch_thread
+        if thread is None:
+            return
+        deadline = time.monotonic() + 30.0
+        while thread.is_alive() and time.monotonic() < deadline:
+            thread.join(timeout=1.0)
+        assert not thread.is_alive(), (
+            "prefetch/prewarm thread did not finish within 30s — "
+            "this is a real hang, not a timing flake"
+        )
 
     def test_full_multi_turn_session(self):
         """Walks init → turns 1..8 → session end. Asserts at every step that
@@ -1626,7 +1719,7 @@ class TestDialecticLifecycleSmoke:
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 2, "turn 4 cadence fire"
         _, kwargs = mgr.dialectic_query.call_args
-        assert kwargs.get("reasoning_level") in ("medium", "high"), \
+        assert kwargs.get("reasoning_level") in {"medium", "high"}, \
             f"long query must bump reasoning level above 'low'; got {kwargs.get('reasoning_level')}"
         assert provider._last_dialectic_turn == 4, "cadence tracker advances on success"
 

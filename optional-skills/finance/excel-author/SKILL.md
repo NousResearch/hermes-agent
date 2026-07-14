@@ -4,6 +4,7 @@ description: Build auditable Excel workbooks headless with openpyxl — blue/bla
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [excel, openpyxl, finance, spreadsheet, modeling]

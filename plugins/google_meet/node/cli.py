@@ -71,7 +71,7 @@ def node_command(args: argparse.Namespace) -> int:
         print(f"[meet-node] display_name={server.display_name}")
         print(f"[meet-node] listening on ws://{args.host}:{args.port}")
         print(f"[meet-node] token (copy to gateway): {token}")
-        print(f"[meet-node] approve with:")
+        print("[meet-node] approve with:")
         print(f"             hermes meet node approve <name> ws://<host>:{args.port} {token}")
         try:
             asyncio.run(server.serve())
@@ -103,7 +103,7 @@ def node_command(args: argparse.Namespace) -> int:
         print(f"removed {args.name!r}" if ok else f"no such node: {args.name!r}")
         return 0 if ok else 1
 
-    if cmd in ("status", "ping"):
+    if cmd in {"status", "ping"}:
         entry = reg.get(args.name)
         if entry is None:
             print(f"no such node: {args.name!r}", file=sys.stderr)

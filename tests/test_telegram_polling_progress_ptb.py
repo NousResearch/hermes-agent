@@ -3,8 +3,7 @@
 import asyncio
 
 import pytest
-
-pytest.importorskip("telegram")  # PTB is an optional dependency; skip if absent.
+pytest.importorskip("telegram", reason="python-telegram-bot not installed")
 from telegram.error import Conflict, TelegramError
 from telegram.request import BaseRequest
 

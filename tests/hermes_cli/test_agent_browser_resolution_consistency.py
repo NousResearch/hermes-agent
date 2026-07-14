@@ -90,3 +90,38 @@ def test_managed_windows_native_fallback_is_consistent(tmp_path, monkeypatch):
         for candidate in doctor._agent_browser_candidates_for_doctor()
     )
     assert browser_tool._find_agent_browser() == native
+
+
+def test_ambient_shim_with_managed_node_is_consistent(tmp_path, monkeypatch):
+    home = tmp_path / "hermes-home"
+    managed_bin = home / "node" / "bin"
+    managed_bin.mkdir(parents=True)
+    node = _make_executable(managed_bin / "node", "#!/bin/sh\nexit 0\n")
+    shim = _make_executable(
+        tmp_path / "agent-browser",
+        "#!/bin/sh\n# node agent-browser.js\nnode --version >/dev/null\n",
+    )
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(browser_tool, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+
+    def fake_which(cmd, path=None):
+        if cmd == "agent-browser" and path is None:
+            return shim
+        if cmd == "node" and path and str(managed_bin) in path:
+            return node
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(dep_ensure, "_has_system_browser", lambda: False)
+    monkeypatch.setattr(
+        browser_tool, "_candidate_agent_browser_native_bins", lambda: []
+    )
+    monkeypatch.setattr(browser_tool, "_cached_agent_browser", None)
+    monkeypatch.setattr(browser_tool, "_agent_browser_resolved", False)
+
+    assert dep_ensure._DEP_CHECKS["browser"]() is True
+    assert nous_subscription._has_agent_browser() is True
+    assert doctor._resolve_agent_browser_for_doctor(shim) == shim
+    assert browser_tool._find_agent_browser() == shim

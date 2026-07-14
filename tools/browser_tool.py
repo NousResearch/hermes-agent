@@ -2277,8 +2277,10 @@ def _find_agent_browser(*, validate: bool = True) -> str:
 
     # Check if it's in PATH (global install). A Node wrapper can still resolve
     # to an adjacent packaged native binary when Node itself is unavailable.
+    extended_path = _merge_browser_path(os.environ.get("PATH", ""))
     which_result = _resolve_agent_browser_candidate(
         shutil.which("agent-browser"),
+        extended_path,
         validate=validate,
     )
     if which_result:
@@ -2295,10 +2297,6 @@ def _find_agent_browser(*, validate: bool = True) -> str:
         _cached_agent_browser = native_binary
         _agent_browser_resolved = True
         return native_binary
-
-    # Build an extended search PATH including Hermes-managed Node, macOS
-    # versioned Homebrew installs, and fallback system dirs like Termux.
-    extended_path = _merge_browser_path("")
 
     if extended_path:
         which_result = _resolve_agent_browser_candidate(

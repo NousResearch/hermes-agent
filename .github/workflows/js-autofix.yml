@@ -56,6 +56,12 @@ jobs:
     # No permissions override → inherits workflow-level contents: read.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Default checkout behavior on pull_request events checks out
+          # refs/pull/N/merge — a synthetic "Merge <head> into <base>" commit.
+          # Pin to the real head SHA instead so the diff/patch is generated
+          # against the actual PR branch, not a merge commit.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -112,6 +118,13 @@ jobs:
       contents: write # needed to push
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Same reasoning as generate-patch, but more important here: this
+          # job commits the patch on top of whatever gets checked out, then
+          # force-pushes local HEAD to the branch. Without pinning this, on
+          # pull_request events it would check out refs/pull/N/merge and push
+          # that merge commit's history onto the PR branch.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Download patch
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -125,8 +138,13 @@ jobs:
 
       - name: Apply patch and push
         env:
-          START_SHA: ${{ github.sha }}
-          BRANCH: ${{ github.ref_name }}
+          # On pull_request events, github.sha / github.ref_name point at the
+          # ephemeral merge ref (refs/pull/N/merge), which is read-only and
+          # can't be pushed to. Use the real head branch + SHA from the event
+          # payload instead. On push events (main), github.sha / github.ref_name
+          # are already correct.
+          START_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          BRANCH: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
         run: |
           set -euo pipefail
 

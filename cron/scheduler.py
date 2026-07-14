@@ -1346,6 +1346,47 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+def _apply_cron_delivery_output_transform(
+    job: dict,
+    content: str,
+    *,
+    platform_name: str,
+) -> str:
+    """Apply final-output plugin transforms for the concrete delivery platform.
+
+    Cron agents run with ``platform="cron"``, but auto-delivery may send the
+    final text to Slack, Telegram, etc.  Gateway replies run
+    ``transform_llm_output`` before platform send, so cron delivery needs the
+    same hook at the delivery boundary with the actual target platform.
+    """
+    if not content:
+        return content
+
+    try:
+        from hermes_cli.plugins import discover_plugins, invoke_hook
+
+        discover_plugins()
+        transform_results = invoke_hook(
+            "transform_llm_output",
+            response_text=content,
+            session_id=f"cron:{job.get('id', '')}" if job.get("id") else "",
+            model=str(job.get("model") or ""),
+            platform=str(platform_name or "").lower(),
+        )
+        for hook_result in transform_results:
+            if isinstance(hook_result, str) and hook_result:
+                return hook_result
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': transform_llm_output hook failed for %s delivery: %s",
+            job.get("id", "?"),
+            platform_name,
+            exc,
+        )
+
+    return content
+
+
 def _is_channel_dm_topic(
     runtime_adapter: Any,
     chat_id: Any,
@@ -1462,10 +1503,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    # MEDIA extraction happens per target below, after the target-platform
+    # output transform hook has run.  That lets Slack-specific plugins adjust
+    # cron output before Slack delivery while preserving attachment handling.
     from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
@@ -1535,6 +1576,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
+
+        transformed_delivery_content = delivery_content
+        if not job.get("no_agent"):
+            transformed_delivery_content = _apply_cron_delivery_output_transform(
+                job,
+                delivery_content,
+                platform_name=platform_name,
+            )
+        media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(
+            transformed_delivery_content
+        )
+        media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.

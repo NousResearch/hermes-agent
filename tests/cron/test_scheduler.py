@@ -669,6 +669,80 @@ class TestDeliverResultWrapping:
         # Media files should be forwarded separately
         assert kwargs["media_files"] == [(str(media_path), False)]
 
+    def test_slack_delivery_applies_transform_llm_output_before_send(self):
+        """Cron Slack delivery should run final-output hooks for Slack."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("hermes_cli.plugins.discover_plugins") as discover_mock, \
+             patch("hermes_cli.plugins.invoke_hook", return_value=["spaced slack text"]) as hook_mock, \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "slack-job",
+                "model": "test-model",
+                "deliver": "origin",
+                "origin": {"platform": "slack", "chat_id": "C123456789"},
+            }
+            _deliver_result(job, "raw cron text")
+
+        discover_mock.assert_called_once()
+        hook_mock.assert_called_once_with(
+            "transform_llm_output",
+            response_text="raw cron text",
+            session_id="cron:slack-job",
+            model="test-model",
+            platform="slack",
+        )
+        send_mock.assert_called_once()
+        args, kwargs = send_mock.call_args
+        assert args[0] == Platform.SLACK
+        assert args[3] == "spaced slack text"
+        assert kwargs["media_files"] == []
+
+    def test_transform_runs_before_media_extraction_and_preserves_wrap_response(
+        self, tmp_path, monkeypatch
+    ):
+        """Hook output should still go through MEDIA extraction after wrapping."""
+        from gateway.config import Platform
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "chart.png")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        def transform_hook(_hook_name, **kwargs):
+            return [f"{kwargs['response_text']}\nPlugin footer\nMEDIA:{media_path}"]
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
+             patch("hermes_cli.plugins.discover_plugins"), \
+             patch("hermes_cli.plugins.invoke_hook", side_effect=transform_hook), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "wrapped-slack-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "slack", "chat_id": "C123456789"},
+            }
+            _deliver_result(job, "Original body")
+
+        send_mock.assert_called_once()
+        args, kwargs = send_mock.call_args
+        sent_content = args[3]
+        assert "Cronjob Response: daily-report" in sent_content
+        assert "Original body" in sent_content
+        assert "Plugin footer" in sent_content
+        assert "MEDIA:" not in sent_content
+        assert kwargs["media_files"] == [(str(media_path), False)]
+
     def test_live_adapter_sends_media_as_attachments(self, tmp_path, monkeypatch):
         """When a live adapter is available, MEDIA files should be sent as native
         platform attachments (e.g., Discord voice, Telegram audio) rather than
@@ -2838,6 +2912,41 @@ class TestRunJobWakeGate:
         assert final == SILENT_MARKER
         assert "Script gate returned `wakeAgent=false`" in doc
         agent_cls.assert_not_called()
+
+    def test_no_agent_delivery_skips_transform_hook(self):
+        """Script-only cron output is delivered verbatim without LLM transforms."""
+        from gateway.config import Platform
+        import cron.scheduler as scheduler
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        job = self._make_job(name="script-only")
+        job.update({
+            "no_agent": True,
+            "deliver": "origin",
+            "origin": {"platform": "slack", "chat_id": "C123456789"},
+        })
+
+        with patch.object(scheduler, "claim_dispatch", return_value=True), \
+             patch.object(scheduler, "_run_job_script", return_value=(True, "raw script text")), \
+             patch.object(scheduler, "save_job_output", return_value="/tmp/out.md"), \
+             patch.object(scheduler, "mark_job_run"), \
+             patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("hermes_cli.plugins.discover_plugins"), \
+             patch("hermes_cli.plugins.invoke_hook", return_value=["spaced script text"]) as hook_mock, \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            assert scheduler.run_one_job(job) is True
+
+        hook_mock.assert_not_called()
+        send_mock.assert_called_once()
+        args, kwargs = send_mock.call_args
+        assert args[0] == Platform.SLACK
+        assert args[3] == "raw script text"
+        assert kwargs["media_files"] == []
 
     def test_wake_true_runs_agent_with_injected_output(self):
         """When the script returns {wakeAgent: true, data: ...}, the agent is

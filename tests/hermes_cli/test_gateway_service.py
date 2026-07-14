@@ -479,6 +479,38 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in unit
         assert str(profile_node_bin) not in unit
 
+    def test_system_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
+        # System-scope twin of the #48700 regression above. When the system
+        # unit rebuilds PATH for the target user, it must keep the node
+        # symlink's own directory (~/.local/bin) and let _remap_path_for_user()
+        # translate it — resolving the symlink would bake one profile's node
+        # path into the unit.
+        root_home = tmp_path / "root"
+        target_home = tmp_path / "home" / "alice"
+        local_bin = root_home / ".local" / "bin"
+        profile_node_bin = root_home / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
+        local_bin.mkdir(parents=True)
+        profile_node_bin.mkdir(parents=True)
+        target_home.mkdir(parents=True)
+        real_node = profile_node_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+        link_node = local_bin / "node"
+        link_node.symlink_to(real_node)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
+        monkeypatch.setattr(gateway_cli.Path, "home", classmethod(lambda cls: root_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_home / ".hermes")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(target_home)),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert str(target_home / ".local" / "bin") in unit
+        assert "profiles/jarvis/node/bin" not in unit
+
     def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Same #48700 regression for the macOS twin generate_launchd_plist().
         local_bin = tmp_path / ".local" / "bin"

@@ -2739,7 +2739,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # omitted, causing a persistent "unit is outdated" false positive.
         path_entries = _build_service_path_dirs(hermes_home=Path(hermes_home))
         if resolved_node:
-            resolved_node_dir = str(Path(resolved_node).resolve().parent)
+            # As above: keep the symlink's own parent (no .resolve()) so a
+            # profile symlink doesn't leak one profile's node path into every
+            # unit; _remap_path_for_user() below translates it for the target
+            # user.
+            resolved_node_dir = str(Path(resolved_node).parent)
             if resolved_node_dir not in path_entries:
                 path_entries.append(resolved_node_dir)
         # Remap all paths that may resolve under the calling user's home

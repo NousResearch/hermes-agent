@@ -52,6 +52,14 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _coerce_nonnegative_float(value, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
     """Build platform-aware thread metadata for adapter sends.
 
@@ -5026,13 +5034,78 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
-                    result = await self._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=_reply_anchor,
-                        metadata=_final_thread_metadata,
+                    delivery_uuid = str(uuid.uuid4())
+                    if _final_thread_metadata is not None:
+                        _final_thread_metadata = dict(_final_thread_metadata)
+                        _final_thread_metadata["delivery_uuid"] = delivery_uuid
+                    else:
+                        _final_thread_metadata = {"delivery_uuid": delivery_uuid}
+                    send_task = asyncio.create_task(
+                        self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=text_content,
+                            reply_to=_reply_anchor,
+                            metadata=_final_thread_metadata,
+                        )
                     )
+                    send_cancelled = False
+                    try:
+                        result = await asyncio.shield(send_task)
+                    except asyncio.CancelledError:
+                        send_cancelled = True
+                        drain_timeout = _coerce_nonnegative_float(
+                            getattr(self, "final_send_cancel_drain_seconds", 5.0),
+                            5.0,
+                        )
+                        logger.warning(
+                            "[%s] Final response send cancelled while in flight for %s; "
+                            "waiting up to %.1fs for delivery result delivery_uuid=%s",
+                            self.name,
+                            event.source.chat_id,
+                            drain_timeout,
+                            delivery_uuid,
+                        )
+                        try:
+                            result = await asyncio.wait_for(asyncio.shield(send_task), timeout=drain_timeout)
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "[%s] Final response delivery result unavailable after cancellation "
+                                "for %s delivery_uuid=%s",
+                                self.name,
+                                event.source.chat_id,
+                                delivery_uuid,
+                            )
+                            send_task.cancel()
+                            raise asyncio.CancelledError
                     _record_delivery(result)
+                    if getattr(result, "success", False):
+                        message_id = getattr(result, "message_id", None)
+                        if self.platform == Platform.FEISHU and not message_id:
+                            logger.warning(
+                                "[%s] Feishu response send returned success without message_id "
+                                "chat_id=%s delivery_uuid=%s",
+                                self.name,
+                                event.source.chat_id,
+                                delivery_uuid,
+                            )
+                        else:
+                            logger.info(
+                                "[%s] Response sent to %s message_id=%s delivery_uuid=%s",
+                                self.name,
+                                event.source.chat_id,
+                                message_id or "<none>",
+                                delivery_uuid,
+                            )
+                    else:
+                        logger.error(
+                            "[%s] Response send failed to %s delivery_uuid=%s: %s",
+                            self.name,
+                            event.source.chat_id,
+                            delivery_uuid,
+                            getattr(result, "error", None) or "unknown error",
+                        )
+                    if send_cancelled:
+                        raise asyncio.CancelledError
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors

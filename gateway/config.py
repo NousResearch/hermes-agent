@@ -684,6 +684,10 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+    # Bounded drain window for in-flight final-response sends after gateway
+    # cancellation/shutdown. Configurable via
+    # ``gateway.final_send_cancel_drain_seconds``.
+    final_send_cancel_drain_seconds: float = 5.0
     # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
     # ".") pre-send. These are model hallucinations emitted when a persona has
     # nothing actionable to say; in bot-to-bot channels they mirror back and
@@ -817,6 +821,7 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
+            "final_send_cancel_drain_seconds": self.final_send_cancel_drain_seconds,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
@@ -913,6 +918,13 @@ class GatewayConfig:
             "pair",
         )
 
+        final_send_cancel_drain_seconds = _coerce_float(
+            data.get("final_send_cancel_drain_seconds", nested_gateway.get("final_send_cancel_drain_seconds")),
+            5.0,
+        )
+        if final_send_cancel_drain_seconds < 0:
+            final_send_cancel_drain_seconds = 5.0
+
         try:
             session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
             session_store_max_age_days = max(session_store_max_age_days, 0)
@@ -929,6 +941,7 @@ class GatewayConfig:
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
+            final_send_cancel_drain_seconds=final_send_cancel_drain_seconds,
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
             ),
@@ -1081,6 +1094,11 @@ def load_gateway_config() -> GatewayConfig:
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+
+            if "final_send_cancel_drain_seconds" in yaml_cfg:
+                gw_data["final_send_cancel_drain_seconds"] = yaml_cfg["final_send_cancel_drain_seconds"]
+            elif isinstance(gateway_cfg, dict) and "final_send_cancel_drain_seconds" in gateway_cfg:
+                gw_data["final_send_cancel_drain_seconds"] = gateway_cfg["final_send_cancel_drain_seconds"]
 
             # write_sessions_json: top-level wins; nested gateway.* fallback
             # (matches the gateway.streaming precedence pattern).

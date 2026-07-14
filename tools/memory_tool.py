@@ -997,6 +997,17 @@ def memory_tool(
         return json.dumps(result, ensure_ascii=False)
 
     # --- Single-op path ---------------------------------------------------
+    # Reject calls that provide neither action (single-op) nor operations
+    # (batch).  Without this guard the dispatch falls through to the generic
+    # "Unknown action 'None'" error, which gives the model no signal about
+    # *why* the call was malformed and can trigger repeated retries. (#64291)
+    if not action and not operations:
+        return tool_error(
+            "Missing required parameter: provide 'action' (add/replace/remove) "
+            "or 'operations' (batch list). Got neither.",
+            success=False,
+        )
+
     # Validate required params BEFORE the gate so an invalid write is rejected
     # immediately instead of being staged and only failing at approve time.
     if action == "add" and not content:

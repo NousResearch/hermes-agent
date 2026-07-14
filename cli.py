@@ -13992,48 +13992,6 @@ class HermesCLI:
         def _bound_move_cursor_down(event):
             _move_cursor_down(event)
 
-        # ═══════════════════════════════════════════════════════════════════
-        # ── Left/Right cross hard-newline boundaries ──
-        # ═══════════════════════════════════════════════════════════════════
-        # THIS SECTION OVERRIDES PROMPT_TOOLKIT'S MULTILINE LEFT/RIGHT.
-        # prompt_toolkit's default left/right only look at column, not row:
-        # at column 0 of a non-first line, left is dead; at end of a
-        # non-last line, right won't jump to the next line.
-        # These wrappers fix that while delegating to the default handler
-        # for normal within-line movement.
-        #
-        # If you don't want ANY overriding of prompt_toolkit's left/right,
-        # delete everything between the ═══ markers (lines above and below).
-        # The rest of the cursor system (Up/Down history, Ctrl+Up/Down visual
-        # movement) works independently — this section is purely about
-        # crossing hard-newline boundaries with arrow keys.
-
-        @kb.add('left', filter=_normal_input)
-        def _move_cursor_left(event):
-            buf = event.app.current_buffer
-            doc = buf.document
-            if doc.cursor_position_col == 0 and doc.cursor_position_row > 0:
-                # At start of non-first line: jump to end of previous line
-                target_row = doc.cursor_position_row - 1
-                buf.cursor_position = doc.translate_row_col_to_index(
-                    target_row, len(doc.lines[target_row])
-                )
-            else:
-                buf.cursor_position += doc.get_cursor_left_position(count=event.arg)
-
-        @kb.add('right', filter=_normal_input)
-        def _move_cursor_right(event):
-            buf = event.app.current_buffer
-            doc = buf.document
-            row = doc.cursor_position_row
-            if doc.cursor_position_col >= len(doc.lines[row]) and row < doc.line_count - 1:
-                # At end of non-last line: jump to start of next line
-                buf.cursor_position = doc.translate_row_col_to_index(row + 1, 0)
-            else:
-                buf.cursor_position += doc.get_cursor_right_position(count=event.arg)
-
-        # ═══ END of prompt_toolkit left/right override ═══
-
         @kb.add('c-l')
         def handle_ctrl_l(event):
             """Ctrl+L: force a clean full-screen repaint.

@@ -46,6 +46,10 @@ func microphoneStatus() -> String {
 }
 
 func notificationStatus() -> String {
+    // UNUserNotificationCenter can raise an Objective-C exception for an
+    // unbundled swiftc-built helper. Keep status probing safe for integration
+    // tests and direct CLI diagnostics; the packaged LoginItem has a bundle id.
+    guard Bundle.main.bundleIdentifier != nil else { return "unavailable" }
     let semaphore = DispatchSemaphore(value: 0)
     var status = "unknown"
     UNUserNotificationCenter.current().getNotificationSettings { settings in
@@ -216,9 +220,32 @@ func timingSafeEqual(_ left: String, _ right: String) -> Bool {
     return diff == 0
 }
 
+let brokerProtocolVersion = 1
+let brokerClockSkewMs = 5_000.0
+let brokerNonceCacheLimit = 1024
+var brokerSeenNonces: [String: Double] = [:]
+
+func rememberBrokerNonce(_ nonce: String, expiresAt: Double, nowMs: Double) -> Bool {
+    for (cachedNonce, cachedExpiry) in brokerSeenNonces where cachedExpiry + brokerClockSkewMs < nowMs {
+        brokerSeenNonces.removeValue(forKey: cachedNonce)
+    }
+    if brokerSeenNonces[nonce] != nil {
+        return false
+    }
+    if brokerSeenNonces.count >= brokerNonceCacheLimit,
+       let oldest = brokerSeenNonces.min(by: { $0.value < $1.value })?.key {
+        brokerSeenNonces.removeValue(forKey: oldest)
+    }
+    brokerSeenNonces[nonce] = expiresAt
+    return true
+}
+
 func verifyBrokerEnvelope(_ request: [String: Any], token: String) -> (ok: Bool, method: String?, params: [String: Any], error: String?) {
     guard token.count >= 32 else {
         return (false, nil, [:], "broker token must be at least 32 characters")
+    }
+    guard let version = request["version"] as? NSNumber, version.intValue == brokerProtocolVersion else {
+        return (false, nil, [:], "unsupported broker protocol version")
     }
     guard let method = request["method"] as? String else {
         return (false, nil, [:], "missing method")
@@ -226,18 +253,27 @@ func verifyBrokerEnvelope(_ request: [String: Any], token: String) -> (ok: Bool,
     guard method == "permission.status" else {
         return (false, nil, [:], "unsupported broker method: \(method)")
     }
+    guard let id = request["id"] as? String, !id.isEmpty else {
+        return (false, nil, [:], "missing id")
+    }
+    guard let nonce = request["nonce"] as? String, !nonce.isEmpty else {
+        return (false, nil, [:], "missing nonce")
+    }
     guard let signature = request["signature"] as? String, !signature.isEmpty else {
         return (false, nil, [:], "missing signature")
     }
-    guard let issuedAt = request["issuedAt"] as? NSNumber else {
-        return (false, nil, [:], "missing issuedAt")
+    guard let issuedAt = request["issuedAt"] as? NSNumber,
+          let expiresAt = request["expiresAt"] as? NSNumber else {
+        return (false, nil, [:], "missing broker timestamps")
     }
-    let ttlMs = (request["ttlMs"] as? NSNumber)?.doubleValue ?? 30_000
+    guard expiresAt.doubleValue > issuedAt.doubleValue else {
+        return (false, nil, [:], "request expiry must be after issue time")
+    }
     let nowMs = Date().timeIntervalSince1970 * 1000
-    if issuedAt.doubleValue - 5_000 > nowMs {
+    if issuedAt.doubleValue - brokerClockSkewMs > nowMs {
         return (false, nil, [:], "request issuedAt is in the future")
     }
-    if issuedAt.doubleValue + ttlMs + 5_000 < nowMs {
+    if expiresAt.doubleValue + brokerClockSkewMs < nowMs {
         return (false, nil, [:], "request expired")
     }
     var unsigned = request
@@ -245,6 +281,9 @@ func verifyBrokerEnvelope(_ request: [String: Any], token: String) -> (ok: Bool,
     let expected = hmacHex(payload: canonicalJson(unsigned), token: token)
     guard timingSafeEqual(expected, signature) else {
         return (false, nil, [:], "signature mismatch")
+    }
+    guard rememberBrokerNonce(nonce, expiresAt: expiresAt.doubleValue, nowMs: nowMs) else {
+        return (false, nil, [:], "request nonce replayed")
     }
     return (true, method, request["params"] as? [String: Any] ?? [:], nil)
 }

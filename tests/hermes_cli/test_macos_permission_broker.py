@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -31,7 +34,9 @@ def test_create_broker_request_signs_stable_envelope() -> None:
     assert request["version"] == 1
     assert request["method"] == "permission.status"
     assert request["issuedAt"] == 1_000
-    assert request["signature"] == "864c883ef84899c9fa811cd7e315b0c8919bdfef11fde3ad62e8eea3ee659204"
+    assert request["expiresAt"] == 31_000
+    assert "ttlMs" not in request
+    assert request["signature"] == "84d93f5380089ea272ab50333fa40d577c8c08abeab44685be2d30e948b4c69e"
 
 
 def test_create_broker_request_rejects_unsupported_method() -> None:
@@ -115,3 +120,57 @@ def test_broker_permission_status_uses_token_file_and_socket() -> None:
 def test_send_broker_request_reports_missing_socket(tmp_path: Path) -> None:
     with pytest.raises(MacPermissionBrokerError, match="broker unavailable"):
         send_broker_request({"ok": True}, socket_path=tmp_path / "missing.sock", timeout=0.1)
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or shutil.which("swiftc") is None, reason="requires macOS swiftc")
+def test_swift_broker_accepts_python_signed_request_and_rejects_replay(tmp_path: Path) -> None:
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "apps"
+        / "desktop"
+        / "macos"
+        / "HermesMacBroker"
+        / "Sources"
+        / "HermesMacBroker"
+        / "main.swift"
+    )
+    executable = tmp_path / "HermesMacBroker"
+    subprocess.run(["swiftc", str(source), "-o", str(executable)], check=True, timeout=60)
+
+    # macOS sockaddr_un paths are short (104 bytes); keep the integration
+    # socket under /tmp instead of pytest's deep per-test temp directory.
+    socket_path = short_tmp_dir() / "broker.sock"
+    token = "0123456789abcdef0123456789abcdef"
+    proc = subprocess.Popen(
+        [str(executable), "--serve", "--socket", str(socket_path), "--token", token],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        listening = json.loads(proc.stdout.readline())
+        assert listening["ok"] is True
+        request = create_broker_request(
+            "permission.status",
+            token=token,
+            now_ms=int(time.time() * 1000),
+            ttl_ms=30_000,
+            nonce="nonce-swift-integration",
+            request_id="request-swift-integration",
+        )
+
+        first = send_broker_request(request, socket_path=socket_path)
+        replay = send_broker_request(request, socket_path=socket_path)
+
+        assert first["ok"] is True
+        assert first["id"] == "request-swift-integration"
+        assert replay["ok"] is False
+        assert "replayed" in replay["error"]
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)

@@ -92,7 +92,7 @@ def create_broker_request(
         "method": method,
         "params": params or {},
         "issuedAt": issued_at,
-        "ttlMs": ttl_ms,
+        "expiresAt": issued_at + int(ttl_ms),
         "nonce": nonce or secrets.token_hex(16),
     }
     envelope["signature"] = _sign(envelope, token)

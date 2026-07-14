@@ -1175,6 +1175,7 @@ def _media_delivery_denied_paths() -> List[Path]:
         # every turn, which defeated the strict-mode recency window) plus the
         # pending-exchange session/verifier file.
         "google_token.json",
+        "google_client_secret.json",
         "google_workspace_auth_contexts.json",
         "google_oauth_pending.json",
         os.path.join("auth", "google_oauth.json"),
@@ -1195,6 +1196,8 @@ def _media_delivery_denied_paths() -> List[Path]:
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
         "mcp-tokens",
+        # Materialized named Google auth-context tokens and client secrets.
+        os.path.join(".cache", "google-workspace", "contexts"),
     )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
         for rel in _ROOT_CREDENTIAL_FILES:

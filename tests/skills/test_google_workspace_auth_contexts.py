@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 SCRIPT_DIR = Path(__file__).resolve().parents[2] / "skills/productivity/google-workspace/scripts"
 AUTH_CONTEXTS_PATH = SCRIPT_DIR / "auth_contexts.py"
 API_PATH = SCRIPT_DIR / "google_api.py"
+SETUP_PATH = SCRIPT_DIR / "setup.py"
 
 
 def load_module(name: str, path: Path, monkeypatch, tmp_path):
@@ -142,15 +144,124 @@ class TestCommandScopeGate:
         auth_contexts.delete_token("gmail-readonly")
         assert not path.exists()
 
-    def test_store_existing_default_does_not_fallback_to_stale_legacy(self, auth_contexts):
+    def test_named_store_migrates_and_preserves_legacy_default(self, auth_contexts):
         auth_contexts.legacy_token_path().write_text('{"token": "legacy"}')
-        auth_contexts.legacy_client_secret_path().write_text('{"installed": {"client_id": "legacy"}}')
+        auth_contexts.legacy_client_secret_path().write_text(
+            '{"installed": {"client_id": "legacy"}}'
+        )
         auth_contexts.legacy_pending_path().write_text('{"state": "legacy"}')
-        auth_contexts.set_default_for_services("default", "gmail")
-        assert auth_contexts.get_token_payload("default") == {}
-        assert auth_contexts.get_client_secret("default") == {}
-        assert auth_contexts.get_pending_auth("default") == {}
+
+        auth_contexts.set_client_secret(
+            "named",
+            {"installed": {"client_id": "named"}},
+        )
+
+        assert auth_contexts.get_token_payload("default")["token"] == "legacy"
+        assert auth_contexts.get_client_secret("default")["installed"]["client_id"] == "legacy"
+        assert auth_contexts.get_pending_auth("default")["state"] == "legacy"
+        assert auth_contexts.context_exists("default")
+        assert "default" in auth_contexts.list_contexts()
+
+        stored_default = auth_contexts.load_store()["contexts"]["default"]
+        assert stored_default["token"]["token"] == "legacy"
+        assert stored_default["client_secret"]["installed"]["client_id"] == "legacy"
+        assert stored_default["pending_auth"]["state"] == "legacy"
+
+    def test_store_backed_default_remains_authoritative_after_migration(self, auth_contexts):
+        auth_contexts.legacy_token_path().write_text('{"token": "legacy"}')
+        auth_contexts.set_client_secret(
+            "named",
+            {"installed": {"client_id": "named"}},
+        )
+        auth_contexts.set_token_payload(
+            "default",
+            {"token": "store", "scopes": [auth_contexts.GMAIL_READONLY]},
+        )
+        auth_contexts.legacy_token_path().write_text('{"token": "stale"}')
+
+        assert auth_contexts.get_token_payload("default")["token"] == "store"
 
     def test_full_drive_implies_read(self, auth_contexts):
         auth_contexts.set_token_payload("drive", {"token": "tok", "scopes": [auth_contexts.DRIVE]})
         auth_contexts.assert_command_allowed("drive", "drive", "search")
+
+
+def test_live_check_uses_scope_neutral_oauth_refresh(monkeypatch, tmp_path, capsys):
+    setup_script = load_module("google_workspace_setup_live_test", SETUP_PATH, monkeypatch, tmp_path)
+    token_file = tmp_path / "token.json"
+    token_file.write_text("{}")
+    monkeypatch.setattr(setup_script, "check_auth", lambda **_kwargs: True)
+    monkeypatch.setattr(setup_script, "_token_file", lambda _context: token_file)
+    monkeypatch.setattr(
+        setup_script,
+        "_token_payload",
+        lambda _context: {
+            "token": "old",
+            "refresh_token": "refresh",
+            "scopes": [setup_script.gauth.GMAIL_SEND],
+        },
+    )
+    saved = {}
+    monkeypatch.setattr(
+        setup_script,
+        "_set_token_payload",
+        lambda context, payload, **_kwargs: saved.update(
+            {"context": context, "payload": payload}
+        ),
+    )
+
+    class FakeCredentials:
+        refresh_token = "refresh"
+
+        @classmethod
+        def from_authorized_user_file(cls, filename):
+            assert filename == str(token_file)
+            return cls()
+
+        def refresh(self, _request):
+            self.refreshed = True
+
+        def to_json(self):
+            assert self.refreshed
+            return json.dumps(
+                {
+                    "token": "refreshed",
+                    "refresh_token": "refresh",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "client_id": "client",
+                    "client_secret": "secret",
+                }
+            )
+
+    google_module = types.ModuleType("google")
+    oauth2_module = types.ModuleType("google.oauth2")
+    credentials_module = types.ModuleType("google.oauth2.credentials")
+    setattr(credentials_module, "Credentials", FakeCredentials)
+    auth_module = types.ModuleType("google.auth")
+    transport_module = types.ModuleType("google.auth.transport")
+    requests_module = types.ModuleType("google.auth.transport.requests")
+    setattr(requests_module, "Request", lambda: object())
+    googleapiclient_module = types.ModuleType("googleapiclient")
+    discovery_module = types.ModuleType("googleapiclient.discovery")
+
+    def reject_service_specific_call(*_args, **_kwargs):
+        raise AssertionError("live check must not require a Calendar or other service scope")
+
+    setattr(discovery_module, "build", reject_service_specific_call)
+    for name, module in {
+        "google": google_module,
+        "google.oauth2": oauth2_module,
+        "google.oauth2.credentials": credentials_module,
+        "google.auth": auth_module,
+        "google.auth.transport": transport_module,
+        "google.auth.transport.requests": requests_module,
+        "googleapiclient": googleapiclient_module,
+        "googleapiclient.discovery": discovery_module,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    assert setup_script.check_auth_live("gmail-send") is True
+    assert saved["context"] == "gmail-send"
+    assert saved["payload"]["token"] == "refreshed"
+    assert saved["payload"]["scopes"] == [setup_script.gauth.GMAIL_SEND]
+    assert "LIVE_CHECK_OK" in capsys.readouterr().out

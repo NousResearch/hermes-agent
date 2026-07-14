@@ -118,6 +118,38 @@ def legacy_pending_path() -> Path:
     return hermes_home() / LEGACY_PENDING_NAME
 
 
+def _read_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _merge_legacy_default(data: dict[str, Any]) -> None:
+    """Snapshot legacy credentials into ``contexts.default`` when needed.
+
+    Creating a named context must not make a working legacy default disappear.
+    Once copied, the store-backed default remains authoritative and later
+    changes to stale legacy files are ignored.
+    """
+    legacy_payloads = {
+        "token": _read_json_file(legacy_token_path()),
+        "client_secret": _read_json_file(legacy_client_secret_path()),
+        "pending_auth": _read_json_file(legacy_pending_path()),
+    }
+    if not any(legacy_payloads.values()):
+        return
+    contexts = data.setdefault("contexts", {})
+    default = contexts.setdefault("default", {"name": "default"})
+    default.setdefault("name", "default")
+    for key, payload in legacy_payloads.items():
+        if payload and key not in default:
+            default[key] = payload
+
+
 def validate_context_name(name: str | None) -> str:
     if name is None:
         name = "default"
@@ -146,6 +178,7 @@ def load_store() -> dict[str, Any]:
     data.setdefault("version", 1)
     data.setdefault("default_contexts", {})
     data.setdefault("contexts", {})
+    _merge_legacy_default(data)
     return data
 
 
@@ -172,6 +205,7 @@ def save_store(data: dict[str, Any]) -> None:
     data.setdefault("version", 1)
     data.setdefault("default_contexts", {})
     data.setdefault("contexts", {})
+    _merge_legacy_default(data)
     _write_private_json(store_path(), data)
 
 

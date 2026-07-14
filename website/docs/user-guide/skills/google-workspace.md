@@ -20,7 +20,7 @@ The setup is fully agent-driven — ask Hermes to set up Google Workspace and it
 3. **Authorize** — Hermes generates an auth URL, you approve in the browser, paste back the redirect URL
 4. **Done** — token auto-refreshes from that point on
 
-Hermes remains backward compatible with the legacy single-token files (`~/.hermes/google_token.json` and `~/.hermes/google_client_secret.json`). For least-privilege or multi-account setups, use **auth contexts**: named OAuth credential bundles stored in `~/.hermes/google_workspace_auth_contexts.json`.
+Hermes remains backward compatible with the legacy single-token files (`~/.hermes/google_token.json` and `~/.hermes/google_client_secret.json`). When the named-context store is first created, any legacy default credentials are copied into its `default` context; the store-backed copy is authoritative after that migration. For least-privilege or multi-account setups, use **auth contexts**: named OAuth credential bundles stored in `~/.hermes/google_workspace_auth_contexts.json`.
 
 Auth contexts let one Hermes profile route different Google APIs through different tokens without splitting the agent's memory/session context. A context can represent a different Google account, or a separately scoped grant for the same account.
 

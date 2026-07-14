@@ -1121,6 +1121,27 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(store)) is None
 
+    def test_denylist_blocks_materialized_google_context_credentials(self, tmp_path, monkeypatch):
+        """Named-context token and client-secret copies live below the cache
+        tree but remain credential material, not deliverable artifacts.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        context_dir = hermes_dir / ".cache" / "google-workspace" / "contexts" / "named"
+        context_dir.mkdir(parents=True)
+        token = context_dir / "google_token.json"
+        client_secret = context_dir / "google_client_secret.json"
+        token.write_text('{"refresh_token": "***"}')
+        client_secret.write_text('{"installed": {"client_secret": "***"}}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+        assert BasePlatformAdapter.validate_media_delivery_path(str(client_secret)) is None
+
     def test_denylist_blocks_google_token_even_when_freshly_refreshed(self, tmp_path, monkeypatch):
         """The exploit was that the Google integration rewrites
         google_token.json every turn, bumping its mtime to ~now, so the

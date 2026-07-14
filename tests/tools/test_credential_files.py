@@ -85,6 +85,31 @@ class TestRegisterCredentialFiles:
         assert "does_not_exist.json" in missing
         assert get_credential_file_mounts() == []
 
+    def test_optional_missing_file_is_not_reported(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([
+                {"path": "optional.json", "optional": True},
+            ])
+
+        assert missing == []
+        assert get_credential_file_mounts() == []
+
+    def test_optional_existing_file_is_still_registered(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "optional.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([
+                {"path": "optional.json", "optional": True},
+            ])
+
+        assert missing == []
+        assert get_credential_file_mounts()[0]["container_path"] == "/root/.hermes/optional.json"
+
     def test_path_takes_precedence_over_name(self, tmp_path):
         """When both path and name are present, path wins."""
         hermes_home = tmp_path / ".hermes"

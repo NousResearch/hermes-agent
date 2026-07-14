@@ -8,10 +8,13 @@ platforms: [linux, macos, windows]
 required_credential_files:
   - path: google_workspace_auth_contexts.json
     description: Named Google Workspace OAuth auth contexts (created by setup script)
+    optional: true
   - path: google_token.json
     description: Legacy Google OAuth2 token (created by setup script)
+    optional: true
   - path: google_client_secret.json
     description: Legacy Google OAuth2 client credentials (downloaded from Google Cloud Console)
+    optional: true
 metadata:
   hermes:
     tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]
@@ -38,6 +41,8 @@ By default this skill remains backward compatible with the legacy single-token f
 
 - `~/.hermes/google_token.json`
 - `~/.hermes/google_client_secret.json`
+
+The first write to the named-context store snapshots any legacy default token, client secret, and pending auth into `contexts.default`; the store-backed copy is authoritative after that migration.
 
 For least-privilege or multi-account setups, use **auth contexts**. An auth context is a named Google OAuth credential bundle: account hint, OAuth client, requested services/scopes, token, and pending PKCE state. Contexts are stored in `~/.hermes/google_workspace_auth_contexts.json`, a single static credential file that remote terminal backends can mount.
 

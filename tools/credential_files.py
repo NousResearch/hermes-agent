@@ -111,20 +111,23 @@ def register_credential_files(
     """Register multiple credential files from skill frontmatter entries.
 
     Each entry is either a string (relative path) or a dict with a ``path``
-    key.  Returns the list of relative paths that were NOT found on the host
-    (i.e. missing files).
+    key. Existing files are always registered. A missing dict entry with
+    ``optional: true`` is not reported as a setup requirement. Returns the
+    list of required relative paths that were not found on the host.
     """
     missing = []
     for entry in entries:
+        optional = False
         if isinstance(entry, str):
             rel_path = entry.strip()
         elif isinstance(entry, dict):
             rel_path = (entry.get("path") or entry.get("name") or "").strip()
+            optional = entry.get("optional") is True
         else:
             continue
         if not rel_path:
             continue
-        if not register_credential_file(rel_path, container_base):
+        if not register_credential_file(rel_path, container_base) and not optional:
             missing.append(rel_path)
     return missing
 

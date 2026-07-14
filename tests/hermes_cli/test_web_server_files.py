@@ -593,6 +593,7 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "config.yaml",
         ".anthropic_oauth.json",
         "google_token.json",
+        "google_client_secret.json",
         "google_workspace_auth_contexts.json",
         "google_oauth_pending.json",
         "google_oauth.json",
@@ -607,6 +608,22 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
     listing = client.get("/api/files", params={"path": str(root)})
     names = [e["name"] for e in listing.json()["entries"]]
     assert names == []
+
+
+def test_materialized_google_context_credentials_blocked(forced_files_client):
+    client, root = forced_files_client
+    context_dir = root / ".cache" / "google-workspace" / "contexts" / "named"
+    context_dir.mkdir(parents=True)
+    token = context_dir / "google_token.json"
+    client_secret = context_dir / "google_client_secret.json"
+    token.write_text('{"refresh_token": "SECRET"}')
+    client_secret.write_text('{"installed": {"client_secret": "SECRET"}}')
+
+    listing = client.get("/api/files", params={"path": str(context_dir)})
+    assert [entry["name"] for entry in listing.json()["entries"]] == []
+    for path in (token, client_secret):
+        assert client.get("/api/files/read", params={"path": str(path)}).status_code == 403
+        assert client.get("/api/files/download", params={"path": str(path)}).status_code == 403
 
 
 def test_git_credentials_blocked(forced_files_client):

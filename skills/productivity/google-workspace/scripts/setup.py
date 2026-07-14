@@ -213,18 +213,39 @@ def _ensure_deps():
 
 
 def check_auth_live(auth_context: str = "default"):
-    """Check auth with a real API call to detect disabled_client/account issues."""
+    """Force a real OAuth refresh to detect disabled clients/accounts.
+
+    Refreshing is service-neutral, so least-privilege Gmail-, Drive-, Sheets-,
+    or Docs-only contexts do not need an unrelated Calendar scope merely to
+    validate their OAuth client and account.
+    """
     # quiet=True suppresses the "AUTHENTICATED" print from check_auth so the
     # final status line reflects the live-call outcome (OK or FAILED).
     if not check_auth(quiet=True, auth_context=auth_context):
         return False
     try:
-        from googleapiclient.discovery import build
+        from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
+
+        payload = _token_payload(auth_context)
         creds = Credentials.from_authorized_user_file(str(_token_file(auth_context)))
-        service = build("calendar", "v3", credentials=creds)
-        service.calendarList().list(maxResults=1).execute()
-        print("LIVE_CHECK_OK: Real API call succeeded.")
+        if not creds.refresh_token:
+            print("LIVE_CHECK_FAILED: Stored credentials have no refresh token.")
+            return False
+        creds.refresh(Request())
+        refreshed_payload = _normalize_authorized_user_payload(
+            json.loads(creds.to_json())
+        )
+        existing_scopes = gauth.scope_list(
+            payload.get("scopes") or payload.get("scope")
+        )
+        refreshed_scopes = gauth.scope_list(
+            refreshed_payload.get("scopes") or refreshed_payload.get("scope")
+        )
+        if existing_scopes and not refreshed_scopes:
+            refreshed_payload["scopes"] = existing_scopes
+        _set_token_payload(auth_context, refreshed_payload)
+        print("LIVE_CHECK_OK: OAuth token refresh succeeded.")
         return True
     except Exception as e:
         err_str = str(e).lower()
@@ -510,7 +531,7 @@ def main():
     parser.add_argument("--strict-scopes", action="store_true", help="Fail auth-code exchange if granted scopes miss requested scopes")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", action="store_true", help="Check if auth is valid (exit 0=yes, 1=no)")
-    group.add_argument("--check-live", action="store_true", help="Check auth with a real API call (detects disabled_client)")
+    group.add_argument("--check-live", action="store_true", help="Force a live OAuth refresh (detects disabled_client without requiring a service scope)")
     group.add_argument("--client-secret", metavar="PATH", help="Store OAuth client_secret.json")
     group.add_argument("--auth-url", action="store_true", help="Print OAuth URL for user to visit")
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")

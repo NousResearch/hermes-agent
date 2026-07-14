@@ -207,3 +207,95 @@ class TestOSSBackend:
         backend, _ = self._make()
         result = backend.delete("m1")
         assert result == {"result": "Memory deleted.", "memory_id": "m1"}
+
+
+class TestOSSBackendInitConfigForwarding:
+    """Regression tests for #64027: OSSBackend.__init__ must forward
+    `custom_instructions` (and any other documented mem0 MemoryConfig fields)
+    from `oss_config` into the dict handed to `Memory.from_config()`."""
+
+    def _make_oss_config(self, **extra):
+        return {
+            "vector_store": {"provider": "qdrant", "config": {"path": "/tmp/qdrant", "collection_name": "mem0"}},
+            "llm": {"provider": "openai", "config": {"model": "gpt-4o-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+            **extra,
+        }
+
+    def _patch_memory_from_config(self, monkeypatch):
+        captured = {}
+
+        class _FakeMemory:
+            def __init__(self):
+                self.calls = []
+
+            def search(self, *a, **kw):
+                self.calls.append(("search", a, kw)); return {"results": []}
+
+            def get_all(self, *a, **kw):
+                self.calls.append(("get_all", a, kw)); return {"results": []}
+
+            def add(self, *a, **kw):
+                self.calls.append(("add", a, kw)); return {"results": []}
+
+            def update(self, *a, **kw):
+                self.calls.append(("update", a, kw)); return {"message": "ok"}
+
+            def delete(self, *a, **kw):
+                self.calls.append(("delete", a, kw)); return {"message": "ok"}
+
+        # The code path is `Memory.from_config(config)` then `_memory = result`.
+        # Build a shim class with a classmethod so the call shape matches.
+        class _MemoryShim:
+            @classmethod
+            def from_config(cls, cfg):
+                captured["config"] = cfg
+                return _FakeMemory()
+
+        # `Memory` is imported lazily inside OSSBackend.__init__ as
+        # `from mem0 import Memory`. Patch it on the mem0 module so the
+        # lazy import resolves to our shim.
+        monkeypatch.setattr("mem0.Memory", _MemoryShim, raising=False)
+        return captured
+
+    def test_init_forwards_custom_instructions_when_present(self, monkeypatch):
+        """#64027: custom_instructions in oss_config must reach Memory.from_config."""
+        from plugins.memory.mem0._backend import OSSBackend
+
+        captured = self._patch_memory_from_config(monkeypatch)
+        cfg = self._make_oss_config(custom_instructions="Reject one-time task requests.")
+
+        OSSBackend(cfg)
+
+        assert "custom_instructions" in captured["config"]
+        assert captured["config"]["custom_instructions"] == "Reject one-time task requests."
+
+    def test_init_omits_custom_instructions_when_absent(self, monkeypatch):
+        """When the user has no custom_instructions, the key must not appear
+        in the config (avoids forwarding `None` and tripping downstream
+        defaults that diverge from the documented schema)."""
+        from plugins.memory.mem0._backend import OSSBackend
+
+        captured = self._patch_memory_from_config(monkeypatch)
+        cfg = self._make_oss_config()  # no custom_instructions
+
+        OSSBackend(cfg)
+
+        assert "custom_instructions" not in captured["config"]
+
+    def test_init_forwards_reranker_when_present(self, monkeypatch):
+        """OSSBackend already handles `reranker` (forwarded if present);
+        this test guards that the same conditional pattern now extends to
+        custom_instructions without breaking the reranker branch."""
+        from plugins.memory.mem0._backend import OSSBackend
+
+        captured = self._patch_memory_from_config(monkeypatch)
+        cfg = self._make_oss_config(
+            custom_instructions="Focus on stable preferences.",
+            reranker={"provider": "cohere", "config": {"model": "rerank-english-v3.0"}},
+        )
+
+        OSSBackend(cfg)
+
+        assert captured["config"].get("custom_instructions") == "Focus on stable preferences."
+        assert "reranker" in captured["config"]

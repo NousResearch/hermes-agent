@@ -123,6 +123,16 @@ class OSSBackend(Mem0Backend):
             "embedder": oss_config["embedder"],
             "version": "v1.1",
         }
+        if "reranker" in oss_config:
+            config["reranker"] = oss_config["reranker"]
+        # Forward `custom_instructions` (mem0 MemoryConfig schema, base.py
+        # line 54-57) so self-hosted users can control fact-extraction
+        # behavior. The cloud PlatformBackend path doesn't have this issue
+        # because it forwards the whole config dict verbatim. Only set the
+        # key when present, to avoid forwarding `None` and tripping
+        # downstream defaults that diverge from the documented schema (#64027).
+        if "custom_instructions" in oss_config:
+            config["custom_instructions"] = oss_config["custom_instructions"]
         self._memory = Memory.from_config(config)
 
     @staticmethod

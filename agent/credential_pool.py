@@ -108,12 +108,10 @@ SUPPORTED_POOL_STRATEGIES = {
 
 # Cooldown before retrying an exhausted credential.
 # Transient 401 auth failures cool down briefly so single-key setups can recover.
-# 429 (rate-limited) uses a short jittered cooldown: many 429s are transient
-# concurrency limits, while provider-supplied reset_at timestamps still override.
-# 402 (billing/quota) and other failures cool down after 1 hour.
+# 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
+# Provider-supplied reset_at timestamps override these defaults.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
-EXHAUSTED_TTL_429_BASE_SECONDS = 60          # base cooldown for transient 429s
-EXHAUSTED_TTL_429_JITTER_SECONDS = 30        # stagger credential re-eligibility
+EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
@@ -250,23 +248,12 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
-def _exhausted_ttl(error_code: Optional[int], *, jitter: bool = False) -> float:
-    """Return cooldown seconds based on the HTTP status that caused exhaustion.
-
-    For newly-marked 429s, add jitter so credentials in the same pool don't
-    all become eligible at the same instant. Read paths use the stored
-    reset_at timestamp (or the base TTL for legacy entries) so status output
-    and eligibility checks remain stable.
-    """
+def _exhausted_ttl(error_code: Optional[int]) -> int:
+    """Return cooldown seconds based on the HTTP status that caused exhaustion."""
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
     if error_code == 429:
-        jitter_seconds = (
-            random.uniform(0, EXHAUSTED_TTL_429_JITTER_SECONDS)
-            if jitter
-            else 0
-        )
-        return EXHAUSTED_TTL_429_BASE_SECONDS + jitter_seconds
+        return EXHAUSTED_TTL_429_SECONDS
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 
@@ -587,7 +574,6 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
-        now = time.time()
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
         # transition to STATUS_DEAD instead of STATUS_EXHAUSTED.  Without this,
         # a revoked credential gets a 1-hour TTL cooldown and then re-enters
@@ -599,17 +585,14 @@ class CredentialPool:
             terminal_status = STATUS_DEAD
         else:
             terminal_status = STATUS_EXHAUSTED
-        reset_at = normalized_error.get("reset_at")
-        if terminal_status == STATUS_EXHAUSTED and reset_at is None and status_code == 429:
-            reset_at = now + _exhausted_ttl(status_code, jitter=True)
         updated = replace(
             entry,
             last_status=terminal_status,
-            last_status_at=now,
+            last_status_at=time.time(),
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
-            last_error_reset_at=reset_at,
+            last_error_reset_at=normalized_error.get("reset_at"),
         )
         self._replace_entry(entry, updated)
         self._persist()

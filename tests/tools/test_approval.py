@@ -2403,6 +2403,21 @@ class TestRuntimeSelfPidKillGuard:
         assert key is not None
         assert "self-termination" in desc
 
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill -0 {pid}",
+            "kill -s 0 {pid}",
+            "kill --signal 0 {pid}",
+        ],
+    )
+    def test_kill_own_pid_with_signal_zero_is_not_flagged(self, template):
+        own_pid = os.getpid()
+
+        dangerous, _key, _desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is False
+
     def test_kill_unrelated_pid_is_not_flagged_by_self_pid_guard(self):
         unrelated_pid = os.getpid() + 1_000_000
 

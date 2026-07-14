@@ -1399,11 +1399,18 @@ def detect_dangerous_command(command: str) -> tuple:
         # terminate the current Hermes process from within. Static regex cannot
         # catch this because the PID is only known at runtime.
         # Covers: kill PID, kill -9 PID, kill -TERM PID, kill -s TERM PID,
-        # kill -s 15 PID, kill --signal TERM PID, kill -- PID.
+        # kill -s 15 PID, kill --signal TERM PID, kill -- PID. Signal 0 is a
+        # non-terminating liveness probe and must remain approval-free.
         own_pid = str(os.getpid())
+        non_terminating_probe = (
+            r"(?!(?:-0|-s\s+0|--signal\s+0)\s+(?:--\s+)?"
+            + re.escape(own_pid)
+            + r"\b)"
+        )
         kill_pid_pattern = (
             r"\bkill\s+"
-            r"(?:"
+            + non_terminating_probe
+            + r"(?:"
             r"(?:--signal\s+\S+\s+)"       # kill --signal TERM
             r"|(?:-s\s+\S+\s+)"            # kill -s TERM / kill -s 15
             r"|(?:--\s+)"                   # kill -- (end of options)

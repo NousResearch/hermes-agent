@@ -224,43 +224,6 @@ def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
-def test_exhausted_429_entry_resets_after_short_jittered_ttl(tmp_path, monkeypatch):
-    """Transient 429s should not strand a credential for the 1h default TTL."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "credential_pool": {
-                "openrouter": [
-                    {
-                        "id": "cred-1",
-                        "label": "primary",
-                        "auth_type": "api_key",
-                        "priority": 0,
-                        "source": "manual",
-                        "access_token": "***",
-                        "base_url": "https://openrouter.ai/api/v1",
-                        "last_status": "exhausted",
-                        "last_status_at": time.time() - 100,
-                        "last_error_code": 429,
-                    }
-                ]
-            },
-        },
-    )
-
-    from agent import credential_pool
-
-    monkeypatch.setattr(credential_pool.random, "uniform", lambda _lo, _hi: 0)
-    pool = credential_pool.load_pool("openrouter")
-    entry = pool.select()
-
-    assert entry is not None
-    assert entry.id == "cred-1"
-    assert entry.last_status == "ok"
-
-
 def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
     """402-exhausted credentials recover after 1 hour, not 24."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -580,10 +543,9 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
         },
     )
 
-    from agent import credential_pool
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
 
-    monkeypatch.setattr(credential_pool.random, "uniform", lambda _lo, _hi: 12.0)
-    pool = credential_pool.load_pool("openai-codex")
+    pool = load_pool("openai-codex")
     assert pool.select().id == "cred-1"
 
     next_entry = pool.mark_exhausted_and_rotate(
@@ -596,11 +558,8 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     persisted = auth_payload["credential_pool"]["openai-codex"][0]
     # 429 stays exhausted (transient) — NOT dead.
-    assert persisted["last_status"] == credential_pool.STATUS_EXHAUSTED
+    assert persisted["last_status"] == STATUS_EXHAUSTED
     assert persisted["last_error_code"] == 429
-    assert persisted["last_error_reset_at"] == pytest.approx(
-        persisted["last_status_at"] + 72.0
-    )
 
 
 def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monkeypatch):

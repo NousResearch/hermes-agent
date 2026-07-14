@@ -984,7 +984,7 @@ def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "rate-limited (429)" in out
-    assert "30s left" in out
+    assert "59m 30s left" in out
 
 
 def test_auth_list_shows_auth_failure_when_exhausted_entry_is_unauthorized(monkeypatch, capsys):

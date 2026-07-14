@@ -78,7 +78,9 @@ def _make_mock_client():
     client.areflect = AsyncMock(
         return_value=SimpleNamespace(text="Synthesized answer")
     )
-    client.aretain_batch = AsyncMock()
+    client.aretain_batch = AsyncMock(
+        return_value=SimpleNamespace(var_async=False, operation_id=None)
+    )
     client.aclose = AsyncMock()
     return client
 
@@ -651,6 +653,16 @@ class TestToolHandlers:
         # bank_id/retain_async are call-level args, never item keys.
         assert "bank_id" not in item
         assert "retain_async" not in item
+
+    def test_retain_async_response_reports_queued(self, provider):
+        provider._client.aretain_batch.return_value = SimpleNamespace(
+            var_async=True, operation_id="op-123"
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "user likes dark mode"}
+        ))
+        assert result["result"] == "Memory queued."
+        assert result["operation_id"] == "op-123"
 
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import auth as auth_mod
 from hermes_cli.auth import AuthError, resolve_spotify_runtime_credentials
+from hermes_cli.subcommands.auth import build_auth_parser
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +348,40 @@ def test_manual_paste_wrong_state_still_rejected(tmp_path, monkeypatch):
             monkeypatch, tmp_path,
             "http://127.0.0.1:43827/spotify/callback?code=abc&state=not-the-nonce",
         )
+
+
+def test_manual_paste_full_url_matching_state_reaches_token_exchange(
+    tmp_path, monkeypatch, capsys
+):
+    """Covers the documented primary workflow: pasting the failed browser
+
+    redirect URL (carrying the state Hermes itself generated) back verbatim,
+    not just the bare-code fallback.
+    """
+    monkeypatch.setattr(
+        auth_mod.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed-state-nonce")
+    )
+    exchanged = _manual_paste_login(
+        monkeypatch,
+        tmp_path,
+        "http://127.0.0.1:43827/spotify/callback?code=full-url-code&state=fixed-state-nonce",
+    )
+    assert exchanged.get("code") == "full-url-code"
+    assert "Spotify login successful!" in capsys.readouterr().out
+
+
+def test_manual_paste_flag_wired_into_spotify_subcommand_parser():
+    """`--manual-paste` must reach ``args.manual_paste`` for `auth spotify`.
+
+    The SSH hint has advertised this flag since before it existed; this
+    guards against the parser wiring regressing silently again.
+    """
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_auth_parser(sub, cmd_auth=lambda args: None)
+
+    ns = parser.parse_args(["auth", "spotify", "--manual-paste"])
+    assert ns.manual_paste is True
+
+    ns_default = parser.parse_args(["auth", "spotify"])
+    assert ns_default.manual_paste is False

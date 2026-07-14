@@ -206,6 +206,89 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_update_use_https_fetches_public_url_without_depth_when_not_shallow(
+        self, mock_run, _mock_which
+    ):
+        from hermes_cli import main as hm
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--is-shallow-repository" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="false\n", stderr="")
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        args = SimpleNamespace(use_https=True)
+
+        with patch.object(hm, "_is_windows", return_value=False), \
+             patch.object(hm, "_run_pre_update_backup"), \
+             patch.object(hm, "_pause_windows_gateways_for_update", return_value=None), \
+             patch.object(hm, "_discard_lockfile_churn"), \
+             patch.object(hm, "_get_origin_url", return_value="git@github.com:NousResearch/hermes-agent.git"), \
+             patch.object(hm, "_stash_local_changes_if_needed", return_value=None), \
+             patch.object(hm, "_capture_head_sha", return_value="before"), \
+             patch.object(
+                 hm,
+                 "_validate_critical_files_syntax",
+                 return_value=(False, PROJECT_ROOT / "hermes_cli/main.py", "boom"),
+             ), pytest.raises(SystemExit):
+            cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        fetch_cmds = [c for c in commands if "fetch" in c]
+        assert len(fetch_cmds) == 1
+        assert "fetch https://github.com/NousResearch/hermes-agent.git" in fetch_cmds[0]
+        assert "--depth" not in fetch_cmds[0]
+        assert "+main:refs/remotes/origin/main" in fetch_cmds[0]
+        assert any("rev-list HEAD..origin/main --count" in c for c in commands)
+        assert any("merge --ff-only origin/main" in c for c in commands)
+        assert not any("pull --ff-only" in c for c in commands)
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_use_https_preserves_depth_when_shallow(self, mock_run, _mock_which):
+        from hermes_cli import main as hm
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--is-shallow-repository" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        args = SimpleNamespace(use_https=True)
+
+        with patch.object(hm, "_is_windows", return_value=False), \
+             patch.object(hm, "_run_pre_update_backup"), \
+             patch.object(hm, "_pause_windows_gateways_for_update", return_value=None), \
+             patch.object(hm, "_discard_lockfile_churn"), \
+             patch.object(hm, "_get_origin_url", return_value="git@github.com:NousResearch/hermes-agent.git"), \
+             patch.object(hm, "_stash_local_changes_if_needed", return_value=None), \
+             patch.object(hm, "_capture_head_sha", return_value="before"), \
+             patch.object(
+                 hm,
+                 "_validate_critical_files_syntax",
+                 return_value=(False, PROJECT_ROOT / "hermes_cli/main.py", "boom"),
+             ), pytest.raises(SystemExit):
+            cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        fetch_cmds = [c for c in commands if "fetch" in c]
+        assert len(fetch_cmds) == 1
+        assert "fetch --depth 1 https://github.com/NousResearch/hermes-agent.git" in fetch_cmds[0]
+        assert "+main:refs/remotes/origin/main" in fetch_cmds[0]
+        assert any("merge --ff-only origin/main" in c for c in commands)
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_already_up_to_date(
         self, mock_run, _mock_which, mock_args, capsys
     ):
@@ -804,7 +887,7 @@ class TestCmdUpdateCheckBranchFlag:
     def test_check_use_https_fetches_public_url_and_recommends_flag(
         self, mock_run, _mock_method, capsys
     ):
-        """--check --use-https bypasses remotes and keeps the install hint."""
+        """--check --use-https fetches the public URL and keeps the install hint."""
 
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
@@ -814,12 +897,48 @@ class TestCmdUpdateCheckBranchFlag:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if "rev-parse" in joined and "--verify" in joined:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="2\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        args = SimpleNamespace(check=True, branch=None, use_https=True)
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        fetch_cmds = [c for c in commands if "fetch" in c]
+        assert len(fetch_cmds) == 1
+        assert "fetch https://github.com/NousResearch/hermes-agent.git" in fetch_cmds[0]
+        assert "--depth" not in fetch_cmds[0]
+        assert "+main:refs/remotes/origin/main" in fetch_cmds[0]
+        assert not any("upstream" in c for c in commands)
+        assert any("rev-list HEAD..origin/main --count" in c for c in commands)
+
+        out = capsys.readouterr().out
+        assert "Run 'hermes update --use-https' to install." in out
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_use_https_preserves_shallow_depth_and_presence_comparison(
+        self, mock_run, _mock_method, capsys
+    ):
+        """Shallow HTTPS checks keep --depth 1 and avoid misleading rev-list counts."""
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--is-shallow-repository" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if "fetch" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if joined.endswith("rev-parse HEAD"):
                 return subprocess.CompletedProcess(cmd, 0, stdout="local-sha\n", stderr="")
             if joined.endswith("rev-parse origin/main"):
                 return subprocess.CompletedProcess(cmd, 0, stdout="remote-sha\n", stderr="")
             if "rev-list" in joined:
-                raise AssertionError("--use-https check should use presence-only comparison")
+                raise AssertionError("shallow check should use presence-only comparison")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         mock_run.side_effect = side_effect
@@ -832,7 +951,6 @@ class TestCmdUpdateCheckBranchFlag:
         assert len(fetch_cmds) == 1
         assert "fetch --depth 1 https://github.com/NousResearch/hermes-agent.git" in fetch_cmds[0]
         assert "+main:refs/remotes/origin/main" in fetch_cmds[0]
-        assert not any("upstream" in c for c in commands)
 
         out = capsys.readouterr().out
         assert "Run 'hermes update --use-https' to install." in out

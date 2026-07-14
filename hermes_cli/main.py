@@ -8401,11 +8401,14 @@ def _resolve_update_branch(args) -> str:
 _UPDATE_HTTPS_URL = "https://github.com/NousResearch/hermes-agent.git"
 
 
-def _https_update_fetch_args(branch: str) -> list[str]:
+def _https_update_fetch_args(
+    branch: str,
+    *,
+    depth_args: list[str] | None = None,
+) -> list[str]:
     return [
         "fetch",
-        "--depth",
-        "1",
+        *(depth_args or []),
         _UPDATE_HTTPS_URL,
         f"+{branch}:refs/remotes/origin/{branch}",
     ]
@@ -8494,7 +8497,7 @@ def _cmd_update_check(
     if use_https:
         print("→ Fetching from GitHub HTTPS...")
         fetch_result = subprocess.run(
-            git_cmd + _https_update_fetch_args(branch),
+            git_cmd + _https_update_fetch_args(branch, depth_args=depth_args),
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8561,7 +8564,7 @@ def _cmd_update_check(
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
 
-    if is_shallow or use_https:
+    if is_shallow:
         # No history to count across the shallow boundary. Compare tip SHAs and
         # report presence-only (mirrors the banner's _check_via_local_git).
         head_sha = subprocess.run(
@@ -8600,7 +8603,10 @@ def _cmd_update_check(
         print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
         from hermes_cli.config import recommended_update_command
 
-        print(f"  Run '{recommended_update_command()}' to install.")
+        update_command = recommended_update_command()
+        if use_https and "--use-https" not in update_command:
+            update_command = f"{update_command} --use-https"
+        print(f"  Run '{update_command}' to install.")
 
 
 def _ensure_fhs_path_guard() -> None:
@@ -9604,11 +9610,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
         use_https = bool(getattr(args, "use_https", False))
 
         print("→ Fetching updates...")
-        fetch_args = (
-            _https_update_fetch_args(branch)
-            if use_https
-            else ["fetch", "origin", branch]
-        )
+        if use_https:
+            is_shallow = (
+                subprocess.run(
+                    git_cmd + ["rev-parse", "--is-shallow-repository"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                == "true"
+            )
+            depth_args = ["--depth", "1"] if is_shallow else []
+            fetch_args = _https_update_fetch_args(branch, depth_args=depth_args)
+        else:
+            fetch_args = ["fetch", "origin", branch]
         fetch_result = subprocess.run(
             git_cmd + fetch_args,
             cwd=PROJECT_ROOT,

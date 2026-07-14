@@ -356,6 +356,59 @@ class TestMattermostSend:
         payload = self.adapter._session.post.call_args[1]["json"]
         assert "root_id" not in payload
 
+    @pytest.mark.asyncio
+    async def test_send_auto_mode_top_level_stays_flat(self):
+        """In 'auto' mode a top-level message (no metadata thread_id) replies flat,
+        even when reply_to is present — keeping a DM as one continuous session."""
+        self.adapter._reply_mode = "auto"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_auto1"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send("channel_1", "Hi!", reply_to="some_post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_auto_mode_threaded_uses_metadata_thread_id(self):
+        """In 'auto' mode, when the incoming message was itself in a thread
+        (metadata['thread_id']), the reply nests under that thread root."""
+        self.adapter._reply_mode = "auto"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_auto2"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        # thread_id from metadata is already a thread root; _resolve_root_id
+        # GETs the post and (no nested root_id) returns it unchanged.
+        mock_get_resp = AsyncMock()
+        mock_get_resp.status = 200
+        mock_get_resp.json = AsyncMock(return_value={"id": "thread_root", "root_id": ""})
+        mock_get_resp.text = AsyncMock(return_value="")
+        mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
+        mock_get_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
+
+        result = await self.adapter.send(
+            "channel_1", "In-thread reply", metadata={"thread_id": "thread_root"}
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "thread_root"
 
     @pytest.mark.asyncio
     async def test_send_uses_metadata_thread_id_for_progress_messages(self):

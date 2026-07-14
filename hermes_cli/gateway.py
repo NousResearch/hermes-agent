@@ -4938,9 +4938,9 @@ _PLATFORMS = [
             },
             {
                 "name": "MATTERMOST_REPLY_MODE",
-                "prompt": "Reply mode — 'off' for flat messages, 'thread' for threaded replies (default: off)",
+                "prompt": "Reply mode — 'off' flat, 'thread' always threaded, 'auto' threaded only when your message was in a thread (default: off)",
                 "password": False,
-                "help": "off = flat channel messages, thread = replies nest under your message.",
+                "help": "off = flat channel messages, thread = replies always nest under your message, auto = nest only when your message was itself in a thread (top-level stays flat).",
             },
         ],
     },

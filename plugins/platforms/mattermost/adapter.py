@@ -92,7 +92,15 @@ class MattermostAdapter(BasePlatformAdapter):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closing = False
 
-        # Reply mode: "thread" to nest replies, "off" for flat messages.
+        # Reply mode:
+        #   "off"    — never thread (flat messages).
+        #   "thread" — always nest replies under the triggering message. On a
+        #              top-level message this roots a brand-new thread, so each
+        #              top-level message starts a new thread (and, for gateways
+        #              that key sessions by thread, a new session → lost context).
+        #   "auto"   — nest ONLY when the incoming message was itself inside a
+        #              thread; top-level messages reply flat, so a DM stays one
+        #              continuous conversation (like Telegram/Discord behaviour).
         self._reply_mode: str = (
             config.extra.get("reply_mode", "")
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
@@ -166,6 +174,18 @@ class MattermostAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Optional[str]:
         """Resolve the Mattermost root_id from reply_to or metadata."""
+        if self._reply_mode == "auto":
+            # Nest only when the incoming message was itself inside a thread,
+            # surfaced as metadata["thread_id"]. Top-level messages stay flat so
+            # the conversation remains one continuous session. reply_to is
+            # ignored on purpose: in "thread" mode it would root a brand-new
+            # thread per top-level message, which is exactly what "auto" avoids.
+            thread_id = (
+                metadata.get("thread_id") if isinstance(metadata, dict) else None
+            )
+            if not thread_id:
+                return None
+            return await self._resolve_root_id(str(thread_id))
         if self._reply_mode != "thread":
             return None
         candidate = reply_to

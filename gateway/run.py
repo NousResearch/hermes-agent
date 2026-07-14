@@ -1470,11 +1470,11 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     _bridge_max_turns_from_config(_hermes_home)
 
 
-def _bridge_max_turns_from_config(home: "Path") -> None:
-    """Bridge config.yaml agent.max_turns into HERMES_MAX_ITERATIONS (a global)."""
+def _load_bridged_config(home: "Path") -> dict | None:
+    """Load config.yaml for the config->env bridge (env expansion + managed overlay)."""
     config_path = home / 'config.yaml'
     if not config_path.exists():
-        return
+        return None
     try:
         import yaml as _yaml
         with open(config_path, encoding="utf-8") as f:
@@ -1482,7 +1482,7 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
         from hermes_cli.config import _expand_env_vars
         cfg = _expand_env_vars(cfg)
         # Managed scope: keep administrator-pinned values authoritative on every
-        # turn too. This per-turn reload re-bridges config→env, so without the
+        # turn too. This per-turn reload re-bridges config->env, so without the
         # overlay a managed agent.max_turns / timezone / redact_secrets would be
         # replaced by the user's value after the first turn. Fail-open.
         try:
@@ -1491,11 +1491,44 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
         except Exception:
             pass
     except Exception:
-        return
+        return None
+    return cfg
 
-    agent_cfg = cfg.get("agent", {})
-    if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
-        os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+
+def _max_iterations_from_config(cfg: dict) -> int | None:
+    agent_cfg = cfg.get("agent")
+    candidates = []
+    if isinstance(agent_cfg, dict):
+        candidates.append(agent_cfg.get("max_turns"))
+    # Legacy root-level max_turns (normalized into agent.max_turns by
+    # hermes_cli.config._normalize_max_turns_config); agent.max_turns wins.
+    candidates.append(cfg.get("max_turns"))
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _read_config_max_iterations(home: "Path") -> int | None:
+    """Return config.yaml's authoritative agent.max_turns value when present."""
+    cfg = _load_bridged_config(home)
+    if cfg is None:
+        return None
+    return _max_iterations_from_config(cfg)
+
+
+def _bridge_max_turns_from_config(home: "Path") -> None:
+    """Bridge config.yaml agent.max_turns into HERMES_MAX_ITERATIONS (a global)."""
+    cfg = _load_bridged_config(home)
+    if cfg is None:
+        return
+    max_iterations = _max_iterations_from_config(cfg)
+    if max_iterations is not None:
+        os.environ["HERMES_MAX_ITERATIONS"] = str(max_iterations)
     # config-authoritative knobs for the session-search index (config.yaml
     # sessions.* wins over stale env; env stays the cross-process carrier).
     sessions_cfg = cfg.get("sessions", {})
@@ -1506,13 +1539,33 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
             os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_cfg["search_slow_ms"])
 
 
+def _resolve_gateway_max_iterations(
+    default: int = 90,
+    *,
+    reload_runtime_env: bool = False,
+) -> int:
+    """Resolve the per-turn iteration cap with config.yaml as source of truth.
+
+    ``~/.hermes/.env`` may contain stale ``HERMES_MAX_ITERATIONS`` values from
+    older setup flows. Always prefer config.yaml ``agent.max_turns`` when it is
+    present; consult the environment only when config omits the key.
+    """
+    if reload_runtime_env:
+        _reload_runtime_env_preserving_config_authority()
+
+    max_iterations = _read_config_max_iterations(_hermes_home)
+    if max_iterations is not None:
+        os.environ["HERMES_MAX_ITERATIONS"] = str(max_iterations)
+        return max_iterations
+    try:
+        return int(os.getenv("HERMES_MAX_ITERATIONS", str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def _current_max_iterations() -> int:
     """Return the current per-turn iteration budget after runtime env refresh."""
-    _reload_runtime_env_preserving_config_authority()
-    try:
-        return int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-    except (TypeError, ValueError):
-        return 90
+    return _resolve_gateway_max_iterations(reload_runtime_env=True)
 
 
 from contextlib import contextmanager as _contextmanager
@@ -1770,10 +1823,14 @@ if _config_path.exists():
         # .env entries (e.g. HERMES_MAX_ITERATIONS=60 written by an old
         # `hermes setup` run) silently shadow the user's current config.
         # See PR #18413 / the 60-vs-500 max_turns incident.
+        # max_turns goes through the shared validated helper: it skips a null
+        # value (str() would export the literal string "None", collapsing every
+        # later int() parse to the hardcoded default) and honors legacy
+        # root-level max_turns, so this import-time bridge agrees with the
+        # per-turn _resolve_gateway_max_iterations() resolution.
+        _bridge_max_turns_from_config(_hermes_home)
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
             if "gateway_timeout" in _agent_cfg:
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
             if "gateway_timeout_warning" in _agent_cfg:
@@ -7500,7 +7557,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
         try:
-            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            _effective_max_iter = _resolve_gateway_max_iterations()
             logger.info(
                 "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
                 "or HERMES_MAX_ITERATIONS from .env, or default 90)",

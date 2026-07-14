@@ -189,14 +189,29 @@ export function useVirtualHistory(
   // key → React.Object.is short-circuits the commit entirely. The key includes
   // sticky state, target scroll position, and viewport height so resize-only
   // changes still recompute the mounted transcript window.
+  //
+  // snapshotKeyRef caches the last snapshot so getSnapshot() returns a stable
+  // value between React's two consecutive calls during tearing detection. Without
+  // this, getSnapshot() reads live scroll state that can change at any moment
+  // (streaming TUI) → false tearing detected → flushSyncWorkAcrossRoots loop
+  // → React error #301.
+  const snapshotKeyRef = useRef('none')
+
   const subscribe = useCallback(
-    (cb: () => void) => (hasScrollRef ? scrollRef.current?.subscribe(cb) : null) ?? NOOP,
+    (cb: () => void) => {
+      if (!hasScrollRef || !scrollRef.current) return NOOP
+      snapshotKeyRef.current = virtualHistorySnapshotKey(scrollRef.current)
+      return scrollRef.current.subscribe(() => {
+        snapshotKeyRef.current = virtualHistorySnapshotKey(scrollRef.current)
+        cb()
+      })
+    },
     [hasScrollRef, scrollRef]
   )
 
   useSyncExternalStore(
     subscribe,
-    () => virtualHistorySnapshotKey(scrollRef.current),
+    () => snapshotKeyRef.current,
     () => 'none'
   )
 

@@ -112,6 +112,65 @@ def test_legacy_engine_receives_only_supported_compression_arguments():
     assert calls == [100_000]
 
 
+def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch):
+    prefix_secret = "sk-" + "a" * 30
+    query_secret = "opaque-query-secret"
+    userinfo_value = "opaque-userinfo-value"
+    manager = MagicMock()
+    manager.on_pre_compress.return_value = (
+        f"api key: {prefix_secret}\n"
+        f"callback: https://example.test/cb?access_token={query_secret}&state=ok\n"
+        f"endpoint: https://user:{userinfo_value}@example.test/private"
+    )
+    received = []
+    compressor = MagicMock()
+
+    def capture_compress(messages, current_tokens=None, memory_context="", **_kwargs):
+        received.append(memory_context)
+        return [messages[0], messages[-1]]
+
+    compressor.compress.side_effect = capture_compress
+    _configure_engine_state(compressor)
+    agent = _make_agent(manager, compressor)
+
+    # Provider-to-engine handoff is an external-LLM egress boundary, so it
+    # remains strict even when display/log redaction was explicitly disabled.
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    agent._compress_context(_messages(), "sys", approx_tokens=100_000)
+
+    assert len(received) == 1
+    context = received[0]
+    assert prefix_secret not in context
+    assert query_secret not in context
+    assert userinfo_value not in context
+    assert "access_token=***" in context
+    assert "https://user:***@example.test/private" in context
+
+
+def test_provider_context_is_bounded_before_plugin_engine():
+    manager = MagicMock()
+    manager.on_pre_compress.return_value = "HEAD-SENTINEL" + "x" * 8_000 + "TAIL-SENTINEL"
+    received = []
+    compressor = MagicMock()
+
+    def capture_compress(messages, current_tokens=None, memory_context="", **_kwargs):
+        received.append(memory_context)
+        return [messages[0], messages[-1]]
+
+    compressor.compress.side_effect = capture_compress
+    _configure_engine_state(compressor)
+    agent = _make_agent(manager, compressor)
+
+    agent._compress_context(_messages(), "sys", approx_tokens=100_000)
+
+    assert len(received) == 1
+    context = received[0]
+    assert len(context) <= 6_000
+    assert context.startswith("HEAD-SENTINEL")
+    assert context.endswith("TAIL-SENTINEL")
+    assert "[memory provider context truncated]" in context
+
+
 def test_internal_engine_type_error_propagates_after_one_call():
     manager = MagicMock()
     manager.on_pre_compress.return_value = "Checkpoint id: ctx-typeerror"

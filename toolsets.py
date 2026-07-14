@@ -77,8 +77,6 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
-    # Diff analysis and security tools
-    "diff_analyze", "secrets_detect",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,

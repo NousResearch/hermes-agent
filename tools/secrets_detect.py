@@ -74,11 +74,18 @@ def _scan_file(file_path: str, custom_patterns: Optional[List[tuple]] = None) ->
             matches = re.finditer(pattern, content, re.MULTILINE)
             for match in matches:
                 line_num = content[:match.start()].count("\n") + 1
-                
-                context_start = max(0, match.start() - 30)
-                context_end = min(len(content), match.end() + 30)
-                context = content[context_start:context_end].replace("\n", " ")
-                
+
+                # Mask the matched credential in context — use the full match
+                # span (not capture groups) so patterns without groups are handled.
+                match_len = match.end() - match.start()
+                mask_len = max(2, match_len // 2)
+                masked_value = match.group()[:mask_len] + "*" * (match_len - mask_len)
+
+                ctx_start = max(0, match.start() - 30)
+                ctx_end = min(len(content), match.end() + 30)
+                raw_ctx = content[ctx_start:match.start()] + masked_value + content[match.end():ctx_end]
+                context = raw_ctx.replace("\n", " ")
+
                 findings.append({
                     "type": secret_type,
                     "severity": severity,
@@ -95,8 +102,12 @@ def _scan_file(file_path: str, custom_patterns: Optional[List[tuple]] = None) ->
 
 MAX_FILES_LIMIT = 1000
 
-def _scan_directory(dir_path: str, max_depth: int = 5, custom_patterns: Optional[List] = None, exclude_custom: Optional[List[str]] = None) -> List[Dict[str, str]]:
-    """Scan a directory for secrets."""
+def _scan_directory(dir_path: str, max_depth: int = 5, custom_patterns: Optional[List] = None, exclude_custom: Optional[List[str]] = None) -> tuple:
+    """Scan a directory for secrets.
+
+    Returns:
+        (findings, files_scanned) — findings list and total files inspected.
+    """
     findings = []
     files_scanned = 0
     
@@ -129,7 +140,7 @@ def _scan_directory(dir_path: str, max_depth: int = 5, custom_patterns: Optional
                 findings.extend(_scan_file(file_path, custom_patterns=custom_patterns))
                 files_scanned += 1
     
-    return findings
+    return findings, files_scanned
 
 
 def secrets_detect(
@@ -188,6 +199,7 @@ def secrets_detect(
                 pass
     
     all_findings = []
+    files_scanned = 0
     
     if os.path.isfile(path):
         excluded = False
@@ -198,8 +210,9 @@ def secrets_detect(
                     break
         if not excluded and not _should_exclude(path):
             all_findings = _scan_file(path, custom_patterns=custom_patterns)
+            files_scanned = 1
     else:
-        all_findings = _scan_directory(path, custom_patterns=custom_patterns, exclude_custom=exclude_patterns)
+        all_findings, files_scanned = _scan_directory(path, custom_patterns=custom_patterns, exclude_custom=exclude_patterns)
     
     severity_filter = severity.upper() if severity != "all" else "ALL"
     if severity_filter != "ALL":
@@ -208,8 +221,6 @@ def secrets_detect(
     critical = [f for f in all_findings if f["severity"] == "critical"]
     high = [f for f in all_findings if f["severity"] == "high"]
     medium = [f for f in all_findings if f["severity"] == "medium"]
-    
-    unique_files = set(f["file"] for f in all_findings)
     
     result = {
         "success": True,
@@ -220,7 +231,7 @@ def secrets_detect(
             "critical": len(critical),
             "high": len(high),
             "medium": len(medium),
-            "files_scanned": len(unique_files),
+            "files_scanned": files_scanned,
         },
         "recommendation": "Review and remove any hardcoded secrets. Use environment variables or secret management tools instead." if all_findings else "No secrets detected.",
     }

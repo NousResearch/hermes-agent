@@ -96,13 +96,48 @@ class TestDiffAnalyze:
                 data = json.loads(output)
                 assert data["success"] is True
 
-    def test_parse_diff_stats(self):
-        from tools.diff_analyze import _parse_diff_stats
-        diff_output = "1 file changed, 10 insertions(+), 5 deletions(-)"
-        stats = _parse_diff_stats(diff_output)
-        assert stats["files_changed"] == 1
-        assert stats["insertions"] == 10
-        assert stats["deletions"] == 5
+    def test_parse_numstat_basic(self):
+        from tools.diff_analyze import _parse_numstat
+        numstat = "10\t5\tfile.py\n3\t1\tanother.py\n"
+        stats = _parse_numstat(numstat)
+        assert stats["files_changed"] == 2
+        assert stats["insertions"] == 13
+        assert stats["deletions"] == 6
+
+    def test_parse_numstat_binary_file(self):
+        from tools.diff_analyze import _parse_numstat
+        numstat = "-\t-\timage.png\n4\t2\tsrc/main.py\n"
+        stats = _parse_numstat(numstat)
+        assert stats["files_changed"] == 2
+        assert stats["insertions"] == 4
+        assert stats["deletions"] == 2
+
+    def test_parse_numstat_empty(self):
+        from tools.diff_analyze import _parse_numstat
+        assert _parse_numstat("") == {"files_changed": 0, "insertions": 0, "deletions": 0}
+
+    def test_parse_numstat_single_file(self):
+        from tools.diff_analyze import _parse_numstat
+        stats = _parse_numstat("42\t0\tpackage.json")
+        assert stats == {"files_changed": 1, "insertions": 42, "deletions": 0}
+
+    def test_diff_analyze_uses_numstat_for_stats(self, monkeypatch):
+        from tools.diff_analyze import diff_analyze
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.chdir(tmpdir)
+            call_count = 0
+            def mock_run(args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if "--numstat" in args:
+                    return MagicMock(stdout="10\t5\tfile.py", returncode=0, stderr="")
+                return MagicMock(stdout="diff --git a/file.py b/file.py\n+line", returncode=0, stderr="")
+            with patch("subprocess.run", side_effect=mock_run):
+                data = json.loads(diff_analyze())
+                assert data["success"] is True
+                assert data["stats"]["files_changed"] == 1
+                assert data["stats"]["insertions"] == 10
+                assert data["stats"]["deletions"] == 5
 
 
 class TestDiffAnalyzeSchema:

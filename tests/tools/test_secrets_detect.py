@@ -143,3 +143,100 @@ class TestShouldExclude:
         from tools.secrets_detect import _should_exclude
         assert _should_exclude("src/config.py") is False
         assert _should_exclude("app.py") is False
+
+
+class TestCredentialMasking:
+    def test_credential_masked_in_context(self):
+        """Credential value in context must be masked, not in plaintext."""
+        from tools.secrets_detect import secrets_detect
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("API_KEY = 'supersecretvalue1234567890'\n")
+            f_name = f.name
+        try:
+            output = secrets_detect(f_name)
+            data = json.loads(output)
+            assert data["success"] is True
+            assert data["total_findings"] > 0
+            for finding in data["findings"]:
+                ctx = finding["context"]
+                # The full credential string must never appear in context
+                assert "supersecretvalue1234567890" not in ctx
+                # Must contain masking indicator
+                assert "*" in ctx
+        finally:
+            os.remove(f_name)
+
+    def test_context_preserves_surrounding_text(self):
+        """Context around the credential must be preserved."""
+        from tools.secrets_detect import secrets_detect
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("my_api_key = 'abcdefghij1234567890'\n")
+            f_name = f.name
+        try:
+            output = secrets_detect(f_name)
+            data = json.loads(output)
+            assert data["success"] is True
+            assert data["total_findings"] > 0
+            ctx = data["findings"][0]["context"]
+            # Variable name must be visible in context
+            assert "my_api_key" in ctx
+            # Password keyword context preserved
+        finally:
+            os.remove(f_name)
+
+    def test_password_pattern_masked(self):
+        """Password values must also be masked."""
+        from tools.secrets_detect import secrets_detect
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("password = 'hunter2isabadpassword'\n")
+            f_name = f.name
+        try:
+            output = secrets_detect(f_name)
+            data = json.loads(output)
+            assert data["success"] is True
+            for finding in data["findings"]:
+                if finding["type"] == "Password":
+                    assert "hunter2isabadpassword" not in finding["context"]
+                    assert "*" in finding["context"]
+                    return
+            pytest.fail("No Password finding detected")
+        finally:
+            os.remove(f_name)
+
+
+class TestFilesScannedCount:
+    def test_files_scanned_reflects_actual_count(self, tmp_path):
+        """files_scanned must reflect total files inspected, not just files with findings."""
+        # Create 3 files, only 1 with a secret
+        for i in range(3):
+            p = tmp_path / f"file_{i}.py"
+            if i == 0:
+                p.write_text("API_KEY = 'test_secret_key_12345678901234567890'\n")
+            else:
+                p.write_text("x = 1\n")
+
+        from tools.secrets_detect import secrets_detect
+        output = secrets_detect(str(tmp_path))
+        data = json.loads(output)
+        assert data["success"] is True
+        # All 3 files were scanned, even though only 1 had findings
+        assert data["summary"]["files_scanned"] == 3
+
+    def test_files_scanned_single_file(self, tmp_path):
+        """Single-file scan must report files_scanned = 1."""
+        p = tmp_path / "clean.py"
+        p.write_text("x = 1\n")
+
+        from tools.secrets_detect import secrets_detect
+        output = secrets_detect(str(p))
+        data = json.loads(output)
+        assert data["success"] is True
+        assert data["summary"]["files_scanned"] == 1
+
+    def test_files_scanned_empty_dir(self, tmp_path):
+        """Empty directory must report files_scanned = 0."""
+        from tools.secrets_detect import secrets_detect
+        output = secrets_detect(str(tmp_path))
+        data = json.loads(output)
+        assert data["success"] is True
+        assert data["summary"]["files_scanned"] == 0

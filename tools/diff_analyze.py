@@ -35,31 +35,30 @@ def _run_git(args: List[str], cwd: Optional[str] = None) -> Dict[str, any]:
         }
 
 
-def _parse_diff_stats(diff_output: str) -> Dict[str, int]:
-    """Parse diff output to get statistics."""
+def _parse_numstat(numstat_output: str) -> Dict[str, int]:
+    """Parse git diff --numstat output for accurate per-file line counts.
+
+    Each line: ``insertions\\tdeletions\\tpath``
+    Binary files show ``-\\t-\\tpath``.
+    """
     stats = {"files_changed": 0, "insertions": 0, "deletions": 0}
-    
-    for line in diff_output.split("\n"):
-        match = re.match(r"(\d+)\s+file[s]?\s+changed", line)
-        if match:
-            stats["files_changed"] = int(match.group(1))
-        
-        match = re.search(r"(\d+)\s+insertion", line)
-        if match:
-            stats["insertions"] = int(match.group(1))
-        
-        match = re.search(r"(\d+)\s+deletion", line)
-        if match:
-            stats["deletions"] = int(match.group(1))
-        
-        match = re.search(r"(\d+),\s*(\d+)\s+insertion", line)
-        if match:
-            stats["insertions"] = int(match.group(1))
-        
-        match = re.search(r"(\d+),\s*(\d+)\s+deletion", line)
-        if match:
-            stats["deletions"] = int(match.group(1))
-    
+    for line in numstat_output.split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        ins_str, dels_str = parts[0], parts[1]
+        if ins_str == "-" or dels_str == "-":
+            # binary file — count as 1 changed file, 0 lines
+            stats["files_changed"] += 1
+            continue
+        try:
+            stats["insertions"] += int(ins_str)
+            stats["deletions"] += int(dels_str)
+            stats["files_changed"] += 1
+        except ValueError:
+            continue
     return stats
 
 
@@ -131,23 +130,35 @@ def diff_analyze(
             })
     
     repo_root = cwd or os.getcwd()
-    
+
     diff_output = ""
-    
+    numstat_output = ""
+
     if base and target:
-        result = _run_git(["diff", "--no-color", f"{base}..{target}"], repo_root)
-        if result["success"]:
-            diff_output = result.get("stdout", "")
+        range_spec = f"{base}..{target}"
     elif base:
-        result = _run_git(["diff", "--no-color", f"{base}..HEAD"], repo_root)
-        if result["success"]:
-            diff_output = result.get("stdout", "")
+        range_spec = f"{base}..HEAD"
+    else:
+        range_spec = ""
+
+    # Fetch unified diff for context / file_changes
+    if range_spec:
+        result = _run_git(["diff", "--no-color", range_spec], repo_root)
     else:
         result = _run_git(["diff", "--no-color"], repo_root)
         if not result["success"] or not result.get("stdout"):
             result = _run_git(["diff", "--no-color", "HEAD"], repo_root)
-        diff_output = result.get("stdout", "")
-    
+    diff_output = result.get("stdout", "") if result["success"] else ""
+
+    # Fetch --numstat for accurate line-count stats
+    if range_spec:
+        numstat_result = _run_git(["diff", "--numstat", range_spec], repo_root)
+    else:
+        numstat_result = _run_git(["diff", "--numstat"], repo_root)
+        if not numstat_result["success"] or not numstat_result.get("stdout"):
+            numstat_result = _run_git(["diff", "--numstat", "HEAD"], repo_root)
+    numstat_output = numstat_result.get("stdout", "") if numstat_result["success"] else ""
+
     if file_filter and diff_output:
         filtered_lines = []
         pattern = file_filter.replace("*", ".*").replace("?", ".")
@@ -157,8 +168,8 @@ def diff_analyze(
             elif any(ext in line for ext in file_filter.split(",")):
                 filtered_lines.append(line)
         diff_output = "\n".join(filtered_lines)
-    
-    stats = _parse_diff_stats(diff_output)
+
+    stats = _parse_numstat(numstat_output) if numstat_output else {"files_changed": 0, "insertions": 0, "deletions": 0}
     
     file_changes = _analyze_diff_details(diff_output) if not summary else []
     

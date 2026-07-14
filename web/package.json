@@ -39,6 +39,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^22.20.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
@@ -48,6 +50,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "jsdom": "^29.1.1",
     "three": "^0.180.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.56.1",

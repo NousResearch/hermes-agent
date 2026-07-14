@@ -1587,7 +1587,7 @@ def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(mo
     produce the final answer.
     """
     agent = _build_agent(monkeypatch)
-    agent.context_compressor.context_length = 20_000
+    agent.context_compressor.context_length = 100_000
     agent.context_compressor.threshold_tokens = 20_000
 
     responses = [
@@ -1653,7 +1653,7 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
     agent._persist_session = run_agent.AIAgent._persist_session.__get__(agent)
     agent._cleanup_task_resources = lambda task_id: None
 
-    agent.context_compressor.context_length = 20_000
+    agent.context_compressor.context_length = 100_000
     agent.context_compressor.threshold_tokens = 20_000
 
     agent._session_db = SessionDB()

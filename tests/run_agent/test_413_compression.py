@@ -592,9 +592,9 @@ class TestPreflightCompression:
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
         agent.compression_enabled = True
-        # Set a small context so the history is "oversized", but large enough
-        # that the compressed result (2 short messages) fits in a single pass.
-        agent.context_compressor.context_length = 2000
+        # Keep the model above the minimum-context validation and drive the
+        # preflight path with an artificially low trigger threshold instead.
+        agent.context_compressor.context_length = 100_000
         agent.context_compressor.threshold_tokens = 200
 
         # Build a history that will be large enough to trigger preflight
@@ -762,7 +762,7 @@ class TestPreflightCompression:
     def test_no_preflight_when_compression_disabled(self, agent):
         """Preflight should not run when compression is disabled."""
         agent.compression_enabled = False
-        agent.context_compressor.context_length = 100
+        agent.context_compressor.context_length = 100_000
         agent.context_compressor.threshold_tokens = 85
 
         big_history = [
@@ -791,7 +791,7 @@ class TestPreflightCompression:
         <10% (the canonical infinite-compression-loop signal).
         """
         agent.compression_enabled = True
-        agent.context_compressor.context_length = 2000
+        agent.context_compressor.context_length = 100_000
         agent.context_compressor.threshold_tokens = 200
 
         big_history = []

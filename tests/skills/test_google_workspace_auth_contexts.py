@@ -368,6 +368,51 @@ class TestCommandScopeGate:
             assert auth_contexts.legacy_token_path().exists()
             assert auth_contexts.legacy_pending_path().exists()
 
+    def test_all_store_mutations_refuse_to_overwrite_malformed_store(
+        self, auth_contexts
+    ):
+        malformed = '{"contexts":{"named":{"client_secret":"named-secret"}'
+        operations = (
+            lambda: auth_contexts.set_token_payload("named", {"token": "new"}),
+            lambda: auth_contexts.set_client_secret(
+                "named", {"installed": {"client_id": "new"}}
+            ),
+            lambda: auth_contexts.set_pending_auth("named", {"state": "new"}),
+            lambda: auth_contexts.set_default_for_services("named", "gmail"),
+        )
+        for operation in operations:
+            auth_contexts.store_path().write_text(malformed)
+
+            with pytest.raises(RuntimeError, match="unreadable"):
+                operation()
+
+            assert auth_contexts.store_path().read_text() == malformed
+
+    def test_destructive_operations_validate_context_entries_before_unlink(
+        self, auth_contexts
+    ):
+        malformed_entry = json.dumps(
+            {
+                "version": 1,
+                "default_contexts": {},
+                "contexts": {"default": "malformed-entry"},
+            }
+        )
+        for operation in (
+            auth_contexts.delete_token,
+            auth_contexts.clear_pending_auth,
+        ):
+            auth_contexts.store_path().write_text(malformed_entry)
+            auth_contexts.legacy_token_path().write_text('{"token": "legacy"}')
+            auth_contexts.legacy_pending_path().write_text('{"state": "pending"}')
+
+            with pytest.raises(RuntimeError, match="unreadable"):
+                operation("default")
+
+            assert auth_contexts.store_path().read_text() == malformed_entry
+            assert auth_contexts.legacy_token_path().exists()
+            assert auth_contexts.legacy_pending_path().exists()
+
     def test_full_drive_implies_read(self, auth_contexts):
         auth_contexts.set_token_payload("drive", {"token": "tok", "scopes": [auth_contexts.DRIVE]})
         auth_contexts.assert_command_allowed("drive", "drive", "search")

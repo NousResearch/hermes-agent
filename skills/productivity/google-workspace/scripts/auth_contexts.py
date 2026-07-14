@@ -221,6 +221,12 @@ def _load_store(*, strict: bool = False) -> dict[str, Any]:
                     f"Auth context store is unreadable; refusing to overwrite {path}"
                 )
             return _empty_store()
+    if any(not isinstance(entry, dict) for entry in data["contexts"].values()):
+        if strict:
+            raise RuntimeError(
+                f"Auth context store is unreadable; refusing to overwrite {path}"
+            )
+        return _empty_store()
     _merge_legacy_default(data)
     return data
 
@@ -332,7 +338,7 @@ def set_token_payload(context: str, token_payload: dict[str, Any], *, services: 
     if context == "default" and not store_path().exists():
         _write_private_json(legacy_token_path(), token_payload)
         return
-    store = load_store()
+    store = _load_store_for_update()
     entry = _context_entry(store, context)
     entry["token"] = token_payload
     if services is not None:
@@ -361,7 +367,7 @@ def set_client_secret(context: str, payload: dict[str, Any], *, account_hint: st
     if context == "default" and not store_path().exists():
         _write_private_json(legacy_client_secret_path(), payload)
         return
-    store = load_store()
+    store = _load_store_for_update()
     entry = _context_entry(store, context)
     entry["client_secret"] = payload
     if account_hint:
@@ -388,7 +394,7 @@ def set_pending_auth(context: str, payload: dict[str, Any]) -> None:
     if context == "default" and not store_path().exists():
         _write_private_json(legacy_pending_path(), payload)
         return
-    store = load_store()
+    store = _load_store_for_update()
     entry = _context_entry(store, context)
     entry["pending_auth"] = payload
     save_store(store)
@@ -450,7 +456,7 @@ def set_default_for_services(context: str, services_csv: str) -> None:
     unknown = sorted(set(services) - valid_api_services)
     if unknown:
         raise ValueError(f"Unknown API service(s) for defaults: {', '.join(unknown)}")
-    store = load_store()
+    store = _load_store_for_update()
     _context_entry(store, context)
     defaults = store.setdefault("default_contexts", {})
     for service in services:

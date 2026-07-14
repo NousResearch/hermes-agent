@@ -97,6 +97,7 @@ function fakeDesktop() {
     })),
     onBootProgress: vi.fn(() => () => undefined),
     onBackendExit: vi.fn(() => () => undefined),
+    onConnectionApplied: vi.fn(() => () => undefined),
     onPowerResume: vi.fn(() => () => undefined),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),

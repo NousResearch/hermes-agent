@@ -30,7 +30,7 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 
 ```yaml
 approvals:
-  mode: manual                    # manual | smart | off
+  mode: smart                     # smart | manual | off
   timeout: 60                     # seconds to wait for user response (default: 60)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
@@ -41,7 +41,7 @@ The full set of keys:
 
 | Key | Default | What it controls |
 |---|---|---|
-| `mode` | `manual` | Approval policy for dangerous shell commands — see the table below. |
+| `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
 | `timeout` | `60` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
@@ -49,8 +49,8 @@ The full set of keys:
 
 | Mode | Behavior |
 |------|----------|
-| **manual** (default) | Always prompt the user for approval on dangerous commands |
-| **smart** | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **manual** | Always prompt the user for approval on dangerous commands. |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
 
 :::warning

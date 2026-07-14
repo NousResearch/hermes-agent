@@ -351,6 +351,14 @@ class HonchoClientConfig:
     message_max_chars: int = 25000
     # Max chars for dialectic query input to peer.chat() (Honcho cloud: 10000)
     dialectic_max_input_chars: int = 10000
+    # Cost-awareness cadence fields (host-scoped, host-first precedence).
+    # These control how often dialectic/context injection fires and the
+    # injection frequency mode.  Previously read directly from root-level
+    # ``cfg.raw``, bypassing the host-block resolution that the setup
+    # wizard writes to — see #35359.
+    injection_frequency: str = "every-turn"
+    context_cadence: int = 1
+    dialectic_cadence: int = 1
     # Recall mode: how memory retrieval works when Honcho is active.
     # "hybrid"  — auto-injected context + Honcho tools available (model decides)
     # "context" — auto-injected context only, Honcho tools removed
@@ -583,6 +591,25 @@ class HonchoClientConfig:
                 host_block.get("dialecticMaxInputChars"),
                 raw.get("dialecticMaxInputChars"),
                 default=10000,
+            ),
+            # Cost-awareness cadence — host-first precedence (#35359).
+            # Setup wizard writes these to the host block; previously the
+            # provider and status display read only root-level raw,
+            # silently ignoring host-scoped overrides.
+            injection_frequency=(
+                host_block.get("injectionFrequency")
+                or raw.get("injectionFrequency")
+                or "every-turn"
+            ),
+            context_cadence=_parse_int_config(
+                host_block.get("contextCadence"),
+                raw.get("contextCadence"),
+                default=1,
+            ),
+            dialectic_cadence=_parse_int_config(
+                host_block.get("dialecticCadence"),
+                raw.get("dialecticCadence"),
+                default=1,
             ),
             recall_mode=_normalize_recall_mode(
                 host_block.get("recallMode")

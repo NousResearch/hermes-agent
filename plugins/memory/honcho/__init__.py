@@ -323,14 +323,13 @@ class HonchoMemoryProvider(MemoryProvider):
 
             # ----- B5: cost-awareness config -----
             try:
-                raw = cfg.raw or {}
-                self._injection_frequency = raw.get("injectionFrequency", "every-turn")
-                self._context_cadence = int(raw.get("contextCadence", 1))
+                self._injection_frequency = cfg.injection_frequency
+                self._context_cadence = cfg.context_cadence
                 # Backwards-compat: unset dialecticCadence falls back to 1
                 # (every turn) so existing honcho.json configs without the key
                 # behave as they did before. New setups via `hermes honcho setup`
                 # get dialecticCadence=2 written explicitly by the wizard.
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
+                self._dialectic_cadence = cfg.dialectic_cadence
                 self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
                 self._dialectic_depth_levels = cfg.dialectic_depth_levels
                 self._reasoning_heuristic = cfg.reasoning_heuristic

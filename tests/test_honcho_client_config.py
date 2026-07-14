@@ -125,3 +125,105 @@ def test_save_config_sets_owner_only_permissions(tmp_path, monkeypatch):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestHonchoCadenceHostScoped:
+    """Test that cadence fields resolve with host-first precedence (#35359)."""
+
+    def test_host_scoped_dialectic_cadence(self, tmp_path):
+        """dialecticCadence in host block takes precedence over root."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-key",
+            "dialecticCadence": 1,
+            "hosts": {
+                "hermes": {
+                    "dialecticCadence": 5,
+                },
+            },
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(
+            host="hermes", config_path=config_path,
+        )
+
+        assert cfg.dialectic_cadence == 5
+
+    def test_root_dialectic_cadence_fallback(self, tmp_path):
+        """dialecticCadence falls back to root when not in host block."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-key",
+            "dialecticCadence": 3,
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(
+            host="hermes", config_path=config_path,
+        )
+
+        assert cfg.dialectic_cadence == 3
+
+    def test_default_dialectic_cadence(self, tmp_path):
+        """dialecticCadence defaults to 1 when not set anywhere."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-key",
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(
+            host="hermes", config_path=config_path,
+        )
+
+        assert cfg.dialectic_cadence == 1
+
+    def test_host_scoped_context_cadence(self, tmp_path):
+        """contextCadence in host block takes precedence over root."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-key",
+            "contextCadence": 1,
+            "hosts": {
+                "hermes": {
+                    "contextCadence": 4,
+                },
+            },
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(
+            host="hermes", config_path=config_path,
+        )
+
+        assert cfg.context_cadence == 4
+
+    def test_host_scoped_injection_frequency(self, tmp_path):
+        """injectionFrequency in host block takes precedence over root."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-key",
+            "injectionFrequency": "every-turn",
+            "hosts": {
+                "hermes": {
+                    "injectionFrequency": "session",
+                },
+            },
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(
+            host="hermes", config_path=config_path,
+        )
+
+        assert cfg.injection_frequency == "session"
+
+    def test_root_injection_frequency_fallback(self, tmp_path):
+        """injectionFrequency falls back to root when not in host block."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-key",
+            "injectionFrequency": "async",
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(
+            host="hermes", config_path=config_path,
+        )
+
+        assert cfg.injection_frequency == "async"

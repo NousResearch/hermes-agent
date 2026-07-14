@@ -12,6 +12,10 @@ def _make_executable(path, content):
     return str(path)
 
 
+def _make_runnable(path):
+    return _make_executable(path, b"#!/bin/sh\nexit 0\n")
+
+
 @pytest.fixture(autouse=True)
 def reset_agent_browser_cache(monkeypatch):
     monkeypatch.setattr(browser_tool, "_cached_agent_browser", None)
@@ -22,7 +26,9 @@ def reset_agent_browser_cache(monkeypatch):
     browser_tool._agent_browser_resolved = False
 
 
-def test_agent_browser_native_binary_names_include_published_package_variants(monkeypatch):
+def test_agent_browser_native_binary_names_include_published_package_variants(
+    monkeypatch,
+):
     monkeypatch.setattr(browser_tool.sys, "platform", "linux")
     monkeypatch.setattr(browser_tool.platform, "machine", lambda: "x86_64")
     assert browser_tool._agent_browser_native_binary_names() == (
@@ -43,23 +49,30 @@ def test_agent_browser_native_binary_names_include_published_package_variants(mo
     )
 
 
-def test_find_agent_browser_uses_native_sibling_of_global_npm_shim_without_node(tmp_path, monkeypatch):
+def test_find_agent_browser_skips_bad_native_sibling_for_runnable_sibling_without_node(
+    tmp_path, monkeypatch
+):
     package_bin = tmp_path / "lib" / "node_modules" / "agent-browser" / "bin"
     package_bin.mkdir(parents=True)
     js_shim = _make_executable(
         package_bin / "agent-browser.js",
-        b"#!/usr/bin/env node\nrequire('../dist/cli.js')\n",
+        b"#!/bin/sh\n# node agent-browser.js\nexit 0\n",
     )
-    native = _make_executable(
+    _make_executable(
         package_bin / browser_tool._agent_browser_native_binary_names()[0],
-        b"\x7fELFfake",
+        b"#!/bin/sh\nexit 1\n",
+    )
+    native = _make_runnable(
+        package_bin / browser_tool._agent_browser_native_binary_names()[1]
     )
     global_bin = tmp_path / "bin"
     global_bin.mkdir()
     global_shim = global_bin / "agent-browser"
     global_shim.symlink_to(js_shim)
 
-    monkeypatch.setattr(browser_tool, "_candidate_agent_browser_native_bins", lambda: [])
+    monkeypatch.setattr(
+        browser_tool, "_candidate_agent_browser_native_bins", lambda: []
+    )
 
     def fake_which(cmd, path=None):
         if cmd == "agent-browser" and path is None:
@@ -71,20 +84,24 @@ def test_find_agent_browser_uses_native_sibling_of_global_npm_shim_without_node(
     assert browser_tool._find_agent_browser() == str(native)
 
 
-def test_find_agent_browser_chmods_native_binary_when_node_wrapper_is_unavailable(tmp_path, monkeypatch):
+def test_find_agent_browser_chmods_native_binary_when_node_wrapper_is_unavailable(
+    tmp_path, monkeypatch
+):
     package_bin = tmp_path / "lib" / "node_modules" / "agent-browser" / "bin"
     package_bin.mkdir(parents=True)
     js_shim = _make_executable(
         package_bin / "agent-browser.js",
-        b"#!/usr/bin/env node\nrequire('../dist/cli.js')\n",
+        b"#!/bin/sh\n# node agent-browser.js\nexit 0\n",
     )
     native = package_bin / browser_tool._agent_browser_native_binary_names()[0]
-    native.write_bytes(b"\x7fELFfake")
+    native.write_bytes(b"#!/bin/sh\nexit 0\n")
     native.chmod(stat.S_IRUSR | stat.S_IWUSR)
     global_shim = tmp_path / "agent-browser"
     global_shim.symlink_to(js_shim)
 
-    monkeypatch.setattr(browser_tool, "_candidate_agent_browser_native_bins", lambda: [])
+    monkeypatch.setattr(
+        browser_tool, "_candidate_agent_browser_native_bins", lambda: []
+    )
 
     def fake_which(cmd, path=None):
         if cmd == "agent-browser" and path is None:
@@ -97,14 +114,20 @@ def test_find_agent_browser_chmods_native_binary_when_node_wrapper_is_unavailabl
     assert native.stat().st_mode & stat.S_IXUSR
 
 
-def test_find_agent_browser_prefers_native_binary_when_path_shim_needs_missing_node(tmp_path, monkeypatch):
+def test_find_agent_browser_prefers_native_binary_when_path_shim_needs_missing_node(
+    tmp_path, monkeypatch
+):
     shim = _make_executable(
         tmp_path / "agent-browser",
-        b"#!/bin/sh\nexec node ../agent-browser/dist/cli.js \"$@\"\n",
+        b"#!/bin/sh\n# node agent-browser shim\nexit 0\n",
     )
-    native = _make_executable(tmp_path / "agent-browser-linux-x64", b"\x7fELFfake")
+    native = _make_runnable(tmp_path / "agent-browser-linux-x64")
 
-    monkeypatch.setattr(browser_tool, "_candidate_agent_browser_native_bins", lambda: [tmp_path / "agent-browser-linux-x64"])
+    monkeypatch.setattr(
+        browser_tool,
+        "_candidate_agent_browser_native_bins",
+        lambda: [tmp_path / "agent-browser-linux-x64"],
+    )
 
     def fake_which(cmd, path=None):
         if cmd == "agent-browser" and path is None:
@@ -116,15 +139,42 @@ def test_find_agent_browser_prefers_native_binary_when_path_shim_needs_missing_n
     assert browser_tool._find_agent_browser() == native
 
 
-def test_find_agent_browser_keeps_path_shim_when_node_is_available(tmp_path, monkeypatch):
+def test_find_agent_browser_skips_non_runnable_native_candidate(tmp_path, monkeypatch):
+    bad_native = _make_executable(
+        tmp_path / "agent-browser-linux-x64",
+        b"#!/bin/sh\nexit 1\n",
+    )
+    good_native = _make_runnable(tmp_path / "agent-browser-linux-musl-x64")
+
+    monkeypatch.setattr(
+        browser_tool,
+        "_candidate_agent_browser_native_bins",
+        lambda: [
+            tmp_path / "agent-browser-linux-x64",
+            tmp_path / "agent-browser-linux-musl-x64",
+        ],
+    )
+    monkeypatch.setattr(browser_tool.shutil, "which", lambda _cmd, path=None: None)
+
+    assert browser_tool._find_agent_browser() == good_native
+    assert browser_tool._find_agent_browser() != bad_native
+
+
+def test_find_agent_browser_keeps_path_shim_when_node_is_available(
+    tmp_path, monkeypatch
+):
     shim = _make_executable(
         tmp_path / "agent-browser",
-        b"#!/bin/sh\nexec node ../agent-browser/dist/cli.js \"$@\"\n",
+        b"#!/bin/sh\n# node agent-browser shim\nexit 0\n",
     )
-    node = _make_executable(tmp_path / "node", b"\x7fELFfake")
-    native = _make_executable(tmp_path / "agent-browser-linux-x64", b"\x7fELFfake")
+    node = _make_runnable(tmp_path / "node")
+    native = _make_runnable(tmp_path / "agent-browser-linux-x64")
 
-    monkeypatch.setattr(browser_tool, "_candidate_agent_browser_native_bins", lambda: [tmp_path / "agent-browser-linux-x64"])
+    monkeypatch.setattr(
+        browser_tool,
+        "_candidate_agent_browser_native_bins",
+        lambda: [tmp_path / "agent-browser-linux-x64"],
+    )
 
     def fake_which(cmd, path=None):
         if cmd == "agent-browser" and path is None:
@@ -140,7 +190,9 @@ def test_find_agent_browser_keeps_path_shim_when_node_is_available(tmp_path, mon
 
 
 def test_find_agent_browser_does_not_use_npx_without_node(monkeypatch):
-    monkeypatch.setattr(browser_tool, "_candidate_agent_browser_native_bins", lambda: [])
+    monkeypatch.setattr(
+        browser_tool, "_candidate_agent_browser_native_bins", lambda: []
+    )
     monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", lambda _name: False)
 
     def fake_which(cmd, path=None):
@@ -154,7 +206,9 @@ def test_find_agent_browser_does_not_use_npx_without_node(monkeypatch):
         browser_tool._find_agent_browser()
 
 
-def test_legacy_chrome_flags_do_not_suppress_no_sandbox_injection(tmp_path, monkeypatch):
+def test_legacy_chrome_flags_do_not_suppress_no_sandbox_injection(
+    tmp_path, monkeypatch
+):
     captured_env = {}
 
     class FakeProc:
@@ -172,13 +226,21 @@ def test_legacy_chrome_flags_do_not_suppress_no_sandbox_injection(tmp_path, monk
 
     monkeypatch.setenv("AGENT_BROWSER_CHROME_FLAGS", "--legacy-only")
     monkeypatch.delenv("AGENT_BROWSER_ARGS", raising=False)
-    monkeypatch.setattr(browser_tool, "_find_agent_browser", lambda: "/bin/agent-browser")
-    monkeypatch.setattr(browser_tool, "_requires_real_termux_browser_install", lambda _cmd: False)
+    monkeypatch.setattr(
+        browser_tool, "_find_agent_browser", lambda: "/bin/agent-browser"
+    )
+    monkeypatch.setattr(
+        browser_tool, "_requires_real_termux_browser_install", lambda _cmd: False
+    )
     monkeypatch.setattr(browser_tool, "_is_local_mode", lambda: True)
     monkeypatch.setattr(browser_tool, "_chromium_installed", lambda: True)
     monkeypatch.setattr(browser_tool, "_get_browser_engine", lambda: "auto")
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(browser_tool, "_get_session_info", lambda _task_id: {"session_name": "test-session"})
+    monkeypatch.setattr(
+        browser_tool,
+        "_get_session_info",
+        lambda _task_id: {"session_name": "test-session"},
+    )
     monkeypatch.setattr(browser_tool, "_socket_safe_tmpdir", lambda: str(tmp_path))
     monkeypatch.setattr(browser_tool, "_write_owner_pid", lambda *_args: None)
     monkeypatch.setattr(browser_tool.os, "geteuid", lambda: 0, raising=False)

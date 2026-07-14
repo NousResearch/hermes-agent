@@ -2,7 +2,6 @@
 
 import json
 import os
-import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -102,7 +101,8 @@ class TestFindAgentBrowser:
 
     def test_finds_in_current_path(self):
         """Should return result from shutil.which if available on current PATH."""
-        with patch("shutil.which", return_value="/usr/local/bin/agent-browser"):
+        with patch("shutil.which", return_value="/usr/local/bin/agent-browser"), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True):
             assert _find_agent_browser() == "/usr/local/bin/agent-browser"
 
     def test_finds_in_homebrew_bin(self):
@@ -113,6 +113,7 @@ class TestFindAgentBrowser:
             return None
 
         with patch("shutil.which", side_effect=mock_which), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True), \
              patch("os.path.isdir", return_value=True), \
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
@@ -125,6 +126,10 @@ class TestFindAgentBrowser:
         """Should find npx in Homebrew paths as a fallback."""
         def mock_which(cmd, path=None):
             if cmd == "agent-browser":
+                return None
+            if cmd == "node":
+                if path and "/opt/homebrew/bin" in path:
+                    return "/opt/homebrew/bin/node"
                 return None
             if cmd == "npx":
                 if path and "/opt/homebrew/bin" in path:
@@ -143,6 +148,7 @@ class TestFindAgentBrowser:
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", return_value=True), \
              patch.object(Path, "exists", mock_path_exists), \
+             patch("hermes_cli.dep_ensure.ensure_dependency", return_value=False), \
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],
@@ -154,6 +160,10 @@ class TestFindAgentBrowser:
         """Should find npx when only Termux fallback dirs are available."""
         def mock_which(cmd, path=None):
             if cmd == "agent-browser":
+                return None
+            if cmd == "node":
+                if path and "/data/data/com.termux/files/usr/bin" in path:
+                    return "/data/data/com.termux/files/usr/bin/node"
                 return None
             if cmd == "npx":
                 if path and "/data/data/com.termux/files/usr/bin" in path:
@@ -181,6 +191,7 @@ class TestFindAgentBrowser:
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch.object(Path, "exists", mock_path_exists), \
+             patch("hermes_cli.dep_ensure.ensure_dependency", return_value=False), \
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],
@@ -221,7 +232,7 @@ class TestBrowserRequirements:
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
         monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
         monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
-        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda **_kw: "npx agent-browser")
 
         assert check_browser_requirements() is False
 
@@ -230,7 +241,7 @@ class TestRunBrowserCommandTermuxFallback:
     def test_termux_local_mode_rejects_bare_npx_fallback(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
-        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda **_kw: "npx agent-browser")
         monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
 
         result = _run_browser_command("task-1", "navigate", ["https://example.com"])

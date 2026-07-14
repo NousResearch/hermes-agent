@@ -1,6 +1,5 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
-import pytest
 
 from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
@@ -116,6 +115,18 @@ class TestBuildToolTitle:
     def test_web_search_title(self):
         title = build_tool_title("web_search", {"query": "python asyncio"})
         assert "python asyncio" in title
+
+    def test_web_extract_title_unwraps_search_result_object(self):
+        title = build_tool_title("web_extract", {
+            "urls": [
+                {"url": "https://example.com/a", "title": "A"},
+                {"href": "https://example.org/b"},
+            ]
+        })
+        assert title == "extract: https://example.com/a (+1)"
+
+    def test_web_extract_title_handles_malformed_object(self):
+        assert build_tool_title("web_extract", {"urls": [{"title": "missing"}]}) == "extract: ?"
 
     def test_skill_view_title_includes_skill_name(self):
         title = build_tool_title("skill_view", {"name": "github-pitfalls"})

@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [voice, telephony, calls, twilio, telnyx, realtime, transcripts]
+    tags: [voice, telephony, calls, twilio, realtime, transcripts]
     related_skills: [telephony]
     category: productivity
     homepage: https://github.com/PatterAI/Patter
@@ -16,7 +16,7 @@ metadata:
 # Patter Voice Skill
 
 Drive an autonomous voice agent on real inbound or outbound phone calls through the
-Patter SDK, over Twilio or Telnyx, with live transcripts, barge-in, and mid-call tool
+Patter SDK, over Twilio, with live transcripts, barge-in, and mid-call tool
 use. It runs a full multi-turn conversation on the line and records every call's cost
 and transcript. It does not buy phone numbers and it does not send SMS — use the
 `telephony` skill for provisioning and texting.
@@ -34,7 +34,6 @@ message. If both this and `telephony` are installed, split the work by intent:
 | Have the agent autonomously handle an outbound task (e.g. book an appointment) | **patter-voice** |
 | Answer an inbound number with an AI agent | **patter-voice** |
 | Pull the full transcript, cost, and metrics of a call afterwards | **patter-voice** |
-| Use Telnyx instead of, or alongside, Twilio | **patter-voice** |
 
 Do not use this skill to dial emergency numbers, or for spam, harassment, or
 impersonation.
@@ -51,17 +50,21 @@ hermes mcp install patter-voice
 Installation prompts for the credentials below and stores them in `~/.hermes/.env`.
 The server is spawned automatically over stdio when a session starts — there is no
 repo to clone and no process to start by hand. Hermes passes stdio servers a
-filtered environment, so the stored keys are not auto-forwarded: keep them in the
-environment Hermes runs in, or add them under `mcp_servers.patter-voice.env` in
-`~/.hermes/config.yaml` (see the entry's post-install notes).
+filtered environment, so the stored keys are **not** auto-forwarded: without an
+`mcp_servers.patter-voice.env` block in `~/.hermes/config.yaml`, patter-mcp exits
+at startup for the missing Twilio credentials and **no** patter-voice tools appear.
+Add each var there as a `${VAR}` reference (e.g. `OPENAI_API_KEY: ${OPENAI_API_KEY}`);
+Hermes interpolates it from `~/.hermes/.env` at load time (see the entry's
+post-install notes for the exact block).
 
 Credentials, by engine:
 
-- **One carrier** — either Twilio (Account SID, Auth Token, and a phone number) or a
-  Telnyx API key with a Telnyx number.
+- **Twilio carrier** — a Twilio Account SID, Auth Token, and phone number. (Telnyx
+  is not supported by patter-mcp at the current pin — Twilio only.)
 - **OpenAI** — an OpenAI API key, required by the default OpenAI Realtime engine.
 - **Pipeline / ConvAI only** — a Deepgram API key (speech-to-text) and an ElevenLabs
-  API key (conversational voice). Leave these blank unless you switch engines.
+  API key (conversational voice), plus an ElevenLabs Agent ID (`ELEVENLABS_AGENT_ID`)
+  for the ConvAI engine. Leave these blank unless you switch engines.
 
 Three engines are available; pick one per agent. OpenAI Realtime is the default
 (one key, lowest latency). ElevenLabs ConvAI is robust to long pauses. Pipeline
@@ -120,6 +123,9 @@ asks.
 
 - **Real telephony minutes cost real money.** Always confirm with the user before
   `make_call` or `call_third_party`.
+- **Built-in spend caps.** patter-voice defaults to 10 outbound calls per user per day
+  and 2 concurrent calls; there is no hourly USD ceiling unless `HOURLY_BUDGET_CAP_USD`
+  is set. Adjust them via the server's env block in `~/.hermes/config.yaml`.
 - **Phone numbers must be E.164** (`+` country code then the number, e.g.
   `+15551234567`). Reject anything else before dialing.
 - Twilio trial accounts and regional rules can restrict who you may call.
@@ -131,7 +137,8 @@ asks.
 
 Cheap, side-effect-free checks that confirm the MCP is wired up correctly:
 
-1. Confirm the seven patter-voice tools are listed in the session's tool surface.
+1. Confirm the six default-enabled patter-voice tools are listed in the session's tool
+   surface (`configure_inbound` is opt-in, so it appears only if enabled at install).
 2. Call `get_calls` — on a fresh install it returns an empty list rather than an error,
    proving the server built, spawned, and is answering over stdio.
 3. Only after those succeed should you place a paid call, and only with user

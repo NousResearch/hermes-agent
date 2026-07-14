@@ -134,3 +134,49 @@ def test_manifest_default_enabled_is_subset_of_known_tools():
     )
     unknown = set(default_enabled) - PATTER_TOOLS
     assert not unknown, f"manifest enables unknown tool name(s): {sorted(unknown)}"
+
+
+def test_configure_inbound_is_opt_in_not_default_enabled():
+    """`configure_inbound` mutates the inbound-agent config, so it is pruned from
+    the default-enabled set — a real tool, but off by default (opt-in at install)."""
+    manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+    default_enabled = manifest["tools"]["default_enabled"]
+    # It is a real patter tool...
+    assert "configure_inbound" in PATTER_TOOLS
+    # ...but must NOT be pre-checked by default.
+    assert "configure_inbound" not in default_enabled
+
+
+def test_manifest_install_ref_is_immutable_sha_pin():
+    """Manifests never float HEAD: install.ref must be a full 40-hex commit SHA."""
+    manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+    ref = manifest["install"]["ref"]
+    assert re.fullmatch(r"[0-9a-f]{40}", ref), (
+        f"install.ref is not an immutable 40-hex SHA: {ref!r}"
+    )
+
+
+def test_manifest_prompts_exactly_the_env_vars_the_server_reads():
+    """The prompted env vars must mirror what patter-mcp@e89dd8c9 and the getpatter
+    SDK actually read from the environment: the hardcoded Twilio trio + the default
+    Realtime engine's OPENAI_API_KEY, plus the optional Deepgram / ElevenLabs vars
+    (ELEVENLABS_AGENT_ID drives the elevenlabs_convai engine).
+
+    TELNYX_API_KEY is intentionally ABSENT — the server hardcodes Twilio and never
+    reads a Telnyx key at this pin, so prompting for it would be a dead prompt.
+    """
+    manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+    prompted = {entry["name"] for entry in manifest["auth"]["env"]}
+    expected = {
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+        "TWILIO_PHONE_NUMBER",
+        "OPENAI_API_KEY",
+        "DEEPGRAM_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "ELEVENLABS_AGENT_ID",
+    }
+    assert prompted == expected, (
+        f"prompted env set drifted from the server: {sorted(prompted)}"
+    )
+    assert "TELNYX_API_KEY" not in prompted

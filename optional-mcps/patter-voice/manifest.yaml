@@ -5,7 +5,7 @@
 manifest_version: 1
 
 name: patter-voice
-description: Place outbound AI phone calls (Twilio or Telnyx), run autonomous third-party tasks, and pull live call transcripts via the Patter SDK.
+description: Place outbound AI phone calls over Twilio, run autonomous third-party tasks, and pull live call transcripts via the Patter SDK.
 source: https://github.com/PatterAI/patter-mcp
 
 # patter-mcp is not published on npm (there is no `npx -y getpatter-mcp`), so it
@@ -48,14 +48,22 @@ install:
 # baseline of PATH/HOME/etc. only), so these keys are not auto-injected into the
 # spawned server — see post_install for how to make them reach it.
 #
-# Required minimum: one carrier (Twilio OR Telnyx) + OPENAI_API_KEY for the
-# default OpenAI Realtime engine. Deepgram + ElevenLabs are only required for
-# the STT->LLM->TTS Pipeline mode.
+# Hard minimum: the full Twilio trio (TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN +
+# TWILIO_PHONE_NUMBER) AND OPENAI_API_KEY for the default OpenAI Realtime engine.
+# patter-mcp's constructor throws at startup if any Twilio var is missing and the
+# process exits — so the install "succeeds" but zero tools ever appear. Deepgram +
+# ElevenLabs are only needed for the STT->LLM->TTS Pipeline mode (and
+# ELEVENLABS_AGENT_ID for the ElevenLabs ConvAI engine).
+#
+# Telnyx is NOT supported by patter-mcp at this pin: the server hardcodes Twilio
+# and never reads TELNYX_API_KEY, even though the Patter SDK ships a Telnyx
+# carrier. Re-add a Telnyx prompt here only when the server exposes carrier
+# selection.
 auth:
   type: api_key
   env:
     - name: TWILIO_ACCOUNT_SID
-      prompt: "Twilio Account SID (starts with AC...). Leave blank if using Telnyx."
+      prompt: "Twilio Account SID (starts with AC...)"
       required: true
       secret: false
     - name: TWILIO_AUTH_TOKEN
@@ -70,10 +78,6 @@ auth:
       prompt: "OpenAI API key (used by the default Realtime engine)"
       required: true
       secret: true
-    - name: TELNYX_API_KEY
-      prompt: "Telnyx API key (optional — alternative to Twilio)"
-      required: false
-      secret: true
     - name: DEEPGRAM_API_KEY
       prompt: "Deepgram API key (required only for STT->LLM->TTS Pipeline mode)"
       required: false
@@ -82,6 +86,10 @@ auth:
       prompt: "ElevenLabs API key (required only for Pipeline mode or ConvAI engine)"
       required: false
       secret: true
+    - name: ELEVENLABS_AGENT_ID
+      prompt: "ElevenLabs ConvAI Agent ID (required only for the elevenlabs_convai engine)"
+      required: false
+      secret: false
 
 # Tool selection at install time:
 # patter-mcp exposes 7 tools. The six call and observability tools are
@@ -104,11 +112,33 @@ post_install: |
   Hermes spawns patter-mcp over stdio automatically — there is no separate
   server to start. The provider keys you entered are saved to ~/.hermes/.env.
 
-  Because Hermes passes stdio MCP servers a filtered environment (a safe
-  baseline only), those keys are NOT auto-forwarded to the spawned server.
-  Make sure the carrier + LLM keys are present in the environment Hermes runs
-  in, or add them under `mcp_servers.patter-voice.env` in ~/.hermes/config.yaml
-  (e.g. `OPENAI_API_KEY: ${OPENAI_API_KEY}`), so patter-mcp can read them.
+  MANDATORY: Hermes passes stdio MCP servers a FILTERED environment (a safe
+  PATH/HOME baseline only), so the keys in ~/.hermes/.env are NOT auto-forwarded
+  to the spawned server. Without the env block below, patter-mcp's constructor
+  throws for the missing Twilio credentials, the process exits at startup, and
+  NONE of the patter-voice tools ever appear. Add this to ~/.hermes/config.yaml:
+
+      mcp_servers:
+        patter-voice:
+          env:
+            TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+            TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+            TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+            OPENAI_API_KEY: ${OPENAI_API_KEY}
+            # Pipeline / ConvAI engines only — add as needed:
+            # DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
+            # ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
+            # ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID}
+
+  Hermes interpolates the ${VAR} placeholders from ~/.hermes/.env at load time,
+  so the block references the values you already entered — you do not paste
+  secrets literally. An unset ${VAR} is passed through verbatim (a broken key),
+  so make sure every referenced var is present in ~/.hermes/.env.
+
+  Built-in spend caps (read from the same env block): RATE_LIMIT_DAILY defaults
+  to 10 outbound calls per user per day, MAX_CONCURRENT_CALLS to 2, and
+  HOURLY_BUDGET_CAP_USD is unset (no global hourly USD ceiling) unless you set
+  it. Override any of them by adding the var to the env block above.
 
   Real telephony minutes cost real money — confirm with the user before
   placing outbound calls.

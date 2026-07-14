@@ -2012,13 +2012,43 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _get_trusted_script_dirs() -> list[Path]:
+    """Return resolved trusted script directories from config.
+
+    Reads ``cron.trusted_script_dirs`` from config.yaml — a list of
+    additional directories (beyond HERMES_HOME/scripts/) whose scripts
+    are allowed to run as cron job scripts.  Symlinks in
+    ``~/.hermes/scripts/`` that resolve into any trusted dir are accepted.
+
+    Each entry is ``expanduser()``'d and ``resolve()``'d.  Non-existent
+    paths are silently skipped.
+    """
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        raw_dirs = cron_cfg.get("trusted_script_dirs", [])
+    except Exception:
+        return []
+    if not isinstance(raw_dirs, list):
+        return []
+    result: list[Path] = []
+    for d in raw_dirs:
+        if not isinstance(d, str):
+            continue
+        p = Path(d).expanduser().resolve()
+        if p.is_dir():
+            result.append(p)
+    return result
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
+    Scripts must reside within HERMES_HOME/scripts/ **or** within any
+    directory listed in ``cron.trusted_script_dirs`` in config.yaml.
+    Both relative and absolute paths are resolved and validated against
+    these directories to prevent arbitrary script execution via path
+    traversal or absolute path injection.
 
     Supported interpreters (chosen by file extension):
 
@@ -2037,7 +2067,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     Args:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+            are also validated to ensure they stay within the scripts dir
+            or any trusted script dir.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2054,10 +2085,18 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         path = (scripts_dir / raw).resolve()
 
     # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
+    # escape — scripts MUST reside within HERMES_HOME/scripts/ or within
+    # any directory listed in cron.trusted_script_dirs.
+    allowed_dirs = [scripts_dir_resolved] + _get_trusted_script_dirs()
+    path_allowed = False
+    for allowed in allowed_dirs:
+        try:
+            path.relative_to(allowed)
+            path_allowed = True
+            break
+        except ValueError:
+            continue
+    if not path_allowed:
         return False, (
             f"Blocked: script path resolves outside the scripts directory "
             f"({scripts_dir_resolved}): {script_path!r}"

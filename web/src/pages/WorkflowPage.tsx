@@ -66,8 +66,6 @@ type AgentNodeData = {
   toolsets: string[];
   status?: "idle" | "pending" | "running" | "completed" | "failed";
   prompt?: string;
-  timeout_seconds?: number;
-  max_iterations?: number;
 };
 
 function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
@@ -570,26 +568,6 @@ export default function WorkflowPage() {
                       />
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="node-timeout">Timeout (s)</Label>
-                        <Input
-                          id="node-timeout"
-                          type="number"
-                          value={data.timeout_seconds || 600}
-                          onChange={(e) => updateSelectedNodeData("timeout_seconds", parseInt(e.target.value) || 600)}
-                        />
-                      </div>
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="node-iterations">Max Turns</Label>
-                        <Input
-                          id="node-iterations"
-                          type="number"
-                          value={data.max_iterations || 30}
-                          onChange={(e) => updateSelectedNodeData("max_iterations", parseInt(e.target.value) || 30)}
-                        />
-                      </div>
-                    </div>
                   </div>
                 );
               }

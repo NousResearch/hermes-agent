@@ -28,6 +28,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -603,7 +604,17 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+    # Inject a per-call nonce so each turn of a session yields a distinct
+    # trace_id (#32005, #29776). In CLI mode `task_id` is empty and the
+    # task_key collapses to ``session:<session_id>``; in TUI/Gateway mode
+    # the gateway passes ``task_id == session_id``. Both cases produced a
+    # constant seed across turns, and ``create_trace_id`` is deterministic
+    # in the seed — so every turn re-derived the same trace_id and later
+    # turns silently overwrote earlier ones in the Langfuse UI.
+    turn_nonce = uuid.uuid4().hex
+    trace_id = client.create_trace_id(
+        seed=f"{session_id or 'sessionless'}::{task_id or task_key}::{turn_nonce}"
+    )
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",

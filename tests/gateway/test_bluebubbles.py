@@ -2,9 +2,12 @@
 import asyncio
 import json
 
+import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import _thread_metadata_for_source
+from gateway.session import SessionSource
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -85,7 +88,7 @@ class TestBlueBubblesHelpers:
         assert all("(" not in chunk for chunk in chunks)
 
     @pytest.mark.asyncio
-    async def test_send_splits_paragraphs_into_multiple_bubbles(self, monkeypatch):
+    async def test_send_preserves_paragraphs_in_one_bubble(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         sent = []
 
@@ -102,7 +105,98 @@ class TestBlueBubblesHelpers:
         result = await adapter.send("user@example.com", "first thought\n\nsecond thought")
 
         assert result.success is True
-        assert sent == ["first thought", "second thought"]
+        assert sent == ["first thought\n\nsecond thought"]
+
+    @pytest.mark.asyncio
+    async def test_text_send_read_timeout_assumes_delivered_to_avoid_fallback_duplicate(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            calls.append(payload["message"])
+            raise httpx.ReadTimeout("")
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter._send_with_retry("user@example.com", "hello")
+
+        assert result.success is True
+        assert result.message_id == "timeout-assumed-delivered"
+        assert calls == ["hello"]
+
+    @pytest.mark.asyncio
+    async def test_create_chat_read_timeout_assumes_delivered(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_api_post(path, payload):
+            calls.append((path, payload["message"]))
+            raise httpx.ReadTimeout("")
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter._create_chat_for_handle("user@example.com", "hello")
+
+        assert result.success is True
+        assert result.message_id == "timeout-assumed-delivered"
+        assert calls == [("/api/v1/chat/new", "hello")]
+
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_chat_id_alt_when_canonical_chat_id_does_not_resolve(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        raw_guid = "any;-;+15551234567"
+        sent = []
+
+        async def fake_api_post(path, payload):
+            sent.append((path, payload))
+            return {"data": {"guid": "msg-1"}}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send(
+            "+15551234567",
+            "hello",
+            metadata={"chat_id_alt": raw_guid},
+        )
+
+        assert result.success is True
+        assert result.message_id == "msg-1"
+        assert len(sent) == 1
+        assert sent[0][0] == "/api/v1/message/text"
+        assert sent[0][1]["chatGuid"] == raw_guid
+        assert sent[0][1]["message"] == "hello"
+
+    def test_thread_metadata_carries_chat_id_alt_without_thread(self):
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="+15551234567",
+            chat_id_alt="any;-;+15551234567",
+        )
+
+        assert _thread_metadata_for_source(source) == {
+            "chat_id_alt": "any;-;+15551234567"
+        }
+
+    def test_runner_thread_metadata_carries_chat_id_alt_without_thread(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="+15551234567",
+            chat_id_alt="any;-;+15551234567",
+        )
+
+        assert runner._thread_metadata_for_source(source) == {
+            "chat_id_alt": "any;-;+15551234567"
+        }
 
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -377,6 +471,41 @@ class TestBlueBubblesWebhookParsing:
             if _chats and isinstance(_chats[0], dict):
                 chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
         assert chat_guid == "any;+;chat-uuid-abc123"
+
+    def test_dm_session_chat_id_prefers_stable_chat_identifier(self, monkeypatch):
+        """DM GUID variants must collapse to one Hermes session key."""
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._canonical_inbound_chat_id(
+                chat_guid="any;-;+15551234567",
+                chat_identifier="+15551234567",
+                sender="+15551234567",
+                is_group=False,
+            )
+            == "+15551234567"
+        )
+        assert (
+            adapter._canonical_inbound_chat_id(
+                chat_guid="iMessage;-;+15551234567",
+                chat_identifier="+15551234567",
+                sender="+15551234567",
+                is_group=False,
+            )
+            == "+15551234567"
+        )
+
+    def test_group_session_chat_id_keeps_bluebubbles_guid(self, monkeypatch):
+        """Group GUIDs are the stable BlueBubbles routing key and must not collapse."""
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._canonical_inbound_chat_id(
+                chat_guid="any;+;chat-uuid-abc123",
+                chat_identifier="+15551234567",
+                sender="+15551234567",
+                is_group=True,
+            )
+            == "any;+;chat-uuid-abc123"
+        )
 
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -842,6 +971,45 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
         assert not post_called, "Should reuse existing, not POST again"
+
+    def test_register_replaces_existing_when_events_drift(self, monkeypatch):
+        """Existing registrations with updated-message must be replaced."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        deleted_urls = []
+        posted_payloads = []
+
+        async def mock_delete(*args, **kwargs):
+            deleted_urls.append(args[0] if args else "")
+
+            class R:
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+            return R()
+
+        async def tracking_post(path, payload):
+            posted_payloads.append(payload)
+            return {"status": 200, "data": {"id": 8}}
+
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
+            ]},
+        )
+        adapter.client.delete = mock_delete
+        adapter._api_post = tracking_post
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+
+        assert ok is True
+        assert posted_payloads == [{"url": url, "events": ["new-message"]}]
+        assert any("/api/v1/webhook/7" in deleted_url for deleted_url in deleted_urls)
 
     def test_register_returns_false_without_client(self, monkeypatch):
         import asyncio

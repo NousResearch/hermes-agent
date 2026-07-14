@@ -62,10 +62,15 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     synthetic/resumed sends that have no reply anchor fall back to Telegram's
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
+    metadata = {}
+    chat_id_alt = getattr(source, "chat_id_alt", None)
+    if chat_id_alt:
+        metadata["chat_id_alt"] = str(chat_id_alt)
+
     thread_id = getattr(source, "thread_id", None)
     if thread_id is None:
-        return None
-    metadata = {"thread_id": thread_id}
+        return metadata or None
+    metadata["thread_id"] = thread_id
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)

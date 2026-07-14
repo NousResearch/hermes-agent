@@ -14465,6 +14465,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
+            chat_id_alt=getattr(source, "chat_id_alt", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
 
@@ -14475,13 +14476,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         thread_id: Optional[str],
         *,
         chat_type: Optional[str] = None,
+        chat_id_alt: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         adapter: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build thread metadata for synthetic sends that only have routing state."""
+        metadata: Dict[str, Any] = {}
+        if chat_id_alt:
+            metadata["chat_id_alt"] = str(chat_id_alt)
+
         if thread_id is None:
-            return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
+            return metadata or None
+        metadata["thread_id"] = thread_id
         if self._is_telegram_dm_topic_target(
             platform,
             chat_id,

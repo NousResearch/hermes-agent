@@ -67,7 +67,8 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
-# Webhook event types that carry user messages
+# Webhook event types that may carry user messages. The adapter only subscribes
+# to new-message by default; this broader set filters out non-message webhooks.
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 
 # Log redaction patterns
@@ -140,6 +141,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
+        webhook_events = (
+            extra.get("webhook_events")
+            or os.getenv("BLUEBUBBLES_WEBHOOK_EVENTS")
+            or ["new-message"]
+        )
+        if isinstance(webhook_events, str):
+            webhook_events = [
+                event.strip()
+                for event in webhook_events.split(",")
+                if event.strip()
+            ]
+        elif not isinstance(webhook_events, (list, tuple, set)):
+            webhook_events = ["new-message"]
+        self.webhook_events = tuple(
+            event.strip()
+            for event in webhook_events
+            if isinstance(event, str) and event.strip()
+        ) or ("new-message",)
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
@@ -361,19 +380,53 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
 
         webhook_url = self._webhook_register_url
+        desired_events = list(self.webhook_events)
 
         # Crash resilience — reuse an existing registration if present
         existing = await self._find_registered_webhooks(webhook_url)
         if existing:
-            logger.info(
-                "[bluebubbles] webhook already registered: %s",
-                self._webhook_register_url_for_log,
-            )
-            return True
+            reusable = []
+            stale = []
+            for wh in existing:
+                events = wh.get("events") or []
+                if (
+                    set(events) == set(desired_events)
+                    and len(events) == len(desired_events)
+                ):
+                    reusable.append(wh)
+                else:
+                    stale.append(wh)
+
+            for wh in stale:
+                wh_id = wh.get("id")
+                if not wh_id:
+                    continue
+                try:
+                    res = await self.client.delete(
+                        self._api_url(f"/api/v1/webhook/{wh_id}")
+                    )
+                    res.raise_for_status()
+                    logger.info(
+                        "[bluebubbles] removed stale webhook registration: %s",
+                        self._webhook_register_url_for_log,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[bluebubbles] failed to remove stale webhook registration: %s",
+                        exc,
+                    )
+                    return False
+
+            if reusable:
+                logger.info(
+                    "[bluebubbles] webhook already registered: %s",
+                    self._webhook_register_url_for_log,
+                )
+                return True
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            "events": desired_events,
         }
 
         try:
@@ -398,6 +451,28 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 exc,
             )
             return False
+
+    @staticmethod
+    def _canonical_inbound_chat_id(
+        chat_guid: Optional[str],
+        chat_identifier: Optional[str],
+        sender: Optional[str],
+        is_group: bool,
+    ) -> Optional[str]:
+        """Return the stable Hermes session key for an inbound BlueBubbles chat."""
+        if is_group:
+            return chat_guid or chat_identifier or sender
+
+        for candidate in (chat_identifier, sender):
+            if candidate and ";" not in candidate:
+                return candidate
+
+        if chat_guid and ";-;" in chat_guid:
+            identifier = chat_guid.rsplit(";-;", 1)[-1].strip()
+            if identifier:
+                return identifier
+
+        return chat_guid or chat_identifier or sender
 
     async def _unregister_webhook(self) -> bool:
         """Unregister this webhook URL from the BlueBubbles server.
@@ -492,8 +567,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             data = res.get("data") or {}
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
             return SendResult(success=True, message_id=str(msg_id), raw_response=res)
+        except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+            return self._assume_delivered_after_send_timeout("create-chat send", exc)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _assume_delivered_after_send_timeout(action: str, exc: Exception) -> SendResult:
+        logger.warning(
+            "[bluebubbles] %s timed out; assuming delivered to avoid duplicate fallback: %s",
+            action,
+            type(exc).__name__,
+        )
+        return SendResult(success=True, message_id="timeout-assumed-delivered")
 
     # ------------------------------------------------------------------
     # Text sending
@@ -516,19 +602,28 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        # Split on paragraph breaks first (double newlines) so each thought
-        # becomes its own iMessage bubble, then truncate any that are still
-        # too long.
-        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
-        chunks: List[str] = []
-        for para in (paragraphs or [text]):
-            if len(para) <= self.MAX_MESSAGE_LENGTH:
-                chunks.append(para)
-            else:
-                chunks.extend(self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH))
+        # Keep paragraph breaks inside one iMessage bubble. Each BlueBubbles
+        # text API call renders as a separate bubble, so only chunk by length.
+        if len(text) <= self.MAX_MESSAGE_LENGTH:
+            chunks = [text]
+        else:
+            chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
+        chat_id_alt = None
+        if isinstance(metadata, dict):
+            raw_alt = metadata.get("chat_id_alt")
+            if isinstance(raw_alt, str):
+                raw_alt = raw_alt.strip()
+                if raw_alt and raw_alt != chat_id:
+                    chat_id_alt = raw_alt
         last = SendResult(success=True)
         for chunk in chunks:
-            guid = await self._resolve_chat_guid(chat_id)
+            guid = None
+            for target in (chat_id_alt, chat_id):
+                if not target:
+                    continue
+                guid = await self._resolve_chat_guid(target)
+                if guid:
+                    break
             if not guid:
                 # If the target looks like an address, try creating a new chat
                 if self._private_api_enabled and (
@@ -555,6 +650,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 last = SendResult(
                     success=True, message_id=str(msg_id), raw_response=res
                 )
+            except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+                return self._assume_delivered_after_send_timeout("text send", exc)
             except Exception as exc:
                 return SendResult(success=False, error=str(exc))
         return last
@@ -906,6 +1003,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # Only process message events; silently acknowledge everything else
         if event_type and event_type not in _MESSAGE_EVENTS:
             return web.Response(text="ok")
+        allowed_events = set(self.webhook_events) | {"message"}
+        if event_type and event_type not in allowed_events:
+            return web.Response(text="ok")
 
         record = self._extract_payload_record(payload) or {}
         is_from_me = bool(
@@ -1003,7 +1103,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
@@ -1012,13 +1111,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
                 return web.Response(text="ok")
             text = self._clean_mention_text(text)
+        session_chat_id = self._canonical_inbound_chat_id(
+            chat_guid=chat_guid,
+            chat_identifier=chat_identifier,
+            sender=sender,
+            is_group=is_group,
+        )
         source = self.build_source(
             chat_id=session_chat_id,
             chat_name=chat_identifier or sender,
             chat_type="group" if is_group else "dm",
             user_id=sender,
             user_name=sender,
-            chat_id_alt=chat_identifier,
+            chat_id_alt=chat_guid if session_chat_id != chat_guid else chat_identifier,
         )
         event = MessageEvent(
             text=text,

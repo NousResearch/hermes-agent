@@ -9487,6 +9487,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_approve_command(event)
                 return await self._handle_deny_command(event)
 
+            # /intervention (/iv) controls a human-intervention prompt in a
+            # DIFFERENT CLI process (not this gateway agent), so a busy gateway
+            # agent must never block it — bypass the running-agent guard.
+            if _cmd_def_inner and _cmd_def_inner.name == "intervention":
+                return await self._handle_intervention_command(event)
+
             # /agents (/tasks alias) should be query-only and never interrupt.
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
@@ -10002,6 +10008,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "deny":
             return await self._handle_deny_command(event)
+
+        if canonical == "intervention":
+            return await self._handle_intervention_command(event)
 
         if canonical == "update":
             return await self._handle_update_command(event)
@@ -14545,6 +14554,132 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
+
+    async def _handle_intervention_command(self, event: MessageEvent) -> str:
+        """Handle /intervention (/iv) — approve/deny/extend/status a REMOTE CLI prompt.
+
+        This controls a pending human-intervention prompt living in a *different*
+        CLI process (tracked in the shared human-interventions store), keyed by a
+        short code. It is intentionally separate from the gateway's own /approve,
+        /deny, /status commands (which act on in-process approvals).
+
+        Remote ``approve`` is tiered: one-tap for low/medium-risk waits and a
+        typed confirm token for higher-risk ones, while the store still refuses
+        critical/disabled tiers (``approve_not_allowed``). The handler is gated by
+        the ``notifications.human_intervention.remote_control`` config block
+        (``enabled`` + ``allowed_targets``) and never raises.
+        """
+        import time as _time
+
+        source = event.source
+        usage = "用法: /iv <approve|deny|extend|status> <审批码> [分钟/令牌]"
+
+        args = (event.get_command_args() or "").strip()
+        tokens = args.split()
+        if not tokens:
+            return usage
+
+        subcommand = tokens[0].lower()
+        if subcommand not in {"deny", "extend", "status", "approve"}:
+            return usage
+
+        code = tokens[1] if len(tokens) > 1 else ""
+        if not code:
+            return usage
+
+        # Authorization: read the remote_control config defensively.
+        try:
+            from hermes_cli.config import load_config
+            cfg = (load_config() or {})
+            rc = (((cfg.get("notifications") or {}).get("human_intervention") or {}).get("remote_control") or {})
+        except Exception:
+            rc = {}
+
+        if not rc.get("enabled", False):
+            return "远程介入控制未启用。"
+
+        allowed_targets = rc.get("allowed_targets") or []
+        platform_name = (
+            source.platform.value
+            if getattr(source, "platform", None) and getattr(source.platform, "value", None)
+            else str(getattr(source, "platform", "") or "")
+        )
+        # If allowed_targets is empty, allow any platform (keeps gating opt-in
+        # and tests simple). A non-empty list is an allowlist.
+        if allowed_targets and platform_name and platform_name not in allowed_targets:
+            return "此平台无权执行远程介入控制。"
+
+        def _map_error(reason: str) -> str:
+            return {
+                "not_found": "未找到该等待项。",
+                "expired": "该等待项已超时。",
+                "already_resolved": "该等待项已处理。",
+                "action_not_allowed": "该操作不被允许。",
+                "invalid_minutes": "延长分钟必须是正整数。",
+                "exceeds_max_extend": f"延长分钟超过最大限制 ({rc.get('max_extend_minutes', 15)} 分钟)。",
+            }.get(reason, f"操作失败：{reason}。")
+
+        try:
+            from hermes_cli.human_intervention_remote_control import (
+                set_remote_decision, get_pending_intervention,
+            )
+
+            if subcommand == "approve":
+                # tokens[2] (if present) is the typed-confirm token, NOT minutes.
+                token = tokens[2] if len(tokens) > 2 else None
+                ok, reason, _rec = set_remote_decision(
+                    code, "approve", token=token, source=platform_name or "mobile"
+                )
+                if ok:
+                    return f"已批准 CLI 等待项 {code}。"
+                if reason == "approve_not_allowed":
+                    return "该命令不支持远程批准（高危/critical），请回到 CLI。"
+                if reason == "bad_token":
+                    return "确认令牌不正确或缺失：高风险命令需 /iv approve <审批码> <令牌>。"
+                return _map_error(reason)
+
+            if subcommand == "status":
+                rec = get_pending_intervention(code)
+                if rec is None:
+                    return f"{code}: 未找到或已过期。"
+                remaining = max(0, rec.deadline_ts - _time.time())
+                return f"{code}: {rec.state}, 类型 {rec.kind}, 剩余约 {int(remaining)}s。"
+
+            if subcommand == "deny":
+                ok, reason, _rec = set_remote_decision(
+                    code, "deny", source=platform_name or "mobile"
+                )
+                if ok:
+                    return f"已拒绝 CLI 等待项 {code}。"
+                return _map_error(reason)
+
+            # subcommand == "extend"
+            minutes = 15
+            if len(tokens) > 2:
+                try:
+                    minutes = int(tokens[2])
+                except (TypeError, ValueError):
+                    return "延长分钟必须是正整数。"
+                if minutes <= 0:
+                    return "延长分钟必须是正整数。"
+
+            max_extend_minutes = rc.get("max_extend_minutes")
+            if max_extend_minutes is not None:
+                max_extend_minutes = int(max_extend_minutes)
+
+            ok, reason, _rec = set_remote_decision(
+                code, "extend", minutes=minutes, source=platform_name or "mobile",
+                max_extend_minutes=max_extend_minutes
+            )
+            if ok:
+                msg = f"已延长 CLI 等待项 {code}：{minutes} 分钟。"
+                if reason == "clamped":
+                    msg += "（已达最大等待上限）"
+                return msg
+            return _map_error(reason)
+        except Exception as exc:  # never raise out of a command handler
+            logger.warning("/iv command failed: %s", exc)
+            return "远程介入控制操作失败。"
 
     # Built-in messaging platforms where the ``/update`` command is allowed.
     # ACP, API server, and webhooks are programmatic interfaces that should

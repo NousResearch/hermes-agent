@@ -769,3 +769,974 @@ class TestClearOverlaysForInterrupt:
         assert not t.is_alive(), "worker thread never unblocked"
         assert result["value"] == "deny"
 
+
+class TestApprovalRemoteControl:
+    """Mobile deny/extend wiring for the dangerous-command approval prompt.
+
+    Approval itself stays local-only: the store only ever drives deny/extend,
+    never a remote approve.
+    """
+
+    def _wait_for_state(self, cli, timeout=3.0):
+        deadline = time.time() + timeout
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert cli._approval_state is not None
+
+    def test_approval_callback_accepts_remote_deny(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: {
+            "enabled": True,
+            "allow_deny": True,
+            "allow_extend": True,
+            "max_total_wait_minutes": 15,
+            "risk_explanation": {
+                "enabled": False,
+                "only_for_risk_levels": ["high", "critical"],
+            },
+        }
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="4242")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            assert code == "4242"
+            if calls["n"] < 2:
+                return None
+            return SimpleNamespace(
+                decision="deny",
+                decision_source="telegram",
+                deadline_ts=time.time() + 60,
+            )
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/x", "wipe")
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            thread.join(timeout=4)
+
+        assert not thread.is_alive()
+        assert result["value"] == "deny"
+        cli._rc_create_pending.assert_called_once()
+
+    def test_approval_callback_remote_extend_bumps_deadline(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: {
+            "enabled": True,
+            "allow_deny": True,
+            "allow_extend": True,
+            "max_total_wait_minutes": 15,
+            "risk_explanation": {
+                "enabled": False,
+                "only_for_risk_levels": ["high", "critical"],
+            },
+        }
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="7777")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return SimpleNamespace(
+                    decision="extend",
+                    decision_source="telegram",
+                    deadline_ts=time.time() + 600,
+                )
+            return None
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        result = {}
+        response_queue_holder = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/x", "wipe")
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            self._wait_for_state(cli)
+            initial_deadline = cli._approval_deadline
+            response_queue_holder["q"] = cli._approval_state["response_queue"]
+
+            # Wait until the extend is consumed and the deadline bumps.
+            deadline = time.time() + 4
+            while (cli._approval_deadline <= initial_deadline + 1
+                   and time.time() < deadline):
+                time.sleep(0.02)
+
+            assert cli._approval_deadline > initial_deadline + 1, \
+                "extend should have increased the monotonic deadline"
+            # Still waiting (not returned) after the extend.
+            assert thread.is_alive()
+            assert "value" not in result
+
+            response_queue_holder["q"].put("once")
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "once"
+
+    def test_local_answer_wins_over_remote(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: {
+            "enabled": True,
+            "allow_deny": True,
+            "allow_extend": True,
+            "max_total_wait_minutes": 15,
+            "risk_explanation": {
+                "enabled": False,
+                "only_for_risk_levels": ["high", "critical"],
+            },
+        }
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="5555")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+        cli._rc_consume = MagicMock(
+            return_value=SimpleNamespace(
+                decision="deny",
+                decision_source="telegram",
+                deadline_ts=time.time() + 60,
+            )
+        )
+
+        # Put the local answer on the queue BEFORE creating the prompt so the
+        # very first response_queue.get() succeeds — local must win.
+        pre_queue = queue.Queue()
+        pre_queue.put("session")
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/x", "wipe")
+
+        # Inject our pre-filled queue by patching queue.Queue used in the
+        # callback to hand back our prepared queue exactly once.
+        orig_queue_cls = queue.Queue
+        made = {"n": 0}
+
+        def _queue_factory(*a, **kw):
+            made["n"] += 1
+            if made["n"] == 1:
+                return pre_queue
+            return orig_queue_cls(*a, **kw)
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True), \
+             patch.object(cli_module.queue, "Queue", side_effect=_queue_factory):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "session"
+
+    def test_remote_approve_is_ignored(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: {
+            "enabled": True,
+            "allow_deny": True,
+            "allow_extend": True,
+            "max_total_wait_minutes": 15,
+            "risk_explanation": {
+                "enabled": False,
+                "only_for_risk_levels": ["high", "critical"],
+            },
+        }
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="9090")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+        cli._rc_consume = MagicMock(return_value=None)
+
+        captured = {}
+
+        def _capture_notify(*args, **kwargs):
+            captured.update(kwargs)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/x", "wipe")
+
+        # The callback imports notify_human_intervention from its source
+        # module, so patch it there (not on cli_module).
+        import hermes_cli.human_intervention_notifications as notif_mod
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(notif_mod, "notify_human_intervention",
+                          side_effect=_capture_notify):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            self._wait_for_state(cli)
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "deny"
+        actions = captured.get("remote_actions")
+        assert actions is not None
+        assert "approve" not in actions
+        assert "deny" in actions
+
+    def test_high_risk_calls_explainer_low_risk_does_not(self):
+        cli = _make_cli_stub()
+        rc = {
+            "risk_explanation": {
+                "enabled": True,
+                "only_for_risk_levels": ["high", "critical"],
+                "max_chars": 280,
+                "timeout_seconds": 3,
+            }
+        }
+        high = cli._explain_command_risk_for_notify(
+            "rm -rf /x", "d", "high", rc
+        )
+        assert isinstance(high, str)
+        assert high != ""
+
+        low = cli._explain_command_risk_for_notify(
+            "ls -la", "d", "low", rc
+        )
+        assert low == ""
+
+    def test_remote_disabled_creates_no_pending(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: {
+            "enabled": False,
+            "allow_deny": True,
+            "allow_extend": True,
+            "max_total_wait_minutes": 15,
+            "risk_explanation": {
+                "enabled": False,
+                "only_for_risk_levels": ["high", "critical"],
+            },
+        }
+        cli._rc_create_pending = MagicMock()
+        cli._rc_cleanup = MagicMock(return_value=0)
+        cli._rc_consume = MagicMock(return_value=None)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/x", "wipe")
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            self._wait_for_state(cli)
+            cli._approval_state["response_queue"].put("once")
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "once"
+        cli._rc_create_pending.assert_not_called()
+
+    def test_approval_poll_errors_do_not_abort_local_prompt(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: {
+            "enabled": True,
+            "allow_deny": True,
+            "allow_extend": True,
+            "max_total_wait_minutes": 15,
+            "risk_explanation": {
+                "enabled": False,
+                "only_for_risk_levels": ["high", "critical"],
+            },
+        }
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="3131")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+        calls = {"n": 0}
+
+        def _flaky_consume(_code):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("store temporarily unavailable")
+            return None
+
+        cli._rc_consume = MagicMock(side_effect=_flaky_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/x", "wipe")
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            self._wait_for_state(cli)
+            deadline = time.time() + 4
+            while calls["n"] < 1 and time.time() < deadline:
+                time.sleep(0.02)
+            cli._approval_state["response_queue"].put("once")
+            thread.join(timeout=3)
+
+        assert calls["n"] >= 1
+        assert not thread.is_alive()
+        assert result["value"] == "once"
+
+    def test_poll_remote_intervention_handles_store_errors(self):
+        cli = _make_cli_stub()
+        cli._rc_consume = MagicMock(side_effect=OSError("store unavailable"))
+        current_deadline = time.monotonic() + 30
+
+        signal, source, deadline = cli._poll_remote_intervention("3131", current_deadline)
+
+        assert signal is None
+        assert source == ""
+        assert deadline == current_deadline
+
+    def test_poll_remote_intervention_denies_and_extends_safely(self):
+        cli = _make_cli_stub()
+        current_deadline = time.monotonic() + 30
+        later_wall_deadline = time.time() + 120
+        cli._rc_consume = MagicMock(return_value=SimpleNamespace(
+            decision="extend",
+            decision_source="telegram",
+            deadline_ts=later_wall_deadline,
+        ))
+
+        signal, source, deadline = cli._poll_remote_intervention("3131", current_deadline)
+
+        assert signal == "extend"
+        assert source == "telegram"
+        assert deadline > current_deadline
+
+        cli._rc_consume = MagicMock(return_value=SimpleNamespace(
+            decision="deny",
+            decision_source="telegram",
+        ))
+        signal, source, deadline2 = cli._poll_remote_intervention("3131", deadline)
+        assert signal == "deny"
+        assert source == "telegram"
+        assert deadline2 == deadline
+
+    def test_poll_remote_intervention_rejects_bad_or_non_extend_decisions(self):
+        cli = _make_cli_stub()
+        current_deadline = time.monotonic() + 30
+
+        cli._rc_consume = MagicMock(return_value=SimpleNamespace(
+            decision="extend",
+            deadline_ts="not-a-number",
+        ))
+        assert cli._poll_remote_intervention("3131", current_deadline) == (
+            None, "", current_deadline
+        )
+
+        cli._rc_consume = MagicMock(return_value=SimpleNamespace(
+            decision="approve",
+            deadline_ts=time.time() + 120,
+        ))
+        assert cli._poll_remote_intervention("3131", current_deadline) == (
+            None, "", current_deadline
+        )
+
+
+
+def _make_sudo_clarify_stub():
+    """CLI stub wired for sudo + clarify remote-control tests.
+
+    Adds the clarify state slots the callbacks expect and swaps the modal
+    snapshot helpers for mocks so no real prompt_toolkit app is touched.
+    """
+    cli = _make_cli_stub()
+    cli._clarify_state = None
+    cli._clarify_deadline = 0
+    cli._clarify_freetext = False
+    cli._capture_modal_input_snapshot = MagicMock()
+    cli._restore_modal_input_snapshot = MagicMock()
+    return cli
+
+
+_DENY_EXTEND_RC = {
+    "enabled": True,
+    "allow_deny": True,
+    "allow_extend": True,
+    "max_total_wait_minutes": 15,
+    "risk_explanation": {
+        "enabled": False,
+        "only_for_risk_levels": ["high", "critical"],
+    },
+}
+
+
+class TestSudoClarifyRemoteControl:
+    """Mobile deny/extend wiring for the sudo-password and clarify prompts.
+
+    HARD SAFETY: sudo must NEVER accept a password remotely (deny == cancel,
+    returns ""), and clarify must NEVER have an option chosen remotely (deny ==
+    timeout-equivalent best-judgement string). Remote can only deny or extend.
+    """
+
+    def _wait_for_sudo_state(self, cli, timeout=3.0):
+        deadline = time.time() + timeout
+        while cli._sudo_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert cli._sudo_state is not None
+
+    def _wait_for_clarify_state(self, cli, timeout=3.0):
+        deadline = time.time() + timeout
+        while cli._clarify_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert cli._clarify_state is not None
+
+    def test_sudo_remote_cancel_returns_empty_never_password(self):
+        cli = _make_sudo_clarify_stub()
+        cli._remote_intervention_settings = lambda: dict(_DENY_EXTEND_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="5555")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            assert code == "5555"
+            if calls["n"] < 2:
+                return None
+            return SimpleNamespace(
+                decision="deny",
+                decision_source="telegram",
+                deadline_ts=time.time() + 45,
+            )
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._sudo_password_callback()
+
+        import hermes_cli.human_intervention_notifications as notif_mod
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(notif_mod, "notify_human_intervention",
+                          create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            # Remote deny lands on ~2nd poll (~2s) — far before the 45s timeout.
+            thread.join(timeout=4)
+
+        assert not thread.is_alive()
+        # The cardinal guarantee: a remote cancel NEVER yields a password.
+        assert result["value"] == ""
+        cli._rc_create_pending.assert_called_once()
+        cli._restore_modal_input_snapshot.assert_called()
+
+    def test_sudo_remote_extend_bumps_deadline(self):
+        cli = _make_sudo_clarify_stub()
+        cli._remote_intervention_settings = lambda: dict(_DENY_EXTEND_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="6666")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return SimpleNamespace(
+                    decision="extend",
+                    decision_source="telegram",
+                    deadline_ts=time.time() + 600,
+                )
+            return None
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._sudo_password_callback()
+
+        import hermes_cli.human_intervention_notifications as notif_mod
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(notif_mod, "notify_human_intervention",
+                          create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            self._wait_for_sudo_state(cli)
+            initial_deadline = cli._sudo_deadline
+
+            deadline = time.time() + 4
+            while (cli._sudo_deadline <= initial_deadline + 1
+                   and time.time() < deadline):
+                time.sleep(0.02)
+
+            assert cli._sudo_deadline > initial_deadline + 1, \
+                "extend should have increased the monotonic deadline"
+            assert thread.is_alive()
+            assert "value" not in result
+
+            # Finish locally with a real password — local always wins.
+            cli._sudo_state["response_queue"].put("hunter2")
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "hunter2"
+
+    def test_clarify_remote_deny_returns_best_judgement(self):
+        cli = _make_sudo_clarify_stub()
+        cli._remote_intervention_settings = lambda: dict(_DENY_EXTEND_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="7070")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            assert code == "7070"
+            if calls["n"] < 2:
+                return None
+            return SimpleNamespace(
+                decision="deny",
+                decision_source="telegram",
+                deadline_ts=time.time() + 120,
+            )
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._clarify_callback("pick one", ["a", "b"])
+
+        import hermes_cli.human_intervention_notifications as notif_mod
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(notif_mod, "notify_human_intervention",
+                          create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            thread.join(timeout=4)
+
+        assert not thread.is_alive()
+        # Remote deny == timeout-equivalent: agent decides, NO option selected.
+        assert "best judgement" in result["value"]
+        assert result["value"] not in ("a", "b")
+        cli._rc_create_pending.assert_called_once()
+
+    def test_clarify_remote_extend_bumps_deadline(self):
+        cli = _make_sudo_clarify_stub()
+        cli._remote_intervention_settings = lambda: dict(_DENY_EXTEND_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="8080")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return SimpleNamespace(
+                    decision="extend",
+                    decision_source="telegram",
+                    deadline_ts=time.time() + 600,
+                )
+            return None
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._clarify_callback("pick one", ["a", "b"])
+
+        import hermes_cli.human_intervention_notifications as notif_mod
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(notif_mod, "notify_human_intervention",
+                          create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            self._wait_for_clarify_state(cli)
+            initial_deadline = cli._clarify_deadline
+
+            deadline = time.time() + 4
+            while (cli._clarify_deadline <= initial_deadline + 1
+                   and time.time() < deadline):
+                time.sleep(0.02)
+
+            assert cli._clarify_deadline > initial_deadline + 1, \
+                "extend should have increased the monotonic deadline"
+            assert thread.is_alive()
+            assert "value" not in result
+
+            cli._clarify_state["response_queue"].put("a")
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "a"
+
+    def test_sudo_remote_disabled_no_pending(self):
+        cli = _make_sudo_clarify_stub()
+        cli._remote_intervention_settings = lambda: {
+            "enabled": False,
+            "allow_deny": True,
+            "allow_extend": True,
+            "max_total_wait_minutes": 15,
+            "risk_explanation": {
+                "enabled": False,
+                "only_for_risk_levels": ["high", "critical"],
+            },
+        }
+        cli._rc_create_pending = MagicMock()
+        cli._rc_cleanup = MagicMock(return_value=0)
+        cli._rc_consume = MagicMock(return_value=None)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._sudo_password_callback()
+
+        import hermes_cli.human_intervention_notifications as notif_mod
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(notif_mod, "notify_human_intervention",
+                          create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            self._wait_for_sudo_state(cli)
+            cli._sudo_state["response_queue"].put("pw")
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "pw"
+        cli._rc_create_pending.assert_not_called()
+
+
+_APPROVE_RC = {
+    "enabled": True,
+    "allow_approve": True,
+    "approve_medium": True,
+    "approve_high_typed_confirm": True,
+    "approve_token_len": 4,
+    "allow_deny": True,
+    "allow_extend": True,
+    "max_total_wait_minutes": 15,
+    "never_approve_levels": ["critical"],
+    "risk_explanation": {
+        "enabled": False,
+        "use_llm": False,
+        "only_for_risk_levels": ["high", "critical"],
+    },
+}
+
+
+class TestApprovalRemoteApprove:
+    """Phase-2 mobile APPROVE wiring for the dangerous-command prompt.
+
+    medium → one-tap, high → typed-confirm, critical → never approvable.
+    Local answer still wins; deny/extend behaviour is unchanged.
+    """
+
+    def _wait_for_state(self, cli, timeout=3.0):
+        deadline = time.time() + timeout
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert cli._approval_state is not None
+
+    def test_approval_medium_remote_one_tap_returns_once(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: dict(_APPROVE_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="4242", approve_token="")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            assert code == "4242"
+            if calls["n"] < 2:
+                return None
+            return SimpleNamespace(
+                decision="approve",
+                decision_source="telegram",
+                deadline_ts=time.time() + 60,
+                approve_token="",
+            )
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback(
+                "ls", "desc", risk_level="medium"
+            )
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            thread.join(timeout=4)
+
+        assert not thread.is_alive()
+        assert result["value"] == "once"
+        cli._rc_create_pending.assert_called_once()
+        kwargs = cli._rc_create_pending.call_args.kwargs
+        assert kwargs.get("approve_tier") == "one_tap"
+        assert kwargs.get("risk_level") == "medium"
+
+    def test_approval_high_remote_typed_confirm_returns_once(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: dict(_APPROVE_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="4242", approve_token="4815")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            assert code == "4242"
+            if calls["n"] < 2:
+                return None
+            return SimpleNamespace(
+                decision="approve",
+                decision_source="telegram",
+                deadline_ts=time.time() + 60,
+                approve_token="4815",
+            )
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        captured = {}
+
+        def _capture_notify(*args, **kwargs):
+            captured.update(kwargs)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback(
+                "rm -rf /tmp/x", "wipe", risk_level="high"
+            )
+
+        import hermes_cli.human_intervention_notifications as notif_mod
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(notif_mod, "notify_human_intervention",
+                          side_effect=_capture_notify):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            thread.join(timeout=4)
+
+        assert not thread.is_alive()
+        assert result["value"] == "once"
+        cli._rc_create_pending.assert_called_once()
+        kwargs = cli._rc_create_pending.call_args.kwargs
+        assert kwargs.get("approve_tier") == "typed_confirm"
+        # The generated token flows into the notification.
+        assert captured.get("approve_tier") == "typed_confirm"
+        assert captured.get("approve_token") == "4815"
+
+    def test_compute_approve_tier_levels(self):
+        cli = _make_cli_stub()
+        rc = dict(_APPROVE_RC)
+
+        tier, never = cli._compute_approve_tier("medium", rc)
+        assert tier == "one_tap"
+        assert "critical" in never
+
+        tier, _ = cli._compute_approve_tier("high", rc)
+        assert tier == "typed_confirm"
+
+        tier, _ = cli._compute_approve_tier("critical", rc)
+        assert tier == "none"
+
+        tier, _ = cli._compute_approve_tier("low", rc)
+        assert tier == "none"
+
+        # allow_approve disabled → never approvable, regardless of level.
+        rc_off = dict(_APPROVE_RC)
+        rc_off["allow_approve"] = False
+        assert cli._compute_approve_tier("medium", rc_off)[0] == "none"
+        assert cli._compute_approve_tier("high", rc_off)[0] == "none"
+
+    def test_approval_critical_no_remote_approve(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: dict(_APPROVE_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="4242", approve_token="")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+        cli._rc_consume = MagicMock(return_value=None)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback(
+                "rm -rf /", "wipe root", risk_level="critical"
+            )
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            self._wait_for_state(cli)
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "deny"
+        cli._rc_create_pending.assert_called_once()
+        kwargs = cli._rc_create_pending.call_args.kwargs
+        assert kwargs.get("approve_tier") == "none"
+
+    def test_approval_remote_deny_still_returns_deny(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: dict(_APPROVE_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="4242", approve_token="")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+
+        calls = {"n": 0}
+
+        def _consume(code):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                return None
+            return SimpleNamespace(
+                decision="deny",
+                decision_source="telegram",
+                deadline_ts=time.time() + 60,
+                approve_token="",
+            )
+
+        cli._rc_consume = MagicMock(side_effect=_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback(
+                "rm -rf /tmp/x", "wipe", risk_level="medium"
+            )
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            thread.join(timeout=4)
+
+        assert not thread.is_alive()
+        assert result["value"] == "deny"
+
+    def test_local_answer_wins_over_remote_approve(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: dict(_APPROVE_RC)
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="5555", approve_token="")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+        cli._rc_consume = MagicMock(
+            return_value=SimpleNamespace(
+                decision="approve",
+                decision_source="telegram",
+                deadline_ts=time.time() + 60,
+                approve_token="",
+            )
+        )
+
+        # Local answer queued BEFORE the prompt → first get() wins.
+        pre_queue = queue.Queue()
+        pre_queue.put("session")
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback(
+                "rm -rf /tmp/x", "wipe", risk_level="medium"
+            )
+
+        orig_queue_cls = queue.Queue
+        made = {"n": 0}
+
+        def _queue_factory(*a, **kw):
+            made["n"] += 1
+            if made["n"] == 1:
+                return pre_queue
+            return orig_queue_cls(*a, **kw)
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True), \
+             patch.object(cli_module.queue, "Queue", side_effect=_queue_factory):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "session"
+
+    def test_explain_uses_llm_when_configured(self):
+        cli = _make_cli_stub()
+        import hermes_cli.human_intervention_risk_explainer as expl_mod
+
+        sentinel = object()
+        captured = {}
+
+        def _capture_explain(**kwargs):
+            captured.update(kwargs)
+            return "explained"
+
+        rc_on = {
+            "risk_explanation": {
+                "enabled": True,
+                "use_llm": True,
+                "only_for_risk_levels": ["high", "critical"],
+                "max_chars": 280,
+                "timeout_seconds": 3,
+            }
+        }
+        with patch.object(expl_mod, "default_llm_fn", sentinel, create=True), \
+             patch.object(expl_mod, "explain_command_risk",
+                          side_effect=_capture_explain):
+            out = cli._explain_command_risk_for_notify(
+                "rm -rf /x", "d", "high", rc_on
+            )
+        assert out == "explained"
+        assert captured.get("llm_fn") is sentinel
+
+        # use_llm False → llm_fn stays None.
+        captured.clear()
+        rc_off = {
+            "risk_explanation": {
+                "enabled": True,
+                "use_llm": False,
+                "only_for_risk_levels": ["high", "critical"],
+                "max_chars": 280,
+                "timeout_seconds": 3,
+            }
+        }
+        with patch.object(expl_mod, "default_llm_fn", sentinel, create=True), \
+             patch.object(expl_mod, "explain_command_risk",
+                          side_effect=_capture_explain):
+            cli._explain_command_risk_for_notify("rm -rf /x", "d", "high", rc_off)
+        assert captured.get("llm_fn") is None

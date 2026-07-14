@@ -2576,6 +2576,64 @@ DEFAULT_CONFIG = {
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
+
+    # Best-effort notifications when the CLI is blocked waiting for the user
+    # to approve a command, answer clarify(), or enter a sudo password. Disabled
+    # by default; if enabled, delivery failures never affect prompt semantics.
+    "notifications": {
+        "human_intervention": {
+            "enabled": False,
+            "channels": ["bell", "log"],
+            "gateway_targets": [],
+            "cooldown_seconds": 20,
+            "repeat_before_timeout_seconds": 15,
+            "include_command_preview": True,
+            "command_preview_chars": 120,
+            # Mobile remote control of a pending CLI human-intervention prompt.
+            # Phase 1: remote DENY (cancel) and EXTEND. Phase 2: tiered remote
+            # APPROVE — medium risk one-tap (/iv approve <code>), high risk
+            # typed-confirm (/iv approve <code> <token>). critical/hardline is
+            # NEVER remotely approvable; remote sudo password / clarify answer
+            # are never allowed. Disabled by default; delivery/parse failures
+            # never change local prompt semantics. Drives /iv deny|extend|
+            # status|approve.
+            "remote_control": {
+                "enabled": False,
+                "allow_deny": True,
+                "allow_extend": True,
+                # Master gate for ANY remote approve. Off by default.
+                "allow_approve": False,
+                # Tier rules (only consulted when allow_approve is True):
+                "approve_medium": True,            # one-tap approve for medium
+                "approve_high_typed_confirm": True,  # high needs a confirm token
+                "approve_token_len": 4,            # typed-confirm token length
+                "never_approve_levels": ["critical"],  # never remotely approvable
+                "max_extend_minutes": 15,          # cap on single /iv extend request
+                "max_total_wait_minutes": 15,      # absolute wait ceiling
+                "allowed_targets": ["telegram", "weixin"],
+                "risk_explanation": {
+                    "enabled": True,
+                    "only_for_risk_levels": ["high", "critical"],
+                    "max_chars": 280,
+                    # Wall-clock budget for the danger explanation. The real
+                    # default_llm_fn → call_llm path measures ~4s on a fast aux
+                    # model (higher than a bare HTTP probe due to client/config
+                    # setup), so 8s leaves jitter margin. Safe to keep generous:
+                    # cli.py computes the explanation AFTER painting the local
+                    # approval panel, so this only delays the mobile
+                    # notification, never the local prompt.
+                    "timeout_seconds": 8,
+                    "fallback_to_static": True,
+                    # Phase 2: use a bounded auxiliary-model call for the danger
+                    # explanation (static fallback on timeout/failure). Off by
+                    # default — only enable with a FAST model at
+                    # auxiliary.approval (a slow reasoning model times out → static).
+                    "use_llm": False,
+                },
+            },
+        },
+    },
+
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
 

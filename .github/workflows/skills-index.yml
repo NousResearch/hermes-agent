@@ -53,4 +53,21 @@ jobs:
       - name: Trigger Deploy Site workflow
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run deploy-site.yml --repo ${{ github.repository }} -f skills_index_run_id=${{ github.run_id }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        # A single `gh workflow run` call can fail on a transient 403 /
+        # secondary-rate-limit. Retry up to 5 times with exponential backoff
+        # (5s, 10s, 20s, 40s) so a momentary blip does not skip the deploy.
+        run: |
+          for i in 1 2 3 4 5; do
+            if gh workflow run deploy-site.yml --repo "$GH_REPO" -f skills_index_run_id="$RUN_ID"; then
+              echo "triggered deploy on attempt $i"
+              exit 0
+            fi
+            if [ "$i" -lt 5 ]; then
+              echo "attempt $i to trigger deploy failed; backing off"
+              sleep $((5 * 2 ** (i - 1)))
+            fi
+          done
+          echo "::error::failed to trigger deploy-site.yml after 5 attempts"
+          exit 1

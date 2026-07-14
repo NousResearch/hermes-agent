@@ -801,33 +801,35 @@ class GitHubSource(SkillSource):
         headers = self.auth.get_headers()
 
         # Resolve default branch
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}",
-                headers=headers, timeout=15, follow_redirects=True,
-            )
-            if resp.status_code != 200:
+        resp = self._github_get(
+            f"https://api.github.com/repos/{repo}",
+            headers=headers, timeout=15,
+        )
+        if resp is None or resp.status_code != 200:
+            if resp is not None:
                 self._check_rate_limit_response(resp)
-                return None
+            return None
+        try:
             default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, ValueError):
+        except ValueError:
             return None
 
         # Fetch recursive tree
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
-                params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
-            )
-            if resp.status_code != 200:
+        resp = self._github_get(
+            f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+            params={"recursive": "1"},
+            headers=headers, timeout=30,
+        )
+        if resp is None or resp.status_code != 200:
+            if resp is not None:
                 self._check_rate_limit_response(resp)
-                return None
+            return None
+        try:
             tree_data = resp.json()
             if tree_data.get("truncated"):
                 logger.debug("Git tree truncated for %s, cannot cache", repo)
                 return None
-        except (httpx.HTTPError, ValueError):
+        except ValueError:
             return None
 
         entries = tree_data.get("tree", [])
@@ -899,6 +901,25 @@ class GitHubSource(SkillSource):
             # Rate-limited: honor the reset header when present, else back off.
             if resp.status_code in (403, 429):
                 remaining = resp.headers.get("X-RateLimit-Remaining", "")
+                # Secondary/abuse rate limit: 403 but primary quota NOT exhausted.
+                # Clears on its own in a few seconds; retry so a transient blip
+                # does not collapse an entire source to zero results.
+                if (
+                    resp.status_code == 403
+                    and remaining not in ("", "0")
+                    and attempt < max_retries - 1
+                ):
+                    wait = backoff
+                    retry_after = resp.headers.get("Retry-After", "")
+                    if retry_after.isdigit():
+                        wait = min(float(retry_after), 30.0)
+                    logger.debug(
+                        "GitHub secondary rate limit on %s, waiting %.1fs (attempt %d/%d)",
+                        url, wait, attempt + 1, max_retries,
+                    )
+                    time.sleep(wait)
+                    backoff = min(backoff * 2, 30.0)
+                    continue
                 is_rl = remaining == "0" or resp.status_code == 429
                 if is_rl and attempt < max_retries - 1:
                     wait = backoff

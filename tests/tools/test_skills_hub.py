@@ -2116,6 +2116,45 @@ class TestDownloadDirectoryRecursive:
         assert "scripts/run.py" not in files  # lost due to rate limit
 
 
+class TestGitHubGetSecondaryRateLimit:
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {}
+        return GitHubSource(auth=auth)
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_retries_secondary_403_then_succeeds(self, mock_get, _mock_sleep):
+        src = self._source()
+        secondary = MagicMock(status_code=403, headers={"X-RateLimit-Remaining": "57"})
+        ok = MagicMock(status_code=200, headers={})
+        mock_get.side_effect = [secondary, ok]
+
+        out = src._github_get("https://api.github.com/repos/o/r/contents/skills")
+
+        assert out is ok
+        assert mock_get.call_count == 2
+        assert src.is_rate_limited is False
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_get_repo_tree_recovers_after_transient_403(self, mock_get):
+        src = self._source()
+        secondary = MagicMock(
+            status_code=403, headers={"X-RateLimit-Remaining": "59"},
+        )
+        repo_resp = MagicMock(status_code=200, headers={})
+        repo_resp.json.return_value = {"default_branch": "main"}
+        tree_resp = MagicMock(status_code=200, headers={})
+        tree_resp.json.return_value = {"truncated": False, "tree": []}
+        mock_get.side_effect = [secondary, repo_resp, tree_resp]
+
+        with patch("tools.skills_hub.time.sleep"):
+            out = src._get_repo_tree("owner/repo")
+
+        assert out == ("main", [])
+        assert src.is_rate_limited is False
+
+
 # ---------------------------------------------------------------------------
 # Install-path safety (lock-file → uninstall rmtree boundary)
 # ---------------------------------------------------------------------------

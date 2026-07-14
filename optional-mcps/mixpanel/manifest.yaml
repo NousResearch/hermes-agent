@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: mixpanel
+description: Analyze, query, and manage your Mixpanel data
+source: https://claude.com/connectors/mixpanel
+ui:
+  display_name: Mixpanel
+  category: Analytics
+  icon: mixpanel
+  tags:
+  - analytics
+  capabilities:
+  - Analyze, query, and manage your Mixpanel data
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.mixpanel.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Mixpanel.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure mixpanel\n"

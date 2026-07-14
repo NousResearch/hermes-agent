@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: kindora-funder-discovery
+description: Find funders who support causes like yours
+source: https://claude.com/connectors/kindora-funder-discovery
+ui:
+  display_name: Kindora Funder Discovery
+  category: Business tools
+  icon: kindora-funder-discovery
+  tags:
+  - connector
+  capabilities:
+  - Find funders who support causes like yours
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://kindora-mcp.azurewebsites.net/mcp/
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Kindora Funder Discovery.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure kindora-funder-discovery\n"

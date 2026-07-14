@@ -313,7 +313,7 @@ export const en: Translations = {
       apiKeys: 'Tools & Keys',
       keysTools: 'Tools',
       keysSettings: 'Settings',
-      mcp: 'MCP',
+      mcp: 'MCP Connectors',
       archivedChats: 'Archived Chats',
       about: 'About',
       notifications: 'Notifications'
@@ -669,6 +669,7 @@ export const en: Translations = {
       catalogEnabled: 'Enabled',
       catalogNeedsInstall: 'Needs build',
       catalogInstall: 'Install',
+      catalogConnect: 'Connect',
       catalogInstalling: 'Installing...',
       catalogInstallStarted: name => `Installing ${name}... applies to new sessions when done.`,
       catalogInstallFailed: name => `Failed to install ${name}`,
@@ -819,7 +820,7 @@ export const en: Translations = {
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
-    tabMcp: 'MCP',
+    tabMcp: 'MCP Connectors',
     tabHub: 'Browse Hub',
     all: 'All',
     searchSkills: 'Search skills...',

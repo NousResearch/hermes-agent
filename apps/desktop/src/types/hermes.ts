@@ -1014,6 +1014,13 @@ export interface McpCatalogEntry {
   bootstrap: string[]
   default_enabled: string[] | null
   post_install: string
+  display_name: string
+  category: string
+  icon: string
+  tags: string[]
+  capabilities: string[]
+  setup_steps: string[]
+  danger_notes: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean

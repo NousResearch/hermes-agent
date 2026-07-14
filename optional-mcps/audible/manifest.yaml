@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: audible
+description: Ask for audiobook recommendations & preview audiobooks
+source: https://claude.com/connectors/audible
+ui:
+  display_name: Audible
+  category: Business tools
+  icon: audible
+  tags:
+  - connector
+  capabilities:
+  - Ask for audiobook recommendations & preview audiobooks
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.audible.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Audible.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure audible\n"

@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: ifttt
+description: Connect, control, and automate 1,000+ apps with IFTTT
+source: https://claude.com/connectors/ifttt
+ui:
+  display_name: IFTTT
+  category: Business tools
+  icon: ifttt
+  tags:
+  - connector
+  capabilities:
+  - Connect, control, and automate 1,000+ apps with IFTTT
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://ifttt.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with IFTTT.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure ifttt\n"

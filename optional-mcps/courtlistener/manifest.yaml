@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: courtlistener
+description: Legal research across millions of court records
+source: https://claude.com/connectors/courtlistener
+ui:
+  display_name: CourtListener
+  category: Business tools
+  icon: courtlistener
+  tags:
+  - connector
+  capabilities:
+  - Legal research across millions of court records
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.courtlistener.com/
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with CourtListener.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure courtlistener\n"

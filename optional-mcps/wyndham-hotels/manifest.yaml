@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: wyndham-hotels
+description: Discover the right Wyndham Hotel for you, faster
+source: https://claude.com/connectors/wyndham-hotels
+ui:
+  display_name: Wyndham Hotels and Resorts
+  category: Business tools
+  icon: wyndham-hotels
+  tags:
+  - connector
+  capabilities:
+  - Discover the right Wyndham Hotel for you, faster
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.wyndhamhotels.com/claude/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Wyndham Hotels and Resorts.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure wyndham-hotels\n"

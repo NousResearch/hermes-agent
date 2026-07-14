@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: adobe-journey-optimizer
+description: Understand and troubleshoot your Journeys and Campaigns
+source: https://claude.com/connectors/adobe-journey-optimizer
+ui:
+  display_name: Adobe Journey Optimizer
+  category: Business tools
+  icon: adobe-journey-optimizer
+  tags:
+  - connector
+  capabilities:
+  - Understand and troubleshoot your Journeys and Campaigns
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://ajo-mcp.adobe.io/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Adobe Journey Optimizer.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure adobe-journey-optimizer\n"

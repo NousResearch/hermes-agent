@@ -11255,6 +11255,7 @@ async def list_mcp_catalog(profile: Optional[str] = None):
             auth = entry.auth
             transport = entry.transport
             install = entry.install
+            ui = entry.ui
             entries.append({
                 "name": entry.name,
                 "description": entry.description,
@@ -11282,6 +11283,13 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 if entry.tools.default_enabled is not None
                 else None,
                 "post_install": entry.post_install or "",
+                "display_name": ui.display_name,
+                "category": ui.category,
+                "icon": ui.icon,
+                "tags": list(ui.tags),
+                "capabilities": list(ui.capabilities),
+                "setup_steps": list(ui.setup_steps),
+                "danger_notes": list(ui.danger_notes),
                 "needs_install": entry.install is not None,
                 "installed": installed_state.get(entry.name, (False, False))[0],
                 "enabled": installed_state.get(entry.name, (False, False))[1],

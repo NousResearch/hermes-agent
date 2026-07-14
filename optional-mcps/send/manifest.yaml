@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: send
+description: Create shareable documents, one-pagers, and decks
+source: https://claude.com/connectors/send
+ui:
+  display_name: Send
+  category: Business tools
+  icon: send
+  tags:
+  - connector
+  capabilities:
+  - Create shareable documents, one-pagers, and decks
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://www.send.co/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Send.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure send\n"

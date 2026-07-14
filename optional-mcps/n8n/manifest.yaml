@@ -8,6 +8,21 @@ name: n8n
 description: Manage and inspect n8n workflows from Hermes (stdio bridge, no public port).
 source: https://github.com/CyberSamuraiX/hermes-n8n-mcp
 
+ui:
+  display_name: n8n
+  category: Automation
+  icon: n8n
+  tags: [workflows, automations, executions]
+  capabilities:
+    - Inspect workflows and executions
+    - Export workflow definitions
+    - Review recent workflow failures
+  setup_steps:
+    - Enter your n8n base URL.
+    - Generate and paste an n8n API key.
+  danger_notes:
+    - Optional mutating tools can activate or deactivate live workflows.
+
 # How to launch the server once installed. The keys here map 1:1 to the
 # `mcp_servers.<name>` block written into ~/.hermes/config.yaml by the
 # existing `_save_mcp_server()` helper in hermes_cli/mcp_config.py.

@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: fiscal-ai
+description: Clean Public Equity Fundamental Data
+source: https://claude.com/connectors/fiscal-ai
+ui:
+  display_name: Fiscal.ai
+  category: Analytics
+  icon: fiscal-ai
+  tags:
+  - analytics
+  capabilities:
+  - Clean Public Equity Fundamental Data
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: sse
+  url: https://api.fiscal.ai/mcp/sse
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Fiscal.ai.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure fiscal-ai\n"

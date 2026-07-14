@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: trivago
+description: Find your ideal hotel at the best price.
+source: https://claude.com/connectors/trivago
+ui:
+  display_name: Trivago
+  category: Business tools
+  icon: trivago
+  tags:
+  - connector
+  capabilities:
+  - Find your ideal hotel at the best price.
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.trivago.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Trivago.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure trivago\n"

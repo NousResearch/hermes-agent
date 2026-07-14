@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: actively
+description: 1:1 account agents for GTM teams
+source: https://claude.com/connectors/actively
+ui:
+  display_name: Actively
+  category: Sales & CRM
+  icon: actively
+  tags:
+  - crm
+  capabilities:
+  - 1:1 account agents for GTM teams
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://api.actively.ai/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Actively.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure actively\n"

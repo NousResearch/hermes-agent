@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: asana
+description: Connect to Asana to coordinate tasks, projects, and goals
+source: https://claude.com/connectors/asana
+ui:
+  display_name: Asana
+  category: Business tools
+  icon: asana
+  tags:
+  - project-management
+  capabilities:
+  - Connect to Asana to coordinate tasks, projects, and goals
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: sse
+  url: https://mcp.asana.com/sse
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Asana.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure asana\n"

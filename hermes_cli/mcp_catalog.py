@@ -72,7 +72,7 @@ class AuthSpec:
 
 @dataclass
 class TransportSpec:
-    type: str  # "stdio" | "http"
+    type: str  # "stdio" | "http" | "sse"
     command: Optional[str] = None
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
@@ -106,6 +106,25 @@ class ToolsSpec:
 
 
 @dataclass
+class ConnectorUiSpec:
+    """Presentation metadata for connector-first catalog surfaces.
+
+    These fields are optional so existing ``manifest_version: 1`` catalog
+    manifests stay valid. They let desktop/dashboard UIs present entries as
+    user-facing connectors instead of raw MCP transport blocks, while the
+    runtime config remains the same ``mcp_servers`` shape.
+    """
+
+    display_name: str = ""
+    category: str = ""
+    icon: str = ""
+    tags: List[str] = field(default_factory=list)
+    capabilities: List[str] = field(default_factory=list)
+    setup_steps: List[str] = field(default_factory=list)
+    danger_notes: List[str] = field(default_factory=list)
+
+
+@dataclass
 class CatalogEntry:
     name: str
     description: str
@@ -113,6 +132,7 @@ class CatalogEntry:
     transport: TransportSpec
     auth: AuthSpec
     tools: ToolsSpec = field(default_factory=ToolsSpec)
+    ui: ConnectorUiSpec = field(default_factory=ConnectorUiSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
     manifest_path: Path = field(default_factory=Path)
@@ -144,6 +164,37 @@ def _parse_env_spec(raw: Any) -> EnvVarSpec:
         required=bool(raw.get("required", True)),
         secret=bool(raw.get("secret", True)),
         default=str(raw.get("default") or ""),
+    )
+
+
+def _parse_string_list(raw: Any, *, path: Path, key: str) -> List[str]:
+    """Parse an optional UI list field as ``list[str]``."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise CatalogError(f"{path}: ui.{key} must be a list of strings")
+    return list(raw)
+
+
+def _parse_ui_spec(path: Path, raw: Any) -> ConnectorUiSpec:
+    if raw is None:
+        return ConnectorUiSpec()
+    if not isinstance(raw, dict):
+        raise CatalogError(f"{path}: 'ui' must be a mapping")
+    return ConnectorUiSpec(
+        display_name=str(raw.get("display_name") or ""),
+        category=str(raw.get("category") or ""),
+        icon=str(raw.get("icon") or ""),
+        tags=_parse_string_list(raw.get("tags"), path=path, key="tags"),
+        capabilities=_parse_string_list(
+            raw.get("capabilities"), path=path, key="capabilities"
+        ),
+        setup_steps=_parse_string_list(
+            raw.get("setup_steps"), path=path, key="setup_steps"
+        ),
+        danger_notes=_parse_string_list(
+            raw.get("danger_notes"), path=path, key="danger_notes"
+        ),
     )
 
 
@@ -179,8 +230,8 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if not isinstance(transport_raw, dict):
         raise CatalogError(f"{path}: 'transport' must be a mapping")
     t_type = transport_raw.get("type")
-    if t_type not in ("stdio", "http"):
-        raise CatalogError(f"{path}: transport.type must be 'stdio' or 'http'")
+    if t_type not in ("stdio", "http", "sse"):
+        raise CatalogError(f"{path}: transport.type must be 'stdio', 'http', or 'sse'")
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
@@ -193,8 +244,8 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     )
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
-    if t_type == "http" and not transport.url:
-        raise CatalogError(f"{path}: http transport requires 'url'")
+    if t_type in ("http", "sse") and not transport.url:
+        raise CatalogError(f"{path}: {t_type} transport requires 'url'")
 
     auth_raw = data.get("auth") or {"type": "none"}
     if not isinstance(auth_raw, dict):
@@ -226,6 +277,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
                 f"{path}: tools.default_enabled must be a list of strings"
             )
     tools_spec = ToolsSpec(default_enabled=default_enabled)
+    ui_spec = _parse_ui_spec(path, data.get("ui"))
 
     install: Optional[InstallSpec] = None
     install_raw = data.get("install")
@@ -256,6 +308,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         transport=transport,
         auth=auth,
         tools=tools_spec,
+        ui=ui_spec,
         install=install,
         post_install=str(data.get("post_install") or ""),
         manifest_path=path,
@@ -468,8 +521,10 @@ def _build_server_config(
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
-    elif t.type == "http":
+    elif t.type in ("http", "sse"):
         cfg["url"] = t.url
+        if t.type == "sse":
+            cfg["transport"] = "sse"
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
     return cfg

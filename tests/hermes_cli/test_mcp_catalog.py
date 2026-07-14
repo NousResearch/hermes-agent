@@ -143,6 +143,61 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+    def test_connector_ui_metadata_is_optional_and_parsed(self, catalog_dir):
+        body = _basic_manifest(
+            ui={
+                "display_name": "Acme CRM",
+                "category": "sales",
+                "icon": "database",
+                "tags": ["crm", "customers"],
+                "capabilities": ["Search customers", "Create follow-up tasks"],
+                "setup_steps": ["Sign in to Acme", "Choose a workspace"],
+                "danger_notes": ["Can create tasks when write tools are enabled"],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.ui.display_name == "Acme CRM"
+        assert e.ui.category == "sales"
+        assert e.ui.icon == "database"
+        assert e.ui.tags == ["crm", "customers"]
+        assert e.ui.capabilities == ["Search customers", "Create follow-up tasks"]
+        assert e.ui.setup_steps == ["Sign in to Acme", "Choose a workspace"]
+        assert e.ui.danger_notes == ["Can create tasks when write tools are enabled"]
+
+    def test_connector_ui_metadata_defaults_keep_existing_manifests_valid(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.ui.display_name == ""
+        assert e.ui.category == ""
+        assert e.ui.icon == ""
+        assert e.ui.tags == []
+        assert e.ui.capabilities == []
+        assert e.ui.setup_steps == []
+        assert e.ui.danger_notes == []
+
+    def test_sse_transport_writes_sse_config(self, catalog_dir):
+        body = _basic_manifest(
+            transport={"type": "sse", "url": "https://example.com/sse"},
+            auth={"type": "oauth"},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import install_entry, list_catalog
+        from hermes_cli.config import load_config
+
+        e = list_catalog()[0]
+        assert e.transport.type == "sse"
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://example.com/sse"
+        assert server["transport"] == "sse"
+        assert server["auth"] == "oauth"
+
     def test_install_block(self, catalog_dir):
         body = _basic_manifest(
             install={
@@ -811,4 +866,4 @@ class TestShippedCatalog:
             entry = _parse_manifest(m)
             assert entry.name
             assert entry.description
-            assert entry.transport.type in ("stdio", "http")
+            assert entry.transport.type in ("stdio", "http", "sse")

@@ -113,9 +113,16 @@ class TestMcpEndpoints:
                 "bootstrap",
                 "default_enabled",
                 "post_install",
+                "display_name",
+                "category",
+                "icon",
+                "tags",
+                "capabilities",
+                "setup_steps",
+                "danger_notes",
             } <= set(e)
-            # http entries expose a url; stdio entries expose a command.
-            if e["transport"] == "http":
+            # http/sse entries expose a url; stdio entries expose a command.
+            if e["transport"] in {"http", "sse"}:
                 assert e["url"]
             elif e["transport"] == "stdio":
                 assert e["command"]

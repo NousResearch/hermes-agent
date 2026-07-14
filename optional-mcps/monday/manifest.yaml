@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: monday
+description: Manage projects, boards, and workflows in monday.com
+source: https://claude.com/connectors/monday
+ui:
+  display_name: Monday
+  category: Business tools
+  icon: monday
+  tags:
+  - project-management
+  capabilities:
+  - Manage projects, boards, and workflows in monday.com
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.monday.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Monday.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure monday\n"

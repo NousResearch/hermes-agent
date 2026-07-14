@@ -6,6 +6,21 @@ name: linear
 description: Find, create, and update Linear issues, projects, and comments.
 source: https://linear.app/docs/mcp
 
+ui:
+  display_name: Linear
+  category: Project management
+  icon: linear
+  tags: [issues, projects, comments]
+  capabilities:
+    - Find and inspect issues
+    - Create and update Linear work
+    - Manage projects and comments
+  setup_steps:
+    - Connect your Linear account in the browser.
+    - Choose which tools Hermes may use after discovery.
+  danger_notes:
+    - Write tools can create or update issues, projects, and comments.
+
 # Linear ships a remote MCP server with native OAuth 2.1 + Dynamic Client
 # Registration over Streamable HTTP. Hermes's MCP client + mcp_oauth_manager
 # handle discovery, PKCE, token exchange, and refresh — nothing to install

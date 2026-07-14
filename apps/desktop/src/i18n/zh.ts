@@ -857,6 +857,7 @@ export const zh: Translations = {
       catalogEnabled: '已启用',
       catalogNeedsInstall: '需要构建',
       catalogInstall: '安装',
+      catalogConnect: '连接',
       catalogInstalling: '安装中…',
       catalogInstallStarted: name => `正在安装 ${name}… 完成后对新会话生效。`,
       catalogInstallFailed: name => `安装 ${name} 失败`,

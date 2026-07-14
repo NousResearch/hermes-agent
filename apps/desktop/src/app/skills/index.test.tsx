@@ -80,6 +80,14 @@ afterEach(() => {
   queryClient.clear()
 })
 
+describe('SkillsView navigation', () => {
+  it('keeps MCP visible in the connector tab label', async () => {
+    await renderSkills()
+
+    expect(await screen.findByRole('button', { name: /MCP Connectors/i })).toBeTruthy()
+  })
+})
+
 describe('SkillsView toolset management', () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()

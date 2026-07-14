@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: expedia
+description: Plan trips, flights and hotels
+source: https://claude.com/connectors/expedia
+ui:
+  display_name: Expedia
+  category: Business tools
+  icon: expedia
+  tags:
+  - connector
+  capabilities:
+  - Plan trips, flights and hotels
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://www.expedia.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Expedia.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure expedia\n"

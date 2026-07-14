@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: clockwise
+description: Advanced scheduling and time management for work.
+source: https://claude.com/connectors/clockwise
+ui:
+  display_name: Clockwise
+  category: Business tools
+  icon: clockwise
+  tags:
+  - project-management
+  capabilities:
+  - Advanced scheduling and time management for work.
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://mcp.getclockwise.com/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Clockwise.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure clockwise\n"

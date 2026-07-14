@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: fathom
+description: Your meetings, now part of every Claude conversation
+source: https://claude.com/connectors/fathom
+ui:
+  display_name: Fathom
+  category: Productivity
+  icon: fathom
+  tags:
+  - productivity
+  capabilities:
+  - Your meetings, now part of every Claude conversation
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://api.fathom.ai/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Fathom.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure fathom\n"

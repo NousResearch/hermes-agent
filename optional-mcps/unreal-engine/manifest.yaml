@@ -6,6 +6,21 @@ name: unreal-engine
 description: Drive the Unreal Engine 5.8 editor over its local MCP server.
 source: https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor
 
+ui:
+  display_name: Unreal Engine
+  category: Creative tools
+  icon: unreal-engine
+  tags: [game-dev, editor, local]
+  capabilities:
+    - Inspect and drive an Unreal Editor project
+    - Spawn actors and configure scene assets
+    - Run editor automation exposed by the plugin
+  setup_steps:
+    - Enable Epic's Unreal MCP plugin in the editor.
+    - Start the local MCP server before connecting Hermes.
+  danger_notes:
+    - Editor tool calls mutate the open Unreal project on the game thread.
+
 # Epic's official "Unreal MCP" plugin (internal id ModelContextProtocol)
 # embeds an MCP server inside the running Unreal Editor process and serves it
 # over local HTTP. There is nothing to install on the Hermes side — the user

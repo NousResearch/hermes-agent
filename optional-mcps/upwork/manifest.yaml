@@ -1,0 +1,25 @@
+# Nous-approved MCP catalog entry.
+# Generated from Anthropic Claude Connectors directory metadata.
+manifest_version: 1
+name: upwork
+description: Hire talent with confidence
+source: https://claude.com/connectors/upwork
+ui:
+  display_name: Upwork
+  category: Business tools
+  icon: upwork
+  tags:
+  - project-management
+  capabilities:
+  - Hire talent with confidence
+  setup_steps:
+  - Connect your account in the browser.
+  - Choose which discovered tools Hermes may use.
+  danger_notes:
+  - Remote connector tools may read or modify data in the connected service depending on the tools you enable.
+transport:
+  type: http
+  url: https://edge.upwork.com/api/v4/upw-mcp-app/v3/mcp
+auth:
+  type: oauth
+post_install: "On first connection, Hermes will open a browser to authenticate with Upwork.\nAfter auth, restart your Hermes session so the connector tools are loaded.\n\nYou can re-run the tool checklist any time with:\n  hermes mcp configure upwork\n"

@@ -4748,6 +4748,22 @@ _PLATFORMS = [
 ]
 
 
+def _should_hide_matrix(platform: str) -> bool:
+    """True when Matrix must be hidden from the setup menu for this platform.
+
+    Matrix is hidden on Windows and macOS (#64065) because python-olm
+    has no wheel for either and fails to build on modern toolchains
+    (cmake 4.x rejects libolm's cmake_minimum_required; Clang 21+
+    fails on a T*const increment in libolm/list.hh). The gateway adapter
+    already falls back to plaintext when olm is absent, so suppressing
+    the install is safe. Users on those platforms who want Matrix can
+    run Hermes under WSL/Linux.
+
+    Extracted so it's directly unit-testable without mocking sys.platform.
+    """
+    return platform == "win32" or platform == "darwin"
+
+
 def _all_platforms() -> list[dict]:
     """Return the full list of platforms for setup menus.
 
@@ -4782,7 +4798,7 @@ def _all_platforms() -> list[dict]:
     platforms = [dict(p) for p in _PLATFORMS]
 
     # Drop platforms that can't function on this host. See docstring.
-    if sys.platform == "win32":
+    if _should_hide_matrix(sys.platform):
         platforms = [p for p in platforms if p.get("key") != "matrix"]
 
     by_key = {p["key"]: p for p in platforms}
@@ -4796,9 +4812,10 @@ def _all_platforms() -> list[dict]:
         if entry.name in by_key:
             continue  # built-in already covers it
         # Drop platforms that can't function on this host. Matrix is hidden on
-        # Windows (python-olm has no Windows wheel) — applies whether matrix is
-        # a built-in or, post-#41112, a registry-discovered plugin.
-        if sys.platform == "win32" and entry.name == "matrix":
+        # Windows + macOS (#64065) (python-olm has no wheel on either) —
+        # applies whether matrix is a built-in or, post-#41112, a
+        # registry-discovered plugin.
+        if _should_hide_matrix(sys.platform) and entry.name == "matrix":
             continue
         platforms.append(
             {

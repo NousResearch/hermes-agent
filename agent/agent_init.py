@@ -19,6 +19,7 @@ preserved.
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -1803,9 +1804,9 @@ def init_agent(
                 # connections, clients); in that case fall back to the built-in
                 # compressor with an ACCURATE message rather than silently
                 # mislabelling it "not found".
-                import copy
+                import copy as _copy
                 try:
-                    _selected_engine = copy.deepcopy(_candidate)
+                    _selected_engine = _copy.deepcopy(_candidate)
                 except Exception as _copy_err:
                     _copy_failed = True
                     _ra().logger.warning(
@@ -2125,6 +2126,8 @@ def init_agent(
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "config_context_length": _config_context_length,
+        "custom_providers": copy.deepcopy(_custom_providers),
         # Context engine state that _try_activate_fallback() overwrites.
         # Use getattr for model/base_url/api_key/provider since plugin
         # engines may not have these (they're ContextCompressor-specific).

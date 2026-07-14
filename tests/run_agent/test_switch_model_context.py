@@ -75,15 +75,16 @@ def test_switch_model_without_config_context_length():
         assert call_kwargs.get("config_context_length") is None
 
 
-@patch("hermes_cli.config.load_config", return_value={"model": {"context_length": 65536}})
-@patch("agent.model_metadata.get_model_context_length", return_value=200_000)
-def test_switch_model_re_reads_global_context_length(mock_ctx_len, mock_load_cfg):
-    """Global model.context_length in config.yaml must be honored after /model switch."""
+def test_switch_model_reads_context_length_from_hermes_home_config(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  context_length: 65536\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
     agent = _make_agent_with_compressor(config_context_length=None)
 
-    agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
+    with patch("agent.model_metadata.get_model_context_length", return_value=200_000) as mock_ctx_len:
+        agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
 
-    # The global model.context_length=65536 must be passed to get_model_context_length.
     call_kwargs = mock_ctx_len.call_args.kwargs
     assert call_kwargs.get("config_context_length") == 65536
 

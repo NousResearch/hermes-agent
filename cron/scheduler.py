@@ -2089,7 +2089,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        argv = [_bash, path.as_posix()]
     else:
         argv = [sys.executable, str(path)]
 

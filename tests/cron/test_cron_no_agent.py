@@ -329,3 +329,41 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+def test_run_job_script_sh_uses_posix_paths(hermes_env, monkeypatch):
+    r"""Regression: on Windows, .sh scripts must receive forward-slash paths.
+
+    ``str(path)`` produces backslashes on Windows (``C:\Users\...``), which
+    bash interprets as escape sequences, mangling the path.  The fix uses
+    ``path.as_posix()`` so the argv is always forward-slash formatted.
+    """
+    from cron import scheduler
+    from cron.scheduler import _run_job_script
+
+    # Place script in a nested directory so the path has separators.
+    nested = hermes_env / "scripts" / "nested" / "dir"
+    nested.mkdir(parents=True)
+    script_path = nested / "watchdog.sh"
+    script_path.write_text('echo "ok"\n')
+
+    captured_argv = []
+
+    def _fake_run(argv, **kwargs):
+        captured_argv[:] = argv
+        class _R:
+            stdout = "ok\n"
+            stderr = ""
+            returncode = 0
+        return _R()
+
+    monkeypatch.setattr(scheduler.subprocess, "run", _fake_run)
+
+    ok, output = _run_job_script("nested/dir/watchdog.sh")
+    assert ok is True
+    assert output == "ok"
+
+    # Second argument is the script path.
+    script_arg = captured_argv[1]
+    assert "/" in script_arg, "path must contain forward slashes"
+    assert "\\" not in script_arg, "path must NOT contain backslashes"

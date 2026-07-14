@@ -1,3 +1,10 @@
+import '@testing-library/react'
+
+// React 19 + Testing Library 16: opt into the act environment so render(),
+// fireEvent(), and findBy* queries automatically flush state updates without
+// spurious "not wrapped in act(...)" warnings.
+;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
+
 class MemoryStorage implements Storage {
   private readonly entries = new Map<string, string>()
 
@@ -27,9 +34,7 @@ class MemoryStorage implements Storage {
 }
 
 // Node 26 exposes an unusable global localStorage unless the process receives
-// --localstorage-file. A fresh in-memory instance per Vitest file keeps renderer
-// tests browser-shaped without sharing state between workers. Individual tests
-// may still reload modules and observe persistence within their own file.
+// --localstorage-file. Keep renderer tests browser-shaped and file-hermetic.
 Object.defineProperty(window, 'localStorage', {
   configurable: true,
   value: new MemoryStorage()

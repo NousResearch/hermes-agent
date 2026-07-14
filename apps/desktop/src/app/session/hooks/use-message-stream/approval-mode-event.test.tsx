@@ -170,6 +170,29 @@ describe('live session.info approval mode reconciliation', () => {
     expect(getProfileSessionValue(cachedStates!, 'work', ACTIVE_SID)?.busy).toBe(false)
   })
 
+  it('keeps unscoped stream pins isolated by profile across a live profile switch', async () => {
+    await mountStream()
+
+    act(() => {
+      handleEvent!({ profile: 'work', type: 'message.start' })
+      $activeGatewayProfile.set('default')
+      handleEvent!({ profile: 'default', type: 'message.start' })
+      handleEvent!({ payload: { text: 'work done' }, profile: 'work', type: 'message.complete' })
+    })
+
+    expect(getProfileSessionValue(cachedStates!, 'work', ACTIVE_SID)?.busy).toBe(false)
+    expect(getProfileSessionValue(cachedStates!, 'default', ACTIVE_SID)?.busy).toBe(true)
+  })
+
+  it('does not borrow the foreground runtime id for a new unscoped background-profile stream', async () => {
+    await mountStream()
+    $activeGatewayProfile.set('default')
+
+    act(() => handleEvent!({ profile: 'work', type: 'message.start' }))
+
+    expect(getProfileSessionValue(cachedStates!, 'work', ACTIVE_SID)).toBeUndefined()
+  })
+
   it('projects only bounded direct activity metadata and clears matching tool activity', async () => {
     await mountStream()
 

@@ -21,7 +21,7 @@ until you install and select a pet.
 ## How it works
 
 - Pets are installed into your profile's `pets/` directory
-  (`<HERMES_HOME>/pets/<slug>/`), so each [profile](../profiles.md) keeps its
+  (`<HERMES_HOME>/pets/<slug>/`), so each [profile](/docs/user-guide/profiles) keeps its
   own set.
 - Selecting a pet writes `display.pet.slug` and `display.pet.enabled` to
   `config.yaml` — nothing is stored as a secret or env var.

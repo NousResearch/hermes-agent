@@ -133,6 +133,10 @@ declare global {
         branchSwitch: (repoPath: string, branch: string) => Promise<{ branch: string }>
         // Local branches for the "convert a branch into a worktree" picker.
         branchList: (repoPath: string) => Promise<HermesGitBranch[]>
+        // Local + remote-tracking branches for the "base branch" picker in the
+        // new-worktree dialog. The remote default (origin/HEAD) is flagged so
+        // the UI can preselect it.
+        baseBranchList: (repoPath: string) => Promise<HermesGitBaseBranch[]>
         // Compact working-tree status for the composer coding rail. Null on a
         // non-repo / remote backend (where the Electron probe can't run).
         repoStatus: (repoPath: string) => Promise<HermesRepoStatus | null>
@@ -674,6 +678,16 @@ export interface HermesGitBranch {
   checkedOut: boolean
   isDefault: boolean
   worktreePath: null | string
+}
+
+// A branch the new worktree can be based on: local heads + remote-tracking
+// refs. `isRemote` distinguishes `origin/main` from a local `main` (the UI
+// may show a remote glyph); `isDefault` flags origin/HEAD so the dialog can
+// preselect it.
+export interface HermesGitBaseBranch {
+  name: string
+  isRemote: boolean
+  isDefault: boolean
 }
 
 // A single changed path from `git status --porcelain=v2`, classified by state

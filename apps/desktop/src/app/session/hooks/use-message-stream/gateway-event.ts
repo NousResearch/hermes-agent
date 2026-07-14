@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -9,7 +9,7 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
+import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -104,22 +104,41 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     upsertToolCall
   } = deps
 
+  const unscopedStreamSessionIdsRef = useRef(new Map<string, string>())
+
   return useCallback(
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
       const profile = normalizeProfileKey(event.profile)
+      const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
 
-      if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
+      const route = resolveGatewayEventSessionId({
+        // An unscoped event may borrow the foreground runtime id only when it
+        // came from that foreground profile. Background profiles either carry
+        // an explicit id or continue their own profile-pinned stream below.
+        activeSessionId: profile === activeProfile ? activeSessionIdRef.current : null,
+        eventType: event.type,
+        explicitSessionId: explicitSid,
+        unscopedStreamSessionId: unscopedStreamSessionIdsRef.current.get(profile) ?? null
+      })
+
+      if (route.nextUnscopedStreamSessionId) {
+        unscopedStreamSessionIdsRef.current.set(profile, route.nextUnscopedStreamSessionId)
+      } else {
+        unscopedStreamSessionIdsRef.current.delete(profile)
+      }
+
+      if (route.drop) {
         return
       }
 
-      const sessionId = explicitSid || activeSessionIdRef.current
+      const sessionId = route.sessionId
 
       const isActiveEvent =
         !!sessionId &&
         sessionId === activeSessionIdRef.current &&
-        profile === normalizeProfileKey($activeGatewayProfile.get())
+        profile === activeProfile
 
       const eventSessionKey = sessionId ? profileSessionKey(profile, sessionId) : null
 
@@ -142,7 +161,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active
         // session, OR when it's a global broadcast and we have no session.
-        const apply = explicitSid ? isActiveEvent : !activeSessionIdRef.current
+        const apply = profile === activeProfile && (explicitSid ? isActiveEvent : !activeSessionIdRef.current)
         const statePatch = sessionInfoStatePatch(payload)
         const hasStatePatch = hasSessionInfoStatePatch(statePatch)
         const modelChanged = typeof payload?.model === 'string'
@@ -158,7 +177,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           isActiveEvent &&
           typeof payload?.approval_mode === 'string' &&
           event.profile &&
-          normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())
+          normalizeProfileKey(event.profile) === activeProfile
         ) {
           reconcileApprovalModeForProfile(event.profile, payload.approval_mode)
         }
@@ -256,7 +275,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
         }
 
-        if (payload?.usage && (!explicitSid || isActiveEvent)) {
+        if (payload?.usage && apply) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
 
@@ -401,7 +420,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // frame leaks to the sprite — including the popped-out overlay, which
           // mirrors each activity change. The jump runs ~2 loops, then settles.
           flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
-
         }
 
         // Completion attention is global, not foreground-only: a background
@@ -410,7 +428,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           markPetUnread()
         }
 
-        if (payload?.usage) {
+        if (payload?.usage && isActiveEvent) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
       } else if (event.type === 'session.title') {

@@ -1,8 +1,11 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import fs from 'fs'
+import { fileURLToPath } from 'node:url'
+
+const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url))
 
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
@@ -18,9 +21,9 @@ const real = (p: string): string | null => {
 const fsAllow = [
   ...new Set(
     [
-      path.resolve(__dirname, '../..'),
-      real(path.resolve(__dirname, 'node_modules')),
-      real(path.resolve(__dirname, '../../node_modules'))
+      path.resolve(ROOT_DIR, '../..'),
+      real(path.resolve(ROOT_DIR, 'node_modules')),
+      real(path.resolve(ROOT_DIR, '../../node_modules'))
     ].filter((p): p is string => p !== null)
   )
 ]
@@ -28,10 +31,6 @@ const fsAllow = [
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
-  test: {
-    environment: 'jsdom',
-    setupFiles: ['./src/test/setup.ts']
-  },
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
@@ -61,12 +60,12 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
-      '@hermes/shared': path.resolve(__dirname, '../shared/src'),
-      react: path.resolve(__dirname, '../../node_modules/react'),
-      'react-dom': path.resolve(__dirname, '../../node_modules/react-dom'),
-      'react/jsx-dev-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-dev-runtime.js'),
-      'react/jsx-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-runtime.js')
+      '@': path.resolve(ROOT_DIR, './src'),
+      '@hermes/shared': path.resolve(ROOT_DIR, '../shared/src'),
+      react: path.resolve(ROOT_DIR, '../../node_modules/react'),
+      'react-dom': path.resolve(ROOT_DIR, '../../node_modules/react-dom'),
+      'react/jsx-dev-runtime': path.resolve(ROOT_DIR, '../../node_modules/react/jsx-dev-runtime.js'),
+      'react/jsx-runtime': path.resolve(ROOT_DIR, '../../node_modules/react/jsx-runtime.js')
     },
     dedupe: ['react', 'react-dom']
   },

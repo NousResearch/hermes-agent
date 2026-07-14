@@ -15189,7 +15189,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 from tools.approval import get_current_session_key
                                 _drain_sk = get_current_session_key(default="")
                                 for _evt, _synth in process_registry.drain_notifications(session_key=_drain_sk):
+                                    from tools.async_delegation import (
+                                        claim_event_delivery, complete_event_delivery,
+                                    )
+                                    _claim = claim_event_delivery(_evt, "cli-idle")
+                                    if _claim is None:
+                                        continue
                                     self._pending_input.put(_synth)
+                                    complete_event_delivery(_evt, _claim)
                             except Exception:
                                 pass
                         continue
@@ -15351,7 +15358,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         try:
                             from tools.process_registry import process_registry
                             for _evt, _synth in process_registry.drain_notifications():
+                                from tools.async_delegation import (
+                                    claim_event_delivery, complete_event_delivery,
+                                )
+                                _claim = claim_event_delivery(_evt, "cli-post-turn")
+                                if _claim is None:
+                                    continue
                                 self._pending_input.put(_synth)
+                                complete_event_delivery(_evt, _claim)
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

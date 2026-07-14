@@ -7952,10 +7952,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
-            _cprint("    Saved to config.yaml (--global)")
+            try:
+                from hermes_cli.config import persist_model_switch_config
+
+                persist_model_switch_config(
+                    new_model=result.new_model,
+                    target_provider=result.target_provider,
+                    base_url=result.base_url,
+                    api_mode=result.api_mode,
+                )
+                _cprint("    Saved to config.yaml (--global)")
+            except Exception as exc:
+                _cprint(f"    ⚠ Failed to persist model switch: {exc}")
         else:
             _cprint("    (session only — add --global to persist)")
 
@@ -8264,9 +8272,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Persistence
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+            try:
+                from hermes_cli.config import persist_model_switch_config
+
+                persist_model_switch_config(
+                    new_model=result.new_model,
+                    target_provider=result.target_provider,
+                    base_url=result.base_url,
+                    api_mode=result.api_mode,
+                )
+            except Exception as exc:
+                _cprint(f"    ⚠ Failed to persist model switch: {exc}")
+                return
             _cprint("    Saved to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")

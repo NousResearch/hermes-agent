@@ -80,6 +80,23 @@ def _fake_switch_result():
     )
 
 
+def _fake_deepseek_switch_result():
+    """A DeepSeek switch result used to verify provider tuple persistence."""
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    return ModelSwitchResult(
+        success=True,
+        new_model="deepseek-v4-pro",
+        target_provider="deepseek",
+        provider_changed=False,
+        api_key="sk-test",
+        base_url="https://api.deepseek.com/v1",
+        api_mode="chat_completions",
+        provider_label="DeepSeek",
+        is_global=True,
+    )
+
+
 def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
     """Write a config.yaml with the given ``model:`` value and stub heavy bits."""
     import gateway.run as gateway_run
@@ -171,9 +188,9 @@ async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model)
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
-    assert "base_url" not in written["model"]
+    assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert written["model"]["api_mode"] == "chat_completions"
     assert "api_key" not in written["model"]
-    assert "api_mode" not in written["model"]
 
 
 @pytest.mark.asyncio
@@ -201,3 +218,52 @@ async def test_picker_tap_session_flag_does_not_persist(tmp_path, monkeypatch):
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert written["model"]["default"] == "old-model"
     assert written["model"]["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_picker_tap_overwrites_provider_tuple_even_without_provider_changed(tmp_path, monkeypatch):
+    """Persist the resolved provider/base_url/api_mode, not only the model name."""
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {
+            "default": "gpt-5.4",
+            "provider": "gpt55",
+            "base_url": "https://cc.auto-link.com.cn/pro/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kw: _fake_deepseek_switch_result(),
+    )
+
+    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model"))
+
+    assert confirmation is not None
+    assert "deepseek-v4-pro" in confirmation
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert written["model"]["default"] == "deepseek-v4-pro"
+    assert written["model"]["provider"] == "deepseek"
+    assert written["model"]["base_url"] == "https://api.deepseek.com/v1"
+    assert written["model"]["api_mode"] == "chat_completions"
+
+
+def test_alias_fallback_prefers_configured_providers_before_openrouter(monkeypatch):
+    """Configured providers like gpt55 should win before generic aggregators."""
+    from hermes_cli.model_switch import _resolve_alias_fallback
+
+    def fake_list_provider_models(provider):
+        if provider == "gpt55":
+            return ["gpt-5.4", "gpt-5.5"]
+        if provider == "openrouter":
+            return ["openai/gpt-5.5-pro"]
+        return []
+
+    monkeypatch.setattr("hermes_cli.model_switch.list_provider_models", fake_list_provider_models)
+
+    result = _resolve_alias_fallback("gpt", ["gpt55", "deepseek", "openrouter"])
+
+    assert result is not None
+    assert result[0] == "gpt55"

@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from run_agent import AIAgent
+from tools.budget_config import BudgetConfig
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -250,3 +251,77 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
     # production flush call breaks one of these assertions.
     assert flushed_tool_ids == ["c1", "c2"]
     assert flush_lengths == [1, 2]
+
+
+def _assert_aggregate_tool_results_bounded_before_each_flush(
+    agent, assistant_message, messages, execute,
+):
+    """Every incremental snapshot must already satisfy the turn budget."""
+    snapshots: list[list] = []
+
+    def _record_flush(flush_messages, conversation_history=None):
+        snapshots.append(copy.deepcopy(flush_messages))
+
+    agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
+    budget = BudgetConfig(
+        default_result_size=150_000,
+        turn_budget=200_000,
+        preview_size=64,
+        tool_overrides={"web_search": 150_000},
+    )
+    sandbox = MagicMock()
+    sandbox.execute.return_value = {"output": "", "returncode": 0}
+
+    with (
+        patch("agent.tool_executor._budget_for_agent", return_value=budget),
+        patch("agent.tool_executor.get_active_env", return_value=sandbox),
+    ):
+        execute(assistant_message, messages, "task-1")
+
+    assert len(snapshots) == 2
+    for snapshot in snapshots:
+        tool_chars = sum(
+            len(message.get("content", ""))
+            for message in snapshot
+            if message.get("role") == "tool"
+        )
+        assert tool_chars <= budget.turn_budget
+
+    # Bounding mutates content only; current-main safety metadata survives.
+    assert all("_tool_output_risk" in message for message in messages)
+
+
+def test_sequential_bounds_aggregate_tool_results_before_incremental_flush():
+    agent = _make_agent()
+    tool_calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+
+    with patch("run_agent.handle_function_call", return_value="x" * 120_000):
+        _assert_aggregate_tool_results_bounded_before_each_flush(
+            agent,
+            assistant_message,
+            messages,
+            agent._execute_tool_calls_sequential,
+        )
+
+
+def test_concurrent_bounds_aggregate_tool_results_before_incremental_flush():
+    agent = _make_agent()
+    tool_calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+
+    with patch.object(agent, "_invoke_tool", return_value="x" * 120_000):
+        _assert_aggregate_tool_results_bounded_before_each_flush(
+            agent,
+            assistant_message,
+            messages,
+            agent._execute_tool_calls_concurrent,
+        )

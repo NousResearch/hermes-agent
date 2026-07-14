@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence, Union
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -108,9 +108,17 @@ try:
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
     from lark_oapi.core.model import BaseRequest
     from lark_oapi.event.callback.model.p2_card_action_trigger import (
+        CallBackAction,
         CallBackCard,
+        CallBackToast,
         P2CardActionTriggerResponse,
     )
+    # Accept both string and dict button values (Feishu API spec allows
+    # both, but the SDK model requires Dict).  Prevents 200671 errors.
+    # Relies on lark-oapi's parse() treating Union types as pass-through
+    # (tested with lark-oapi 1.6.8).
+    if CallBackAction is not None:
+        CallBackAction._types["value"] = Union[str, Dict[str, Any]]
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
     from lark_oapi.ws import Client as FeishuWSClient
 
@@ -118,7 +126,9 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
+    CallBackAction = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
+    CallBackToast = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
@@ -242,7 +252,7 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
 
 
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
-_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003, 99992354})  # reply target invalid/withdrawn/missing → create fallback
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -1383,8 +1393,11 @@ def check_feishu_requirements() -> bool:
         from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
         from lark_oapi.core.model import BaseRequest
         from lark_oapi.event.callback.model.p2_card_action_trigger import (
-            CallBackCard, P2CardActionTriggerResponse,
+            CallBackAction, CallBackCard, CallBackToast, P2CardActionTriggerResponse,
         )
+        # Accept both string and dict button values (see static import above).
+        if CallBackAction is not None:
+            CallBackAction._types["value"] = Union[str, Dict[str, Any]]
         from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
         from lark_oapi.ws import Client as FeishuWSClient
         return {
@@ -2670,7 +2683,17 @@ class FeishuAdapter(BasePlatformAdapter):
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
             return None
-        return P2CardActionTriggerResponse()
+        # Return a toast to give the user immediate visual feedback,
+        # while the agent processes the action asynchronously in chat.
+        # The card stays intact so multi-button panels remain usable.
+        action_tag = str(getattr(action, "tag", "") or "button")
+        response = P2CardActionTriggerResponse()
+        if CallBackToast is not None:
+            toast = CallBackToast()
+            toast.type = "info"
+            toast.content = f"✅ Received '{action_tag}' action, processing..."
+            response.toast = toast
+        return response
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:
@@ -2986,20 +3009,24 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
-        synthetic_text = f"/card {action_tag}"
+        synthetic_text = f"Card button '{action_tag}' clicked"
         if action_value:
             try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
+                synthetic_text += f" with data: {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
 
-        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+        sender_id = SimpleNamespace(
+            open_id=open_id,
+            user_id=None,
+            union_id=str(getattr(operator, "union_id", "") or ""),
+        )
         sender_profile = await self._resolve_sender_profile(sender_id)
         chat_info = await self.get_chat_info(chat_id)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+            chat_type=chat_info.get("type") or "group",
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=None,
@@ -3010,7 +3037,7 @@ class FeishuAdapter(BasePlatformAdapter):
             message_type=MessageType.COMMAND,
             source=source,
             raw_message=data,
-            message_id=token or str(uuid.uuid4()),
+            message_id=None,
             channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
         )

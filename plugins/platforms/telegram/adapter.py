@@ -1970,12 +1970,31 @@ class TelegramAdapter(BasePlatformAdapter):
         self._send_path_degraded = False
 
     def _instrument_polling_request(self, request):
-        """Wrap one dedicated PTB getUpdates request with progress tracking."""
-        do_request = request.do_request
+        """Wrap one dedicated PTB getUpdates request with progress tracking.
 
-        async def _do_request(*args, **kwargs):
+        The wrapper is attached by rebinding ``request.__class__`` to a subclass
+        that overrides ``do_request``, rather than by assigning the attribute on
+        the instance. ``HTTPXRequest`` declares ``__slots__`` (python-telegram-bot
+        >= 22), so ``request.do_request = ...`` raises
+
+            AttributeError: 'HTTPXRequest' object attribute 'do_request' is read-only
+
+        and aborts Telegram startup. A subclass with empty ``__slots__`` has the
+        same instance layout, so ``__class__`` assignment is legal and adds no
+        per-instance attribute.
+
+        The wrapper cannot simply be skipped when it fails to attach: the polling
+        progress verifier consumes what ``_record_polling_progress`` records, so a
+        no-op wrapper makes healthy polling look stalled and drops the adapter into
+        a reconnect loop.
+        """
+        adapter = self
+        base = type(request)
+        base_do_request = base.do_request
+
+        async def _do_request(request, *args, **kwargs):
             generation = _POLLING_GENERATION_CONTEXT.get()
-            result = await do_request(*args, **kwargs)
+            result = await base_do_request(request, *args, **kwargs)
             status_code, payload = result
             if generation is not None and 200 <= status_code < 300:
                 try:
@@ -1993,10 +2012,15 @@ class TelegramAdapter(BasePlatformAdapter):
                         and envelope.get("ok") is True
                         and "result" in envelope
                     ):
-                        self._record_polling_progress(generation)
+                        adapter._record_polling_progress(generation)
             return result
 
-        request.do_request = _do_request
+        instrumented = type(
+            f"_Instrumented{base.__name__}",
+            (base,),
+            {"__slots__": (), "do_request": _do_request},
+        )
+        request.__class__ = instrumented
         return request
 
     async def _start_polling_once(

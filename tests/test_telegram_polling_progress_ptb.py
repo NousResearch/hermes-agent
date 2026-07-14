@@ -291,3 +291,49 @@ async def test_real_ptb_stop_cleanup_cannot_heal_recovery_generation():
             await app.updater.stop()
         await _cancel_task(adapter._polling_progress_verifier_task)
         await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_instrument_polling_request_attaches_to_real_httpxrequest(monkeypatch):
+    """Instrumentation must attach to the real PTB request class.
+
+    Regression for the Telegram startup failure
+
+        AttributeError: 'HTTPXRequest' object attribute 'do_request' is read-only
+
+    ``HTTPXRequest`` declares ``__slots__`` (python-telegram-bot >= 22), so the
+    instrumentation cannot be attached by assigning ``request.do_request``. The
+    other doubles in this suite subclass ``BaseRequest`` without ``__slots__``,
+    so they acquire a ``__dict__`` and accept the assignment — which is why the
+    suite did not catch this. Use the production class here.
+
+    Attaching is not enough: progress must still be recorded. A wrapper that
+    silently fails to attach would make healthy polling look stalled to the
+    progress verifier and send the adapter into a reconnect loop.
+    """
+    from telegram.request import HTTPXRequest
+
+    async def _no_network(self, *args, **kwargs):
+        return (200, b'{"ok":true,"result":[]}')
+
+    monkeypatch.setattr(HTTPXRequest, "do_request", _no_network)
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    generation, progress = adapter._begin_polling_generation()
+
+    request = HTTPXRequest()
+    instrumented = adapter._instrument_polling_request(request)
+
+    assert instrumented is request
+
+    generation_context = tg_adapter._POLLING_GENERATION_CONTEXT
+    token = generation_context.set(generation)
+    try:
+        result = await instrumented.do_request(
+            "https://api.telegram.org/bottest-token/getUpdates", "POST"
+        )
+    finally:
+        generation_context.reset(token)
+
+    assert result == (200, b'{"ok":true,"result":[]}')
+    assert progress.is_set(), "instrumentation attached but recorded no polling progress"

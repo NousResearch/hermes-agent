@@ -372,3 +372,69 @@ def test_picker_prefs_absent_config_is_noop(monkeypatch):
     result = model_switch.list_picker_providers(max_models=50)
 
     assert [p["slug"] for p in result] == ["openrouter", "anthropic"]
+
+
+# ─── model.picker.hide glob patterns ───────────────────────────────────
+
+
+def test_picker_hide_glob_collapses_family(monkeypatch):
+    """A glob in model.picker.hide drops a whole slug family in one line."""
+    base = [
+        _make_provider("openrouter", models=["m1"]),
+        _make_provider("claude-apx-0", models=["c"]),
+        _make_provider("claude-apx-1", models=["c"]),
+        _make_provider("claude-apx-10", models=["c"]),
+        _make_provider("claude-apr", models=["c"]),  # not a *-N lane, kept
+    ]
+    cfg = {"model": {"picker": {"hide": ["claude-apx-*"]}}}
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("m1", "M1")])
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    assert [p["slug"] for p in result] == ["openrouter", "claude-apr"]
+
+
+def test_picker_hide_glob_and_exact_mix(monkeypatch):
+    """Exact slugs and glob patterns can be mixed in the same hide list."""
+    base = [
+        _make_provider("openrouter", models=["m1"]),
+        _make_provider("anthropic", models=["c"]),
+        _make_provider("claude-bpx-3", models=["c"]),
+    ]
+    cfg = {"model": {"picker": {"hide": ["anthropic", "claude-bpx-*"]}}}
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("m1", "M1")])
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    assert [p["slug"] for p in result] == ["openrouter"]
+
+
+def test_picker_hide_glob_never_hides_current(monkeypatch):
+    """A glob must not hide the currently-active provider it happens to match."""
+    base = [
+        _make_provider("openrouter", models=["m1"]),
+        _make_provider("claude-apx-2", models=["c"], is_current=True),
+        _make_provider("claude-apx-3", models=["c"]),
+    ]
+    cfg = {"model": {"picker": {"hide": ["claude-apx-*"]}}}
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("m1", "M1")])
+
+    result = model_switch.list_picker_providers(
+        current_provider="claude-apx-2", max_models=50,
+    )
+
+    slugs = [p["slug"] for p in result]
+    assert "claude-apx-2" in slugs      # current lane kept despite matching glob
+    assert "claude-apx-3" not in slugs  # sibling lane still hidden

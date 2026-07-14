@@ -2517,9 +2517,13 @@ def _apply_picker_preferences(
         order: [anthropic, openai-codex, ...]  # front-anchored display order
     ```
 
-    - ``hide``: drop matching provider rows (by slug, case-insensitive). The
-      **currently-active** provider is NEVER hidden — you must always be able
-      to see/switch off what you're on. Unknown slugs are ignored.
+    - ``hide``: drop matching provider rows (by slug, case-insensitive). An
+      entry may be an exact slug (``openai-api``) or a glob pattern
+      (``claude-apx-*``, ``*-preview``) — a glob collapses a whole noisy
+      provider family (e.g. numbered auto-failover lanes) into one config
+      line. The **currently-active** provider is NEVER hidden — you must
+      always be able to see/switch off what you're on. Unknown slugs /
+      non-matching patterns are ignored.
     - ``order``: rows whose slug appears here are moved to the front in the
       given order; every other row keeps its original relative order after
       them. Unknown slugs in ``order`` are ignored (no empty rows). Rows not
@@ -2541,11 +2545,34 @@ def _apply_picker_preferences(
 
     hide = picker_cfg.get("hide") or []
     if isinstance(hide, (list, tuple)):
-        hide_set = {str(s).strip().lower() for s in hide if str(s).strip()}
-        if hide_set:
+        # Two kinds of hide entry: an exact slug ("openai-api") or a glob
+        # pattern ("claude-apx-*", "*-preview"). Globs let a user collapse a
+        # whole noisy provider family — e.g. numbered auto-failover lanes —
+        # into one config line instead of listing each slug. An entry is a
+        # pattern iff it contains a glob metacharacter (* ? [); everything
+        # else stays an exact case-insensitive match (the fast common case).
+        import fnmatch
+
+        exact: set[str] = set()
+        patterns: list[str] = []
+        for s in hide:
+            token = str(s).strip().lower()
+            if not token:
+                continue
+            if any(ch in token for ch in "*?["):
+                patterns.append(token)
+            else:
+                exact.add(token)
+
+        if exact or patterns:
+            def _is_hidden(slug: str) -> bool:
+                if slug in exact:
+                    return True
+                return any(fnmatch.fnmatchcase(slug, pat) for pat in patterns)
+
             rows = [
                 r for r in rows
-                if str(r.get("slug", "")).strip().lower() not in hide_set
+                if not _is_hidden(str(r.get("slug", "")).strip().lower())
                 or str(r.get("slug", "")).strip().lower() == _cur  # never hide current
             ]
 

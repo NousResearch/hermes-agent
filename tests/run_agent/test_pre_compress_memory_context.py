@@ -1,25 +1,25 @@
 """Behavior contracts for the pre-compression memory-context handoff."""
 
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 
 def _make_agent(memory_manager, compressor):
-    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}):
-        from run_agent import AIAgent
+    from run_agent import AIAgent
 
-        agent = AIAgent(
-            api_key="",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            session_db=None,
-            session_id="test-session",
-            skip_context_files=True,
-            skip_memory=True,
-        )
+    agent = AIAgent(
+        api_key="test-key",
+        provider="openrouter",
+        api_mode="chat_completions",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        session_db=None,
+        session_id="test-session",
+        skip_context_files=True,
+        skip_memory=True,
+    )
 
     agent._memory_manager = memory_manager
     agent.context_compressor = compressor

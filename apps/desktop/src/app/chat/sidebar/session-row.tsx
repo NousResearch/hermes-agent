@@ -13,7 +13,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, $unreadSessionIds } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -78,6 +78,9 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  // True when this session finished a turn while the user was viewing another
+  // chat — a completed, not-yet-read reply. Cleared when the row is selected.
+  const isUnread = useStore($unreadSessionIds).includes(session.id)
 
   return (
     <SessionContextMenu
@@ -234,7 +237,7 @@ function SessionRowLeadDot({
           {branchStem}
         </span>
       ) : null}
-      <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+      <SidebarRowDot isUnread={isUnread} isWorking={isWorking} needsInput={needsInput} />
     </span>
   )
 }
@@ -242,10 +245,12 @@ function SessionRowLeadDot({
 function SidebarRowDot({
   isWorking,
   needsInput = false,
+  isUnread = false,
   className
 }: {
   isWorking: boolean
   needsInput?: boolean
+  isUnread?: boolean
   className?: string
 }) {
   const { t } = useI18n()
@@ -266,17 +271,37 @@ function SidebarRowDot({
     )
   }
 
+  // An active turn outranks "completed" — it's still in progress. Accent + ping.
+  if (isWorking) {
+    return (
+      <span
+        aria-label={r.sessionRunning}
+        className={cn(
+          "relative size-1.5 rounded-full bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']",
+          className
+        )}
+        role="status"
+      />
+    )
+  }
+
+  // Completed while the user was viewing another chat: a solid accent dot, NO
+  // pulse. Reads as "done, fresh, unseen" — calmer than working's ping and
+  // distinct from needs-input's amber glow, but still clearly "this row wants
+  // your attention" versus the faint gray of an already-read idle chat.
+  if (isUnread) {
+    return (
+      <span
+        aria-label={r.unreadReply}
+        className={cn('size-1.5 rounded-full bg-(--ui-accent)', className)}
+        role="status"
+        title={r.unreadReply}
+      />
+    )
+  }
+
+  // Idle: nothing pending.
   return (
-    <span
-      aria-label={isWorking ? r.sessionRunning : undefined}
-      className={cn(
-        'rounded-full',
-        isWorking
-          ? "relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
-          : 'size-1 bg-(--ui-text-quaternary) opacity-80',
-        className
-      )}
-      role={isWorking ? 'status' : undefined}
-    />
+    <span className={cn('size-1 rounded-full bg-(--ui-text-quaternary) opacity-80', className)} />
   )
 }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
@@ -7,12 +7,16 @@ import {
   $attentionSessionIds,
   $connection,
   $currentCwd,
+  $selectedStoredSessionId,
+  $unreadSessionIds,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  clearSessionUnread,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
+  setSelectedStoredSessionId,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
@@ -295,5 +299,65 @@ describe('getRecentlySettledSessionIds', () => {
     // settled set so it's tracked as working, not recently-finished.
     setSessionWorking('s2', true)
     expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+})
+
+describe('completed-while-away unread tracking', () => {
+  beforeEach(() => {
+    $unreadSessionIds.set([])
+    $workingSessionIds.set([])
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('flags a session that finishes while a DIFFERENT session is selected', () => {
+    $selectedStoredSessionId.set('other')
+
+    // A background session runs a full turn while the user looks elsewhere.
+    setSessionWorking('bg', true)
+    setSessionWorking('bg', false)
+
+    expect($unreadSessionIds.get()).toEqual(['bg'])
+  })
+
+  it('does NOT flag the session the user is currently viewing', () => {
+    $selectedStoredSessionId.set('active')
+
+    setSessionWorking('active', true)
+    setSessionWorking('active', false)
+
+    // A turn that finishes in the session you're watching is read by definition.
+    expect($unreadSessionIds.get()).toEqual([])
+  })
+
+  it('does NOT flag on an idle re-assertion (session was never working)', () => {
+    $selectedStoredSessionId.set('other')
+
+    // updateSessionState re-asserts `false` every tick for idle sessions; this
+    // must not be mistaken for a working→idle completion.
+    setSessionWorking('idle', false)
+    setSessionWorking('idle', false)
+
+    expect($unreadSessionIds.get()).toEqual([])
+  })
+
+  it('clears unread when the session is later selected (read)', () => {
+    $selectedStoredSessionId.set('other')
+    setSessionWorking('bg', true)
+    setSessionWorking('bg', false)
+    expect($unreadSessionIds.get()).toEqual(['bg'])
+
+    // Opening the session is reading it — the flag drops via the selection
+    // chokepoint, with no per-call-site bookkeeping.
+    setSelectedStoredSessionId('bg')
+    expect($unreadSessionIds.get()).toEqual([])
+  })
+
+  it('clearSessionUnread no-ops on null and unknown ids', () => {
+    $unreadSessionIds.set(['a'])
+
+    clearSessionUnread(null)
+    clearSessionUnread('zzz')
+
+    expect($unreadSessionIds.get()).toEqual(['a'])
   })
 })

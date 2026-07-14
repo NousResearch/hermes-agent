@@ -330,6 +330,95 @@ class SessionContext:
         }
 
 
+def _coerce_sender_profile_map(config: GatewayConfig, platform: Platform) -> Dict[str, Dict[str, Any]]:
+    """Return the configured sender profile map for a platform.
+
+    Profiles intentionally live in platform ``extra`` config so operators can
+    define relationship/addressing rules without hard-coding private IDs in
+    source. Keys are usually platform user IDs (Feishu ``open_id``/``user_id``
+    or ``union_id``), but each profile may also expose ``ids``/``aliases``.
+    """
+    try:
+        platform_cfg = config.platforms.get(platform)
+        raw = (platform_cfg.extra or {}).get("sender_profiles") if platform_cfg else None
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+
+
+def _lookup_sender_profile(
+    source: SessionSource,
+    config: GatewayConfig,
+) -> Optional[Dict[str, Any]]:
+    profiles = _coerce_sender_profile_map(config, source.platform)
+    if not profiles:
+        return None
+    candidates = [
+        source.user_id,
+        source.user_id_alt,
+        source.user_name,
+    ]
+    for candidate in candidates:
+        if candidate and str(candidate) in profiles:
+            return profiles[str(candidate)]
+    for profile in profiles.values():
+        aliases = profile.get("ids") or profile.get("aliases") or []
+        if isinstance(aliases, (str, int)):
+            aliases = [aliases]
+        alias_set = {str(v) for v in aliases if v is not None}
+        if any(candidate and str(candidate) in alias_set for candidate in candidates):
+            return profile
+    return None
+
+
+def _speaker_fallback_name(source: SessionSource) -> str:
+    if source.user_name:
+        return str(source.user_name).strip()
+    if source.platform == Platform.FEISHU and source.user_id:
+        return f"unknown Feishu user {source.user_id}"
+    return str(source.user_id or source.user_id_alt or "unknown user")
+
+
+def format_shared_sender_prefix(source: SessionSource, config: GatewayConfig) -> str:
+    """Format the per-message sender prefix for shared multi-user sessions.
+
+    The prefix is deliberately stronger than a display name: it carries the
+    relationship/addressing rule into the user turn so a shared group does not
+    inherit the root persona's "主人" address term for every participant. Unknown
+    participants fall back to an explicit non-owner label instead of bare text.
+    """
+    profile = _lookup_sender_profile(source, config) or {}
+    name = str(profile.get("name") or profile.get("display_name") or _speaker_fallback_name(source)).strip()
+    role = str(profile.get("role") or ("unknown" if not profile else "participant")).strip()
+    relationship = str(profile.get("relationship") or "").strip()
+    address_as = str(profile.get("address_as") or ("对方/这位用户" if not profile else name)).strip()
+    not_owner = bool(profile.get("not_owner")) or role.lower() in {"unknown", "collaborator", "guest", "client"}
+
+    parts = [f"Speaker: {name}", f"role: {role}"]
+    if relationship:
+        parts.append(f"relationship: {relationship}")
+    if address_as:
+        parts.append(f"address_as: {address_as}")
+    if not_owner:
+        parts.append("not_owner: true")
+    return "[" + " | ".join(parts) + "]"
+
+
+def prefix_shared_sender_message(
+    message: str,
+    source: SessionSource,
+    config: GatewayConfig,
+) -> str:
+    """Prepend sender relationship metadata to a shared-session user message."""
+    prefix = format_shared_sender_prefix(source, config)
+    text = str(message or "")
+    if text.startswith(prefix):
+        return text
+    return f"{prefix}\n{text}" if text else prefix
+
+
 _PII_SAFE_PLATFORMS = frozenset({
     Platform.WHATSAPP,
     Platform.SIGNAL,
@@ -479,8 +568,9 @@ def build_session_context_prompt(
     if context.shared_multi_user_session:
         session_label = "Multi-user thread" if context.source.thread_id else "Multi-user session"
         lines.append(
-            f"**Session type:** {session_label} — messages are prefixed "
-            "with [sender name]. Multiple users may participate."
+            f"**Session type:** {session_label} — each user turn is prefixed "
+            "with [Speaker: ... | role: ... | address_as: ...]. Multiple users may participate; "
+            "do not infer that every participant is the owner/主人."
         )
     elif context.source.user_name:
         lines.append(

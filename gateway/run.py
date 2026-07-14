@@ -1780,6 +1780,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    prefix_shared_sender_message,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -17217,6 +17218,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        # In shared group/thread sessions, inject the sender relationship into
+        # the actual user turn before it reaches either the local agent or proxy.
+        # This prevents non-owner/unknown group participants from being treated
+        # as the root persona's "主人" just because they share the transcript.
+        try:
+            if is_shared_multi_user_session(
+                source,
+                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            ):
+                message = prefix_shared_sender_message(message, source, self.config)
+        except Exception:
+            logger.debug("Failed to prefix shared-session sender metadata", exc_info=True)
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(

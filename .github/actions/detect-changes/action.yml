@@ -1,7 +1,7 @@
 name: Detect affected areas
 description: >-
   Classify a PR's changed files into CI work lanes (python, frontend, site,
-  scan, deps, mcp_catalog) so the orchestrator can conditionally call only
+  scan, deps, nix, mcp_catalog) so the orchestrator can conditionally call only
   the sub-workflows a PR can affect. Outputs are always "true" on push/dispatch
   events and fail open (everything "true") when the diff cannot be computed.
 
@@ -24,6 +24,9 @@ outputs:
   deps:
     description: Check pyproject.toml dependency upper bounds.
     value: ${{ steps.classify.outputs.deps }}
+  nix:
+    description: Build the Nix flake outputs (.#web, .#tui, .#desktop) offline.
+    value: ${{ steps.classify.outputs.nix }}
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}

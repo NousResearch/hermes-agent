@@ -41,6 +41,7 @@ jobs:
       site: ${{ steps.classify.outputs.site }}
       scan: ${{ steps.classify.outputs.scan }}
       deps: ${{ steps.classify.outputs.deps }}
+      nix: ${{ steps.classify.outputs.nix }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       event_name: ${{ github.event_name }}
@@ -127,6 +128,16 @@ jobs:
     name: OSV scan
     uses: ./.github/workflows/osv-scanner.yml
 
+  # Offline Nix build of the flake outputs (.#web, .#tui, .#desktop). Runs on
+  # both the inputs the build depends on: the `frontend` lane (package-lock.json
+  # — the file an incremental `npm install` prunes platform-optional packages
+  # from — plus the web/ui-tui/apps sources) and the `nix` lane (nix/, flake.nix,
+  # flake.lock). See .github/workflows/nix-build.yml for the full rationale.
+  nix-build:
+    needs: detect
+    if: needs.detect.outputs.frontend == 'true' || needs.detect.outputs.nix == 'true'
+    uses: ./.github/workflows/nix-build.yml
+
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``
@@ -147,6 +158,7 @@ jobs:
       - docker-lint
       - supply-chain
       - osv-scanner
+      - nix-build
       # we don't require docker to pass rn because it's so slow lol
       # - docker
     if: always()

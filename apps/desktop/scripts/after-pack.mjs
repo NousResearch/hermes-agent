@@ -19,11 +19,27 @@
  *   - packager.appInfo.productFilename: the exe basename (e.g. 'Hermes')
  */
 
+import { createRequire } from 'node:module'
 import path from 'node:path'
 
 import { stampExeIdentity } from './set-exe-identity.mjs'
 
+const require = createRequire(import.meta.url)
+const { stageMacPermissionBroker } = require('./stage-mac-permission-broker.cjs')
+
 export default async function afterPack(context) {
+  if (context.electronPlatformName === 'darwin') {
+    try {
+      const result = await stageMacPermissionBroker(context)
+      if (result?.installed) {
+        console.log(`[after-pack] staged HermesMacBroker at ${result.installed}`)
+      }
+    } catch (err) {
+      throw new Error(`macOS permission broker staging failed: ${err.message}`)
+    }
+    return
+  }
+
   if (context.electronPlatformName !== 'win32') {
     return
   }

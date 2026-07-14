@@ -12402,7 +12402,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mac-broker", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
@@ -13164,6 +13164,31 @@ def main():
     # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
+
+
+    # =========================================================================
+    # mac-broker command — local macOS permission broker diagnostics
+    # =========================================================================
+    from hermes_cli.macos_permission_broker import cmd_macos_permission_broker
+
+    mac_broker_parser = subparsers.add_parser(
+        "mac-broker",
+        help="Inspect the local macOS permission broker",
+        description=(
+            "Inspect the Hermes macOS permission broker over its authenticated "
+            "local Unix-socket IPC path. Starts with the safe permission.status route."
+        ),
+    )
+    mac_broker_subparsers = mac_broker_parser.add_subparsers(dest="mac_broker_command")
+    mac_broker_status = mac_broker_subparsers.add_parser(
+        "status",
+        help="Request permission.status from the running macOS broker daemon",
+    )
+    mac_broker_status.add_argument("--socket", default=None, help="Override broker Unix socket path")
+    mac_broker_status.add_argument("--token-file", default=None, help="Override broker token file path")
+    mac_broker_status.add_argument("--timeout", type=float, default=5.0, help="Socket timeout in seconds")
+    mac_broker_status.set_defaults(func=cmd_macos_permission_broker)
+    mac_broker_parser.set_defaults(func=cmd_macos_permission_broker)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)

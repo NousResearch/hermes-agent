@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -28,6 +29,23 @@ import {
   systemPreferences
 } from 'electron'
 import nodePty from 'node-pty'
+
+const require = createRequire(import.meta.url)
+const {
+  brokerExecutableFromProcess,
+  brokerServiceStatus,
+  brokerStatus,
+  openBrokerSettings,
+  registerBrokerLoginItem,
+  unregisterBrokerLoginItem
+}: {
+  brokerExecutableFromProcess: () => string | null
+  brokerServiceStatus: (executable: string | null) => Record<string, unknown>
+  brokerStatus: (executable: string | null) => Record<string, unknown>
+  openBrokerSettings: (executable: string | null, pane: string) => Record<string, unknown>
+  registerBrokerLoginItem: (executable: string | null) => Record<string, unknown>
+  unregisterBrokerLoginItem: (executable: string | null) => Record<string, unknown>
+} = require('./mac-permission-broker-runtime.cjs')
 
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
@@ -7669,6 +7687,37 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
+})
+
+ipcMain.handle('hermes:mac-broker:status', async () => {
+  const executable = brokerExecutableFromProcess()
+  const status = brokerStatus(executable)
+  return { ...status, executable }
+})
+
+ipcMain.handle('hermes:mac-broker:service-status', async () => {
+  const executable = brokerExecutableFromProcess()
+  const status = brokerServiceStatus(executable)
+  return { ...status, executable }
+})
+
+ipcMain.handle('hermes:mac-broker:register', async () => {
+  const executable = brokerExecutableFromProcess()
+  const result = registerBrokerLoginItem(executable)
+  return { ...result, executable }
+})
+
+ipcMain.handle('hermes:mac-broker:unregister', async () => {
+  const executable = brokerExecutableFromProcess()
+  const result = unregisterBrokerLoginItem(executable)
+  return { ...result, executable }
+})
+
+ipcMain.handle('hermes:mac-broker:open-settings', async (_event, pane) => {
+  const executable = brokerExecutableFromProcess()
+  const safePane = typeof pane === 'string' && pane.trim() ? pane.trim() : 'accessibility'
+  const result = openBrokerSettings(executable, safePane)
+  return { ...result, executable, pane: safePane }
 })
 
 ipcMain.handle('hermes:requestMicrophoneAccess', async () => {

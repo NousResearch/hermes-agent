@@ -1760,26 +1760,37 @@ class TestBearerTokenRoutesToConverse:
     AWS_BEARER_TOKEN_BEDROCK. Ref: #28156.
     """
 
-    def test_bearer_token_forces_converse_for_claude(self):
+    def _resolve(self, monkeypatch, *, bearer: bool):
+        import os
+
+        from hermes_cli import runtime_provider as rp
+
+        if bearer:
+            monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token-123")
+        else:
+            monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        assert "AWS_BEARER_TOKEN_BEDROCK" in os.environ or not bearer
+
+        monkeypatch.setattr(
+            rp,
+            "_get_model_config",
+            lambda: {
+                "default": "us.anthropic.claude-sonnet-4-6",
+                "provider": "bedrock",
+            },
+        )
+        monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
+        return rp.resolve_runtime_provider(requested="bedrock")
+
+    def test_bearer_token_forces_converse_for_claude(self, monkeypatch):
         """Claude model + Bearer Token → bedrock_converse, not anthropic_messages."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-
-        env = {
-            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token-123",
-            "AWS_DEFAULT_REGION": "us-east-1",
-        }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
-             patch("hermes_cli.runtime_provider._get_model_config", return_value={
-                 "default": "us.anthropic.claude-sonnet-4-6",
-                 "provider": "bedrock",
-             }), \
-             patch("hermes_cli.runtime_provider.load_config", return_value={"bedrock": {}}), \
-             patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.resolve_aws_auth_env_var", return_value="bearer-token"), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"), \
-             patch("agent.bedrock_adapter.is_anthropic_bedrock_model", return_value=True):
-            runtime = resolve_runtime_provider(requested="bedrock")
-
+        runtime = self._resolve(monkeypatch, bearer=True)
         assert runtime["api_mode"] == "bedrock_converse"
         assert "bedrock_anthropic" not in runtime
+
+    def test_sigv4_claude_still_uses_anthropic_bedrock_sdk(self, monkeypatch):
+        """Without a bearer token, Claude keeps the AnthropicBedrock SDK path."""
+        runtime = self._resolve(monkeypatch, bearer=False)
+        assert runtime["api_mode"] == "anthropic_messages"
+        assert runtime.get("bedrock_anthropic") is True

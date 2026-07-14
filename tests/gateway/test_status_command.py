@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
@@ -472,6 +472,58 @@ async def test_first_run_non_slack_home_channel_onboarding_keeps_direct_command(
     runner.adapters[Platform.TELEGRAM].send.assert_awaited_once()
     onboarding = runner.adapters[Platform.TELEGRAM].send.await_args.args[1]
     assert "Type /sethome" in onboarding
+
+
+@pytest.mark.asyncio
+async def test_first_run_home_channel_onboarding_skipped_when_configured(monkeypatch):
+    """If the home channel is set in gateway config (e.g. via config.yaml),
+    the daily onboarding notice should be skipped even when the env var
+    is missing — e.g. after a restart where dotenv was not reloaded."""
+    import gateway.run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source(Platform.TELEGRAM)),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.TELEGRAM)
+    runner.session_store.load_transcript.return_value = []
+    runner.session_store.has_any_sessions.return_value = False
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "model": "openai/test-model",
+        }
+    )
+
+    # Simulate a home channel configured in config.yaml but NOT in the env.
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="c1",
+        name="Test Chat",
+    )
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    result = await runner._handle_message(_make_event("hello", platform=Platform.TELEGRAM))
+
+    assert result == "ok"
+    # No onboarding notice should be sent because config already has the channel.
+    runner.adapters[Platform.TELEGRAM].send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

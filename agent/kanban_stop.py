@@ -96,7 +96,8 @@ def build_kanban_stop_nudge(
         "1. Finish any remaining deliverable (write the required file(s) now).\n"
         "2. Call `kanban_complete(summary=..., artifacts=[...])` if the work "
         "is done, OR `kanban_block(reason=...)` if you are blocked.\n\n"
-        "Never end a turn with only a promise of future action.]"
+        "Never end a turn with only a promise of future action. Repeated "
+        "protocol violations will block this task and require manual intervention.]"
     )
 
 

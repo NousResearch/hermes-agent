@@ -8,11 +8,18 @@ Covers:
     includes workdir, _format_job exposes it when set
   - scheduler.tick(): partitions workdir jobs off the thread pool, restores
     TERMINAL_CWD in finally, honours the env override during run_job
+  - scheduler.run_job() no_agent path: workdir becomes the script
+    subprocess's cwd WITHOUT mutating the process-global cwd (no bleed into
+    concurrently running parallel-pool jobs)
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
+import threading
+import time
 
 import pytest
 
@@ -390,3 +397,136 @@ class TestRunJobTerminalCwd:
         # And after run_job completes, it's still the sentinel (nothing
         # overwrote or cleared it).
         assert os.environ["TERMINAL_CWD"] == before
+
+
+# ---------------------------------------------------------------------------
+# scheduler.run_job() no_agent path: workdir → subprocess cwd, no process
+# cwd mutation (regression for cross-job cwd bleed between the sequential
+# and parallel pools)
+# ---------------------------------------------------------------------------
+
+
+class TestNoAgentWorkdir:
+    """A no_agent job's workdir must apply to the script subprocess only.
+
+    The old implementation used a process-global ``os.chdir()`` outside
+    ``_terminal_cwd_lock`` — and ``_run_job_script`` hardcoded the subprocess
+    cwd to the script's directory anyway, so the chdir bled the workdir into
+    concurrently running parallel-pool jobs while never actually reaching the
+    script.  The workdir must instead be passed to ``subprocess.run(cwd=...)``.
+    """
+
+    @pytest.fixture()
+    def hermes_home(self, tmp_path, monkeypatch):
+        """Isolate HERMES_HOME so the scripts dir resolves under tmp_path."""
+        home = tmp_path / ".hermes"
+        (home / "scripts").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    @staticmethod
+    def _job(workdir: str) -> dict:
+        return {
+            "id": "no-agent-wd",
+            "name": "no-agent-wd",
+            "no_agent": True,
+            "script": "whereami.py",
+            "workdir": workdir,
+        }
+
+    def test_workdir_is_script_subprocess_cwd(self, hermes_home, tmp_path):
+        """The script actually runs with the configured workdir as its cwd."""
+        from cron.scheduler import run_job
+
+        workdir = tmp_path / "wd"
+        workdir.mkdir()
+        (hermes_home / "scripts" / "whereami.py").write_text(
+            "import os\nprint(os.getcwd())\n"
+        )
+
+        success, _doc, final_response, error = run_job(self._job(str(workdir)))
+
+        assert success is True, error
+        assert os.path.realpath(final_response.strip()) == os.path.realpath(
+            str(workdir)
+        )
+
+    def test_workdir_does_not_mutate_process_cwd(self, hermes_home, tmp_path):
+        """While a workdir job's script runs, the process cwd stays put.
+
+        Reproduces the bleed: with the old os.chdir() implementation, any
+        concurrent parallel-pool job observed the workdir as its cwd for the
+        whole script run.
+        """
+        from cron.scheduler import run_job
+
+        workdir = tmp_path / "wd"
+        workdir.mkdir()
+        marker = workdir / "started.marker"
+        (hermes_home / "scripts" / "whereami.py").write_text(
+            "import pathlib, time\n"
+            f"pathlib.Path({str(marker)!r}).write_text('1')\n"
+            "time.sleep(1.0)\n"
+            "print('done')\n"
+        )
+
+        original_cwd = os.getcwd()
+        observed: dict[str, object] = {}
+
+        def _run():
+            observed["result"] = run_job(self._job(str(workdir)))
+
+        worker = threading.Thread(target=_run, name="no-agent-workdir-test")
+        worker.start()
+        try:
+            deadline = time.time() + 10
+            while not marker.exists() and time.time() < deadline:
+                time.sleep(0.01)
+            assert marker.exists(), "script never started"
+            # The workdir job's script is running right now — a concurrent
+            # job must still see the original process cwd.
+            assert os.getcwd() == original_cwd
+        finally:
+            worker.join(timeout=15)
+
+        assert not worker.is_alive()
+        assert os.getcwd() == original_cwd
+        assert observed["result"][0] is True
+
+    def test_missing_workdir_warns_and_falls_back_to_script_dir(
+        self, hermes_home, tmp_path, caplog
+    ):
+        """A workdir that vanished on disk is dropped with a warning, same as
+        the agent path — the script runs in its own directory."""
+        from cron.scheduler import run_job
+
+        (hermes_home / "scripts" / "whereami.py").write_text(
+            "import os\nprint(os.getcwd())\n"
+        )
+        missing = str(tmp_path / "gone")
+
+        with caplog.at_level(logging.WARNING):
+            success, _doc, final_response, error = run_job(self._job(missing))
+
+        assert success is True, error
+        assert "no longer exists" in caplog.text
+        assert os.path.realpath(final_response.strip()) == os.path.realpath(
+            str(hermes_home / "scripts")
+        )
+
+    def test_no_workdir_keeps_script_dir_cwd(self, hermes_home):
+        """Without a workdir the script still runs in its own directory."""
+        from cron.scheduler import run_job
+
+        (hermes_home / "scripts" / "whereami.py").write_text(
+            "import os\nprint(os.getcwd())\n"
+        )
+        job = self._job("")
+        del job["workdir"]
+
+        success, _doc, final_response, error = run_job(job)
+
+        assert success is True, error
+        assert os.path.realpath(final_response.strip()) == os.path.realpath(
+            str(hermes_home / "scripts")
+        )

@@ -2296,8 +2296,7 @@ def decompose_task_endpoint(
 
 
 # ---------------------------------------------------------------------------
-# Orchestration settings (kanban.orchestrator_profile / default_assignee /
-# auto_decompose) — surfaced to the dashboard's settings panel
+# Orchestration settings — surfaced to the dashboard's settings panel
 # ---------------------------------------------------------------------------
 
 class OrchestrationSettingsBody(BaseModel):
@@ -2305,6 +2304,7 @@ class OrchestrationSettingsBody(BaseModel):
     default_assignee: Optional[str] = None
     auto_decompose: Optional[bool] = None
     auto_promote_children: Optional[bool] = None
+    inherit_notify_subscriptions_to_children: Optional[bool] = None
 
 
 @router.get("/orchestration")
@@ -2321,6 +2321,9 @@ def get_orchestration_settings():
     explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
     auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
     auto_promote_children = bool(kanban_cfg.get("auto_promote_children", True))
+    inherit_notify_subscriptions = bool(
+        kanban_cfg.get("inherit_notify_subscriptions_to_children", False)
+    )
 
     # Resolve fallbacks the same way the decomposer does.
     resolved_orch = explicit_orch
@@ -2344,6 +2347,7 @@ def get_orchestration_settings():
         "default_assignee": explicit_default,
         "auto_decompose": auto_decompose,
         "auto_promote_children": auto_promote_children,
+        "inherit_notify_subscriptions_to_children": inherit_notify_subscriptions,
         "resolved_orchestrator_profile": resolved_orch,
         "resolved_default_assignee": resolved_default,
         "active_profile": active_default,
@@ -2411,6 +2415,11 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 
     if payload.auto_promote_children is not None:
         kanban_section["auto_promote_children"] = bool(payload.auto_promote_children)
+
+    if payload.inherit_notify_subscriptions_to_children is not None:
+        kanban_section["inherit_notify_subscriptions_to_children"] = bool(
+            payload.inherit_notify_subscriptions_to_children
+        )
 
     try:
         save_config(cfg)

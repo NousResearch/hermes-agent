@@ -524,7 +524,10 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
+| `inherit_notify_subscriptions_to_children` | `false` | Copy the root task's notification subscriptions to every child created by decomposition. Each child can then send its own completion or blocked notification, so enable this only when you want per-child notification fan-out. |
 | `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
+
+`inherit_notify_subscriptions_to_children` is off by default, so existing installations continue to notify only through subscriptions already attached to the root task. You can enable it in the expanded **Orchestration settings** panel or in `config.yaml` when the originating chat should receive a separate notification from each decomposed child.
 
 And the two auxiliary LLM slots:
 
@@ -576,8 +579,8 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `GET` | `/profiles` | List installed profiles with their descriptions (consumed by the dashboard's profile-description editor and the orchestrator picker). |
 | `PATCH` | `/profiles/:name` | Set or clear a profile's description (user-authored — `description_auto: false`). Returns `{ok, profile, description}`. |
 | `POST` | `/profiles/:name/describe-auto` | Generate a description for a profile via `auxiliary.profile_describer`. Persists with `description_auto: true` so the dashboard can surface a "review" badge. |
-| `GET` | `/orchestration` | Read the kanban orchestration settings (`orchestrator_profile`, `default_assignee`, `auto_decompose`) plus the *resolved* effective values after fallbacks. |
-| `PUT` | `/orchestration` | Update one or more of the three orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. |
+| `GET` | `/orchestration` | Read the kanban orchestration settings, including decomposition and child-notification flags, plus the *resolved* effective profile values after fallbacks. |
+| `PUT` | `/orchestration` | Update one or more orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. |
 | `POST` | `/links` | Add a dependency (`parent_id` → `child_id`) |
 | `DELETE` | `/links?parent_id=…&child_id=…` | Remove a dependency |
 | `POST` | `/dispatch?max=…&dry_run=…` | Nudge the dispatcher — skip the 60 s wait |

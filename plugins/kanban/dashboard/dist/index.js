@@ -1528,8 +1528,9 @@
   // ---------------------------------------------------------------------
   // OrchestrationPanel — collapsible settings panel for the kanban
   // orchestrator (orchestrator profile picker, default assignee picker,
-  // auto-decompose toggle, plus per-profile description editing with
-  // auto-generate). Backed by /orchestration + /profiles endpoints.
+  // decomposition and child-notification toggles, plus per-profile
+  // description editing with auto-generate). Backed by /orchestration +
+  // /profiles endpoints.
   // ---------------------------------------------------------------------
 
   function OrchestrationPanel() {
@@ -1682,7 +1683,7 @@
           className: msg.ok ? "hermes-kanban-msg-ok" : "hermes-kanban-msg-err",
         }, msg.text) : null,
 
-        settings ? h("div", { className: "grid gap-3 sm:grid-cols-3" },
+        settings ? h("div", { className: "grid gap-3 sm:grid-cols-2 lg:grid-cols-4" },
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestrator profile"),
@@ -1733,6 +1734,21 @@
               settings.auto_decompose
                 ? "The dispatcher decomposes new triage tasks automatically."
                 : "Triage tasks stay in triage until you click ⚗ Decompose."),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs text-muted-foreground" },
+              "Child notifications"),
+            h("label", { className: "flex items-center gap-2 text-xs min-h-8" },
+              h(Checkbox, {
+                checked: !!settings.inherit_notify_subscriptions_to_children,
+                onCheckedChange: function (checked) {
+                  saveSettings({ inherit_notify_subscriptions_to_children: checked === true });
+                },
+              }),
+              "Notify for each decomposed child",
+            ),
+            h("div", { className: "text-[10px] text-muted-foreground" },
+              "Copies the root task's subscriptions to every child. Each child can send its own completion or blocked notification."),
           ),
         ) : h("div", { className: "text-xs text-muted-foreground" },
           "Loading…"),

@@ -211,6 +211,45 @@ def test_dashboard_workspace_picker_explains_persistence_contract():
     )
 
 
+def test_orchestration_notification_inheritance_defaults_off_and_persists(client):
+    initial = client.get("/api/plugins/kanban/orchestration")
+
+    assert initial.status_code == 200
+    assert initial.json()["inherit_notify_subscriptions_to_children"] is False
+
+    enabled = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={"inherit_notify_subscriptions_to_children": True},
+    )
+
+    assert enabled.status_code == 200
+    assert enabled.json()["inherit_notify_subscriptions_to_children"] is True
+
+    partial_update = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={"auto_decompose": False},
+    )
+
+    assert partial_update.status_code == 200
+    assert partial_update.json()["inherit_notify_subscriptions_to_children"] is True
+
+
+def test_dashboard_exposes_child_notification_inheritance_setting():
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "settings.inherit_notify_subscriptions_to_children" in bundle
+    assert "inherit_notify_subscriptions_to_children: checked === true" in bundle
+    assert "Notify for each decomposed child" in bundle
+    assert "Each child can send its own completion or blocked notification." in bundle
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 

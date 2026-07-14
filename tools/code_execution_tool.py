@@ -1342,38 +1342,16 @@ def execute_code(
         _child_cwd = _resolve_child_cwd(_mode, tmpdir)
         _script_path = os.path.join(tmpdir, "script.py")
 
-        # Detect sudo usage — reuse terminal tool's cached password so the
-        # user doesn't have to type it again.  Falls back gracefully if no
-        # password is cached (a clear error is returned to the agent).
-        _sudo_stdin = subprocess.DEVNULL
-        _sudo_pw = ""
-        if "sudo" in code:
-            try:
-                from tools.terminal_tool import _get_cached_sudo_password
-                _sudo_pw = _get_cached_sudo_password()
-                if _sudo_pw:
-                    _sudo_stdin = subprocess.PIPE
-            except Exception:
-                pass
-
         proc = subprocess.Popen(
             [_child_python, _script_path],
             cwd=_child_cwd,
             env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            stdin=_sudo_stdin,
+            stdin=subprocess.DEVNULL,
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
-
-        # Feed sudo password if we opened a pipe for it
-        if _sudo_pw and _sudo_stdin is subprocess.PIPE:
-            try:
-                proc.stdin.write(_sudo_pw.encode() + b"\n")
-                proc.stdin.flush()
-            except Exception:
-                pass
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
         deadline = time.monotonic() + timeout

@@ -160,6 +160,28 @@ def test_cli_and_gateway_env_maps_agree():
     )
 
 
+def test_wsl_and_per_backend_cwds_are_bridged_everywhere():
+    """WSL settings must reach CLI, gateway, and ``hermes config set``."""
+    required = {
+        "wsl_distro",
+        "wsl_cwd",
+        "local_cwd",
+        "docker_cwd",
+        "ssh_cwd",
+        "singularity_cwd",
+        "modal_cwd",
+        "daytona_cwd",
+    }
+
+    for bridge_name, bridge_keys in (
+        ("cli.py env_mappings", _cli_env_map_keys()),
+        ("gateway/run.py _terminal_env_map", _gateway_env_map_keys()),
+        ("TERMINAL_CONFIG_ENV_MAP", _save_config_env_sync_keys()),
+    ):
+        missing = required - bridge_keys
+        assert not missing, f"{bridge_name} is missing {sorted(missing)}"
+
+
 def test_save_config_set_supports_critical_bridged_keys():
     """``hermes config set terminal.X true`` must propagate to .env for
     known-critical keys.  This used to be an all-keys invariant but the SSH

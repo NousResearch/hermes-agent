@@ -5593,7 +5593,10 @@ def _claim_or_reuse_live(
     resume lock, or — if a concurrent resume already won — release ``lease`` and
     return the winner for the caller to reuse."""
     with _session_resume_lock:
-        live = _find_live_session_by_key(session_key)
+        live = _find_live_session_by_key(
+            session_key,
+            profile_home=record.get("profile_home"),
+        )
         if live is not None:
             if lease is not None:
                 lease.release()
@@ -5719,7 +5722,7 @@ def _session_resume(rid, params: dict, profile_home: Path | None) -> dict:
 
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
-        live = _find_live_session_by_key(target)
+        live = _find_live_session_by_key(target, profile_home=profile_home)
         if live is not None:
             return _ok(rid, _reuse_live_payload(*live))
 
@@ -5927,7 +5930,7 @@ def _session_resume(rid, params: dict, profile_home: Path | None) -> dict:
     # live session while we were building. Re-check under the lock; if it won,
     # discard our just-built agent and reuse theirs (no worker/poller wired yet).
     with _session_resume_lock:
-        live = _find_live_session_by_key(target)
+        live = _find_live_session_by_key(target, profile_home=profile_home)
         if live is not None:
             try:
                 if hasattr(agent, "close"):
@@ -6100,9 +6103,36 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     )
 
 
-def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
+_ANY_PROFILE_HOME = object()
+
+
+def _profile_home_identity(profile_home: object) -> str | None:
+    """Return a stable comparison key for a live session's profile scope."""
+    if profile_home is None:
+        return None
+    return os.path.normcase(
+        os.path.abspath(os.path.expanduser(os.fspath(profile_home)))
+    )
+
+
+def _find_live_session_by_key(
+    session_key: str,
+    *,
+    profile_home: object = _ANY_PROFILE_HOME,
+) -> tuple[str, dict] | None:
+    requested_profile_home = (
+        _profile_home_identity(profile_home)
+        if profile_home is not _ANY_PROFILE_HOME
+        else _ANY_PROFILE_HOME
+    )
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
+            continue
+        if (
+            requested_profile_home is not _ANY_PROFILE_HOME
+            and _profile_home_identity(session.get("profile_home"))
+            != requested_profile_home
+        ):
             continue
         if _session_lookup_key(session, fallback=sid) == session_key:
             return sid, session

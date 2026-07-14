@@ -7156,7 +7156,8 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with patch(
-            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+            "hermes_cli.browser_connect.launch_chrome_debug",
+            return_value=ChromeDebugLaunch(launched=True),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -9117,17 +9118,75 @@ def test_session_resume_echoes_effective_profile(monkeypatch):
 
 
 def test_gateway_ready_advertises_session_profile_capability():
-    """Both gateway.ready emitters advertise the session_profiles capability.
-
-    Clients (the browser extension's remote dashboard mode) refuse to send a
-    profile-scoped session.create/session.resume unless this flag arrives on
-    gateway.ready, so a legacy gateway never receives a scoped RPC it would
-    silently resolve to the launch profile.
-    """
-    import inspect
-
-    from tui_gateway import entry, ws
-
+    """The optional profile-session contract has one canonical capability."""
     assert server.GATEWAY_CAPABILITIES["session_profiles"] is True
-    assert "GATEWAY_CAPABILITIES" in inspect.getsource(ws)
-    assert "GATEWAY_CAPABILITIES" in inspect.getsource(entry)
+
+
+def test_session_resume_does_not_reuse_same_key_from_another_profile(
+    monkeypatch, tmp_path
+):
+    """Durable ids are profile-local and cannot identify a live session alone."""
+    import hermes_state
+    from hermes_cli import profiles as profiles_mod
+
+    target = "same-durable-id"
+    profile_home = tmp_path / "profiles" / "research"
+    profile_home.mkdir(parents=True)
+
+    class FakeDB:
+        def __init__(self, db_path=None):
+            assert db_path == profile_home / "state.db"
+
+        def get_session(self, session_id):
+            assert session_id == target
+            return {"id": target, "cwd": str(tmp_path)}
+
+        def resolve_resume_session_id(self, session_id):
+            return session_id
+
+        def reopen_session(self, session_id):
+            assert session_id == target
+
+        def get_messages_as_conversation(self, session_id, include_ancestors=False):
+            assert session_id == target
+            return [{"role": "user", "content": "research profile history"}]
+
+    launch_sid = "launch-live-id"
+    launch_session = server._deferred_session_record(
+        target,
+        cols=80,
+        cwd=str(tmp_path),
+        history=[{"role": "user", "content": "launch profile history"}],
+        lease=None,
+        profile_home=None,
+    )
+    server._sessions[launch_sid] = launch_session
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda _name: profile_home)
+    monkeypatch.setattr(hermes_state, "SessionDB", FakeDB)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.resume",
+                "params": {"session_id": target, "profile": "research"},
+            }
+        )
+        result = resp["result"]
+        scoped_sid = result["session_id"]
+
+        assert scoped_sid != launch_sid
+        assert result["profile"] == "research"
+        assert result["messages"] == [
+            {"role": "user", "text": "research profile history"}
+        ]
+        assert server._sessions[scoped_sid]["profile_home"] == str(profile_home)
+        assert server._sessions[launch_sid] is launch_session
+    finally:
+        for sid, session in list(server._sessions.items()):
+            if session is launch_session or session.get("session_key") == target:
+                server._sessions.pop(sid, None)

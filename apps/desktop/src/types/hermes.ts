@@ -197,6 +197,7 @@ export interface MessagingPlatformTestResponse {
 }
 
 export interface GatewayReadyPayload {
+  capabilities?: Record<string, boolean>
   skin?: unknown
 }
 
@@ -312,6 +313,7 @@ export interface SessionCreateResponse {
   info?: SessionRuntimeInfo
   message_count?: number
   messages?: SessionMessage[]
+  profile?: string
   session_id: string
   stored_session_id?: string
 }
@@ -389,6 +391,7 @@ export interface SessionResumeResponse {
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
+  profile?: string
   resumed: string
   session_id: string
 }

@@ -8599,6 +8599,35 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
         server._sessions.clear()
 
 
+def test_reap_idle_sessions_calls_periodic_trim(monkeypatch):
+    """The idle reaper must call trim_memory every scan, even with no victims."""
+    trim_calls = []
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(server, "_close_session_by_id", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
+
+    # Mock trim_memory at the import site inside _reap_idle_sessions.
+    import hermes_cli.mem_trim as mem_trim
+    real_trim = mem_trim.trim_memory
+    monkeypatch.setattr(
+        mem_trim, "trim_memory",
+        lambda **kw: trim_calls.append(kw.get("reason", "")) or True,
+    )
+    # Patch the delayed import path: the function does `from hermes_cli.mem_trim import trim_memory`.
+    import sys
+    orig_module = sys.modules.get("hermes_cli.mem_trim")
+    if orig_module:
+        monkeypatch.setattr(orig_module, "trim_memory", lambda **kw: trim_calls.append(kw.get("reason", "")) or True)
+
+    server._sessions.clear()
+    try:
+        server._reap_idle_sessions()
+        assert len(trim_calls) == 1
+        assert trim_calls[0] == "idle reaper periodic trim"
+    finally:
+        server._sessions.clear()
+
+
 def test_session_create_records_ui_model_as_session_override(monkeypatch):
     """The desktop composer owns its model as plain UI state and ships it on
     session.create. The gateway must record it as a PER-SESSION override (built
@@ -9001,3 +9030,70 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
+    """The trim boundary must not retain the just-pruned history snapshots."""
+    observed = {}
+    cleanup_order = []
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": "reply",
+                "messages": [{"role": "assistant", "content": "reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            assert self._target is not None
+            self._target()
+
+    def _inspect_trim_frame(**_kwargs):
+        import inspect
+
+        cleanup_order.append("trim")
+        frame = inspect.currentframe()
+        assert frame is not None and frame.f_back is not None
+        caller_locals = frame.f_back.f_locals
+        observed["history"] = caller_locals.get("history")
+        observed["run_kwargs"] = caller_locals.get("run_kwargs")
+
+    session = _session(agent=_Agent())
+    session["profile_home"] = "/tmp/test-profile"
+    session["history"] = [
+        {"role": "tool", "tool_call_id": "old", "content": "x" * 20_000}
+    ]
+    server._sessions["sid_trim"] = session
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: object())
+        monkeypatch.setattr(
+            server,
+            "reset_hermes_home_override",
+            lambda _token: cleanup_order.append("reset_home"),
+        )
+        monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _inspect_trim_frame)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid_trim", "text": "hi"},
+            }
+        )
+
+        assert resp is not None and resp.get("result")
+        assert not observed["history"]
+        assert not observed["run_kwargs"]
+        assert cleanup_order == ["trim", "reset_home"]
+    finally:
+        server._sessions.pop("sid_trim", None)

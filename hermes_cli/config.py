@@ -2184,6 +2184,12 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Return freed glibc allocator pages after long-running agent/TUI
+        # cleanup boundaries. Unsupported platforms are safe no-ops.
+        "memory_trim": {
+            "enabled": True,
+            "cooldown_seconds": 60.0,
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

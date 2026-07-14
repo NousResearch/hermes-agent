@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from agent.conversation_loop import _inject_steer_into_api_message_copy
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 from run_agent import AIAgent
 
@@ -23,6 +24,7 @@ def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent._pending_steer = None
     agent._pending_steer_lock = threading.Lock()
+    setattr(agent, "_pending_steer_api_injections", [])
     return agent
 
 
@@ -73,7 +75,7 @@ class TestSteerDrain:
 
 
 class TestSteerInjection:
-    def test_appends_to_last_tool_result(self):
+    def test_queues_last_tool_result_for_api_copy_injection(self):
         agent = _bare_agent()
         agent.steer("please also check auth.log")
         messages = [
@@ -83,11 +85,17 @@ class TestSteerInjection:
             {"role": "tool", "content": "ls output B", "tool_call_id": "b"},
         ]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=2)
-        # The LAST tool result is modified; earlier ones are untouched.
+        # Canonical tool results are untouched.
         assert messages[2]["content"] == "ls output A"
-        assert "ls output B" in messages[3]["content"]
-        assert STEER_MARKER_OPEN in messages[3]["content"]
-        assert "please also check auth.log" in messages[3]["content"]
+        assert messages[3]["content"] == "ls output B"
+        # The LAST tool result is queued for API-only injection.
+        assert getattr(agent, "_pending_steer_api_injections") == [
+            (messages[3], "please also check auth.log")
+        ]
+        api_msg = messages[3].copy()
+        _inject_steer_into_api_message_copy(api_msg, "please also check auth.log")
+        assert STEER_MARKER_OPEN in api_msg["content"]
+        assert "please also check auth.log" in api_msg["content"]
         # And pending_steer is consumed.
         assert agent._pending_steer is None
 
@@ -99,6 +107,7 @@ class TestSteerInjection:
         ]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         assert messages[-1]["content"] == "output"  # unchanged
+        assert getattr(agent, "_pending_steer_api_injections") == []
 
     def test_no_op_when_num_tool_msgs_zero(self):
         agent = _bare_agent()
@@ -112,14 +121,20 @@ class TestSteerInjection:
         """The injection marker must attribute the appended text to the user
         via the explicit out-of-band marker (which the system prompt tells the
         model to trust) — otherwise the model reads it as untrusted tool output
-        and refuses it as suspected prompt injection.  Cache-safe: it only
-        rewrites existing tool content, never the message-role sequence.
+        and refuses it as suspected prompt injection. Cache-safe: it only
+        rewrites the API request copy, never the stored message-role sequence.
         """
         agent = _bare_agent()
         agent.steer("stop after next step")
         messages = [{"role": "tool", "content": "x", "tool_call_id": "1"}]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
-        content = messages[-1]["content"]
+        assert messages[-1]["content"] == "x"
+        assert getattr(agent, "_pending_steer_api_injections") == [
+            (messages[-1], "stop after next step")
+        ]
+        api_msg = messages[-1].copy()
+        _inject_steer_into_api_message_copy(api_msg, "stop after next step")
+        content = api_msg["content"]
         assert STEER_MARKER_OPEN in content
         assert "stop after next step" in content
 
@@ -133,7 +148,10 @@ class TestSteerInjection:
             {"role": "tool", "content": list(original_blocks), "tool_call_id": "1"}
         ]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
-        new_content = messages[-1]["content"]
+        assert messages[-1]["content"] == original_blocks
+        api_msg = messages[-1].copy()
+        _inject_steer_into_api_message_copy(api_msg, "extra note")
+        new_content = api_msg["content"]
         assert isinstance(new_content, list)
         assert len(new_content) == 2
         assert new_content[0] == {"type": "text", "text": "existing output"}
@@ -157,6 +175,7 @@ class TestSteerInjection:
         assert messages[-1]["content"] == "y"
         # And the steer is back in pending so the fallback can grab it
         assert agent._pending_steer == "ping"
+        assert getattr(agent, "_pending_steer_api_injections") == []
 
 
 class TestSteerThreadSafety:
@@ -208,10 +227,11 @@ class TestPreApiCallSteerDrain:
     fix for the scenario where /steer sent during model thinking only lands
     after the agent is completely done."""
 
-    def test_pre_api_drain_injects_into_last_tool_result(self):
+    def test_pre_api_drain_injects_into_api_copy_without_mutating_tool_result(self):
         """If a steer is pending when the main loop starts building
-        api_messages, it should be injected into the last tool result
-        in the messages list."""
+        api_messages, it should be injected into the API request copy while
+        the stored tool result remains byte-identical to the original output.
+        """
         agent = _bare_agent()
         # Simulate messages after a tool batch completed
         messages = [
@@ -221,18 +241,29 @@ class TestPreApiCallSteerDrain:
             ]},
             {"role": "tool", "content": "output here", "tool_call_id": "tc1"},
         ]
+        original_tool_content = messages[-1]["content"]
         # Steer arrives during API call (set after tool execution)
         agent.steer("focus on error handling")
         # Simulate what the pre-API-call drain does:
         _pre_api_steer = agent._drain_pending_steer()
         assert _pre_api_steer == "focus on error handling"
-        # Inject into last tool msg (mirrors the new code in run_conversation)
+        target_idx = None
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += format_steer_marker(_pre_api_steer)
+                target_idx = _si
                 break
-        assert STEER_MARKER_OPEN in messages[-1]["content"]
-        assert "focus on error handling" in messages[-1]["content"]
+        assert target_idx == 2
+
+        api_messages = []
+        for idx, msg in enumerate(messages):
+            api_msg = msg.copy()
+            if idx == target_idx:
+                _inject_steer_into_api_message_copy(api_msg, _pre_api_steer)
+            api_messages.append(api_msg)
+
+        assert messages[-1]["content"] == original_tool_content
+        assert STEER_MARKER_OPEN in api_messages[-1]["content"]
+        assert "focus on error handling" in api_messages[-1]["content"]
         assert agent._pending_steer is None
 
     def test_pre_api_drain_restashes_when_no_tool_message(self):
@@ -269,13 +300,19 @@ class TestPreApiCallSteerDrain:
             {"role": "tool", "content": "search results", "tool_call_id": "tc1"},
         ]
         agent.steer("change approach")
+        original_tool_content = messages[2]["content"]
         _pre_api_steer = agent._drain_pending_steer()
         assert _pre_api_steer is not None
+        target_idx = None
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += format_steer_marker(_pre_api_steer)
+                target_idx = _si
                 break
-        assert "change approach" in messages[2]["content"]
+        assert target_idx == 2
+        api_msg = messages[target_idx].copy()
+        _inject_steer_into_api_message_copy(api_msg, _pre_api_steer)
+        assert messages[2]["content"] == original_tool_content
+        assert "change approach" in api_msg["content"]
 
 
 class TestSteerMarkerContract:

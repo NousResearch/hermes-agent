@@ -2799,15 +2799,17 @@ class AIAgent:
         if _steer_lock is not None:
             with _steer_lock:
                 self._pending_steer = None
+        self._pending_steer_api_injections = []
 
     def steer(self, text: str) -> bool:
         """
-        Inject a user message into the next tool result without interrupting.
+        Inject a user message into the next API request without interrupting.
 
         Unlike interrupt(), this does NOT stop the current tool call. The
-        text is stashed and the agent loop appends it to the LAST tool
-        result's content once the current tool batch finishes. The model
-        sees the steer as part of the tool output on its next iteration.
+        text is stashed and the agent loop associates it with the LAST tool
+        result once the current tool batch finishes. The model sees the
+        steer in the next API request's tool-message copy; the stored tool
+        result remains unchanged.
 
         Thread-safe: callable from gateway/CLI/TUI threads. Multiple calls
         before the drain point concatenate with newlines.

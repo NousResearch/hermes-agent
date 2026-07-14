@@ -1011,9 +1011,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
-    # Append any pending user steer text to the last tool result so the
-    # agent sees it on its next iteration. Runs AFTER budget enforcement
-    # so the steer marker is never truncated. See steer() for details.
+    # Queue any pending user steer text against the last tool result so
+    # the next API request can inject it into a per-call message copy.
+    # Runs AFTER budget enforcement so the steer marker is never truncated.
+    # See steer() for details.
     if num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
 

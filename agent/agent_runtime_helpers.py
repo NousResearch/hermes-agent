@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
-from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
@@ -3134,13 +3133,14 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
 
 
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
-    """Append any pending /steer text to the last tool result in this turn.
+    """Queue any pending /steer text for the next API request's tool copy.
 
     Called at the end of a tool-call batch, before the next API call.
-    The steer is appended to the last ``role:"tool"`` message's content
-    with a clear marker so the model understands it came from the user
-    and NOT from the tool itself. Role alternation is preserved —
-    nothing new is inserted, we only modify existing content.
+    The steer is associated with the last ``role:"tool"`` message so
+    ``conversation_loop`` can append the marker to that message's per-call
+    ``api_messages`` copy. The canonical tool result remains byte-identical
+    to what the tool returned, preserving transcript integrity and prompt
+    cache stability on later turns.
 
     Args:
         messages: The running messages list.
@@ -3176,22 +3176,13 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             existing = getattr(agent, "_pending_steer", None)
             agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
         return
-    marker = format_steer_marker(steer_text)
-    existing_content = messages[target_idx].get("content", "")
-    if not isinstance(existing_content, str):
-        # Anthropic multimodal content blocks — preserve them and append
-        # a text block at the end.
-        try:
-            blocks = list(existing_content) if existing_content else []
-            blocks.append({"type": "text", "text": marker.lstrip()})
-            messages[target_idx]["content"] = blocks
-        except Exception:
-            # Fall back to string replacement if content shape is unexpected.
-            messages[target_idx]["content"] = f"{existing_content}{marker}"
-    else:
-        messages[target_idx]["content"] = existing_content + marker
+    pending_injections = getattr(agent, "_pending_steer_api_injections", None)
+    if pending_injections is None:
+        pending_injections = []
+        agent._pending_steer_api_injections = pending_injections
+    pending_injections.append((messages[target_idx], steer_text))
     _ra().logger.info(
-        "Delivered /steer to agent after tool batch (%d chars): %s",
+        "Queued /steer for next API request after tool batch (%d chars): %s",
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )

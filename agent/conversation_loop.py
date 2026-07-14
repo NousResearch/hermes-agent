@@ -152,6 +152,42 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     )
 
 
+def _restash_pending_steer(agent: Any, steer_text: str) -> None:
+    """Put drained /steer text back so a later tool/API path can consume it."""
+    _lock = getattr(agent, "_pending_steer_lock", None)
+    if _lock is not None:
+        with _lock:
+            if agent._pending_steer:
+                agent._pending_steer = agent._pending_steer + "\n" + steer_text
+            else:
+                agent._pending_steer = steer_text
+    else:
+        existing = getattr(agent, "_pending_steer", None)
+        agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+
+
+def _inject_steer_into_api_message_copy(api_msg: Dict[str, Any], steer_text: str) -> None:
+    """Append a /steer marker to an API-only message copy.
+
+    The caller passes the shallow-copied ``api_msg`` built for this provider
+    request, never the canonical ``messages`` entry that gets persisted.
+    """
+    from agent.prompt_builder import format_steer_marker
+
+    marker = format_steer_marker(steer_text)
+    existing = api_msg.get("content", "")
+    if isinstance(existing, str):
+        api_msg["content"] = existing + marker
+    else:
+        # Multimodal content blocks — append text block.
+        try:
+            blocks = list(existing) if existing else []
+            blocks.append({"type": "text", "text": marker})
+            api_msg["content"] = blocks
+        except Exception:
+            pass
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -709,48 +745,33 @@ def run_conversation(
         # which may never come if the model returns a final response.
         #
         # We scan backwards for the last tool-role message in the messages
-        # list.  If found, the steer is appended there.  If not (first
+        # list.  If found, the steer is appended later to that message's
+        # per-call api_messages copy.  If not (first
         # iteration, no tools yet), the steer stays pending for the next
         # tool batch — injecting into a user message would break role
         # alternation, and there's no tool output to piggyback on.
+        _pending_api_steer_injections = list(
+            getattr(agent, "_pending_steer_api_injections", []) or []
+        )
+        if _pending_api_steer_injections:
+            agent._pending_steer_api_injections = []
+
         _pre_api_steer = agent._drain_pending_steer()
         if _pre_api_steer:
-            _injected = False
+            _pre_api_steer_target_msg = None
             for _si in range(len(messages) - 1, -1, -1):
                 _sm = messages[_si]
                 if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                    from agent.prompt_builder import format_steer_marker
-                    marker = format_steer_marker(_pre_api_steer)
-                    existing = _sm.get("content", "")
-                    if isinstance(existing, str):
-                        _sm["content"] = existing + marker
-                    else:
-                        # Multimodal content blocks — append text block
-                        try:
-                            blocks = list(existing) if existing else []
-                            blocks.append({"type": "text", "text": marker})
-                            _sm["content"] = blocks
-                        except Exception:
-                            pass
-                    _injected = True
-                    logger.debug(
-                        "Pre-API-call steer drain: injected into tool msg at index %d",
-                        _si,
-                    )
+                    _pre_api_steer_target_msg = _sm
                     break
-            if not _injected:
+            if _pre_api_steer_target_msg is None:
                 # No tool message to inject into — put it back so
                 # the post-tool-execution drain picks it up later.
-                _lock = getattr(agent, "_pending_steer_lock", None)
-                if _lock is not None:
-                    with _lock:
-                        if agent._pending_steer:
-                            agent._pending_steer = agent._pending_steer + "\n" + _pre_api_steer
-                        else:
-                            agent._pending_steer = _pre_api_steer
-                else:
-                    existing = getattr(agent, "_pending_steer", None)
-                    agent._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
+                _restash_pending_steer(agent, _pre_api_steer)
+            else:
+                _pending_api_steer_injections.append(
+                    (_pre_api_steer_target_msg, _pre_api_steer)
+                )
 
         # Prepare messages for API call
         # If we have an ephemeral system prompt, prepend it to the messages
@@ -790,8 +811,20 @@ def run_conversation(
             )
 
         api_messages = []
+        _injected_api_steer_indices = set()
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
+
+            for _steer_idx, (_target_msg, _steer_text) in enumerate(
+                _pending_api_steer_injections
+            ):
+                if msg is _target_msg:
+                    _inject_steer_into_api_message_copy(api_msg, _steer_text)
+                    _injected_api_steer_indices.add(_steer_idx)
+                    logger.debug(
+                        "Pre-API-call steer drain: injected into API tool msg copy at index %d",
+                        idx,
+                    )
 
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
@@ -833,6 +866,13 @@ def run_conversation(
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)
+
+        if len(_injected_api_steer_indices) < len(_pending_api_steer_injections):
+            for _steer_idx, (_target_msg, _steer_text) in enumerate(
+                _pending_api_steer_injections
+            ):
+                if _steer_idx not in _injected_api_steer_indices:
+                    _restash_pending_steer(agent, _steer_text)
 
         # Build the final system message: cached prompt + ephemeral system prompt.
         # Ephemeral additions are API-call-time only (not persisted to session DB).

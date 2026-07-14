@@ -5858,6 +5858,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         platform_str,
                     )
                     continue
+                if (
+                    platform_cfg is not None
+                    and not platform_cfg.gateway_restart_notification_active_sessions
+                ):
+                    logger.info(
+                        "Shutdown notification suppressed for active session: "
+                        "%s has gateway_restart_notification_active_sessions=false",
+                        platform_str,
+                    )
+                    continue
 
                 reply_to_message_id = getattr(source, "message_id", None) if source is not None else None
                 if reply_to_message_id is None and restart_source is not None:
@@ -5898,6 +5908,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug(
                     "Failed to send shutdown notification to %s:%s: %s",
                     platform_str, chat_id, e,
+                )
+
+        # Optional dedicated lifecycle target. This runs before restart/home
+        # early returns so operator profiles can receive one reliable alert.
+        for platform, adapter in list(self.adapters.items()):
+            platform_cfg = self.config.platforms.get(platform)
+            if platform_cfg is None or not platform_cfg.gateway_restart_notification:
+                continue
+            target = platform_cfg.gateway_restart_notification_target
+            if target is None or not target.chat_id:
+                continue
+
+            dedup_key = (
+                platform.value,
+                str(target.chat_id),
+                str(target.thread_id) if target.thread_id else None,
+            )
+            if dedup_key in notified:
+                continue
+
+            try:
+                metadata = self._thread_metadata_for_target(
+                    platform,
+                    target.chat_id,
+                    target.thread_id,
+                    adapter=adapter,
+                )
+                if metadata:
+                    result = await adapter.send(str(target.chat_id), msg, metadata=metadata)
+                else:
+                    result = await adapter.send(str(target.chat_id), msg)
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.debug(
+                        "Failed to send shutdown notification to dedicated target %s:%s: %s",
+                        platform.value,
+                        target.chat_id,
+                        getattr(result, "error", "send returned success=False"),
+                    )
+                    continue
+                notified.add(dedup_key)
+                logger.info(
+                    "Sent shutdown notification to dedicated target %s:%s thread=%s",
+                    platform.value,
+                    target.chat_id,
+                    target.thread_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to send shutdown notification to dedicated target %s:%s: %s",
+                    platform.value,
+                    target.chat_id,
+                    e,
                 )
 
         if self._restart_requested and restart_source is not None:
@@ -5944,6 +6006,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
+                    platform.value,
+                )
+                continue
+            if (
+                platform_cfg is not None
+                and not platform_cfg.gateway_restart_notification_home_channel
+            ):
+                logger.info(
+                    "Shutdown notification suppressed for home channel: "
+                    "%s has gateway_restart_notification_home_channel=false",
                     platform.value,
                 )
                 continue
@@ -9787,6 +9859,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        if command and canonical and is_gateway_known_command(canonical):
+            _telegram_redirect_applied = False
+            _telegram_redirect_target = None
+            try:
+                from gateway.telegram_topology import operator_target_for_command
+
+                target = operator_target_for_command(source)
+                if target:
+                    event.metadata = dict(getattr(event, "metadata", None) or {})
+                    event.metadata["telegram_final_response_target"] = target
+                    _telegram_redirect_applied = True
+                    _telegram_redirect_target = target
+            except Exception:
+                logger.debug("Telegram C2 command redirect lookup failed", exc_info=True)
+            if getattr(getattr(source, "platform", None), "value", None) == "telegram":
+                logger.info(
+                    "telegram_command_route command=%s source_chat=%s source_thread=%s final_chat=%s final_thread=%s redirect_applied=%s",
+                    canonical,
+                    getattr(source, "chat_id", None),
+                    getattr(source, "thread_id", None),
+                    (_telegram_redirect_target or {}).get("chat_id") or getattr(source, "chat_id", None),
+                    (_telegram_redirect_target or {}).get("thread_id") or getattr(source, "thread_id", None),
+                    _telegram_redirect_applied,
+                )
+
         if canonical == "new":
             if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
                 return self._telegram_topic_root_new_message()
@@ -13459,6 +13556,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            from gateway.telegram_topology import restrict_toolsets_for_source
+            enabled_toolsets = restrict_toolsets_for_source(source, enabled_toolsets)
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -17225,6 +17324,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        from gateway.telegram_topology import restrict_toolsets_for_source
+        enabled_toolsets = restrict_toolsets_for_source(source, enabled_toolsets)
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

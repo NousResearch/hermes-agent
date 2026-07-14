@@ -1441,9 +1441,16 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
         return False
 
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
+    raw_temp_dir = os.path.normpath(tempfile.gettempdir())
+    temp_dir = os.path.realpath(raw_temp_dir)
     basename = os.path.basename(operand)
-    if operand != os.path.join(temp_dir, basename):
+    allowed_operands = {os.path.join(temp_dir, basename)}
+    # macOS exposes /tmp as the system alias for /private/tmp.  Accept that
+    # one OS-defined lexical alias without weakening the arbitrary-symlink
+    # guard exercised below.
+    if raw_temp_dir == "/tmp" and temp_dir == "/private/tmp":
+        allowed_operands.add(os.path.join(raw_temp_dir, basename))
+    if operand not in allowed_operands:
         return False
 
     target = os.path.realpath(operand)

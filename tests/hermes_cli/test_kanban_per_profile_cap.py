@@ -21,11 +21,27 @@ def isolated_kanban_home_with_profiles(monkeypatch):
     for prof in ("alpha", "beta", "default"):
         os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
+    affected = {
+        name: module
+        for name, module in sys.modules.items()
+        if name.startswith("hermes_cli")
+        or name.startswith("hermes_state")
+        or name == "hermes_constants"
+    }
+    for name in affected:
+        sys.modules.pop(name, None)
     from hermes_cli import kanban_db
-    yield kanban_db
+    try:
+        yield kanban_db
+    finally:
+        for name in list(sys.modules):
+            if (
+                name.startswith("hermes_cli")
+                or name.startswith("hermes_state")
+                or name == "hermes_constants"
+            ):
+                sys.modules.pop(name, None)
+        sys.modules.update(affected)
 
 
 def _fake_spawn(*args, **kwargs):

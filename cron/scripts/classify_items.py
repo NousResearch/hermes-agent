@@ -105,7 +105,7 @@ def _build_prompt(items: List[Dict[str, Any]], criteria: str) -> str:
     lines.append(
         "\nReturn the JSON array of scores now (one object per item, same order)."
     )
-    return "\n".join(lines)
+    return _CLASSIFY_INSTRUCTIONS + "\n\n" + "\n".join(lines)
 
 
 def _parse_scores(content: str, n_items: int) -> Dict[int, Dict[str, Any]]:

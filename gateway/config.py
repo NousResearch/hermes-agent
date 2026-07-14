@@ -461,6 +461,12 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Fine-grained lifecycle delivery controls. Defaults preserve historical
+    # behavior; operator profiles can route one copy to a dedicated target.
+    gateway_restart_notification_active_sessions: bool = True
+    gateway_restart_notification_home_channel: bool = True
+    gateway_restart_notification_target: Optional[HomeChannel] = None
+
     # Whether the gateway shows a "typing…" / "is thinking…" status indicator
     # while the agent processes a message on this platform. Default True
     # preserves prior behavior. Set False on platforms where the indicator is
@@ -482,6 +488,8 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "gateway_restart_notification_active_sessions": self.gateway_restart_notification_active_sessions,
+            "gateway_restart_notification_home_channel": self.gateway_restart_notification_home_channel,
             "typing_indicator": self.typing_indicator,
         }
         if self.token:
@@ -490,6 +498,10 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.gateway_restart_notification_target:
+            result["gateway_restart_notification_target"] = (
+                self.gateway_restart_notification_target.to_dict()
+            )
         if self.channel_overrides:
             result["channel_overrides"] = {
                 cid: ov.to_dict() for cid, ov in self.channel_overrides.items()
@@ -512,6 +524,21 @@ class PlatformConfig:
         if _grn is None:
             _grn = extra.get("gateway_restart_notification")
 
+        _grn_active = data.get("gateway_restart_notification_active_sessions")
+        if _grn_active is None:
+            _grn_active = extra.get("gateway_restart_notification_active_sessions")
+
+        _grn_home = data.get("gateway_restart_notification_home_channel")
+        if _grn_home is None:
+            _grn_home = extra.get("gateway_restart_notification_home_channel")
+
+        _grn_target = data.get("gateway_restart_notification_target")
+        if _grn_target is None:
+            _grn_target = extra.get("gateway_restart_notification_target")
+        gateway_restart_notification_target = None
+        if isinstance(_grn_target, dict):
+            gateway_restart_notification_target = HomeChannel.from_dict(_grn_target)
+
         # typing_indicator mirrors gateway_restart_notification: it may arrive
         # top-level or bridged into extra by the shared-key loop in
         # load_gateway_config(), so check both.
@@ -533,6 +560,9 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            gateway_restart_notification_active_sessions=_coerce_bool(_grn_active, True),
+            gateway_restart_notification_home_channel=_coerce_bool(_grn_home, True),
+            gateway_restart_notification_target=gateway_restart_notification_target,
             typing_indicator=_coerce_bool(_typing, True),
             channel_overrides=channel_overrides,
             extra=extra,
@@ -673,7 +703,7 @@ class GatewayConfig:
     quick_commands: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
-    sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
+    sessions_dir: Path = field(default_factory=lambda: get_hermes_home().resolve() / "sessions")
 
     # Whether to keep writing the legacy sessions.json mirror of the gateway
     # routing index. The primary copy lives in state.db (gateway_routing
@@ -859,7 +889,7 @@ class GatewayConfig:
         if "default_reset_policy" in data:
             default_policy = SessionResetPolicy.from_dict(data["default_reset_policy"])
         
-        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir = get_hermes_home().resolve() / "sessions"
         if "sessions_dir" in data:
             sessions_dir = Path(data["sessions_dir"])
         
@@ -1133,6 +1163,14 @@ def load_gateway_config() -> GatewayConfig:
             _merge_platform_map(yaml_cfg.get("platforms"))
             if platforms_data:
                 gw_data["platforms"] = platforms_data
+
+            _configured_platform_names: set[str] = set()
+            for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                if isinstance(_src, dict):
+                    _configured_platform_names.update(str(k).strip().lower() for k in _src)
+            for _plat in Platform:
+                if isinstance(yaml_cfg.get(_plat.value), dict):
+                    _configured_platform_names.add(_plat.value)
             # Iterate built-in platforms plus any registered plugin platforms
             # so plugin authors get the same shared-key bridging (#24836).
             try:
@@ -1145,7 +1183,11 @@ def load_gateway_config() -> GatewayConfig:
 
             _shared_loop_targets: list = list(Platform)
             if _pr is not None:
-                for _entry in _pr.plugin_entries():
+                # Resolve only explicitly configured plugin platform names.  The
+                # old plugin_entries() call materialized every deferred platform
+                # adapter, including unconfigured Teams, during Telegram-only
+                # config loads.
+                for _entry in _pr.entries_for(_configured_platform_names):
                     try:
                         _plat = Platform(_entry.name)
                     except (ValueError, KeyError):
@@ -1238,6 +1280,18 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "gateway_restart_notification_active_sessions" in platform_cfg:
+                    bridged["gateway_restart_notification_active_sessions"] = platform_cfg[
+                        "gateway_restart_notification_active_sessions"
+                    ]
+                if "gateway_restart_notification_home_channel" in platform_cfg:
+                    bridged["gateway_restart_notification_home_channel"] = platform_cfg[
+                        "gateway_restart_notification_home_channel"
+                    ]
+                if "gateway_restart_notification_target" in platform_cfg:
+                    bridged["gateway_restart_notification_target"] = platform_cfg[
+                        "gateway_restart_notification_target"
+                    ]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 has_channel_overrides = "channel_overrides" in platform_cfg
@@ -1272,7 +1326,7 @@ def load_gateway_config() -> GatewayConfig:
             # blocks (below; no-op when a hook already set their env var) →
             # ``_apply_env_overrides()`` after ``GatewayConfig.from_dict``.
             if _pr is not None:
-                for entry in _pr.all_entries():
+                for entry in _pr.entries_for(_configured_platform_names):
                     if entry.apply_yaml_config_fn is None:
                         continue
                     platform_cfg = yaml_cfg.get(entry.name)
@@ -2139,7 +2193,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
+        _configured_platform_names = {platform.value for platform in config.platforms}
+        for entry in platform_registry.entries_for(_configured_platform_names):
             try:
                 platform = Platform(entry.name)
             except Exception as e:

@@ -3584,14 +3584,25 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
+            plain_text_only = bool((metadata or {}).get("telegram_plain_text_only"))
+
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            if not plain_text_only and self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
+                    logger.info(
+                        "telegram_final_send target_chat=%s target_thread=%s outbound_message_id=%s success=%s error_class=%s attempt=%s",
+                        chat_id,
+                        self._metadata_thread_id(metadata),
+                        rich_result.message_id,
+                        rich_result.success,
+                        None if rich_result.success else rich_result.error_kind or "SendResultFailure",
+                        1,
+                    )
                     if rich_result.success:
                         # Re-trigger typing like the legacy success path does,
                         # but ONLY for intermediate sends. On the final reply
@@ -3606,8 +3617,10 @@ class TelegramAdapter(BasePlatformAdapter):
                                 pass  # Typing failures are non-fatal
                     return rich_result
 
-            # Format and split message if needed
-            formatted = self.format_message(content)
+            # Format and split message if needed. C2 pipeline deliveries can
+            # opt into strict plain text per message without disabling rich
+            # Telegram rendering for ordinary dialogue.
+            formatted = content if plain_text_only else self.format_message(content)
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
@@ -3688,34 +3701,49 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
-                        try:
+                        # C2 strict plain-text deliveries bypass Telegram rich
+                        # messages and MarkdownV2 while preserving topic/reply
+                        # routing, notification metadata, and retry/backoff.
+                        if plain_text_only:
                             msg = await self._bot.send_message(
                                 chat_id=normalize_telegram_chat_id(chat_id),
                                 text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
+                                parse_mode=None,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
                             )
-                        except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
+                        else:
+                            # Try Markdown first, fall back to plain text if it fails
+                            try:
                                 msg = await self._bot.send_message(
                                     chat_id=normalize_telegram_chat_id(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
+                                    text=chunk,
+                                    parse_mode=ParseMode.MARKDOWN_V2,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
                                 )
-                            else:
-                                raise
+                            except Exception as md_error:
+                                # Markdown parsing failed, try plain text
+                                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                                    logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                    plain_chunk = _strip_mdv2(chunk)
+                                    msg = await self._bot.send_message(
+                                        chat_id=normalize_telegram_chat_id(chat_id),
+                                        text=plain_chunk,
+                                        parse_mode=None,
+                                        reply_to_message_id=reply_to_id,
+                                        **thread_kwargs,
+                                        **self._link_preview_kwargs(),
+                                        **self._notification_kwargs(metadata),
+                                    )
+                                else:
+                                    raise
                         break  # success
+
                     except _NetErr as send_err:
                         # BadRequest is a subclass of NetworkError in
                         # python-telegram-bot but represents permanent errors
@@ -3835,6 +3863,15 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                logger.info(
+                    "telegram_final_send target_chat=%s target_thread=%s outbound_message_id=%s success=%s error_class=%s attempt=%s",
+                    chat_id,
+                    effective_thread_id,
+                    getattr(msg, "message_id", None),
+                    True,
+                    None,
+                    locals().get("_send_attempt", 0) + 1,
+                )
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -3864,7 +3901,15 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             safe_error = _redact_telegram_error_text(e)
-            logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
+            logger.error(
+                "[%s] Failed to send Telegram message target_chat=%s target_thread=%s success=False error_class=%s attempt=%s error=%s",
+                self.name,
+                chat_id,
+                locals().get("effective_thread_id", self._metadata_thread_id(metadata)),
+                e.__class__.__name__,
+                locals().get("_send_attempt", 0) + 1,
+                safe_error,
+            )
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
             # Message too long — content exceeded 4096 chars. Return failure so
@@ -7507,6 +7552,105 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    def _input_intake_session_key(self, event: MessageEvent) -> Optional[str]:
+        try:
+            from gateway.session import build_session_key
+            return build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+        except Exception:
+            return None
+
+    async def _maybe_handle_input_intake(self, event: MessageEvent) -> bool:
+        """Persist approved Telegram Input-topic messages before agent dispatch.
+
+        Runs only after the Telegram handler's existing auth/access checks have
+        accepted the update. It never logs user text/caption and never downloads
+        binary attachments for C2-B intake.
+        """
+        try:
+            from gateway.input_intake import (
+                ACK_TEXT,
+                INPUT_THREAD_ID,
+                IntakeError,
+                accept_event,
+                is_input_intake_event,
+            )
+        except Exception as exc:
+            logger.error("[Telegram] input intake import failed: %s", exc.__class__.__name__)
+            return False
+
+        if not is_input_intake_event(event):
+            return False
+
+        source = event.source
+        source_session_key = self._input_intake_session_key(event)
+        try:
+            result = accept_event(event, source_session_key=source_session_key)
+        except IntakeError as exc:
+            logger.error(
+                "[Telegram] input intake write_failed chat=%s thread=%s message_id=%s error=%s",
+                source.chat_id,
+                source.thread_id,
+                event.message_id,
+                str(exc),
+            )
+            return True
+
+        record = result.record or {}
+        record_id = record.get("record_id", "unknown")
+        if result.duplicate:
+            logger.info(
+                "[Telegram] input intake duplicate record=%s chat=%s thread=%s message_id=%s",
+                record_id,
+                source.chat_id,
+                source.thread_id,
+                event.message_id,
+            )
+            return True
+
+        if not result.accepted:
+            return False
+
+        logger.info(
+            "[Telegram] input intake accepted record=%s chat=%s thread=%s message_id=%s",
+            record_id,
+            source.chat_id,
+            source.thread_id,
+            event.message_id,
+        )
+        try:
+            ack = await self.send(
+                chat_id=str(source.chat_id),
+                content=ACK_TEXT,
+                metadata={
+                    "thread_id": INPUT_THREAD_ID,
+                    "message_thread_id": INPUT_THREAD_ID,
+                    "telegram_plain_text_only": True,
+                },
+            )
+            if not getattr(ack, "success", False):
+                logger.error(
+                    "[Telegram] input intake ack_failed record=%s chat=%s thread=%s message_id=%s error_kind=%s",
+                    record_id,
+                    source.chat_id,
+                    source.thread_id,
+                    event.message_id,
+                    getattr(ack, "error_kind", None),
+                )
+        except Exception as exc:
+            logger.error(
+                "[Telegram] input intake ack_failed record=%s chat=%s thread=%s message_id=%s error=%s",
+                record_id,
+                source.chat_id,
+                source.thread_id,
+                event.message_id,
+                exc.__class__.__name__,
+            )
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -7536,6 +7680,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        if await self._maybe_handle_input_intake(event):
+            return
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
@@ -7799,6 +7945,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
+
+        if await self._maybe_handle_input_intake(event):
+            return
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:

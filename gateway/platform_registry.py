@@ -268,6 +268,30 @@ class PlatformRegistry:
         self._resolve_all()
         return [e for e in self._entries.values() if e.source == "plugin"]
 
+    def entries_for(self, names: list[str] | set[str] | tuple[str, ...]) -> list[PlatformEntry]:
+        """Return entries for specific platform names, resolving only those loaders.
+
+        Gateway config loading often needs plugin-owned YAML/env bridge hooks for
+        the platforms explicitly present in config, not every bundled platform.
+        Resolving all deferred loaders imports optional SDKs for unconfigured
+        platforms (for example Microsoft Teams) and can mutate process-wide
+        environment state.  This accessor preserves on-demand behavior while
+        keeping Telegram-only config loads Telegram-only.
+        """
+        entries: list[PlatformEntry] = []
+        seen: set[str] = set()
+        for raw_name in names:
+            name = str(raw_name or "").strip().lower()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if name not in self._entries:
+                self._resolve(name)
+            entry = self._entries.get(name)
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered --
         # the loader will materialize it on first real use.  This keeps cheap

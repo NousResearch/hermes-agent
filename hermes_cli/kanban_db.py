@@ -388,7 +388,7 @@ def kanban_home() -> Path:
     if override:
         return Path(override).expanduser()
     from hermes_constants import get_default_hermes_root
-    return get_default_hermes_root()
+    return get_default_hermes_root().resolve()
 
 
 def boards_root() -> Path:

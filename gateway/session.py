@@ -453,6 +453,18 @@ def build_session_context_prompt(
             f"**Channel Topic:** {_format_untrusted_prompt_value(context.source.chat_topic)}"
         )
 
+    if context.source.platform == Platform.TELEGRAM and context.source.thread_id:
+        try:
+            from gateway.telegram_topology import topic_contract_for_source
+
+            topic_contract = topic_contract_for_source(context.source)
+        except Exception:
+            topic_contract = None
+        if topic_contract:
+            lines.append("")
+            lines.append("**Telegram topic mode:**")
+            lines.append(topic_contract)
+
     if context.source.platform == Platform.MATRIX:
         src = context.source
         room_name = src.chat_name or src.chat_id

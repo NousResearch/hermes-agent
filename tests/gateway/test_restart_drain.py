@@ -8,14 +8,18 @@ import pytest
 
 import gateway.run as gateway_run
 from agent.i18n import t
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
 @pytest.mark.asyncio
-async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
+async def test_restart_command_while_busy_requests_drain_without_interrupt(tmp_path, monkeypatch):
+    # This test executes the real /restart marker-writing path. Keep all
+    # lifecycle markers inside pytest's temporary directory — never the
+    # configured Hermes profile.
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
     # which changes the restart call signature.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
@@ -509,6 +513,38 @@ async def test_shutdown_notification_home_channel_suppressed_when_flag_disabled(
     await runner._notify_active_sessions_of_shutdown()
 
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_dedicated_target_suppresses_legacy_home_copy():
+    from gateway.config import HomeChannel, Platform
+
+    runner, adapter = make_restart_runner()
+    platform_cfg = runner.config.platforms[Platform.TELEGRAM]
+    platform_cfg.home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="operator-parent",
+        name="Operator",
+        thread_id="2654",
+    )
+    platform_cfg.gateway_restart_notification_active_sessions = False
+    platform_cfg.gateway_restart_notification_home_channel = False
+    platform_cfg.gateway_restart_notification_target = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="alerts-parent",
+        name="Alerts",
+        thread_id="2661",
+    )
+    send_mock = AsyncMock(return_value=SendResult(success=True, message_id="1"))
+    adapter.send = send_mock
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    send_mock.assert_awaited_once_with(
+        "alerts-parent",
+        "⚠️ Gateway shutting down — Your current task will be interrupted.",
+        metadata={"thread_id": "2661"},
+    )
 
 
 @pytest.mark.asyncio

@@ -4567,22 +4567,38 @@ class BasePlatformAdapter(ABC):
             # after cancel_session_processing, which could silently drop the
             # "/new" confirmation when an agent was actively running.
             if _text:
+                _final_chat_id = event.source.chat_id
+                _final_reply_anchor = _reply_anchor_for_event(event)
+                _final_thread_meta = thread_meta
+                _final_target = (getattr(event, "metadata", None) or {}).get(
+                    "telegram_final_response_target"
+                )
+                if isinstance(_final_target, dict):
+                    _target_chat = str(_final_target.get("chat_id", "")).strip()
+                    _target_thread = str(_final_target.get("thread_id", "")).strip()
+                    if _target_chat and _target_thread:
+                        _final_chat_id = _target_chat
+                        _final_reply_anchor = None
+                        _final_thread_meta = dict(thread_meta or {})
+                        _final_thread_meta["thread_id"] = _target_thread
+                        _final_thread_meta.pop("telegram_reply_to_message_id", None)
+                        _final_thread_meta.pop("reply_to_message_id", None)
                 logger.info(
                     "[%s] Sending command '/%s' response (%d chars) to %s",
                     self.name,
                     cmd,
                     len(_text),
-                    event.source.chat_id,
+                    _final_chat_id,
                 )
                 _r = await self._send_with_retry(
-                    chat_id=event.source.chat_id,
+                    chat_id=_final_chat_id,
                     content=_text,
-                    reply_to=_reply_anchor_for_event(event),
-                    metadata=_mark_notify_metadata(thread_meta),
+                    reply_to=_final_reply_anchor,
+                    metadata=_mark_notify_metadata(_final_thread_meta),
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
                     self._schedule_ephemeral_delete(
-                        chat_id=event.source.chat_id,
+                        chat_id=_final_chat_id,
                         message_id=_r.message_id,
                         ttl_seconds=_eph_ttl,
                     )
@@ -4681,15 +4697,31 @@ class BasePlatformAdapter(ABC):
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
+                        _final_chat_id = event.source.chat_id
+                        _final_reply_anchor = _reply_anchor_for_event(event)
+                        _final_thread_meta = _thread_meta
+                        _final_target = (getattr(event, "metadata", None) or {}).get(
+                            "telegram_final_response_target"
+                        )
+                        if isinstance(_final_target, dict):
+                            _target_chat = str(_final_target.get("chat_id", "")).strip()
+                            _target_thread = str(_final_target.get("thread_id", "")).strip()
+                            if _target_chat and _target_thread:
+                                _final_chat_id = _target_chat
+                                _final_reply_anchor = None
+                                _final_thread_meta = dict(_thread_meta or {})
+                                _final_thread_meta["thread_id"] = _target_thread
+                                _final_thread_meta.pop("telegram_reply_to_message_id", None)
+                                _final_thread_meta.pop("reply_to_message_id", None)
                         _r = await self._send_with_retry(
-                            chat_id=event.source.chat_id,
+                            chat_id=_final_chat_id,
                             content=_text,
-                            reply_to=_reply_anchor_for_event(event),
-                            metadata=_mark_notify_metadata(_thread_meta),
+                            reply_to=_final_reply_anchor,
+                            metadata=_mark_notify_metadata(_final_thread_meta),
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
                             self._schedule_ephemeral_delete(
-                                chat_id=event.source.chat_id,
+                                chat_id=_final_chat_id,
                                 message_id=_r.message_id,
                                 ttl_seconds=_eph_ttl,
                             )
@@ -4972,6 +5004,22 @@ class BasePlatformAdapter(ABC):
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
 
+                _final_chat_id = event.source.chat_id
+                _final_reply_anchor = _reply_anchor_for_event(event)
+                _final_target = (getattr(event, "metadata", None) or {}).get(
+                    "telegram_final_response_target"
+                )
+                if isinstance(_final_target, dict):
+                    _target_chat = str(_final_target.get("chat_id", "")).strip()
+                    _target_thread = str(_final_target.get("thread_id", "")).strip()
+                    if _target_chat and _target_thread:
+                        _final_chat_id = _target_chat
+                        _final_reply_anchor = None
+                        _final_thread_metadata = dict(_final_thread_metadata or {})
+                        _final_thread_metadata["thread_id"] = _target_thread
+                        _final_thread_metadata.pop("telegram_reply_to_message_id", None)
+                        _final_thread_metadata.pop("reply_to_message_id", None)
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -5008,7 +5056,7 @@ class BasePlatformAdapter(ABC):
                         ):
                             telegram_tts_caption = text_content
                         tts_result = await self.play_tts(
-                            chat_id=event.source.chat_id,
+                            chat_id=_final_chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
                             metadata=_final_thread_metadata,
@@ -5024,12 +5072,11 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
-                    logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    _reply_anchor = _reply_anchor_for_event(event)
+                    logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), _final_chat_id)
                     result = await self._send_with_retry(
-                        chat_id=event.source.chat_id,
+                        chat_id=_final_chat_id,
                         content=text_content,
-                        reply_to=_reply_anchor,
+                        reply_to=_final_reply_anchor,
                         metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
@@ -5044,7 +5091,7 @@ class BasePlatformAdapter(ABC):
                         and result.message_id
                     ):
                         self._schedule_ephemeral_delete(
-                            chat_id=event.source.chat_id,
+                            chat_id=_final_chat_id,
                             message_id=result.message_id,
                             ttl_seconds=_ephemeral_ttl,
                         )
@@ -5057,7 +5104,7 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
                         await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
+                            chat_id=_final_chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
@@ -5099,7 +5146,7 @@ class BasePlatformAdapter(ABC):
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
                         await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
+                            chat_id=_final_chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
@@ -5114,19 +5161,19 @@ class BasePlatformAdapter(ABC):
                         ext = Path(media_path).suffix.lower()
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
-                                chat_id=event.source.chat_id,
+                                chat_id=_final_chat_id,
                                 audio_path=media_path,
                                 metadata=_final_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
                             media_result = await self.send_video(
-                                chat_id=event.source.chat_id,
+                                chat_id=_final_chat_id,
                                 video_path=media_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
                             media_result = await self.send_document(
-                                chat_id=event.source.chat_id,
+                                chat_id=_final_chat_id,
                                 file_path=media_path,
                                 metadata=_final_thread_metadata,
                             )
@@ -5144,13 +5191,13 @@ class BasePlatformAdapter(ABC):
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
                             await self.send_video(
-                                chat_id=event.source.chat_id,
+                                chat_id=_final_chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
                             await self.send_document(
-                                chat_id=event.source.chat_id,
+                                chat_id=_final_chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )

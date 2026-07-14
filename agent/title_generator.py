@@ -83,7 +83,7 @@ def generate_title(
             task="title_generation",
             messages=messages,
             max_tokens=500,
-            temperature=0.3,
+            temperature=0.0,
             timeout=timeout,
             main_runtime=main_runtime,
         )

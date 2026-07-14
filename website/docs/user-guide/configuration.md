@@ -974,6 +974,22 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 | `model` | Which model to request | provider's default |
 | `base_url` | Custom OpenAI-compatible endpoint (overrides provider) | not set |
 
+Auxiliary task blocks additionally accept a `reasoning_effort` knob:
+
+| Key | What it does | Default |
+|-----|-------------|---------|
+| `reasoning_effort` | Thinking level for that task's LLM calls: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | not set (provider default) |
+
+This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It works on every auxiliary task block (`vision`, `web_extract`, `compression`, `title_generation`, `curator`, `background_review`, `moa_reference`, `moa_aggregator`, ...), across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand.
+
+```yaml
+auxiliary:
+  compression:
+    reasoning_effort: "low"    # summaries don't need deep thinking
+  vision:
+    reasoning_effort: "none"   # disable thinking for image description
+```
+
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
 Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).

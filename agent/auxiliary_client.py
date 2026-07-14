@@ -1306,12 +1306,24 @@ class _AnthropicCompletionsAdapter:
             elif choice_type in {"auto", "required", "none"}:
                 normalized_tool_choice = choice_type
 
+        # Honor extra_body.reasoning (chat.completions shape) so auxiliary
+        # tasks configured with auxiliary.<task>.reasoning_effort (or an
+        # explicit extra_body.reasoning) control Anthropic thinking too —
+        # build_anthropic_kwargs translates the config dict into the native
+        # ``thinking`` field and handles models where thinking is mandatory.
+        _reasoning_cfg = None
+        _eb = kwargs.get("extra_body")
+        if isinstance(_eb, dict):
+            _rc = _eb.get("reasoning")
+            if isinstance(_rc, dict):
+                _reasoning_cfg = _rc
+
         anthropic_kwargs = build_anthropic_kwargs(
             model=model,
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
-            reasoning_config=None,
+            reasoning_config=_reasoning_cfg,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
@@ -6141,12 +6153,34 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
-    """Read auxiliary.<task>.extra_body and return a shallow copy when valid."""
+    """Read auxiliary.<task>.extra_body and return a shallow copy when valid.
+
+    Also folds in ``auxiliary.<task>.reasoning_effort`` as an
+    ``extra_body.reasoning`` config dict ({"enabled": ..., "effort": ...})
+    when set. An explicit ``extra_body.reasoning`` in config wins over the
+    ``reasoning_effort`` shorthand (it is the more specific wire control).
+    Downstream, each wire already translates ``extra_body.reasoning``:
+    chat.completions passes it through, the Codex Responses adapter maps it
+    to top-level ``reasoning``/``include``, and the Anthropic auxiliary
+    client maps it to ``build_anthropic_kwargs(reasoning_config=...)``.
+    """
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("extra_body")
-    if isinstance(raw, dict):
-        return dict(raw)
-    return {}
+    result = dict(raw) if isinstance(raw, dict) else {}
+    if "reasoning" not in result:
+        effort = task_config.get("reasoning_effort")
+        if effort is not None and effort != "":
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(effort)
+            if parsed is not None:
+                result["reasoning"] = parsed
+            else:
+                logger.warning(
+                    "auxiliary.%s.reasoning_effort %r is not a valid level "
+                    "(none, minimal, low, medium, high, xhigh, max, ultra) — ignoring",
+                    task, effort,
+                )
+    return result
 
 
 # ---------------------------------------------------------------------------

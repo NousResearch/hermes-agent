@@ -188,6 +188,31 @@ class TestMcpAdd:
         out = capsys.readouterr().out
         assert "Must specify" in out
 
+    def test_add_bare_catalog_name_routes_to_installer(self, capsys, monkeypatch):
+        """``hermes mcp add <name>`` with no transport falls back to the
+        catalog installer when <name> is a shipped catalog entry, making
+        ``mcp add deapi`` and ``mcp install deapi`` equivalent."""
+        installed = {}
+
+        class _FakeEntry:
+            name = "deapi"
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_catalog.get_entry",
+            lambda n: _FakeEntry if n == "deapi" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.mcp_catalog.install_entry",
+            lambda entry, enable=True: installed.setdefault("entry", entry),
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(name="deapi"))
+        out = capsys.readouterr().out
+        assert "catalog" in out.lower()
+        assert installed["entry"] is _FakeEntry
+
     def test_add_http_server_all_tools(self, tmp_path, capsys, monkeypatch):
         """Add an HTTP server, accept all tools."""
         fake_tools = [

@@ -143,6 +143,46 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+    def test_http_transport_headers_parsed(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"X-API-Key": "${DEMO_KEY}", "X-Tenant": "acme"},
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.transport.headers == {
+            "X-API-Key": "${DEMO_KEY}",
+            "X-Tenant": "acme",
+        }
+
+    def test_headers_rejected_for_stdio_transport(self, catalog_dir):
+        body = _basic_manifest()
+        body["transport"]["headers"] = {"Authorization": "Bearer ${DEMO_KEY}"}
+        path = _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="only valid for http"):
+            _parse_manifest(path)
+
+    def test_headers_must_be_string_mapping(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"X-Retries": 3},
+            },
+        )
+        path = _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="string to string"):
+            _parse_manifest(path)
+
     def test_install_block(self, catalog_dir):
         body = _basic_manifest(
             install={
@@ -306,6 +346,68 @@ class TestInstall:
         server = load_config()["mcp_servers"]["demo"]
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
+
+    def test_install_http_api_key_writes_authorization_header(
+        self, catalog_dir, monkeypatch
+    ):
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_API_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path, get_env_value
+
+        install_entry(_entry("demo"), enable=True)
+
+        # Read the raw config file so we assert the persisted placeholder
+        # rather than load_config()'s ${VAR}-expanded value.
+        with open(get_config_path()) as f:
+            raw = yaml.safe_load(f)
+        server = raw["mcp_servers"]["demo"]
+        assert get_env_value("DEMO_API_KEY") == "secret-val"
+        assert server["url"] == "https://mcp.example.com/mcp"
+        assert server["headers"]["Authorization"] == "Bearer ${DEMO_API_KEY}"
+
+    def test_install_explicit_headers_override_auto_bearer(
+        self, catalog_dir, monkeypatch
+    ):
+        """Manifest transport.headers win over the api_key auto-Bearer header."""
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"X-API-Key": "${DEMO_API_KEY}"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_API_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path
+
+        install_entry(_entry("demo"), enable=True)
+
+        with open(get_config_path()) as f:
+            raw = yaml.safe_load(f)
+        server = raw["mcp_servers"]["demo"]
+        assert server["headers"] == {"X-API-Key": "${DEMO_API_KEY}"}
+        assert "Authorization" not in server["headers"]
 
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(

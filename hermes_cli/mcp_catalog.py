@@ -77,6 +77,13 @@ class TransportSpec:
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
     version: Optional[str] = None  # informational, pinned
+    # http only. Extra request headers written verbatim into the
+    # mcp_servers.<name> block; ${VAR} placeholders are resolved by the MCP
+    # client's existing env interpolation at connect time, never at install
+    # time. Overrides the automatic Authorization header derived from
+    # auth.type: api_key - use for X-API-Key style schemes, non-Bearer
+    # prefixes, or multiple headers.
+    headers: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -184,15 +191,25 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
+    headers_raw = transport_raw.get("headers") or {}
+    if not isinstance(headers_raw, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in headers_raw.items()
+    ):
+        raise CatalogError(
+            f"{path}: transport.headers must be a mapping of string to string"
+        )
     transport = TransportSpec(
         type=t_type,
         command=transport_raw.get("command"),
         args=[str(a) for a in args],
         url=transport_raw.get("url"),
         version=transport_raw.get("version"),
+        headers=dict(headers_raw),
     )
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
+    if t_type == "stdio" and transport.headers:
+        raise CatalogError(f"{path}: transport.headers is only valid for http transport")
     if t_type == "http" and not transport.url:
         raise CatalogError(f"{path}: http transport requires 'url'")
 
@@ -470,8 +487,24 @@ def _build_server_config(
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
     elif t.type == "http":
         cfg["url"] = t.url
+        if t.headers:
+            # Explicit manifest headers win. Written verbatim - ${VAR}
+            # placeholders are resolved by the MCP client at connect time.
+            cfg["headers"] = dict(t.headers)
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+        elif entry.auth.type == "api_key" and not t.headers:
+            # Mirror the manual ``hermes mcp add`` path (mcp_config.py): the
+            # api_key is prompted for and saved to .env, but an http server only
+            # authenticates if that key is interpolated into an Authorization
+            # header. Prefer an explicit auth.env_var; else fall back to the
+            # first declared env name. Guarded so an api_key entry with no
+            # declared env var writes no unresolvable ``Bearer ${}`` placeholder.
+            env_name = entry.auth.env_var or (
+                entry.auth.env[0].name if entry.auth.env else None
+            )
+            if env_name:
+                cfg["headers"] = {"Authorization": f"Bearer ${{{env_name}}}"}
     return cfg
 
 

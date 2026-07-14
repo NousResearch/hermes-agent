@@ -421,11 +421,23 @@ def cmd_mcp_add(args):
 
     # Validate transport
     if not url and not command:
+        # Bare `hermes mcp add <name>`: if <name> is a catalog entry, route to
+        # the catalog installer so `mcp add deapi` and `mcp install deapi` are
+        # equivalent for shipped MCPs. Explicit --url/--command/--preset always
+        # means a custom server and never consults the catalog.
+        from hermes_cli.mcp_catalog import get_entry, install_entry
+
+        entry = get_entry(name)
+        if entry is not None:
+            _info(f"'{name}' is a catalog MCP - installing from the catalog.")
+            install_entry(entry, enable=True)
+            return
         _error("Must specify --url <endpoint>, --command <cmd>, or --preset <name>")
         _info("Examples:")
         _info('  hermes mcp add ink --url "https://mcp.ml.ink/mcp"')
         _info('  hermes mcp add github --command npx --args @modelcontextprotocol/server-github')
         _info('  hermes mcp add myserver --preset mypreset')
+        _info("Shipped catalog MCPs install by name: hermes mcp install <name>")
         return
 
     # Check if server already exists

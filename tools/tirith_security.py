@@ -618,7 +618,14 @@ def _background_install(*, log_failures: bool = True):
             _install_failure_reason = ""
             return
 
-        installed, reason = _install_tirith(log_failures=log_failures)
+        try:
+            installed, reason = _install_tirith(log_failures=log_failures)
+        except Exception as exc:
+            logger.debug("tirith background install failed: %s", exc)
+            _resolved_path = _INSTALL_FAILED
+            _install_failure_reason = "background_install_error"
+            _mark_install_failed(_install_failure_reason)
+            return
         if installed:
             _resolved_path = installed
             _install_failure_reason = ""

@@ -877,11 +877,29 @@ class TestBackgroundInstall:
 
         _tirith_mod._resolved_path = None
 
+    def test_background_install_suppresses_closed_stdout_shutdown_noise(self):
+        """Background installer must not leak thread exceptions during stream teardown."""
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_failure_reason = ""
+
+        with patch("tools.tirith_security.shutil.which", return_value=None), \
+             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
+             patch("tools.tirith_security._install_tirith",
+                   side_effect=ValueError("I/O operation on closed file")), \
+             patch("tools.tirith_security._mark_install_failed") as mock_mark:
+            _tirith_mod._background_install(log_failures=False)
+
+        assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
+        assert _tirith_mod._install_failure_reason == "background_install_error"
+        mock_mark.assert_called_once_with("background_install_error")
+
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_failure_reason = ""
+
 
 # ---------------------------------------------------------------------------
 # Disk failure marker persistence (P2)
 # ---------------------------------------------------------------------------
-
 class TestDiskFailureMarker:
     def test_mark_and_check(self):
         """Writing then reading the marker should work."""

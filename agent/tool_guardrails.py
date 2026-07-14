@@ -145,7 +145,7 @@ class ToolCallSignature:
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
-    action: str = "allow"  # allow | warn | block | halt
+    action: str = "allow"  # allow | warn | skip | block | halt
     code: str = "allow"
     message: str = ""
     tool_name: str = ""
@@ -186,6 +186,72 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     )
 
 
+def _canonical_memory_text(value: Any) -> dict[str, Any]:
+    normalized = str(value).strip()
+    return {"hash": _sha256(normalized), "chars": len(normalized)}
+
+
+def _canonical_memory_operation(operation: Any) -> dict[str, Any]:
+    if not isinstance(operation, Mapping):
+        return {"invalid_type": type(operation).__name__}
+    normalized: dict[str, Any] = {
+        "action": str(operation.get("action") or "").strip(),
+    }
+    for field in ("content", "old_text"):
+        if field in operation and operation.get(field) is not None:
+            normalized[field] = _canonical_memory_text(operation.get(field))
+    if operation.get("entry_id") is not None:
+        normalized["entry_id"] = str(operation.get("entry_id"))
+    return normalized
+
+
+def canonical_memory_args(args: Mapping[str, Any]) -> str:
+    """Canonicalize memory writes without retaining raw memory content."""
+    normalized: dict[str, Any] = {
+        "store": str(args.get("store") or args.get("target") or "memory").strip(),
+    }
+    if args.get("action") is not None:
+        normalized["action"] = str(args.get("action") or "").strip()
+    for field in ("content", "old_text"):
+        if field in args and args.get(field) is not None:
+            normalized[field] = _canonical_memory_text(args.get(field))
+    if args.get("entry_id") is not None:
+        normalized["entry_id"] = str(args.get("entry_id"))
+    operations = args.get("operations")
+    if isinstance(operations, list):
+        normalized["operations"] = [
+            _canonical_memory_operation(operation) for operation in operations
+        ]
+    return canonical_tool_args(normalized)
+
+
+def tool_call_signature(
+    tool_name: str, args: Mapping[str, Any] | None
+) -> ToolCallSignature:
+    coerced = _coerce_args(args)
+    if tool_name == "memory":
+        return ToolCallSignature(
+            tool_name=tool_name,
+            args_hash=_sha256(canonical_memory_args(coerced)),
+        )
+    return ToolCallSignature.from_call(tool_name, coerced)
+
+
+def _memory_store_from_args(args: Mapping[str, Any]) -> str:
+    return str(args.get("store") or args.get("target") or "memory")
+
+
+def _memory_quota_error(data: Mapping[str, Any]) -> bool:
+    details = data.get("error_details")
+    return (
+        data.get("error_code") == "memory_quota_exceeded"
+        or (
+            isinstance(details, Mapping)
+            and details.get("code") == "memory_quota_exceeded"
+        )
+    )
+
+
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Safety-fallback classifier used only when callers don't pass ``failed``.
 
@@ -211,7 +277,10 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if tool_name == "memory":
         data = safe_json_loads(result)
         if isinstance(data, dict):
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+            if data.get("success") is False and (
+                _memory_quota_error(data)
+                or "exceed the limit" in data.get("error", "")
+            ):
                 return True, " [full]"
 
     lower = result[:500].lower()
@@ -232,14 +301,47 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._memory_quota_failures: dict[
+            tuple[ToolCallSignature, str, str], ToolGuardrailDecision
+        ] = {}
+        self._observed_memory_store_states: dict[str, str] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
-    def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
-        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+    def before_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        *,
+        current_store_state_token: str | None = None,
+    ) -> ToolGuardrailDecision:
+        args = _coerce_args(args)
+        signature = tool_call_signature(tool_name, args)
+        if tool_name == "memory":
+            store = _memory_store_from_args(args)
+            if current_store_state_token is not None:
+                self._observed_memory_store_states[store] = current_store_state_token
+            observed_token = self._observed_memory_store_states.get(store)
+            if observed_token is not None:
+                previous = self._memory_quota_failures.get(
+                    (signature, store, observed_token)
+                )
+                if previous is not None:
+                    return ToolGuardrailDecision(
+                        action="skip",
+                        code=previous.code,
+                        message=(
+                            "This memory write already exceeded quota for the current "
+                            "store state. Remove memory, shorten the write, or wait for "
+                            "the store state to change before retrying."
+                        ),
+                        tool_name=tool_name,
+                        count=previous.count,
+                        signature=signature,
+                    )
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -291,7 +393,41 @@ class ToolCallGuardrailController:
         failed: bool | None = None,
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
-        signature = ToolCallSignature.from_call(tool_name, args)
+        signature = tool_call_signature(tool_name, args)
+        data = safe_json_loads(result or "")
+        if (
+            tool_name == "memory"
+            and isinstance(data, dict)
+            and data.get("success") is False
+            and _memory_quota_error(data)
+        ):
+            args_store = _memory_store_from_args(args)
+            store = str(data.get("store") or data.get("target") or args_store)
+            token = str(
+                data.get("store_state_token")
+                or self._observed_memory_store_states.get(store)
+                or ""
+            )
+            if token:
+                self._observed_memory_store_states[store] = token
+                self._observed_memory_store_states[args_store] = token
+            decision = ToolGuardrailDecision(
+                action="warn",
+                code="memory_quota_exceeded_non_retryable",
+                message=(
+                    "Shorten the memory content, remove existing memory first, "
+                    "or skip the write. Retrying this memory call unchanged cannot "
+                    "succeed while the store state is unchanged."
+                ),
+                tool_name=tool_name,
+                count=1,
+                signature=signature,
+            )
+            if token:
+                self._memory_quota_failures[(signature, store, token)] = decision
+                self._memory_quota_failures[(signature, args_store, token)] = decision
+            self._no_progress.pop(signature, None)
+            return decision
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 
@@ -343,6 +479,16 @@ class ToolCallGuardrailController:
                 )
 
             return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
+
+        if tool_name == "memory" and isinstance(data, dict):
+            store = str(
+                data.get("store")
+                or data.get("target")
+                or _memory_store_from_args(args)
+            )
+            token = data.get("store_state_token")
+            if token is not None:
+                self._observed_memory_store_states[store] = str(token)
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)

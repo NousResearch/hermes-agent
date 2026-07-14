@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -333,6 +334,101 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    @staticmethod
+    def _serialized_char_count(entries: List[str]) -> int:
+        return len(ENTRY_DELIMITER.join(entries)) if entries else 0
+
+    def _store_state_token_for_entries(self, target: str, entries: List[str]) -> str:
+        payload = json.dumps(
+            {
+                "store": target,
+                "entries": entries,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "opaque:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _store_state_token(self, target: str) -> str:
+        return self._store_state_token_for_entries(target, self._entries_for(target))
+
+    def _quota_usage(
+        self,
+        target: str,
+        *,
+        current_chars: int,
+        attempted_total_chars: int,
+        extra: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        limit = self._char_limit(target)
+        payload: Dict[str, Any] = {
+            "current_chars": current_chars,
+            "limit_chars": limit,
+            "remaining_chars": max(0, limit - current_chars),
+            "attempted_total_chars": attempted_total_chars,
+            "over_by_chars": max(0, attempted_total_chars - limit),
+            "quota_unit": "serialized_chars",
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    def _quota_failure(
+        self,
+        target: str,
+        *,
+        operation: str,
+        error: str,
+        attempted_total_chars: int,
+        extra: Dict[str, Any] | None = None,
+        quota_extra: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        entries = self._entries_for(target)
+        current = self._char_count(target)
+        response: Dict[str, Any] = {
+            "success": False,
+            "target": target,
+            "store": target,
+            "error": error,
+            "error_code": "memory_quota_exceeded",
+            "error_details": {
+                "code": "memory_quota_exceeded",
+                "operation": operation,
+            },
+            "store_state_token": self._store_state_token_for_entries(target, entries),
+            "current_entries": entries,
+            "usage": f"{current:,}/{self._char_limit(target):,}",
+            "quota_usage": self._quota_usage(
+                target,
+                current_chars=current,
+                attempted_total_chars=attempted_total_chars,
+                extra=quota_extra,
+            ),
+        }
+        if extra:
+            response.update(extra)
+        return self._consolidation_failure(response)
+
+    def stat(self, target: str) -> Dict[str, Any]:
+        """Return current usage and opaque state without exposing entries."""
+        with self._file_lock(self._path_for(target)):
+            entries = list(dict.fromkeys(self._read_file(self._path_for(target))))
+        current = self._serialized_char_count(entries)
+        limit = self._char_limit(target)
+        return {
+            "success": True,
+            "target": target,
+            "store": target,
+            "store_state_token": self._store_state_token_for_entries(target, entries),
+            "usage": {
+                "current_chars": current,
+                "limit_chars": limit,
+                "remaining_chars": max(0, limit - current),
+                "quota_unit": "serialized_chars",
+            },
+        }
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -366,18 +462,25 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
+                delimiter_chars = len(ENTRY_DELIMITER) if entries else 0
+                max_add_chars = max(0, limit - current - delimiter_chars)
+                return self._quota_failure(
+                    target,
+                    operation="add",
+                    error=(
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
                         f"Consolidate now: use 'replace' to merge overlapping entries into "
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
                     ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                })
+                    attempted_total_chars=new_total,
+                    quota_extra={
+                        "new_entry_chars": len(content),
+                        "max_add_chars": max_add_chars,
+                        "min_chars_to_free": max(0, new_total - limit),
+                    },
+                )
 
             entries.append(content)
             self._set_entries(target, entries)
@@ -435,18 +538,30 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
+                old_entry_chars = len(entries[idx])
+                new_entry_chars = len(new_content)
+                return self._quota_failure(
+                    target,
+                    operation="replace",
+                    error=(
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
                         f"Shorten the new content, or 'remove' other stale or less important "
                         f"entries to make room (see current_entries below), then retry — all "
                         f"in this turn."
                     ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                })
+                    attempted_total_chars=new_total,
+                    extra={
+                        "replacement": {
+                            "old_entry_chars": old_entry_chars,
+                            "new_entry_chars": new_entry_chars,
+                            "delta_chars": new_entry_chars - old_entry_chars,
+                            "max_replacement_chars": max(
+                                0,
+                                limit - (self._char_count(target) - old_entry_chars),
+                            ),
+                        },
+                    },
+                )
 
             entries[idx] = new_content
             self._set_entries(target, entries)
@@ -583,17 +698,17 @@ class MemoryStore:
             # Budget check against the FINAL state only.
             new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
             if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
+                return self._quota_failure(
+                    target,
+                    operation="batch",
+                    error=(
                         f"After applying all {len(operations)} operations, memory would be at "
                         f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                         f"entries in the same batch (see current_entries below), then retry."
                     ),
-                    "current_entries": self._entries_for(target),
-                    "usage": f"{current:,}/{limit:,}",
-                })
+                    attempted_total_chars=new_total,
+                    quota_extra={"operation_count": len(operations)},
+                )
 
             # Commit.
             self._set_entries(target, working)
@@ -653,6 +768,8 @@ class MemoryStore:
             "success": True,
             "done": True,
             "target": target,
+            "store": target,
+            "store_state_token": self._store_state_token(target),
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
         }
@@ -1146,7 +1263,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

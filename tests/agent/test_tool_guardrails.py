@@ -11,6 +11,20 @@ from agent.tool_guardrails import (
 )
 
 
+def _memory_quota_result(*, store_state_token: str = "opaque:A", operation: str = "batch"):
+    return json.dumps({
+        "success": False,
+        "store": "memory",
+        "store_state_token": store_state_token,
+        "error": "Memory quota rejected this write.",
+        "error_code": "memory_quota_exceeded",
+        "error_details": {
+            "code": "memory_quota_exceeded",
+            "operation": operation,
+        },
+    })
+
+
 def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposing_raw_args():
     args_a = {
         "z": [{"β": "☤", "a": 1}],
@@ -90,6 +104,100 @@ def test_default_repeated_identical_failed_call_warns_without_blocking():
     assert {d.code for d in decisions[1:]} == {"repeated_exact_failure_warning"}
     assert controller.before_call("web_search", args).action == "allow"
     assert controller.halt_decision is None
+
+
+def test_memory_quota_failure_skips_identical_batch_under_same_store_state():
+    controller = ToolCallGuardrailController()
+    args = {
+        "target": "memory",
+        "operations": [
+            {"action": "remove", "old_text": "obsolete"},
+            {"action": "add", "content": "replacement fact"},
+        ],
+    }
+
+    assert controller.before_call(
+        "memory", args, current_store_state_token="opaque:A"
+    ).action == "allow"
+    first = controller.after_call("memory", args, _memory_quota_result(), failed=True)
+    skipped = controller.before_call(
+        "memory", args, current_store_state_token="opaque:A"
+    )
+
+    assert first.action == "warn"
+    assert first.code == "memory_quota_exceeded_non_retryable"
+    assert skipped.action == "skip"
+    assert skipped.code == "memory_quota_exceeded_non_retryable"
+    assert skipped.allows_execution is False
+    assert skipped.should_halt is False
+
+
+def test_memory_quota_batch_retry_allows_changed_operations_or_store_state():
+    controller = ToolCallGuardrailController()
+    original = {
+        "target": "memory",
+        "operations": [{"action": "add", "content": "oversized fact"}],
+    }
+    changed = {
+        "target": "memory",
+        "operations": [{"action": "add", "content": "short"}],
+    }
+
+    controller.before_call("memory", original, current_store_state_token="opaque:A")
+    controller.after_call("memory", original, _memory_quota_result(), failed=True)
+
+    assert controller.before_call(
+        "memory", changed, current_store_state_token="opaque:A"
+    ).action == "allow"
+    assert controller.before_call(
+        "memory", original, current_store_state_token="opaque:B"
+    ).action == "allow"
+
+
+def test_memory_batch_signature_normalizes_key_order_without_exposing_content():
+    controller = ToolCallGuardrailController()
+    first_args = {
+        "target": "memory",
+        "operations": [{"action": "add", "content": "private fact   "}],
+    }
+    reordered_args = {
+        "operations": [{"content": "private fact", "action": "add"}],
+        "target": "memory",
+    }
+
+    controller.before_call("memory", first_args, current_store_state_token="opaque:A")
+    decision = controller.after_call(
+        "memory", first_args, _memory_quota_result(), failed=True
+    )
+    skipped = controller.before_call(
+        "memory", reordered_args, current_store_state_token="opaque:A"
+    )
+
+    assert skipped.action == "skip"
+    assert "private fact" not in json.dumps(decision.to_metadata())
+
+
+def test_memory_batch_retry_allows_unicode_variant_with_different_serialized_length():
+    controller = ToolCallGuardrailController()
+    decomposed = {
+        "target": "memory",
+        "operations": [{"action": "add", "content": "e\u0301"}],
+    }
+    composed = {
+        "target": "memory",
+        "operations": [{"action": "add", "content": "é"}],
+    }
+
+    controller.before_call("memory", decomposed, current_store_state_token="opaque:A")
+    controller.after_call("memory", decomposed, _memory_quota_result(), failed=True)
+
+    assert controller.before_call(
+        "memory", composed, current_store_state_token="opaque:A"
+    ).action == "allow"
+
+
+def test_structured_memory_quota_failure_classifier_uses_error_code():
+    assert classify_tool_failure("memory", _memory_quota_result()) == (True, " [full]")
 
 
 def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution():

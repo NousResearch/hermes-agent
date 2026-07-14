@@ -318,6 +318,99 @@ class TestMemoryStoreAdd:
         assert "Blocked" in result["error"]
 
 
+class TestMemoryQuotaMetadata:
+    def test_stat_reports_opaque_store_state_without_exposing_entries(self, store):
+        store.add("memory", "entry one")
+
+        first = store.stat("memory")
+        repeated = store.stat("memory")
+
+        assert first["success"] is True
+        assert first["store"] == "memory"
+        assert first["store_state_token"].startswith("opaque:")
+        assert repeated["store_state_token"] == first["store_state_token"]
+        assert "entries" not in first
+        assert first["usage"] == {
+            "current_chars": len("entry one"),
+            "limit_chars": store.memory_char_limit,
+            "remaining_chars": store.memory_char_limit - len("entry one"),
+            "quota_unit": "serialized_chars",
+        }
+
+    def test_stat_token_tracks_exact_serialized_unicode_state(self, store):
+        path = store._path_for("memory")
+        path.write_text("e\u0301", encoding="utf-8")
+        decomposed = store.stat("memory")
+
+        path.write_text("é", encoding="utf-8")
+        composed = store.stat("memory")
+
+        assert decomposed["usage"]["current_chars"] == 2
+        assert composed["usage"]["current_chars"] == 1
+        assert decomposed["store_state_token"] != composed["store_state_token"]
+
+    def test_success_response_keeps_terminal_contract_with_store_state(self, store):
+        result = store.add("memory", "entry one")
+
+        assert result["success"] is True
+        assert result["done"] is True
+        assert result["store"] == "memory"
+        assert result["store_state_token"].startswith("opaque:")
+        assert "entries" not in result
+
+    def test_add_overflow_returns_structured_quota_state(self, store):
+        store.memory_char_limit = 40
+        store.add("memory", "x" * 35)
+
+        result = store.add("memory", "y" * 20)
+
+        assert result["success"] is False
+        assert result["store"] == "memory"
+        assert result["error_code"] == "memory_quota_exceeded"
+        assert result["error_details"] == {
+            "code": "memory_quota_exceeded",
+            "operation": "add",
+        }
+        assert result["store_state_token"].startswith("opaque:")
+        assert result["quota_usage"]["current_chars"] == 35
+        assert result["quota_usage"]["remaining_chars"] == 5
+        assert result["quota_usage"]["attempted_total_chars"] > 40
+        assert result["quota_usage"]["over_by_chars"] > 0
+
+    def test_replace_overflow_returns_structured_quota_state(self, store):
+        store.memory_char_limit = 80
+        store.add("memory", "alpha " + "x" * 20)
+        store.add("memory", "beta " + "y" * 20)
+
+        result = store.replace("memory", "alpha", "alpha " + "z" * 70)
+
+        assert result["success"] is False
+        assert result["error_code"] == "memory_quota_exceeded"
+        assert result["error_details"] == {
+            "code": "memory_quota_exceeded",
+            "operation": "replace",
+        }
+        assert result["store_state_token"].startswith("opaque:")
+        assert result["quota_usage"]["attempted_total_chars"] > 80
+
+    def test_batch_overflow_returns_structured_quota_state_without_mutating(self, store):
+        store.add("memory", "keep")
+        before = store.stat("memory")
+        operations = [{"action": "add", "content": "q" * 600}]
+
+        result = store.apply_batch("memory", operations)
+
+        assert result["success"] is False
+        assert result["error_code"] == "memory_quota_exceeded"
+        assert result["error_details"] == {
+            "code": "memory_quota_exceeded",
+            "operation": "batch",
+        }
+        assert result["store_state_token"] == before["store_state_token"]
+        assert result["quota_usage"]["attempted_total_chars"] > store.memory_char_limit
+        assert store.memory_entries == ["keep"]
+
+
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
         store.add("memory", "Python 3.11 project")

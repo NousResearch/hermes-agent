@@ -24,6 +24,7 @@ const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/
 
 const ERROR_TITLE_RE =
   /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
+
 const REPLACEMENT_CHAR = String.fromCharCode(0xfffd)
 
 export function normalizeExternalUrl(value: string): string {

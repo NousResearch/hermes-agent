@@ -25,7 +25,9 @@ export const ja = defineLocale({
     docs: 'ドキュメント',
     done: '完了',
     error: 'エラー',
+    expand: '展開',
     failed: '失敗',
+    formatJson: 'JSON を整形',
     free: '無料',
     loading: '読み込み中…',
     notSet: '未設定',
@@ -38,6 +40,7 @@ export const ja = defineLocale({
     set: '設定',
     skip: 'スキップ',
     update: '更新',
+    tryHint: term => `「${term}」を試す`,
     on: 'オン',
     off: 'オフ'
   },
@@ -87,10 +90,14 @@ export const ja = defineLocale({
       retry: '再試行',
       repairInstall: 'インストールを修復',
       useLocalGateway: 'ローカルゲートウェイを使用',
+      gatewaySettings: 'ゲートウェイ設定',
+      back: '戻る',
       openLogs: 'ログを開く',
       repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
-      remoteSignInHint:
-        'ゲートウェイのログインウィンドウを開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。',
+      remoteSignInHint: signInLabel =>
+        `保存済みのリモートブラウザセッションからサインアウトし、${signInLabel}を開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。`,
+      signOutAndSignIn: 'サインアウトして再サインイン',
+      remoteFailureHint: '「ゲートウェイ設定」でゲートウェイの URL とサインインを確認するか、ローカルゲートウェイに切り替えてください。',
       hideRecentLogs: '最近のログを非表示',
       showRecentLogs: '最近のログを表示',
       signedInTitle: 'サインインしました',
@@ -117,6 +124,7 @@ export const ja = defineLocale({
     backendOutOfDateTitle: 'バックエンドが古いです',
     backendOutOfDateMessage:
       'Hermes バックエンドがこのデスクトップビルドより古く、正常に動作しない場合があります。更新して揃えてください。',
+    installMethodUnsupportedTitle: 'サポート対象外のインストール方法',
     updateHermes: 'Hermes を更新',
     updateReadyTitle: '更新の準備ができました',
     updateReadyMessage: count => `${count} 件の新しい変更が利用可能です。`,
@@ -166,8 +174,7 @@ export const ja = defineLocale({
 
   remoteDisplayBanner: {
     message: reason =>
-      `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`,
-    dismiss: '閉じる'
+      `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
   },
 
   titlebar: {
@@ -181,7 +188,8 @@ export const ja = defineLocale({
     showRightSidebar: '右サイドバーを表示',
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
-    openSettings: '設定を開く'
+    openSettings: '設定を開く',
+    openStarmap: 'メモリグラフを開く'
   },
 
   language: {
@@ -284,6 +292,9 @@ export const ja = defineLocale({
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
+      uiScaleTitle: 'UI スケール',
+      uiScaleDesc: (percent: number) =>
+        `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
       embedsTitle: 'インライン埋め込み',
@@ -319,6 +330,8 @@ export const ja = defineLocale({
           'ペット機能には再起動が必要です。この機能が追加される前に起動したアプリが動作中です。Hermes を終了して再度開き、このページに戻ってください。',
         scaleTitle: 'サイズ',
         scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
+        roamTitle: '散歩',
+        roamDesc: 'アイドル中にペットがウィンドウ内を自由に歩き回ります。',
         on: 'オン',
         off: 'オフ',
         chooseTitle: 'ペットを選ぶ',
@@ -605,8 +618,6 @@ export const ja = defineLocale({
       enterValueFirst: '最初に値を入力してください。',
       couldNotSave: '認証情報を保存できませんでした。',
       remove: '削除',
-      or: 'または',
-      escToCancel: 'Esc でキャンセル',
       getKey: 'キーを取得',
       saving: '保存中'
     },
@@ -724,7 +735,22 @@ export const ja = defineLocale({
       name: '名前',
       serverJson: 'サーバー JSON',
       remove: '削除',
-      saveServer: 'サーバーを保存'
+      saveServer: 'サーバーを保存',
+      capabilitySummary: (tools, prompts, resources) =>
+        `${[`ツール ${tools} 個`, ...(prompts ? [`プロンプト ${prompts} 個`] : []), ...(resources ? [`リソース ${resources} 個`] : [])].join('、')} を有効化`,
+      statusConnecting: '接続中…',
+      statusNeedsAuth: '認証が必要です',
+      statusError: 'エラー',
+      statusOff: 'オフ',
+      allServers: 'すべてのサーバー',
+      authenticatedTitle: '認証済み',
+      authenticatedMessage: (server, count) => `${server}: ツール ${count} 個`,
+      waitingForBrowser: 'ブラウザを待機中…',
+      authenticate: '認証',
+      unsavedConnect: '未保存 — 接続するには mcp.json を保存してください。',
+      enableTool: tool => `${tool} を有効化`,
+      disableTool: tool => `${tool} を無効化`,
+      noOutput: 'まだ出力がありません。'
     },
     model: {
       loading: 'モデル設定を読み込み中...',
@@ -836,6 +862,7 @@ export const ja = defineLocale({
   skills: {
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
+    tabMcp: 'MCP',
     all: 'すべて',
     searchSkills: 'スキルを検索...',
     searchToolsets: 'ツールセットを検索...',
@@ -859,9 +886,48 @@ export const ja = defineLocale({
     toolsetEnabled: 'ツールセットを有効にしました',
     toolsetDisabled: 'ツールセットを無効にしました',
     appliesToNewSessions: name => `${name} は新しいセッションに適用されます。`,
-    failedToUpdate: name => `${name} の更新に失敗しました`
+    failedToUpdate: name => `${name} の更新に失敗しました`,
+    sortMostUsed: '使用頻度順',
+    sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ 使用頻度順',
+    sortLeastUsedAsc: '↑ 使用頻度が低い順',
+    enableAll: 'すべて有効化',
+    disableAll: 'すべて無効化',
+    disableUnused: '未使用を無効化',
+    bulkUpdated: count => `${count} 件を新しいセッション向けに更新しました。`,
+    bulkNoChange: '変更するものはありません。',
+    usageCount: count => `${count} 回使用`,
+    provenance: {
+      agent: '学習済み',
+      bundled: '組み込み',
+      hub: 'ハブ'
+    },
+    emptyNoneFound: noun => `${noun} が見つかりません`,
+    emptyNothingMatches: query => `「${query}」に一致するものはありません。`,
+    emptyNoneAvailable: noun => `利用可能な ${noun} はまだありません。`,
+    changesApplyNewSessions: '変更は新しいセッションに適用されます。',
+    skillUpdated: 'スキルを更新しました',
+    edit: '編集',
+    archive: 'アーカイブ',
+    skillArchivedTitle: 'スキルをアーカイブしました',
+    skillArchivedMessage: 'hermes curator restore で復元できます。'
   },
 
+  starmap: {
+    title: 'メモリグラフ',
+    subtitle: (nodes, clusters) => `${clusters} カテゴリの ${nodes} スキル`,
+    close: 'メモリグラフを閉じる',
+    refresh: '更新',
+    memory: 'メモリ',
+    filterAll: 'すべて',
+    filterUsed: '使用済み',
+    filterLearned: '学習済み',
+    viewGraph: 'グラフ',
+    loadFailed: 'メモリグラフを読み込めませんでした',
+    loading: '読み込み中…',
+    emptyTitle: 'まだ学習はありません',
+    emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。'
+  },
   agents: {
     close: 'エージェントを閉じる',
     title: 'スポーンツリー',
@@ -889,7 +955,6 @@ export const ja = defineLocale({
     ageHours: hours => `${hours}時間前`,
     durationSeconds: seconds => `${seconds}秒`,
     durationMinutes: (minutes, seconds) => `${minutes}分 ${seconds}秒`,
-    tokensK: k => `${k}k トーク`,
     tokens: value => `${value} トーク`
   },
 
@@ -906,7 +971,7 @@ export const ja = defineLocale({
     appearance: '外観',
     settings: '設定',
     changeTheme: 'テーマを変更',
-    changeColorMode: 'カラーモードを変更...',
+    changeColorMode: 'カラーモードを変更…',
     pets: {
       title: 'ペット',
       placeholder: 'ペットを検索…',
@@ -952,7 +1017,8 @@ export const ja = defineLocale({
       startOver: 'やり直す'
     },
     installTheme: {
-      title: 'テーマをインストール...',
+      title: 'テーマをインストール…',
+      pageTitle: 'テーマをインストール',
       placeholder: 'VS Code Marketplace を検索...',
       loading: 'Marketplace を検索中...',
       error: 'Marketplace に接続できませんでした。',
@@ -1177,9 +1243,9 @@ export const ja = defineLocale({
     allProfiles: 'すべてのプロファイル',
     showAllProfiles: 'すべてのプロファイルを表示',
     switchToProfile: name => `${name} に切り替え`,
-    manageProfiles: 'プロファイルを管理...',
+    manageProfiles: 'プロファイルを管理…',
     actionsFor: name => `${name} のアクション`,
-    color: 'カラー...',
+    color: 'カラー…',
     colorFor: name => `${name} のカラー`,
     setColor: color => `カラー ${color} に設定`,
     autoColor: '自動',
@@ -1192,6 +1258,8 @@ export const ja = defineLocale({
     env: 'env',
     defaultBadge: 'デフォルト',
     rename: '名前を変更',
+    renameMenu: '名前を変更…',
+    editSoul: 'SOUL.md を編集…',
     copySetup: 'セットアップをコピー',
     copying: 'コピー中...',
     modelLabel: 'モデル',
@@ -1351,7 +1419,10 @@ export const ja = defineLocale({
     customPlaceholder: '0 9 * * * または weekdays at 9am',
     customHint: 'Cron 式、または「every hour」「weekdays at 9am」のようなフレーズ。',
     optional: '省略可能',
+    promptRequired: 'プロンプトは必須です。',
     promptScheduleRequired: 'プロンプトとスケジュールは必須です。',
+    scheduleRequired: 'スケジュールは必須です。',
+    scriptOnlyEditHint: 'スクリプトのみのジョブ（AI プロンプトなし）。ジョブ ID:',
     saveChanges: '変更を保存',
     createAction: 'Cron を作成'
   },
@@ -1448,12 +1519,17 @@ export const ja = defineLocale({
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
       createFailed: 'プロジェクトを作成できませんでした',
+      staleBackend:
+        'プロジェクトを作成するには Hermes バックエンドを更新してください。バックエンドがこのデスクトップアプリより古いです（設定 → 更新 → バックエンド）。',
       deleteConfirm:
         'Hermes から保存済みプロジェクトを削除します。ファイル・git リポジトリ・ワークツリーはそのまま残ります。',
       startWork: '新しいワークツリー',
       newWorktreeTitle: '新しいワークツリー',
       newWorktreeDesc: 'このワークツリーのブランチ名を入力してください。',
       branchPlaceholder: '例: my-feature',
+      branchOff: () => ({ after: ' から分岐', before: '' }),
+      baseBranchPlaceholder: 'ブランチを検索…',
+      baseBranchNone: 'ブランチが見つかりません',
       startWorkFailed: 'ワークツリーを作成できませんでした',
       convertBranch: 'ブランチを変換…',
       convertBranchTitle: 'ブランチを変換',
@@ -1549,6 +1625,8 @@ export const ja = defineLocale({
     stopDictation: '口述を停止',
     transcribingDictation: '口述を文字起こし中',
     voiceDictation: '音声口述',
+    speakReplies: '返信を読み上げる',
+    stopSpeakingReplies: '返信の読み上げを停止',
     lookupLoading: '検索中…',
     lookupNoMatches: '一致なし。',
     lookupTry: '試す',
@@ -1807,6 +1885,10 @@ export const ja = defineLocale({
     featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
     openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',
     apiKeyOptions: {
+      fireworks: {
+        short: 'モデル API に直接接続',
+        description: 'Fireworks AI がホストするモデルに直接アクセスします。'
+      },
       openrouter: {
         short: '1 つのキーで多くのモデル',
         description: '1 つのキーで数百のモデルをホスト。新規インストールのデフォルトとして最適。'
@@ -1830,7 +1912,6 @@ export const ja = defineLocale({
     flowSubtitles: {
       pkce: 'ブラウザーを開いてサインインし、ここに戻ります',
       device_code: 'ブラウザーで確認ページを開きます — Hermes が自動接続します',
-      loopback: 'サインインのためブラウザーを開きます — Hermes が自動接続します',
       external: 'ターミナルで一度サインインして、チャットに戻ります'
     },
     startingSignIn: provider => `${provider} のサインインを開始中...`,
@@ -1910,7 +1991,9 @@ export const ja = defineLocale({
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '特高',
       max: '最大',
+      ultra: 'ウルトラ',
       updateFailed: 'モデルオプションの更新に失敗しました',
       fastFailed: '高速モードの更新に失敗しました'
     },
@@ -1928,6 +2011,16 @@ export const ja = defineLocale({
       recentActivity: '最近のアクティビティ',
       viewAllLogs: 'すべてのログを見る →',
       messagingPlatforms: 'メッセージングプラットフォーム'
+    },
+    approvalMode: {
+      title: '承認モード',
+      ariaLabel: mode => `承認モード: ${mode}`,
+      manual: '手動',
+      manualDescription: '承認が必要な操作の前に確認します',
+      smart: 'スマート',
+      smartDescription: '必要な場合にのみ確認します',
+      off: 'オフ',
+      offDescription: '承認プロンプトなしで実行します'
     },
     statusbar: {
       unknown: '不明',
@@ -1961,9 +2054,29 @@ export const ja = defineLocale({
       running: count => `${count} 実行中`,
       cron: 'Cron',
       openCron: 'Cron ジョブを開く',
+      starmap: 'メモリグラフ',
+      openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
       currentTurnElapsed: '現在のターン経過時間',
       contextUsage: 'コンテキスト使用状況',
+      contextUsagePanel: {
+        categories: {
+          conversation: '会話',
+          mcp: 'MCP',
+          memory: 'メモリ',
+          rules: 'ルール',
+          skills: 'スキル',
+          subagent_definitions: 'サブエージェント定義',
+          system_prompt: 'システムプロンプト',
+          tool_definitions: 'ツール定義'
+        },
+        empty: 'コンテキストデータはまだありません',
+        loading: '内訳を読み込み中…',
+        percentFull: percent => `${percent}% 使用中`,
+        title: 'コンテキスト使用状況',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: 'コンテキスト使用状況の内訳を開く',
       session: 'セッション',
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
@@ -2166,6 +2279,7 @@ export const ja = defineLocale({
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
       skip: 'スキップ',
+      skipped: 'スキップ済み',
       continueLabel: '続行'
     },
     tool: {

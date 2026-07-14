@@ -34,6 +34,11 @@ from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
 from agent.display import ToolPreview
+from plugins.platforms.discord.unicode_command_policy import (
+    _APP_COMMAND_LN_COMPATIBILITY_RANGES,
+    _APP_COMMAND_LOWERCASE_COMPATIBILITY_RANGES,
+    _APP_COMMAND_SCRIPT_RANGES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -450,32 +455,30 @@ def discord_deps_present() -> bool:
 # 32-character tokens plus two literal spaces.
 _APP_COMMAND_MENTION_RE = re.compile(r"</([^<>:\r\n]{1,98}):([0-9]+)>")
 
-# Python's stdlib ``re`` has no Unicode script properties. Letters and numbers
-# are covered via their Unicode general categories. This immutable table is the
-# remaining Script=Devanagari or Script=Thai code points whose Unicode 17.0
-# General_Category is not L* or N*. It was generated from the official files at
-# https://www.unicode.org/Public/17.0.0/ucd/{Scripts,UnicodeData}.txt; adjacent
-# code points were compressed into inclusive ranges. Keeping the script-property
-# exceptions explicit also makes behavior independent of Python's bundled
-# unicodedata version (notably, U+11B00-U+11B09 are unassigned in Python 3.11's
-# Unicode 14.0 database).
-_APP_COMMAND_SCRIPT_RANGES = (
-    (0x0900, 0x0903),
-    (0x093A, 0x093C),
-    (0x093E, 0x094F),
-    (0x0955, 0x0957),
-    (0x0962, 0x0963),
-    (0x0970, 0x0970),
-    (0xA8E0, 0xA8F1),
-    (0xA8F8, 0xA8FA),
-    (0xA8FC, 0xA8FC),
-    (0xA8FF, 0xA8FF),
-    (0x11B00, 0x11B09),
-    (0x0E31, 0x0E31),
-    (0x0E34, 0x0E3A),
-    (0x0E47, 0x0E4F),
-    (0x0E5A, 0x0E5B),
-)
+def _codepoint_in_ranges(codepoint: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    """Return membership in sorted, disjoint inclusive ranges."""
+    low = 0
+    high = len(ranges)
+    while low < high:
+        middle = (low + high) // 2
+        start, end = ranges[middle]
+        if codepoint < start:
+            high = middle
+        elif codepoint > end:
+            low = middle + 1
+        else:
+            return True
+    return False
+
+
+def _is_app_command_name_character(char: str) -> bool:
+    """Apply the pinned Unicode character class for one CHAT_INPUT name code point."""
+    if char in "-_'" or unicodedata.category(char)[0] in {"L", "N"}:
+        return True
+    codepoint = ord(char)
+    return _codepoint_in_ranges(
+        codepoint, _APP_COMMAND_LN_COMPATIBILITY_RANGES
+    ) or _codepoint_in_ranges(codepoint, _APP_COMMAND_SCRIPT_RANGES)
 
 
 def _is_valid_app_command_name(name: str) -> bool:
@@ -484,12 +487,13 @@ def _is_valid_app_command_name(name: str) -> bool:
         return False
 
     for char in name:
-        if char in "-_'" or unicodedata.category(char)[0] in {"L", "N"}:
-            continue
         codepoint = ord(char)
-        if any(start <= codepoint <= end for start, end in _APP_COMMAND_SCRIPT_RANGES):
-            continue
-        return False
+        # Python 3.11's UCD 14.0 does not know the lowercase mappings of
+        # capitals assigned later. Preserve Discord's lowercase rule explicitly.
+        if _codepoint_in_ranges(codepoint, _APP_COMMAND_LOWERCASE_COMPATIBILITY_RANGES):
+            return False
+        if not _is_app_command_name_character(char):
+            return False
     return True
 
 

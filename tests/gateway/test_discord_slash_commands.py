@@ -1,8 +1,10 @@
 """Tests for native Discord slash command fast-paths (thread creation & auto-thread)."""
 
+import json
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-import sys
 
 import pytest
 
@@ -77,10 +79,18 @@ _ensure_discord_mock()
 
 from gateway.platforms.base import MessageType  # noqa: E402
 from plugins.platforms.discord.adapter import (  # noqa: E402
+    _APP_COMMAND_LN_COMPATIBILITY_RANGES,
+    _APP_COMMAND_LOWERCASE_COMPATIBILITY_RANGES,
     _APP_COMMAND_SCRIPT_RANGES,
     DiscordAdapter,
+    _is_app_command_name_character,
     _is_valid_app_command_name,
     _normalize_app_command_mentions,
+)
+from plugins.platforms.discord.unicode_command_policy import (  # noqa: E402
+    _APP_COMMAND_UNICODE_BASELINE_VERSION,
+    _APP_COMMAND_UNICODE_SOURCE_SHA256,
+    _APP_COMMAND_UNICODE_VERSION,
 )
 
 
@@ -629,6 +639,7 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         # Discord's CHAT_INPUT grammar is Unicode-aware and permits apostrophes.
         ("</café:42>", "/café"),
         ("</नमस्ते:42>", "/नमस्ते"),
+        ("</\U0001e4d0:42>", "/\U0001e4d0"),
         ("</rock'n_roll:42>", "/rock'n_roll"),
         ("</café नमस्ते:42>", "/café नमस्ते"),
         ("</café समूह नमस्ते:42>", "/café समूह नमस्ते"),
@@ -668,6 +679,8 @@ def test_normalize_app_command_mentions(raw, expected):
         "\u0e4f",
         "\ua8e0",
         "\U00011b00",
+        "\U0001e4d0",  # Nag Mundari L/N assigned after the UCD 14 runtime floor.
+        "\u1c8a",  # Lowercase counterpart assigned after the UCD 14 runtime floor.
         "".join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2)),
         "\u0e47\u0e4f",
     ],
@@ -676,27 +689,104 @@ def test_valid_app_command_name_accepts_discord_unicode_grammar(name):
     assert _is_valid_app_command_name(name)
 
 
-def test_app_command_script_ranges_match_unicode_17_property_oracle():
-    """Pin the generated Script=Devanagari/Thai non-L/N range contract."""
-    expected_ranges = (
-        (0x0900, 0x0903),
-        (0x093A, 0x093C),
-        (0x093E, 0x094F),
-        (0x0955, 0x0957),
-        (0x0962, 0x0963),
-        (0x0970, 0x0970),
-        (0xA8E0, 0xA8F1),
-        (0xA8F8, 0xA8FA),
-        (0xA8FC, 0xA8FC),
-        (0xA8FF, 0xA8FF),
-        (0x11B00, 0x11B09),
-        (0x0E31, 0x0E31),
-        (0x0E34, 0x0E3A),
-        (0x0E47, 0x0E4F),
-        (0x0E5A, 0x0E5B),
+_UNICODE_ORACLE = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "discord_chat_input_unicode_17.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+def _oracle_ranges(name):
+    return tuple((start, end) for start, end in _UNICODE_ORACLE[name])
+
+
+def _oracle_contains(codepoint, ranges):
+    low = 0
+    high = len(ranges)
+    while low < high:
+        middle = (low + high) // 2
+        start, end = ranges[middle]
+        if codepoint < start:
+            high = middle
+        elif codepoint > end:
+            low = middle + 1
+        else:
+            return True
+    return False
+
+
+def test_app_command_unicode_policy_and_oracle_share_pinned_official_sources():
+    assert _APP_COMMAND_UNICODE_BASELINE_VERSION == _UNICODE_ORACLE["baseline_unicode_version"]
+    assert _APP_COMMAND_UNICODE_VERSION == _UNICODE_ORACLE["unicode_version"]
+    assert _APP_COMMAND_UNICODE_SOURCE_SHA256 == _UNICODE_ORACLE["source_sha256"]
+    assert set(_APP_COMMAND_UNICODE_SOURCE_SHA256) == set(_UNICODE_ORACLE["source_urls"])
+    assert all(
+        len(digest) == 64 and not (set(digest) - set("0123456789abcdef"))
+        for digest in _APP_COMMAND_UNICODE_SOURCE_SHA256.values()
     )
 
-    assert _APP_COMMAND_SCRIPT_RANGES == expected_ranges
+
+def test_app_command_unicode_compatibility_ranges_are_canonical():
+    for ranges in (
+        _APP_COMMAND_LN_COMPATIBILITY_RANGES,
+        _APP_COMMAND_SCRIPT_RANGES,
+        _APP_COMMAND_LOWERCASE_COMPATIBILITY_RANGES,
+    ):
+        previous_end = -2
+        for start, end in ranges:
+            assert 0 <= start <= end <= sys.maxunicode
+            assert start > previous_end + 1
+            previous_end = end
+
+
+def test_app_command_unicode_17_full_table_oracle_has_no_missing_or_extra_codepoints():
+    """Compare official expected, embedded class, and validator over all Unicode."""
+    property_ranges = _oracle_ranges("property_ranges")
+    lowercase_disallowed = _oracle_ranges("lowercase_disallowed_ranges")
+    counts = {
+        "embedded_missing": 0,
+        "embedded_extra": 0,
+        "accepted_missing": 0,
+        "accepted_extra": 0,
+    }
+    samples = {name: [] for name in counts}
+    for codepoint in range(sys.maxunicode + 1):
+        char = chr(codepoint)
+        expected_property = _oracle_contains(codepoint, property_ranges)
+        expected_character = expected_property or char in "-_'"
+        target_has_lowercase = _oracle_contains(codepoint, lowercase_disallowed)
+        expected_valid = expected_character and not target_has_lowercase
+        embedded = _is_app_command_name_character(char)
+        accepted = _is_valid_app_command_name(char)
+
+        comparisons = (
+            ("embedded_missing", expected_character and not embedded),
+            ("embedded_extra", embedded and not expected_character),
+            ("accepted_missing", expected_valid and not accepted),
+            ("accepted_extra", accepted and not expected_valid),
+        )
+        for name, mismatched in comparisons:
+            if mismatched:
+                counts[name] += 1
+                if len(samples[name]) < 8:
+                    samples[name].append(f"U+{codepoint:04X}")
+
+    assert counts == {name: 0 for name in counts}, samples
+
+
+def test_app_command_unicode_17_property_range_boundaries():
+    property_ranges = _oracle_ranges("property_ranges")
+    for start, end in property_ranges:
+        assert _is_app_command_name_character(chr(start))
+        assert _is_app_command_name_character(chr(end))
+        if start:
+            before = start - 1
+            expected = _oracle_contains(before, property_ranges) or chr(before) in "-_'"
+            assert _is_app_command_name_character(chr(before)) is expected
+        if end < sys.maxunicode:
+            after = end + 1
+            expected = _oracle_contains(after, property_ranges) or chr(after) in "-_'"
+            assert _is_app_command_name_character(chr(after)) is expected
 
 
 @pytest.mark.parametrize(
@@ -707,6 +797,7 @@ def test_app_command_script_ranges_match_unicode_17_property_oracle():
         "status!",
         "has space",
         "tab\tname",
+        "\u1c89",  # Post-UCD-14 capital with a UCD 17 lowercase mapping.
         "\u0301",  # Combining mark outside the permitted scripts.
         "\u0e3f",  # Thai block, but Script=Common.
         "\u0964",  # Gap between exact Devanagari script ranges.
@@ -772,6 +863,8 @@ async def test_clicked_slash_suggestion_dispatched_as_command(adapter, monkeypat
         ("</\u0e4f:108>", "/\u0e4f", MessageType.COMMAND),
         ("</\ua8e0:109>", "/\ua8e0", MessageType.COMMAND),
         ("</\U00011b00:110>", "/\U00011b00", MessageType.COMMAND),
+        ("</\U0001e4d0:116>", "/\U0001e4d0", MessageType.COMMAND),
+        ("</\u1c8a:117>", "/\u1c8a", MessageType.COMMAND),
         (
             f"</{''.join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2))}:111>",
             "/" + "".join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2)),
@@ -783,6 +876,7 @@ async def test_clicked_slash_suggestion_dispatched_as_command(adapter, monkeypat
         ("</\u0301:113>", "</\u0301:113>", MessageType.TEXT),
         ("</\u0e3f:114>", "</\u0e3f:114>", MessageType.TEXT),
         ("</\u0964:115>", "</\u0964:115>", MessageType.TEXT),
+        ("</\u1c89:118>", "</\u1c89:118>", MessageType.TEXT),
     ],
 )
 async def test_clicked_slash_suggestion_enforces_discord_name_grammar(

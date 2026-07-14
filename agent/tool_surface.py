@@ -38,7 +38,32 @@ def _tool_name(tool_def: Dict[str, Any]) -> str:
     return name if isinstance(name, str) else ""
 
 
-def _family_enabled(family: str, enabled_toolsets: Optional[List[str]]) -> bool:
+def _family_enabled(
+    family: str,
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]],
+) -> bool:
+    if disabled_toolsets:
+        if family in disabled_toolsets:
+            return False
+        try:
+            from toolsets import get_toolset, resolve_toolset
+
+            for toolset in disabled_toolsets:
+                # Match model_tools subtraction semantics: platform bundles and
+                # posture toolsets preserve shared core tools.
+                if toolset.startswith("hermes-") or (
+                    get_toolset(toolset) or {}
+                ).get("posture"):
+                    continue
+                if family in resolve_toolset(toolset):
+                    return False
+        except Exception:
+            logger.debug(
+                "Failed to resolve disabled toolsets for %s tools",
+                family,
+                exc_info=True,
+            )
     if family == "memory":
         from agent.memory_manager import memory_provider_tools_enabled
 
@@ -55,12 +80,13 @@ def _append_family(
     family: str,
     schemas: Iterable[Any],
     enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]],
     injected_names: Dict[str, List[str]],
     skipped: Dict[str, List[Dict[str, str]]],
 ) -> None:
     from agent.memory_manager import normalize_tool_schema
 
-    allowed = _family_enabled(family, enabled_toolsets)
+    allowed = _family_enabled(family, enabled_toolsets, disabled_toolsets)
     for raw_schema in schemas:
         schema = normalize_tool_schema(raw_schema)
         if schema is None:
@@ -87,6 +113,7 @@ def assemble_full_tool_surface(
     base_tool_defs: Iterable[Dict[str, Any]],
     *,
     enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
     memory_tool_schemas: Iterable[Any] = (),
     context_engine_tool_schemas: Iterable[Any] = (),
     apply_tool_search: bool = True,
@@ -116,6 +143,7 @@ def assemble_full_tool_surface(
         family="memory",
         schemas=memory_tool_schemas,
         enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
         injected_names=injected_names,
         skipped=skipped,
     )
@@ -125,11 +153,16 @@ def assemble_full_tool_surface(
         family="context_engine",
         schemas=context_engine_tool_schemas,
         enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
         injected_names=injected_names,
         skipped=skipped,
     )
 
-    sanitized = sanitize_tool_schemas(staged)
+    try:
+        sanitized = sanitize_tool_schemas(staged)
+    except Exception as exc:  # pragma: no cover - preserve fail-soft loading
+        logger.warning("Schema sanitization skipped: %s", exc)
+        sanitized = list(staged)
     pre_assembly = list(sanitized)
     if not apply_tool_search:
         return FullToolSurface(
@@ -220,6 +253,7 @@ def assemble_agent_tool_surface(
     return assemble_full_tool_surface(
         base_tool_defs,
         enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
         memory_tool_schemas=memory_schemas,
         context_engine_tool_schemas=context_schemas,
         context_length=getattr(

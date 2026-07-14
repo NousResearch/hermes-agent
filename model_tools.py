@@ -1113,6 +1113,7 @@ def handle_function_call(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
                 quiet_mode=True, skip_tool_search_assembly=True,
+                record_resolved_names=False,
             ) or []
         except Exception:
             current_defs = []

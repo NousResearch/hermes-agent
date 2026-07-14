@@ -2,7 +2,11 @@
 from argparse import Namespace
 from unittest.mock import patch
 
-from hermes_cli.tools_config import build_tools_diagnostics, tools_disable_enable_command
+from hermes_cli.tools_config import (
+    _diagnostic_context_engine,
+    build_tools_diagnostics,
+    tools_disable_enable_command,
+)
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────
@@ -180,6 +184,30 @@ class TestToolsList:
 
 
 class TestToolsDiagnose:
+
+    def test_context_engine_diagnostics_rejects_uncopyable_plugin_singleton(self):
+        class _UncopyableEngine:
+            name = "uncopyable"
+
+            def __deepcopy__(self, memo):
+                raise TypeError("contains a lock")
+
+            def get_tool_schemas(self):
+                return [{"name": "should_not_be_visible"}]
+
+        with patch(
+            "plugins.context_engine.load_context_engine", return_value=None
+        ), patch(
+            "hermes_cli.plugins.get_plugin_context_engine",
+            return_value=_UncopyableEngine(),
+        ):
+            provider, schemas, error = _diagnostic_context_engine(
+                {"context": {"engine": "uncopyable"}}
+            )
+
+        assert provider == "uncopyable"
+        assert schemas == []
+        assert error == "engine cannot be copied safely"
 
     def test_build_diagnostics_reports_visible_and_disabled_tools(self):
         config = {

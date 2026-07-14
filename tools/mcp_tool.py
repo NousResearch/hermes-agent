@@ -5254,9 +5254,10 @@ def refresh_agent_mcp_tools(
     Crucially it preserves the two schema families that live outside the
     registry — external memory-provider tools (mem0/honcho/…) and context-engine
     tools (``lcm_*``). The same complete-surface assembler used at agent init
-    reconstructs registry and injected families together before the new
-    ``(tools, valid_tool_names)`` pair is published under ``_agent_tools_lock``
-    so a concurrent reader never sees a cross-attribute half-swap.
+    reconstructs registry and injected families together. Writers serialize the
+    ``tools``, ``valid_tool_names``, and context-routing update under
+    ``_agent_tools_lock``; callers must invoke refresh only at the safe turn
+    boundaries described below.
 
     Returns the set of newly-added tool names (empty when nothing changed), so
     callers can decide whether to notify the user / re-emit session info.  The
@@ -5334,11 +5335,8 @@ def refresh_agent_mcp_tools(
         agent.tools = new_defs
         agent.valid_tool_names = new_names
         record_resolved_tool_names(new_defs)
-        # Publish context-engine routing names atomically with the snapshot.
-        engine_names = getattr(agent, "_context_engine_tool_names", None)
-        if isinstance(engine_names, set):
-            engine_names.clear()
-            engine_names.update(staged_engine_names)
+        # One assignment avoids exposing a transient empty routing set.
+        agent._context_engine_tool_names = set(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         return new_names - current
 

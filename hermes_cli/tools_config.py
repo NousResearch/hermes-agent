@@ -4493,11 +4493,19 @@ def _diagnostic_context_engine(config: dict) -> tuple[str, List[Dict[str, Any]],
 
         engine = load_context_engine(engine_name)
         if engine is None:
+            import copy
+
             from hermes_cli.plugins import get_plugin_context_engine
 
             candidate = get_plugin_context_engine()
             if candidate is not None and getattr(candidate, "name", None) == engine_name:
-                engine = candidate
+                try:
+                    engine = copy.deepcopy(candidate)
+                except Exception:
+                    logger.debug(
+                        "Context-engine diagnostic copy failed", exc_info=True
+                    )
+                    return engine_name, [], "engine cannot be copied safely"
         if engine is None:
             return engine_name, [], "engine not found"
         get_schemas = getattr(engine, "get_tool_schemas", None)
@@ -4539,19 +4547,21 @@ def build_tools_diagnostics(config: dict, platform: str) -> Dict[str, Any]:
         and isinstance(platform_toolsets.get(platform), list)
     )
     agent_cfg = config.get("agent") or {}
+    disabled_list = sorted(
+        str(toolset) for toolset in (agent_cfg.get("disabled_toolsets") or [])
+    ) if isinstance(agent_cfg, dict) else []
     config_sources = {
         "toolset_selection": (
             f"platform_toolsets.{platform}"
             if explicit_platform_config
             else f"platform default ({PLATFORMS.get(platform, {}).get('default_toolset', f'hermes-{platform}')})"
         ),
-        "global_disabled_toolsets": sorted(
-            str(toolset) for toolset in (agent_cfg.get("disabled_toolsets") or [])
-        ) if isinstance(agent_cfg, dict) else [],
+        "global_disabled_toolsets": disabled_list,
     }
 
     base_tool_defs = get_tool_definitions(
         enabled_toolsets=enabled_list,
+        disabled_toolsets=disabled_list,
         quiet_mode=True,
         skip_tool_search_assembly=True,
         record_resolved_names=False,
@@ -4570,6 +4580,7 @@ def build_tools_diagnostics(config: dict, platform: str) -> Dict[str, Any]:
     surface = assemble_full_tool_surface(
         base_tool_defs,
         enabled_toolsets=enabled_list,
+        disabled_toolsets=disabled_list,
         memory_tool_schemas=memory_schemas,
         context_engine_tool_schemas=context_schemas,
         context_length=context_length,

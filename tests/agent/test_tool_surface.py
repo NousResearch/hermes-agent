@@ -104,3 +104,39 @@ def test_tool_search_runs_after_external_families_are_injected():
     assert {"surface_memory_recall", "surface_context_expand"}.issubset(names)
     assert surface.tool_search_activated is True
     assert surface.deferred_names == [deferred_name]
+
+
+def test_disabled_toolsets_override_enabled_external_families():
+    surface = assemble_full_tool_surface(
+        [_tool("read_file")],
+        enabled_toolsets=["file", "memory", "context_engine"],
+        disabled_toolsets=["memory", "context_engine"],
+        memory_tool_schemas=[_schema("disabled_memory")],
+        context_engine_tool_schemas=[_schema("disabled_context")],
+        tool_search_config=ToolSearchConfig.from_raw({"enabled": "off"}),
+    )
+
+    names = {tool["function"]["name"] for tool in surface.tool_defs}
+    assert names == {"read_file"}
+    assert surface.skipped == {
+        "memory": [{"tool": "disabled_memory", "reason": "toolset disabled"}],
+        "context_engine": [
+            {"tool": "disabled_context", "reason": "toolset disabled"}
+        ],
+    }
+
+
+def test_schema_sanitization_failure_is_fail_soft(monkeypatch):
+    def _raise(_schemas):
+        raise TypeError("non-copyable schema")
+
+    monkeypatch.setattr("tools.schema_sanitizer.sanitize_tool_schemas", _raise)
+
+    surface = assemble_full_tool_surface(
+        [_tool("read_file")],
+        apply_tool_search=False,
+    )
+
+    assert [tool["function"]["name"] for tool in surface.tool_defs] == [
+        "read_file"
+    ]

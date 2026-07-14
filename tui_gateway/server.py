@@ -4401,6 +4401,7 @@ def _init_session(
     history: list,
     cols: int = 80,
     cwd: str | None = None,
+    explicit_cwd: bool = False,
     session_db=None,
 ):
     now = time.time()
@@ -4418,7 +4419,7 @@ def _init_session(
             "attached_images": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
-            "explicit_cwd": False,
+            "explicit_cwd": explicit_cwd,
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -7782,6 +7783,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4008, "nothing to branch — send a message first")
     new_key = _new_session_key()
     new_sid = uuid.uuid4().hex[:8]
+    branch_cwd = _session_cwd(session)
+    branch_explicit_cwd = bool(session.get("explicit_cwd"))
     lease, limit_message = _claim_active_session_slot(new_key, live_session_id=new_sid)
     if limit_message is not None:
         return _err(rid, 4090, limit_message)
@@ -7807,7 +7810,7 @@ def _(rid, params: dict) -> dict:
             # thing that surfaces TUI branches. See issue #20856.
             model_config={"_branched_from": old_key},
             parent_session_id=old_key,
-            cwd=_session_cwd(session),
+            cwd=branch_cwd,
         )
         for msg in history:
             db.append_message(
@@ -7827,7 +7830,13 @@ def _(rid, params: dict) -> dict:
         finally:
             _clear_session_context(tokens)
         _init_session(
-            new_sid, new_key, agent, list(history), cols=session.get("cols", 80)
+            new_sid,
+            new_key,
+            agent,
+            list(history),
+            cols=session.get("cols", 80),
+            cwd=branch_cwd,
+            explicit_cwd=branch_explicit_cwd,
         )
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = lease

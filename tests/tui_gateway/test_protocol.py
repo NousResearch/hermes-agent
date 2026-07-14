@@ -22,7 +22,10 @@ def _restore_stdout():
 @pytest.fixture()
 def server():
     with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
+        "hermes_constants": MagicMock(
+            get_hermes_home=MagicMock(return_value="/tmp/hermes_test"),
+            translate_cwd_for_wsl_backend=lambda cwd: cwd,
+        ),
         "hermes_cli.env_loader": MagicMock(),
         "hermes_cli.banner": MagicMock(),
         "hermes_state": MagicMock(),
@@ -367,6 +370,35 @@ def test_init_session_keeps_persisted_cwd_without_terminal_override(server, monk
     assert server._sessions["sid-persisted"]["cwd"] == str(tmp_path)
     assert server._sessions["sid-persisted"]["explicit_cwd"] is False
     assert calls == []
+
+
+def test_init_session_registers_explicit_cwd_override(server, monkeypatch, tmp_path):
+    calls = []
+    terminal_tool = types.SimpleNamespace(
+        register_task_env_overrides=lambda key, overrides: calls.append((key, overrides))
+    )
+
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_SlashWorker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_start_notification_poller", lambda _sid, _session: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {})
+
+    with patch.dict(sys.modules, {"tools.terminal_tool": terminal_tool}):
+        server._init_session(
+            "sid-explicit",
+            "session-key",
+            MagicMock(),
+            [],
+            cols=80,
+            cwd=str(tmp_path),
+            explicit_cwd=True,
+        )
+
+    assert server._sessions["sid-explicit"]["explicit_cwd"] is True
+    assert calls == [("session-key", {"cwd": str(tmp_path)})]
 
 
 def test_set_session_cwd_registers_terminal_override(server, monkeypatch, tmp_path):
@@ -1213,7 +1245,10 @@ def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(serve
     assert not server._ws_session_is_orphaned(server._sessions[sid])
 
 
-def test_session_branch_persists_branched_from_marker(server, monkeypatch):
+@pytest.mark.parametrize("parent_explicit_cwd", [False, True])
+def test_session_branch_persists_branched_from_marker(
+    server, monkeypatch, parent_explicit_cwd
+):
     """TUI /branch must persist a _branched_from marker so the branch stays
     visible in /resume and /sessions.
 
@@ -1223,6 +1258,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     thing that keeps a TUI branch visible.
     """
     create_calls = []
+    init_calls = []
 
     class _DB:
         def get_session_title(self, _key):
@@ -1251,7 +1287,11 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
             model="test/model", session_id=session_id or key
         ),
     )
-    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        server,
+        "_init_session",
+        lambda *args, **kwargs: init_calls.append((args, kwargs)),
+    )
     monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
     monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
@@ -1263,6 +1303,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
         "history": [{"role": "user", "content": "hello"}],
         "history_lock": threading.Lock(),
         "cols": 80,
+        "explicit_cwd": parent_explicit_cwd,
     }
 
     resp = server.handle_request(
@@ -1276,6 +1317,10 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["parent_session_id"] == parent_key
     # The marker — without it the branch is invisible in /resume and /sessions.
     assert kwargs["model_config"] == {"_branched_from": parent_key}
+    assert len(init_calls) == 1
+    _, init_kwargs = init_calls[0]
+    assert init_kwargs["cwd"] == "/tmp/branch-cwd"
+    assert init_kwargs["explicit_cwd"] is parent_explicit_cwd
 
 
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):

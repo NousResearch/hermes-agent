@@ -613,6 +613,11 @@ def run_conversation(
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    # Last composed answer intentionally held back by a verification gate. If
+    # that continuation consumes the remaining budget, this is the best
+    # user-facing result available; it must not be confused with error or
+    # recovery text produced by unrelated exit paths.
+    _pending_verification_response = None
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
@@ -1162,7 +1167,11 @@ def run_conversation(
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
-                    api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+                    api_kwargs = agent._get_transport().preflight_kwargs(
+                        api_kwargs,
+                        allow_stream=False,
+                        is_github_responses=agent._is_copilot_url(),
+                    )
                 # Copilot x-initiator: the first API call of a user turn is
                 # marked "user" so Copilot bills a premium request; tool-loop
                 # follow-ups keep the default "agent" header (#3040).
@@ -1309,6 +1318,12 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    if agent.api_mode == "codex_responses":
+                        next_api_kwargs = agent._get_transport().preflight_kwargs(
+                            next_api_kwargs,
+                            allow_stream=False,
+                            is_github_responses=agent._is_copilot_url(),
+                        )
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
@@ -2104,7 +2119,19 @@ def run_conversation(
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
+                elif getattr(
+                    agent.context_compressor,
+                    "awaiting_real_usage_after_compression",
+                    False,
+                ):
+                    # A response with no usage cannot adjudicate whether the
+                    # prior compaction cleared the threshold. Consume the pending
+                    # verdict now so a much later, unrelated reading is not
+                    # charged to that old compaction, and so preflight deferral
+                    # does not remain latched indefinitely.
+                    agent.context_compressor.update_from_response({})
 
+                if hasattr(response, 'usage') and response.usage:
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
                     # from the error message), not guessed probe tiers.
@@ -3034,14 +3061,24 @@ def run_conversation(
                 # (``/new``), switch to a larger-context model, or reduce
                 # attachments.  Forced compaction via ``/compress``
                 # (``force=True``) is unaffected — it never reaches this loop.
+                #
+                # Output-cap errors (max_tokens too large) are NOT input
+                # overflow — the recovery is a max_tokens-only retry that
+                # does not require compression.  Exempt them from this guard
+                # so the retry still fires even when compression is disabled.
                 _overflow_reasons = {
                     FailoverReason.long_context_tier,
                     FailoverReason.payload_too_large,
                     FailoverReason.context_overflow,
                 }
+                _is_output_cap_error = (
+                    is_output_cap_error(error_msg)
+                    or parse_available_output_tokens_from_error(error_msg) is not None
+                )
                 if (
                     classified.reason in _overflow_reasons
                     and not getattr(agent, "compression_enabled", True)
+                    and not _is_output_cap_error
                 ):
                     agent._flush_status_buffer()
                     agent._vprint(
@@ -3445,15 +3482,33 @@ def run_conversation(
                     #       context_length = total window (input + output combined).
                     available_out = parse_available_output_tokens_from_error(error_msg)
                     if available_out is not None:
-                        # Error is purely about the output cap being too large.
-                        # Cap output to the available space and retry without
-                        # touching context_length or triggering compression.
-                        safe_out = max(1, available_out - 64)  # small safety margin
+                        # This is an output-cap error, not input overflow.
+                        # The provider's available_tokens is the authoritative
+                        # cap for the failed request, so keep it as an upper
+                        # bound.  Also estimate the current API request shape
+                        # (system prompt, injected context, tool schemas) because
+                        # Hermes may add API-only content not present in persisted
+                        # messages.  Use the smaller budget and apply a small
+                        # safety margin.  Do not alter context_length.
+                        request_input_estimate = estimate_request_tokens_rough(
+                            api_messages, tools=agent.tools or None,
+                        )
+                        local_available_out = old_ctx - request_input_estimate
+                        if local_available_out > 0:
+                            safe_out = max(1, min(available_out, local_available_out) - 64)
+                        else:
+                            # The rough local estimate can overshoot the real
+                            # request size.  Fall back to the provider-reported
+                            # budget, which is authoritative for the failed
+                            # request.
+                            safe_out = max(1, available_out - 64)
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "
                             f"retrying with max_tokens={safe_out:,} "
-                            f"(available_tokens={available_out:,}; context_length unchanged at {old_ctx:,})"
+                            f"(provider_available={available_out:,}, "
+                            f"estimated_request_tokens={request_input_estimate:,}; "
+                            f"context_length unchanged at {old_ctx:,})"
                         )
                         # Still count against compression_attempts so we don't
                         # loop forever if the error keeps recurring.
@@ -5062,8 +5117,11 @@ def run_conversation(
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
-                # Successful content reached — drop any buffered retry
-                # status from earlier failed attempts in this turn.
+                # Successful content reached — surface the one-shot fallback
+                # switch notice (if a fallback activated this turn) before
+                # dropping the noisy retry buffer, so a provider/model switch
+                # stays visible even when the fallback succeeds.
+                agent._emit_pending_fallback_notice()
                 agent._clear_status_buffer()
 
                 from agent.agent_runtime_helpers import (
@@ -5096,6 +5154,10 @@ def run_conversation(
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
+                    # An acknowledgment is explicitly non-final. Do not let its
+                    # text suppress iteration-limit summarization if this
+                    # continuation consumes the remaining budget.
+                    final_response = None
                     continue
 
                 codex_ack_continuations = 0
@@ -5170,6 +5232,12 @@ def run_conversation(
                     # terminal. Keep a debug breadcrumb in agent.log for tracing.
                     logger.debug("verification stop-loop nudge issued (attempt %d)",
                                  agent._verification_stop_nudges)
+                    # Keep the attempted answer only as an explicit fallback for
+                    # continuation-budget exhaustion.  ``final_response`` itself
+                    # must be cleared so the finalizer can distinguish this gate
+                    # from unrelated error/recovery exits. (#61631)
+                    _pending_verification_response = final_response
+                    final_response = None
                     continue
 
                 # User verification-loop gate: when the agent edited code this
@@ -5221,6 +5289,8 @@ def run_conversation(
                     agent._session_messages = messages
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)
+                    _pending_verification_response = final_response
+                    final_response = None
                     continue
 
                 messages.append(final_msg)
@@ -5305,6 +5375,7 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        _pending_verification_response=_pending_verification_response,
     )
 
 

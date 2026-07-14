@@ -166,7 +166,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
     CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
-               cli_only=True, args_hint="[queue|steer|interrupt|status]",
+               args_hint="[queue|steer|interrupt|status]",
                subcommands=("queue", "steer", "interrupt", "status")),
 
     # Tools & Skills
@@ -1164,7 +1164,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - version: low-frequency diagnostic; /hermes version on Slack saves a slot.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

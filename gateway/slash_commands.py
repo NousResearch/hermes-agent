@@ -2994,6 +2994,61 @@ class GatewaySlashCommandsMixin:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{descriptions[new_mode]}\n" + t("gateway.verbose.save_failed", error=e)
 
+    async def _handle_busy_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /busy — control what happens when messaging while Hermes is working.
+
+        Usage:
+            /busy               Show current busy input mode
+            /busy status        Show current busy input mode
+            /busy queue         Queue messages for the next turn
+            /busy steer         Inject messages mid-run without interrupting
+            /busy interrupt     Interrupt the current run (default)
+        """
+        arg = event.get_command_args().strip().lower()
+        if not arg or arg == "status":
+            mode = self._busy_input_mode
+            if mode == "queue":
+                behavior = "queues for next turn"
+            elif mode == "steer":
+                behavior = "steers into current run (after next tool call)"
+            else:
+                behavior = "interrupts current run"
+            return EphemeralReply(
+                f"**Busy input mode: `{mode}`" + "\n"
+                f"Messages while busy: _{behavior}_" + "\n"
+                f"Change with `/busy queue`, `/busy steer`, or `/busy interrupt`."
+            )
+
+        if arg not in {"queue", "interrupt", "steer"}:
+            return EphemeralReply(
+                f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
+            )
+
+        # Persist before mutate
+        try:
+            from cli import save_config_value
+            if save_config_value("display.busy_input_mode", arg):
+                self._busy_input_mode = arg
+                if arg == "queue":
+                    behavior = "Messages will be queued for the next turn while Hermes is busy."
+                elif arg == "steer":
+                    behavior = "Messages will be steered into the current run (after the next tool call)."
+                else:
+                    behavior = "Messages will interrupt the current run while Hermes is busy."
+                return EphemeralReply(
+                    f"Busy input mode set to **`{arg}`** (saved)." + "\n"
+                    f"_{behavior}_"
+                )
+            else:
+                return EphemeralReply(
+                    f"Busy input mode could not be saved to config. Mode unchanged."
+                )
+        except Exception as e:
+            logger.warning("Failed to save busy_input_mode: %s", e)
+            return EphemeralReply(
+                f"Could not save busy input mode: {e}. Mode unchanged."
+            )
+
     async def _handle_footer_command(self, event: MessageEvent) -> str:
         """Handle /footer command — toggle the runtime-metadata footer.
 

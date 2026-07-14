@@ -35,6 +35,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _resolve_async_origin_session_key,
 )
 
 
@@ -52,6 +53,7 @@ def _make_mock_parent(depth=0):
     parent.providers_order = None
     parent.provider_sort = None
     parent._session_db = None
+    parent.session_id = "parent-origin-session"
     parent._delegate_depth = depth
     parent._active_children = []
     parent._active_children_lock = threading.Lock()
@@ -62,6 +64,25 @@ def _make_mock_parent(depth=0):
 
 
 class TestDelegateRequirements(unittest.TestCase):
+    def test_async_origin_uses_parent_session_when_worker_context_is_missing(self):
+        parent = _make_mock_parent()
+        with patch("tools.approval.get_current_session_key", return_value=""):
+            self.assertEqual(
+                _resolve_async_origin_session_key(parent),
+                "parent-origin-session",
+            )
+
+    def test_async_origin_prefers_gateway_session_context(self):
+        parent = _make_mock_parent()
+        with patch(
+            "tools.approval.get_current_session_key",
+            return_value="gateway-origin-session",
+        ):
+            self.assertEqual(
+                _resolve_async_origin_session_key(parent),
+                "gateway-origin-session",
+            )
+
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())
 

@@ -238,6 +238,7 @@ class TestCheckpointNotify:
             "command": "sleep 999",
             "pid": os.getpid(),
             "task_id": "t1",
+            "session_key": "test-origin-session",
             "notify_on_complete": True,
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
@@ -278,6 +279,7 @@ class TestCheckpointNotify:
             "command": "sleep 999",
             "pid": os.getpid(),
             "task_id": "t1",
+            "session_key": "test-origin-session",
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
@@ -510,6 +512,7 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
         result = json.loads(
             tt.terminal_tool(
                 command="while true; do gh pr checks 999; sleep 30; done",
+                session_id="test-origin-session",
                 background=True,
             )
         )
@@ -535,6 +538,7 @@ def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
         result = json.loads(
             tt.terminal_tool(
                 command="pytest tests/",
+                session_id="test-origin-session",
                 background=True,
                 notify_on_complete=True,
             )
@@ -556,6 +560,7 @@ def test_background_with_watch_patterns_does_not_emit_hint(monkeypatch, tmp_path
         result = json.loads(
             tt.terminal_tool(
                 command="uvicorn app:server --port 8080",
+                session_id="test-origin-session",
                 background=True,
                 watch_patterns=["Application startup complete"],
             )
@@ -628,6 +633,7 @@ def test_homebrew_ci_poller_via_statusCheckRollup_emits_hint(monkeypatch, tmp_pa
                     "| group_by(.) | map({k:.[0],v:length}) | from_entries'); "
                     "echo \"$status\"; sleep 30; done"
                 ),
+                session_id="test-origin-session",
                 background=True,
                 notify_on_complete=True,
             )
@@ -660,6 +666,7 @@ def test_homebrew_ci_poller_via_gh_pr_checks_piped_to_jq_emits_hint(monkeypatch,
                     "gh pr checks $PR | jq -R 'split(\"\\t\")[1]'; "
                     "sleep 30; done"
                 ),
+                session_id="test-origin-session",
                 background=True,
                 notify_on_complete=True,
             )
@@ -692,6 +699,7 @@ def test_canonical_column2_awk_poller_does_not_emit_homebrew_hint(monkeypatch, t
                     "fi; sleep 30; "
                     "done"
                 ),
+                session_id="test-origin-session",
                 background=True,
                 notify_on_complete=True,
             )
@@ -719,6 +727,7 @@ def test_canonical_gh_pr_checks_exit_code_loop_does_not_emit_hint(monkeypatch, t
                     "case $rc in 0) exit 0;; 8) sleep 30;; *) exit 1;; esac; "
                     "done"
                 ),
+                session_id="test-origin-session",
                 background=True,
                 notify_on_complete=True,
             )
@@ -743,6 +752,7 @@ def test_non_ci_background_command_does_not_emit_homebrew_hint(monkeypatch, tmp_
         result = json.loads(
             tt.terminal_tool(
                 command="cat /var/log/syslog | awk '/error/ {print}' > /tmp/errs.log",
+                session_id="test-origin-session",
                 background=True,
                 notify_on_complete=True,
             )

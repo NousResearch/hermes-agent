@@ -2366,6 +2366,20 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _resolve_async_origin_session_key(parent_agent) -> str:
+    """Return the durable owner for an async delegation.
+
+    Gateway context is preferred when available. Worker threads may not inherit
+    that ContextVar, so the parent agent's durable session id is the mandatory
+    fallback instead of allowing an ownerless dispatch.
+    """
+    from tools.approval import get_current_session_key
+
+    gateway_key = str(get_current_session_key(default="") or "").strip()
+    parent_key = str(getattr(parent_agent, "session_id", "") or "").strip()
+    return gateway_key or parent_key
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2794,7 +2808,6 @@ def delegate_task(
     # keep chatting, get the combined summaries back together at the end.
     if background:
         from tools.async_delegation import dispatch_async_delegation_batch
-        from tools.approval import get_current_session_key
 
         # Stateless request/response sessions (the API server / WebUI path)
         # cannot route a detached subagent result back to the agent after the
@@ -2824,7 +2837,11 @@ def delegate_task(
                 )
             return json.dumps(_sync_result, ensure_ascii=False)
 
-        _session_key = get_current_session_key(default="")
+        # Gateway conversation keys win when present. The parent agent's
+        # durable session id is the fail-safe when tool-worker contextvars are
+        # unavailable, so an async delegation is never dispatched ownerless.
+        _parent_session_id = getattr(parent_agent, "session_id", None)
+        _session_key = _resolve_async_origin_session_key(parent_agent)
         _origin_ui_session_id = ""
         try:
             from gateway.session_context import get_session_env
@@ -2844,7 +2861,6 @@ def delegate_task(
                     _session_key = _agent_session_id
         except Exception:
             _origin_ui_session_id = ""
-        _parent_session_id = getattr(parent_agent, "session_id", None)
         _child_agents = [c for (_, _, c) in children]
 
         # Detach every child from the parent's interrupt-propagation list — the

@@ -65,6 +65,36 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
     return False
 
 
+def test_quick_background_process_is_registered_and_armed_before_exit(
+    registry, tmp_path
+):
+    """A zero-duration child must still publish one owned completion event."""
+    with patch.object(registry, "_write_checkpoint"):
+        session = registry.spawn_local(
+            f'{sys.executable} -c "print(\'done\')"',
+            cwd=str(tmp_path),
+            session_key="origin-session",
+            notify_on_complete=True,
+        )
+
+        assert _wait_until(lambda: session.exited)
+        assert session.id not in registry._running
+        assert session.id in registry._finished
+
+        event = registry.completion_queue.get(timeout=2)
+        assert event["type"] == "completion"
+        assert event["session_id"] == session.id
+        assert event["session_key"] == "origin-session"
+
+
+def test_registry_rejects_ownerless_local_and_remote_spawns(registry):
+    with pytest.raises(ValueError, match="origin session"):
+        registry.spawn_local("echo nope", cwd="/tmp")
+
+    with pytest.raises(ValueError, match="origin session"):
+        registry.spawn_via_env(MagicMock(), "echo nope")
+
+
 def test_write_stdin_uses_str_for_windows_pty(monkeypatch, registry):
     """pywinpty expects str input; bytes raises a PyString conversion error."""
     written = []
@@ -481,6 +511,7 @@ class TestStdinHelpers:
         session = registry.spawn_local(
             'python3 -c "import sys; print(sys.stdin.read().strip())"',
             cwd=str(tmp_path),
+            session_key="test-origin-session",
             use_pty=True,
         )
 
@@ -685,6 +716,7 @@ class TestSpawnEnvSanitization:
             registry.spawn_local(
                 "echo hello",
                 cwd="/tmp",
+                session_key="test-origin-session",
                 env_vars={
                     "MY_CUSTOM_VAR": "keep-me",
                     "TELEGRAM_BOT_TOKEN": "drop-me",
@@ -716,7 +748,7 @@ class TestSpawnEnvSanitization:
 
         with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
             patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_via_env(env, "echo hello")
+            session = registry.spawn_via_env(env, "echo hello", session_key="test-origin-session")
 
         bg_command = env.commands[0][0]
         assert session.pid == 4321
@@ -741,7 +773,7 @@ class TestSpawnEnvSanitization:
 
         with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
             patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_via_env(env, "echo hello")
+            session = registry.spawn_via_env(env, "echo hello", session_key="test-origin-session")
 
         assert session.exited is True
         assert session.exit_code == 2
@@ -768,7 +800,7 @@ class TestSpawnEnvSanitization:
 
         with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
             patch.object(registry, "_write_checkpoint"):
-            registry.spawn_via_env(env, "echo hello")
+            registry.spawn_via_env(env, "echo hello", session_key="test-origin-session")
 
         args, kwargs = env.commands[0]
         assert kwargs.get("rewrite_compound_background") is False
@@ -847,7 +879,7 @@ class TestPopenLeakOnSetupFailure:
              patch("os.getpgid", side_effect=ProcessLookupError), \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
-                registry.spawn_local("echo hello", cwd="/tmp")
+                registry.spawn_local("echo hello", cwd="/tmp", session_key="test-origin-session")
 
         assert killed, "proc.kill() must be called when post-Popen setup raises"
 
@@ -879,7 +911,7 @@ class TestPopenLeakOnSetupFailure:
              patch("os.getpgid", side_effect=ProcessLookupError), \
              patch.object(registry, "_write_checkpoint", side_effect=OSError("disk full")):
             with pytest.raises(OSError, match="disk full"):
-                registry.spawn_local("echo hello", cwd="/tmp")
+                registry.spawn_local("echo hello", cwd="/tmp", session_key="test-origin-session")
 
         assert killed, "proc.kill() must be called when _write_checkpoint raises"
 
@@ -905,7 +937,7 @@ class TestPopenLeakOnSetupFailure:
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", return_value=fake_thread), \
              patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_local("echo hello", cwd="/tmp")
+            session = registry.spawn_local("echo hello", cwd="/tmp", session_key="test-origin-session")
 
         assert not killed, "proc.kill() must NOT be called on successful spawn"
         assert session.pid == 7777
@@ -919,16 +951,37 @@ class TestCheckpoint:
     def test_write_checkpoint(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
             s = _make_session()
+            s.session_key = "origin-session"
+            s.notify_on_complete = True
+            s.watch_patterns = ["READY"]
             registry._running[s.id] = s
             registry._write_checkpoint()
 
             data = json.loads((tmp_path / "procs.json").read_text())
             assert len(data) == 1
             assert data[0]["session_id"] == s.id
+            assert data[0]["session_key"] == "origin-session"
+            assert data[0]["notify_on_complete"] is True
+            assert data[0]["watch_patterns"] == ["READY"]
 
     def test_recover_no_file(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
             assert registry.recover_from_checkpoint() == 0
+
+    def test_recovery_quarantines_ownerless_live_process(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_ownerless",
+            "command": "legacy command",
+            "pid": os.getpid(),
+            "task_id": "legacy-task",
+            "session_key": "",
+        }]))
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 0
+            assert registry.get("proc_ownerless") is None
+            assert json.loads(checkpoint.read_text()) == []
 
     def test_recover_dead_pid(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
@@ -998,6 +1051,7 @@ class TestCheckpoint:
             "command": "sleep 999",
             "pid": os.getpid(),
             "task_id": "t1",
+            "session_key": "test-origin-session",
             "watcher_interval": 0,
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
@@ -1013,12 +1067,18 @@ class TestCheckpoint:
             "pid": os.getpid(),
             "task_id": "t1",
             "session_key": "sk1",
+            "notify_on_complete": True,
+            "watch_patterns": ["READY"],
         }]))
 
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 1
-            assert registry.get("proc_live") is not None
+            recovered_session = registry.get("proc_live")
+            assert recovered_session is not None
+            assert recovered_session.session_key == "sk1"
+            assert recovered_session.notify_on_complete is True
+            assert recovered_session.watch_patterns == ["READY"]
 
             data = json.loads(checkpoint.read_text())
             assert len(data) == 1
@@ -1836,6 +1896,7 @@ class TestPidReuseGuard:
             "pid_scope": "host",
             "host_start_time": real_start,
             "task_id": "t1",
+            "session_key": "test-origin-session",
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             assert registry.recover_from_checkpoint() == 1
@@ -1849,6 +1910,7 @@ class TestPidReuseGuard:
             "pid": os.getpid(),
             "pid_scope": "host",
             "task_id": "t1",
+            "session_key": "test-origin-session",
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             assert registry.recover_from_checkpoint() == 1

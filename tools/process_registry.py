@@ -692,6 +692,8 @@ class ProcessRegistry:
         cwd: str = None,
         task_id: str = "",
         session_key: str = "",
+        notify_on_complete: bool = False,
+        watch_patterns: Optional[List[str]] = None,
         env_vars: dict = None,
         use_pty: bool = False,
     ) -> ProcessSession:
@@ -705,11 +707,18 @@ class ProcessRegistry:
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
         """
+        session_key = str(session_key or "").strip()
+        if not session_key:
+            raise ValueError(
+                "Background process requires a non-empty origin session ID"
+            )
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
             session_key=session_key,
+            notify_on_complete=bool(notify_on_complete),
+            watch_patterns=list(watch_patterns or []),
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
         )
@@ -743,18 +752,27 @@ class ProcessRegistry:
                     name=f"proc-pty-reader-{session.id}",
                 )
                 session._reader_thread = reader
-                reader.start()
 
                 with self._lock:
                     self._prune_if_needed()
                     self._running[session.id] = session
 
+                reader.start()
                 self._write_checkpoint()
                 return session
 
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
+                with self._lock:
+                    self._running.pop(session.id, None)
+                try:
+                    if session._pty is not None:
+                        session._pty.terminate(force=True)
+                except Exception:
+                    pass
+                session._pty = None
+                session.pid = None
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)
@@ -795,17 +813,19 @@ class ProcessRegistry:
                 name=f"proc-reader-{session.id}",
             )
             session._reader_thread = reader
-            reader.start()
 
             with self._lock:
                 self._prune_if_needed()
                 self._running[session.id] = session
 
+            reader.start()
             self._write_checkpoint()
         except Exception:
             # Post-Popen setup failed — kill the orphaned subprocess (and any
             # descendants spawned via setsid) before re-raising so they do not
             # leak as untracked background processes.
+            with self._lock:
+                self._running.pop(session.id, None)
             try:
                 if not _IS_WINDOWS:
                     try:
@@ -832,6 +852,8 @@ class ProcessRegistry:
         cwd: str = None,
         task_id: str = "",
         session_key: str = "",
+        notify_on_complete: bool = False,
+        watch_patterns: Optional[List[str]] = None,
         timeout: int = 10,
     ) -> ProcessSession:
         """
@@ -845,11 +867,18 @@ class ProcessRegistry:
         This is less capable than local spawn (no live stdout pipe, no stdin),
         but it ensures the command runs in the correct sandbox context.
         """
+        session_key = str(session_key or "").strip()
+        if not session_key:
+            raise ValueError(
+                "Background process requires a non-empty origin session ID"
+            )
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
             session_key=session_key,
+            notify_on_complete=bool(notify_on_complete),
+            watch_patterns=list(watch_patterns or []),
             cwd=cwd,
             started_at=time.time(),
             env_ref=env,
@@ -904,8 +933,14 @@ class ProcessRegistry:
             session.termination_source = "failed_start"
             session.output_buffer = f"Failed to start: {e}"
 
+        with self._lock:
+            self._prune_if_needed()
+            if not session.exited:
+                self._running[session.id] = session
+
         if not session.exited:
-            # Start a poller thread that periodically reads the log file
+            # Register the fully-owned, fully-armed session before the poller
+            # can observe process exit. This mirrors spawn_local's ordering.
             reader = threading.Thread(
                 target=self._env_poller_loop,
                 args=(session, env, log_path, pid_path, exit_path),
@@ -913,15 +948,13 @@ class ProcessRegistry:
                 name=f"proc-poller-{session.id}",
             )
             session._reader_thread = reader
-            reader.start()
-
-        with self._lock:
-            self._prune_if_needed()
-            if not session.exited:
-                self._running[session.id] = session
-
-        if not session.exited:
-            self._write_checkpoint()
+            try:
+                reader.start()
+                self._write_checkpoint()
+            except Exception:
+                with self._lock:
+                    self._running.pop(session.id, None)
+                raise
 
         return session
 
@@ -1919,6 +1952,15 @@ class ProcessRegistry:
                 )
                 continue
 
+            session_key = str(entry.get("session_key", "") or "").strip()
+            if not session_key:
+                logger.warning(
+                    "Quarantining recovered background process %s: missing "
+                    "origin session ID",
+                    entry.get("session_id", "?"),
+                )
+                continue
+
             # The PID must be alive AND still the same process we spawned. A
             # bare liveness check is unsafe: across a restart (especially a
             # reboot or long uptime) the kernel may have recycled this number
@@ -1940,7 +1982,7 @@ class ProcessRegistry:
                 id=entry["session_id"],
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
-                session_key=entry.get("session_key", ""),
+                session_key=session_key,
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,

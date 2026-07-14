@@ -470,6 +470,16 @@ def dispatch_async_delegation(
         ``{"status": "dispatched", "delegation_id": ...}`` on success, or
         ``{"status": "rejected", "error": ...}`` when at capacity.
     """
+    session_key = str(session_key or "").strip()
+    if not session_key:
+        return {
+            "status": "rejected",
+            "error": (
+                "Background delegation requires an origin session ID; "
+                "refusing to start ownerless work."
+            ),
+        }
+
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
     record: Dict[str, Any] = {
@@ -598,7 +608,7 @@ def _push_completion_event(
         "type": "async_delegation",
         "delegation_id": record.get("delegation_id"),
         # session_key routes the completion back to the originating gateway
-        # session; empty string => CLI (single-session) path.
+        # session and is required at dispatch time.
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
@@ -663,6 +673,16 @@ def dispatch_async_delegation_batch(
     ``{"status": "rejected", "error": ...}`` when the async pool is at
     capacity.
     """
+    session_key = str(session_key or "").strip()
+    if not session_key:
+        return {
+            "status": "rejected",
+            "error": (
+                "Background delegation requires an origin session ID; "
+                "refusing to start ownerless work."
+            ),
+        }
+
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
     n = len(goals)

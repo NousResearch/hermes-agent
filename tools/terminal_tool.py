@@ -2345,21 +2345,43 @@ def terminal_tool(
             )
 
         # Claim the (shared "default") terminal env for the session driving this
-        # command. File tools read env.cwd_owner to decide whether the env's live
-        # cwd is THIS session's `cd` or a different worktree session's — without
-        # it, two open worktree sessions sharing the env route each other's edits
-        # to the wrong checkout. get_current_session_key()'s contextvar doesn't
-        # cross tool-worker threads, so fall back to the raw task_id (which IS the
-        # session_key for the top-level agent) — a stable, thread-safe anchor.
+        # command. Prefer the gateway's stable conversation key when present;
+        # contextvars do not reliably cross tool-worker threads, so the
+        # dispatcher's explicit durable AIAgent session id is the mandatory
+        # fallback that prevents an ownerless background process.
         from tools.approval import get_current_session_key
 
-        session_key = get_current_session_key(default="") or (task_id or "")
+        session_key = (
+            str(get_current_session_key(default="") or "").strip()
+            or str(session_id or "").strip()
+            or str(task_id or "").strip()
+        )
+        if background and not session_key:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": (
+                    "Background process requires an origin session ID. The tool "
+                    "dispatcher must pass session_id; refusing to start ownerless "
+                    "work because its output could not be delivered safely."
+                ),
+            }, ensure_ascii=False)
         try:
             env.cwd_owner = session_key
         except Exception:
             pass
 
+        notification_conflict_note = None
         if background:
+            # Resolve mutually-exclusive notification modes before spawn so a
+            # fast child cannot observe a transient, invalid configuration.
+            watch_patterns, notification_conflict_note = (
+                _resolve_notification_flag_conflict(
+                    notify_on_complete=bool(notify_on_complete),
+                    watch_patterns=watch_patterns,
+                    background=True,
+                )
+            )
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
@@ -2377,6 +2399,8 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        notify_on_complete=bool(notify_on_complete),
+                        watch_patterns=watch_patterns,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
                     )
@@ -2387,6 +2411,8 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        notify_on_complete=bool(notify_on_complete),
+                        watch_patterns=watch_patterns,
                     )
 
                 result_data = {
@@ -2562,11 +2588,7 @@ def terminal_tool(
                 # notify_on_complete is the more useful signal for "let me know
                 # when the task finishes"; watch_patterns should be reserved for
                 # standalone mid-process signals on long-lived processes.
-                watch_patterns, conflict_note = _resolve_notification_flag_conflict(
-                    notify_on_complete=bool(notify_on_complete),
-                    watch_patterns=watch_patterns,
-                    background=bool(background),
-                )
+                conflict_note = notification_conflict_note
                 if conflict_note:
                     logger.warning("background proc %s: %s", proc_session.id, conflict_note)
                     result_data["watch_patterns_ignored"] = conflict_note

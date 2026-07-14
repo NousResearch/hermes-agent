@@ -30,13 +30,34 @@ def _clean_state():
         process_registry.completion_queue.get_nowait()
 
 
-def _drain_one(timeout=5.0):
+def _drain_one(timeout=5.0, *, goal=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not process_registry.completion_queue.empty():
-            return process_registry.completion_queue.get_nowait()
+            event = process_registry.completion_queue.get_nowait()
+            if goal is None or event.get("goal") == goal:
+                return event
         time.sleep(0.02)
     return None
+
+
+def test_dispatch_rejects_missing_origin_session_without_starting_runner():
+    ran = threading.Event()
+
+    result = ad.dispatch_async_delegation(
+        goal="ownerless",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="  ",
+        runner=lambda: ran.set() or {"status": "completed"},
+        max_async_children=3,
+    )
+
+    assert result["status"] == "rejected"
+    assert "origin session" in result["error"].lower()
+    assert not ran.is_set()
 
 
 def test_dispatch_returns_immediately_without_blocking():
@@ -50,7 +71,7 @@ def test_dispatch_returns_immediately_without_blocking():
     t0 = time.monotonic()
     res = ad.dispatch_async_delegation(
         goal="g", context=None, toolsets=None, role="leaf", model="m",
-        session_key="", runner=runner, max_async_children=3,
+        session_key="test-origin-session", runner=runner, max_async_children=3,
     )
     elapsed = time.monotonic() - t0
 
@@ -75,7 +96,7 @@ def test_async_executor_workers_are_daemon_threads():
 
     res = ad.dispatch_async_delegation(
         goal="daemon check", context=None, toolsets=None, role="leaf", model="m",
-        session_key="", runner=runner, max_async_children=1,
+        session_key="test-origin-session", runner=runner, max_async_children=1,
     )
     assert res["status"] == "dispatched"
 
@@ -126,7 +147,7 @@ def test_rich_reinjection_block_is_self_contained():
         goal="Compute the meaning of life",
         context="User is a philosopher. Respond tersely.",
         toolsets=["web"], role="leaf", model="test-model",
-        session_key="", runner=runner, max_async_children=3,
+        session_key="test-origin-session", runner=runner, max_async_children=3,
     )
     evt = _drain_one()
     assert evt is not None
@@ -154,13 +175,13 @@ def test_dispatch_rejected_at_capacity():
     for i in range(2):
         r = ad.dispatch_async_delegation(
             goal=f"task{i}", context=None, toolsets=None, role="leaf",
-            model="m", session_key="", runner=blocker, max_async_children=2,
+            model="m", session_key="test-origin-session", runner=blocker, max_async_children=2,
         )
         assert r["status"] == "dispatched"
 
     r3 = ad.dispatch_async_delegation(
         goal="task3", context=None, toolsets=None, role="leaf", model="m",
-        session_key="", runner=blocker, max_async_children=2,
+        session_key="test-origin-session", runner=blocker, max_async_children=2,
     )
     assert r3["status"] == "rejected"
     assert "capacity reached" in r3["error"]
@@ -173,10 +194,10 @@ def test_crashed_runner_produces_error_completion():
 
     r = ad.dispatch_async_delegation(
         goal="risky", context=None, toolsets=None, role="leaf", model="m",
-        session_key="", runner=boom, max_async_children=3,
+        session_key="test-origin-session", runner=boom, max_async_children=3,
     )
     assert r["status"] == "dispatched"
-    evt = _drain_one()
+    evt = _drain_one(goal="risky")
     assert evt is not None
     assert evt["status"] == "error"
     text = format_process_notification(evt)
@@ -200,7 +221,7 @@ def test_interrupt_all_signals_running_children():
 
     ad.dispatch_async_delegation(
         goal="long task", context=None, toolsets=None, role="leaf",
-        model="m", session_key="", runner=blocker,
+        model="m", session_key="test-origin-session", runner=blocker,
         interrupt_fn=interrupt_fn, max_async_children=3,
     )
     n = ad.interrupt_all(reason="test")
@@ -217,7 +238,7 @@ def test_completed_records_pruned_to_cap():
     for i in range(ad._MAX_RETAINED_COMPLETED + 10):
         ad.dispatch_async_delegation(
             goal=f"t{i}", context=None, toolsets=None, role="leaf", model="m",
-            session_key="", runner=lambda: {"status": "completed", "summary": "ok"},
+            session_key="test-origin-session", runner=lambda: {"status": "completed", "summary": "ok"},
             max_async_children=ad._MAX_RETAINED_COMPLETED + 20,
         )
     # let workers finish
@@ -751,7 +772,7 @@ def test_concurrent_dispatch_respects_capacity():
         results.append(
             ad.dispatch_async_delegation(
                 goal="race", context=None, toolsets=None, role="leaf",
-                model="m", session_key="", runner=blocker,
+                model="m", session_key="test-origin-session", runner=blocker,
                 max_async_children=1,
             )
         )
@@ -846,8 +867,8 @@ def test_gateway_builds_routable_source_from_enriched_event():
     assert src.chat_id == "12345"
 
 
-def test_gateway_cli_origin_event_left_unrouted():
-    """An empty session_key (CLI origin) is left without routing fields."""
+def test_gateway_legacy_ownerless_event_left_unrouted():
+    """A legacy ownerless event is left without routing fields."""
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)

@@ -17123,7 +17123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
         moa_config: Optional[dict] = None,
-        persist_user_message: Optional[str] = None,
+        persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
@@ -17184,7 +17184,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
         moa_config: Optional[dict] = None,
-        persist_user_message: Optional[str] = None,
+        persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
     ) -> Dict[str, Any]:
         """

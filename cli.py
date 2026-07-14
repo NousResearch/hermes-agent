@@ -12176,7 +12176,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
-        
+        agent = self.agent
+        if agent is None:
+            return None
+
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
         #            translate for Anthropic/Gemini/Bedrock).
@@ -12264,8 +12267,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from run_agent import _sanitize_surrogates
             message = _sanitize_surrogates(message)
 
-        # Add user message to history
-        self.conversation_history.append({"role": "user", "content": message})
+        # Keep the exact CLI input dict available until turn-start persistence.
+        # Copy the completed agent transcript before appending: otherwise this
+        # UI-only staging step mutates ``agent._session_messages`` and exposes a
+        # duplicate-prone intermediate snapshot to terminal-close persistence.
+        if self.conversation_history is getattr(agent, "_session_messages", None):
+            self.conversation_history = list(self.conversation_history)
+        # The prior turn's override applies only to its own user dict. Clear it
+        # before exposing the next staged input to close persistence; otherwise
+        # a shutdown before the worker prologue can write old API-local text as
+        # this new user message (#63766).
+        persist_lock = getattr(agent, "_session_persist_lock", None)
+
+        def _stage_user_message() -> None:
+            agent._persist_user_message_idx = None
+            agent._persist_user_message_override = None
+            agent._persist_user_message_timestamp = None
+            staged_user_message = {"role": "user", "content": message}
+            agent._pending_cli_user_message = staged_user_message
+            self.conversation_history.append(staged_user_message)
+
+        if persist_lock is None:
+            _stage_user_message()
+        else:
+            with persist_lock:
+                _stage_user_message()
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
@@ -12402,13 +12428,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pending_moa_config = None
                 if _moa_cfg is None:
                     _moa_cfg = None
+                # Model/skill notes and voice instructions are API-local. Keep
+                # the original staged input as the durable transcript value so a
+                # close-path marker follows the same dict into turn setup rather
+                # than producing a second noted user row (#63766).
+                _persist_clean_user_message = (
+                    message if (_voice_prefix or agent_message != message) else None
+                )
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                         stream_callback=stream_callback,
                         task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
+                        persist_user_message=_persist_clean_user_message,
                         moa_config=_moa_cfg,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
@@ -12871,20 +12904,75 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not agent or not hasattr(agent, "_persist_session"):
             return
 
-        messages = getattr(agent, "_session_messages", None)
-        if not isinstance(messages, list):
-            messages = getattr(self, "conversation_history", None)
-        if not isinstance(messages, list) or not messages:
-            return
+        persist_lock = getattr(agent, "_session_persist_lock", None)
 
-        conversation_history = getattr(self, "conversation_history", None)
-        if not isinstance(conversation_history, list):
-            conversation_history = messages
+        def _snapshot_and_persist() -> None:
+            # This snapshot must share the staging lock with ``chat()``. Without
+            # it, close can retain a mutable history baseline just before chat
+            # appends its pending dict; the later flush then mistakes that dict
+            # for durable history and stamps it without writing a row (#63766).
+            messages = getattr(agent, "_session_messages", None)
+            pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
+            if not isinstance(messages, list):
+                messages = getattr(self, "conversation_history", None)
+            if not isinstance(messages, list):
+                return
+            if isinstance(pending_cli_message, dict) and not any(
+                message is pending_cli_message for message in messages
+            ):
+                # The UI has accepted a new input but the worker still exposes its
+                # prior snapshot. Include only that staged dict; the baseline below
+                # keeps any durable resumed prefix from being re-appended.
+                messages = [*messages, pending_cli_message]
+            if not messages:
+                return
 
-        try:
+            # A normal turn builds a new list that reuses the resumed-history dicts.
+            # Keep that CLI history as the baseline so a signal between assigning
+            # ``_session_messages`` and the turn's DB flush cannot append its durable
+            # prefix a second time. Once the CLI takes the turn result, however, both
+            # names can point at the same live list; passing that alias would mark an
+            # unflushed tail durable without writing it. Marker-only persistence is
+            # correct only in that alias case.
+            conversation_history = getattr(self, "conversation_history", None)
+            pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
+            if (
+                isinstance(conversation_history, list)
+                and conversation_history
+                and conversation_history[-1] is pending_cli_message
+            ):
+                # The UI accepted this user message before the agent finished its
+                # early persistence. Its dict can already be in ``messages`` but is
+                # not durable yet, so exclude it from the resumed-history baseline.
+                conversation_history = conversation_history[:-1]
+            elif not isinstance(conversation_history, list) or conversation_history is messages:
+                conversation_history = None
+
+            # A first-turn close can arrive before the worker builds its cached
+            # prompt. Build or restore it before the DB row is created so the
+            # durable transcript never leaves a NULL system_prompt cache entry.
+            if getattr(agent, "_cached_system_prompt", None) is None:
+                try:
+                    from agent.conversation_loop import _restore_or_build_system_prompt
+
+                    _restore_or_build_system_prompt(agent, None, conversation_history)
+                except Exception:
+                    logger.debug("Could not build system prompt during CLI close", exc_info=True)
+                    return
+            if getattr(agent, "_cached_system_prompt", None) is None:
+                return
+
+            agent._ensure_db_session()
             agent._persist_session(messages, conversation_history)
             if getattr(agent, "session_id", None):
                 self.session_id = agent.session_id
+
+        try:
+            if persist_lock is None:
+                _snapshot_and_persist()
+            else:
+                with persist_lock:
+                    _snapshot_and_persist()
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Could not persist active CLI session before close: %s", e)
 

@@ -231,7 +231,13 @@ class _ThreadedProcessHandle:
         def _worker():
             try:
                 output, exit_code = exec_fn()
-                self._returncode = exit_code
+                # Some SDKs (notably Daytona's process.exec) hand back a
+                # ``None`` exit code for killed/odd commands.  A ``None`` here
+                # is indistinguishable from "still running" once it flows
+                # through poll(), so coerce it to a concrete success code:
+                # exec_fn returned normally (no exception), so the command
+                # completed — real failures raise and take the branch below.
+                self._returncode = exit_code if exit_code is not None else 0
                 # Write output into the pipe so drain thread picks it up.
                 try:
                     os.write(self._write_fd, output.encode("utf-8", errors="replace"))
@@ -259,7 +265,16 @@ class _ThreadedProcessHandle:
         return self._returncode
 
     def poll(self) -> int | None:
-        return self._returncode if self._done.is_set() else None
+        # Completion is driven by the ``_done`` event, NOT by the value of
+        # ``_returncode`` — otherwise a finished command whose exit code is
+        # ``None`` would look identical to one still running, and
+        # ``_wait_for_process``'s ``while proc.poll() is None`` loop would
+        # busy-spin until the foreground timeout and misreport the (already
+        # drained) result as rc 124.  ``_worker`` guarantees a concrete int
+        # once ``_done`` is set, but guard here too for defence in depth.
+        if not self._done.is_set():
+            return None
+        return self._returncode if self._returncode is not None else 0
 
     def kill(self):
         if self._cancel_fn:
@@ -270,7 +285,7 @@ class _ThreadedProcessHandle:
 
     def wait(self, timeout: float | None = None) -> int:
         self._done.wait(timeout=timeout)
-        return self._returncode
+        return self._returncode if self._returncode is not None else 0
 
 
 # ---------------------------------------------------------------------------

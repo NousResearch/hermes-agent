@@ -4,9 +4,10 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import time
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _ThreadedProcessHandle
 
 
 class _TestableEnv(BaseEnvironment):
@@ -482,3 +483,44 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestThreadedProcessHandleNoneExitCode:
+    """A SDK exec_fn that returns a None exit code (Daytona's
+    process.exec can do this for killed/odd commands) must still register as
+    finished. Before the fix, poll() returned None for both "running" and
+    "done with a None code", so _wait_for_process busy-spun until the
+    foreground timeout and misreported the completed command as rc 124.
+    """
+
+    def test_poll_returns_concrete_int_when_done(self):
+        handle = _ThreadedProcessHandle(lambda: ("done\n", None))
+        handle._done.wait(timeout=5)
+
+        # poll() must signal completion (a concrete int), not None.
+        assert handle.poll() == 0
+        assert handle.returncode == 0
+        assert handle.wait(timeout=5) == 0
+
+    def test_wait_for_process_completes_promptly_without_false_timeout(self):
+        env = _TestableEnv()
+        handle = _ThreadedProcessHandle(lambda: ("hello\n", None))
+
+        start = time.monotonic()
+        result = env._wait_for_process(handle, timeout=10)
+        elapsed = time.monotonic() - start
+
+        # Natural completion is detected, not a forced rc-124 timeout.
+        assert result["returncode"] == 0
+        assert "hello" in result["output"]
+        assert "[Command timed out" not in result["output"]
+        # And it returns ~immediately rather than spinning for the full
+        # 10s timeout window.
+        assert elapsed < 5
+
+    def test_real_exit_code_is_preserved(self):
+        handle = _ThreadedProcessHandle(lambda: ("boom\n", 127))
+        handle._done.wait(timeout=5)
+
+        assert handle.poll() == 127
+        assert handle.returncode == 127

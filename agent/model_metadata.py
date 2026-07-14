@@ -2362,6 +2362,37 @@ def get_model_context_length(
                     model, base_url,
                 )
                 # Fall through; step 5b reconciles and overwrites if portal responds.
+            # Aggregator providers use cross-provider models.dev metadata because
+            # they front models from multiple upstream vendors. Reconcile their
+            # persisted rows here too: otherwise a value cached before that lookup
+            # existed wins at step 1 forever and the fixed resolver is unreachable.
+            # Dedicated provider resolvers and local servers remain authoritative
+            # for provider-imposed / runtime-loaded limits and must not be widened.
+            elif provider and not is_local_endpoint(base_url):
+                from agent.models_dev import (
+                    PROVIDER_TO_MODELS_DEV,
+                    lookup_models_dev_context_any_provider,
+                )
+
+                normalized_provider = provider.strip().lower()
+                dedicated = {"bedrock", "custom", "gmi", "moa", "nous"}
+                if (
+                    normalized_provider
+                    and normalized_provider not in dedicated
+                    and normalized_provider not in PROVIDER_TO_MODELS_DEV
+                ):
+                    registry_ctx = lookup_models_dev_context_any_provider(model)
+                    # Self-heal stale underreports only. A community registry can
+                    # transiently lag or understate a model; never let that lower
+                    # a larger value already proven/persisted for this endpoint.
+                    if registry_ctx and registry_ctx > cached:
+                        logger.info(
+                            "Refreshing stale aggregator cache entry %s@%s: %s -> %s",
+                            model, base_url, f"{cached:,}", f"{registry_ctx:,}",
+                        )
+                        save_context_length(model, base_url, registry_ctx)
+                        return registry_ctx
+                return cached
             else:
                 if is_local_endpoint(base_url):
                     return _reconcile_local_cached_context_length(

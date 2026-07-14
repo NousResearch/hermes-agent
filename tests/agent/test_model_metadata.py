@@ -1923,6 +1923,93 @@ class TestAggregatorCrossProviderContext:
                 ctx = get_model_context_length(model, base_url="https://yunwu.ai/v1", provider="yunwu")
                 assert ctx == expected, f"{model}: got {ctx}, want {expected} (cross-provider path)"
 
+    def test_stale_aggregator_cache_reconciles_with_cross_provider_registry(
+        self, tmp_path, monkeypatch
+    ):
+        """An upgrade must self-heal values cached before aggregator resolution.
+
+        PR #310 added the correct cross-provider lookup, but a pre-existing
+        ``model@aggregator`` row still won at cache step 1 forever. Reproduce the
+        live Yunwu failure: claude-fable-5 was stuck at 167K even though fresh
+        resolution and the upstream model registry both say 1M.
+        """
+        import yaml as _yaml
+        import agent.model_metadata as mm
+        from agent import models_dev
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        stale_key = "claude-fable-5@https://yunwu.ai/v1"
+        other_key = "unrelated@https://example.test/v1"
+        cache_file.write_text(_yaml.safe_dump({"context_lengths": {
+            stale_key: 167000,
+            other_key: 128000,
+        }}))
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        with patch.object(models_dev, "fetch_models_dev", return_value=_AGG_MODELS_DEV_SAMPLE):
+            ctx = mm.get_model_context_length(
+                "claude-fable-5",
+                base_url="https://yunwu.ai/v1",
+                provider="yunwu",
+            )
+
+        assert ctx == 1000000
+        remaining = (_yaml.safe_load(cache_file.read_text()) or {}).get("context_lengths", {})
+        assert remaining[stale_key] == 1000000
+        assert remaining[other_key] == 128000
+
+    def test_aggregator_cache_is_not_downgraded_by_registry(
+        self, tmp_path, monkeypatch
+    ):
+        """A transient registry underreport must not poison a correct cache."""
+        import yaml as _yaml
+        import agent.model_metadata as mm
+        from agent import models_dev
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        key = "claude-fable-5@https://yunwu.ai/v1"
+        cache_file.write_text(_yaml.safe_dump({"context_lengths": {key: 1000000}}))
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+        underreported = {
+            "anthropic": {
+                "models": {"claude-fable-5": {"limit": {"context": 167000}}}
+            }
+        }
+
+        with patch.object(models_dev, "fetch_models_dev", return_value=underreported):
+            ctx = mm.get_model_context_length(
+                "claude-fable-5",
+                base_url="https://yunwu.ai/v1",
+                provider="yunwu",
+            )
+
+        assert ctx == 1000000
+        remaining = (_yaml.safe_load(cache_file.read_text()) or {}).get("context_lengths", {})
+        assert remaining[key] == 1000000
+
+    def test_provider_specific_cache_is_not_reconciled_as_aggregator(
+        self, tmp_path, monkeypatch
+    ):
+        """Dedicated provider limits still win over the native model window."""
+        import yaml as _yaml
+        import agent.model_metadata as mm
+        from agent import models_dev
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        key = "claude-fable-5@https://bedrock-runtime.us-east-1.amazonaws.com"
+        cache_file.write_text(_yaml.safe_dump({"context_lengths": {key: 200000}}))
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        with patch.object(models_dev, "fetch_models_dev", return_value=_AGG_MODELS_DEV_SAMPLE) as fetch:
+            ctx = mm.get_model_context_length(
+                "claude-fable-5",
+                base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+                provider="bedrock",
+            )
+
+        assert ctx == 200000
+        fetch.assert_not_called()
+
     def test_mapped_provider_does_not_use_cross_provider_guess(self):
         """A mapped provider that misses must NOT get a cross-provider guess.
         Uses a synthetic id present ONLY under a non-mapped vendor in the

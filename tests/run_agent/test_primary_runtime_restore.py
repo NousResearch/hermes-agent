@@ -73,6 +73,9 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["api_mode"] == agent.api_mode
         assert "client_kwargs" in rt
         assert "compressor_context_length" in rt
+        assert rt["config_context_length"] == agent._config_context_length
+        assert rt["custom_providers"] == agent._custom_providers
+        assert rt["custom_providers"] is not agent._custom_providers
 
     def test_snapshot_includes_compressor_state(self):
         agent = _make_agent()
@@ -405,6 +408,59 @@ class TestRestorePrimaryRuntime:
         assert result is True
         assert agent.base_url == original_base_url
         agent._swap_credential.assert_not_called()
+
+    def test_restores_config_context_length_and_custom_providers(self):
+        agent = _make_agent()
+        expected_custom_providers = [
+            {"name": "Private", "base_url": "https://private.example/v1"}
+        ]
+        agent._primary_runtime["config_context_length"] = 65536
+        agent._primary_runtime["custom_providers"] = list(expected_custom_providers)
+        agent._fallback_activated = True
+        agent._config_context_length = None
+        agent._custom_providers = []
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._restore_primary_runtime()
+
+        assert agent._config_context_length == 65536
+        assert agent._custom_providers == expected_custom_providers
+        assert agent._custom_providers is not agent._primary_runtime["custom_providers"]
+
+    def test_fallback_before_model_switch_preserves_initial_context_state(self):
+        expected_custom_providers = [
+            {"name": "Private", "base_url": "https://private.example/v1"}
+        ]
+        with (
+            patch("hermes_cli.config.load_config", return_value={"model": {"context_length": 65536}}),
+            patch("hermes_cli.config.get_compatible_custom_providers", return_value=expected_custom_providers),
+        ):
+            agent = _make_agent(
+                fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            )
+
+        assert agent._primary_runtime["config_context_length"] == 65536
+        assert agent._primary_runtime["custom_providers"] == expected_custom_providers
+
+        mock_client = _mock_resolve()
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.model_metadata.get_model_context_length", return_value=32000),
+        ):
+            agent._try_activate_fallback()
+
+        assert agent._fallback_activated is True
+        assert agent._config_context_length is None
+        assert agent._custom_providers == expected_custom_providers
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._fallback_activated is False
+        assert agent._config_context_length == 65536
+        assert agent._custom_providers == expected_custom_providers
+        assert agent._custom_providers is not agent._primary_runtime["custom_providers"]
 
     def test_restore_survives_exception(self):
         """If client rebuild fails, the method returns False gracefully."""

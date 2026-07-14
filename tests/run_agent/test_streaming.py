@@ -1293,6 +1293,90 @@ class TestAnthropicStreamCallbacks:
         assert agent._anthropic_client.messages.stream.call_count == 1
         assert mock_replace.call_count == 0
 
+    @patch("run_agent.AIAgent._try_refresh_anthropic_client_credentials")
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_anthropic_zero_event_stream_retried_as_transient(
+        self, mock_replace, mock_rebuild, mock_refresh,
+    ):
+        """An eventless Anthropic stream with an empty final Message gets the
+        same transient retry budget as the chat_completions zero-chunk guard
+        (parity follow-up to #64420)."""
+        from agent.errors import EmptyStreamError
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            provider="anthropic",
+            model="claude-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        empty_message = SimpleNamespace(content=[], stop_reason=None)
+        empty_stream = MagicMock()
+        empty_stream.__enter__ = MagicMock(return_value=empty_stream)
+        empty_stream.__exit__ = MagicMock(return_value=False)
+        empty_stream.__iter__ = MagicMock(side_effect=lambda: iter([]))
+        empty_stream.get_final_message.return_value = empty_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = empty_stream
+
+        with pytest.raises(EmptyStreamError):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._anthropic_client.messages.stream.call_count == 3
+        # Anthropic-native cleanup between attempts: rebuild the Anthropic
+        # client, never the OpenAI primary client.
+        assert mock_replace.call_count == 0
+        assert mock_rebuild.call_count == 2
+
+    @patch("run_agent.AIAgent._try_refresh_anthropic_client_credentials")
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_anthropic_eventless_sdk_assertion_normalized_to_empty_stream(
+        self, mock_replace, mock_rebuild, mock_refresh,
+    ):
+        """Real-SDK shape: an eventless stream has no message_start, so
+        get_final_message() raises AssertionError (final snapshot is None).
+        That must be normalized to EmptyStreamError and retried as
+        transient — not surface as a raw AssertionError."""
+        from agent.errors import EmptyStreamError
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            provider="anthropic",
+            model="claude-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        empty_stream = MagicMock()
+        empty_stream.__enter__ = MagicMock(return_value=empty_stream)
+        empty_stream.__exit__ = MagicMock(return_value=False)
+        empty_stream.__iter__ = MagicMock(side_effect=lambda: iter([]))
+        empty_stream.get_final_message.side_effect = AssertionError()
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = empty_stream
+
+        with pytest.raises(EmptyStreamError):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._anthropic_client.messages.stream.call_count == 3
+        assert mock_replace.call_count == 0
+        assert mock_rebuild.call_count == 2
+
 
 class TestPartialToolCallWarning:
     """Regression: when a stream dies mid tool-call argument generation after

@@ -2601,6 +2601,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         works unchanged.
         """
         has_tool_use = False
+        # Zero-event guard parity with the chat_completions path: track
+        # whether the provider delivered ANY stream event. On an eventless
+        # stream the real Anthropic SDK's get_final_message() raises
+        # AssertionError (no message_start ⇒ no final-message snapshot);
+        # OpenAI-compat shims may instead fabricate a contentless Message
+        # with no stop_reason, or return None under ``python -O`` (assert
+        # stripped). Every one of those shapes is normalized below to
+        # EmptyStreamError so the shared _call() retry loop treats it as
+        # transient instead of surfacing a raw AssertionError or a
+        # fabricated "successful" empty turn.
+        saw_stream_event = False
 
         # Reset stale-stream timer for this attempt
         last_chunk_time["t"] = time.time()
@@ -2628,6 +2639,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             for event in stream:
+                saw_stream_event = True
                 # Update stale-stream timer on every event so the
                 # outer poll loop knows data is flowing.  Without
                 # this, the detector kills healthy long-running
@@ -2688,7 +2700,38 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # this return value is discarded anyway.
             if agent._interrupt_requested:
                 return None
-            return stream.get_final_message()
+            # Zero-event guard (parity with the chat_completions zero-chunk
+            # guard above). Real SDK: an eventless stream has no
+            # message_start, so get_final_message() raises AssertionError
+            # (final-message snapshot is None) — normalize that to
+            # EmptyStreamError so it gets the transient retry budget
+            # instead of surfacing raw.
+            try:
+                _final_message = stream.get_final_message()
+            except AssertionError:
+                if not saw_stream_event:
+                    raise EmptyStreamError(
+                        "Provider returned an empty stream with no events "
+                        "(possible upstream error or malformed event stream)."
+                    ) from None
+                raise
+            # Shim variants of the same failure: an OpenAI-compat adapter
+            # may fabricate a contentless Message with no stop_reason, or
+            # return None where the SDK assert would have fired (e.g.
+            # ``python -O``). A real completed response always carries a
+            # stop_reason, so this cannot fire on legitimate turns.
+            if not saw_stream_event and (
+                _final_message is None
+                or (
+                    not getattr(_final_message, "content", None)
+                    and getattr(_final_message, "stop_reason", None) is None
+                )
+            ):
+                raise EmptyStreamError(
+                    "Provider returned an empty stream with no stop_reason "
+                    "(possible upstream error or malformed event stream)."
+                )
+            return _final_message
 
     def _call():
         import httpx as _httpx

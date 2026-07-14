@@ -70,6 +70,16 @@ class MessageDeduplicator:
                 self._seen = dict(newest)
         return False
 
+    def remove(self, key: str) -> None:
+        """Remove *key* from the seen cache so it can be accepted again.
+
+        Useful for lifecycle-aware dedup: mark a message as in-flight
+        with ``is_duplicate()``, then ``remove()`` the key once
+        processing completes so the same content is accepted on the
+        next send.
+        """
+        self._seen.pop(key, None)
+
     def clear(self):
         """Clear all tracked messages."""
         self._seen.clear()

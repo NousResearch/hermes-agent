@@ -1412,9 +1412,13 @@ class WeixinAdapter(BasePlatformAdapter):
         if message_id and self._dedup.is_duplicate(message_id):
             return
 
-        # Secondary content-fingerprint dedup for text messages
+        # Secondary content-fingerprint dedup for text messages.
+        # The key is stored on the event so it can be removed from the
+        # dedup cache after the message is dispatched, allowing the same
+        # text to be accepted again on the next send (issue #36750).
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
+        content_key: str = ""
         if text:
             content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
             if self._dedup.is_duplicate(content_key):
@@ -1466,6 +1470,9 @@ class WeixinAdapter(BasePlatformAdapter):
             media_types=media_types,
             timestamp=datetime.now(),
         )
+        # Attach content key for lifecycle-aware dedup removal after dispatch.
+        if content_key:
+            event._dedup_content_key = content_key  # type: ignore[attr-defined]
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
             self._enqueue_text_event(event)
@@ -1564,6 +1571,11 @@ class WeixinAdapter(BasePlatformAdapter):
                 return
             await self.handle_message(event)
         finally:
+            # Lifecycle-aware dedup: remove the content fingerprint key
+            # so the same text is accepted again on the next send (#36750).
+            dedup_key = getattr(event, "_dedup_content_key", None)
+            if dedup_key:
+                self._dedup.remove(dedup_key)
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 

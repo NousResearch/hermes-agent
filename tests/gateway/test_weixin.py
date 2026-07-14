@@ -988,6 +988,42 @@ class TestWeixinContentDedup:
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
 
+    def test_same_text_accepted_after_previous_processing_completes(self):
+        """Regression test for Issue #36750.
+
+        After the first message with text T has been dispatched (i.e. the
+        text-batch flush completed), sending the same text T again must be
+        accepted — the content dedup key is removed on dispatch so the TTL
+        cache does not suppress the follow-up.
+        """
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+
+        msg = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": { "text": "怎么样了"}}],
+        }
+
+        async def _drive():
+            # First send — should be accepted and dispatched.
+            await adapter._process_message({**msg, "message_id": "msg-1"})
+            await asyncio.sleep(0.2)  # wait for flush
+            assert adapter.handle_message.await_count == 1
+
+            # Second send with the same text but a different message_id.
+            # The content dedup key should have been removed after the
+            # first dispatch, so this must be accepted.
+            await adapter._process_message({**msg, "message_id": "msg-2"})
+            await asyncio.sleep(0.2)  # wait for flush
+
+        asyncio.run(_drive())
+
+        # Both messages should reach handle_message.
+        assert adapter.handle_message.await_count == 2
+
 
 class TestWeixinTextDebounce:
     """Text-debounce batching for rapid multi-message bursts (issue #35301).

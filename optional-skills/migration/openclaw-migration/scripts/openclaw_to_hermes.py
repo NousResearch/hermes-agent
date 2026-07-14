@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -2242,8 +2243,184 @@ class Migrator:
             self.record("cron-jobs", str(cron_store), str(dest_cron), "archived",
                         "Cron job store archived")
 
+        # Check the SQLite source-of-truth (#64138). Newer OpenClaw installs
+        # store enabled cron jobs in ~/.openclaw/state/openclaw.sqlite
+        # (table cron_jobs) instead of the flat JSON files. The legacy
+        # paths above miss those entirely; this query surfaces them so
+        # the migration report at least names them and the operator can
+        # recreate via `hermes cron`. The migrator does NOT auto-create
+        # Hermes cron entries (the openclaw.sqlite schema is too rich to
+        # translate losslessly); it only reports what's there.
+        state_dir = self.source_root / "state"
+        sqlite_path = state_dir / "openclaw.sqlite"
+        if sqlite_path.is_file():
+            sqlite_jobs = self._read_sqlite_cron_jobs(sqlite_path)
+            if sqlite_jobs is None:
+                # Could not open the db (corrupt, locked, missing table);
+                # the legacy record below still names "No cron config".
+                pass
+            elif sqlite_jobs:
+                found_any = True
+                enabled_count = sum(1 for j in sqlite_jobs if j.get("enabled"))
+                disabled_count = len(sqlite_jobs) - enabled_count
+                # Archive the raw sqlite file so the operator can recover
+                # the full row payload later if needed.
+                if self.archive_dir and self.execute:
+                    self.archive_dir.mkdir(parents=True, exist_ok=True)
+                    dest_sql = self.archive_dir / "openclaw.sqlite"
+                    shutil.copy2(sqlite_path, dest_sql)
+                # Per-job record so each is independently findable in the
+                # migration report (and grep-able in the notes file).
+                for job in sqlite_jobs:
+                    enabled_marker = "enabled" if job.get("enabled") else "disabled"
+                    schedule = (
+                        f"{job.get('schedule_kind', '?')}={job.get('schedule_expr', '?')}"
+                        if job.get("schedule_kind") or job.get("schedule_expr")
+                        else "no-schedule"
+                    )
+                    payload = job.get("payload_message") or job.get("name") or job.get("job_id")
+                    delivery = job.get("delivery_channel")
+                    if job.get("delivery_to"):
+                        delivery = f"{delivery}:{job.get('delivery_to')}" if delivery else job.get("delivery_to")
+                    # Build a copy-pasteable `hermes cron add` command
+                    # so the operator can recreate the job without
+                    # parsing the report. Use shlex.quote on the prompt
+                    # so single-quotes / newlines survive.
+                    parts = ["hermes", "cron", "add"]
+                    sched_expr = job.get("schedule_expr") or ""
+                    if sched_expr:
+                        # schedule_kind=cron uses the expr directly; other
+                        # kinds (interval, one-shot) need rewriting that
+                        # is out of scope for the migrator — only emit
+                        # the command for the cron-typed jobs we can
+                        # translate losslessly.
+                        if job.get("schedule_kind") == "cron":
+                            parts.append(shlex.quote(sched_expr))
+                        else:
+                            parts.append(
+                                f"# TODO: {job.get('schedule_kind')}-typed "
+                                f"schedule '{sched_expr}' — rewrite to "
+                                f"hermes cron format (e.g. '30m' / 'every 2h' / '0 9 * * *')"
+                            )
+                    if payload:
+                        parts.append(shlex.quote(str(payload)))
+                    if job.get("name"):
+                        parts.extend(["--name", shlex.quote(str(job.get("name")))])
+                    if delivery:
+                        parts.extend(["--deliver", shlex.quote(str(delivery))])
+                    if job.get("payload_model"):
+                        parts.extend(["--model", shlex.quote(str(job.get("payload_model")))])
+                    recreate_cmd = " ".join(parts)
+                    self.record(
+                        "cron-jobs",
+                        sqlite_path,
+                        Path(f"openclaw.sqlite#cron_jobs[{job.get('job_id', '?')}]"),
+                        "archived" if self.archive_dir else "skipped",
+                        f"SQLite cron_jobs row: id={job.get('job_id')}, "
+                        f"name={job.get('name')!r}, status={enabled_marker}, "
+                        f"schedule={schedule}, payload={payload!r}. "
+                        f"To recreate: `{recreate_cmd}`",
+                    )
+                self.record(
+                    "cron-jobs",
+                    sqlite_path,
+                    Path("archive/openclaw.sqlite"),
+                    "archived",
+                    f"SQLite cron store: {enabled_count} enabled + "
+                    f"{disabled_count} disabled jobs in cron_jobs table "
+                    f"(see per-job records above).",
+                )
+            else:
+                # SQLite exists but table is empty — surface that
+                # explicitly so the operator doesn't wonder.
+                if self.archive_dir and self.execute:
+                    self.archive_dir.mkdir(parents=True, exist_ok=True)
+                    dest_sql = self.archive_dir / "openclaw.sqlite"
+                    shutil.copy2(sqlite_path, dest_sql)
+                self.record(
+                    "cron-jobs",
+                    sqlite_path,
+                    Path("archive/openclaw.sqlite"),
+                    "archived",
+                    "SQLite cron_jobs table exists but is empty. "
+                    "No jobs to migrate from SQLite.",
+                )
+                # If the legacy paths also didn't find anything, this still
+                # counts as 'found' — we have a source, it's just empty.
+                # (Don't set found_any=False because that re-emits the
+                # bug-shape 'No cron configuration found' line below.)
+
         if not found_any:
             self.record("cron-jobs", None, None, "skipped", "No cron configuration found")
+
+    def _read_sqlite_cron_jobs(self, sqlite_path: Path) -> Optional[list]:
+        """Read enabled and disabled cron jobs from openclaw.sqlite.
+
+        Returns a list of dicts (one per row) with keys normalised from the
+        column names. Returns ``None`` on any read error (corrupt db, locked,
+        missing table, etc.) so the caller can fall through to the legacy
+        "No cron configuration found" path. Returns ``[]`` if the table
+        exists but is empty (caller should distinguish via the bool check).
+
+        The schema we expect (see #64138):
+            job_id, name, enabled, schedule_kind, schedule_expr, schedule_tz,
+            payload_message, payload_model, delivery_channel, delivery_to,
+            job_json, state_json
+
+        We tolerate missing columns (older OpenClaw versions may have
+        fewer) by using ``PRAGMA table_info`` to detect column presence
+        and substituting defaults.
+        """
+        try:
+            import sqlite3
+        except ImportError:
+            return None
+        try:
+            conn = sqlite3.connect(str(sqlite_path))
+            try:
+                cur = conn.cursor()
+                # Confirm table exists.
+                cur.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='cron_jobs'"
+                )
+                if cur.fetchone() is None:
+                    return []
+                # Detect columns present (older schemas may be missing some).
+                cur.execute("PRAGMA table_info(cron_jobs)")
+                cols = {row[1] for row in cur.fetchall()}
+                select_cols = [c for c in (
+                    "job_id", "name", "enabled", "schedule_kind", "schedule_expr",
+                    "schedule_tz", "payload_message", "payload_model",
+                    "delivery_channel", "delivery_to", "job_json", "state_json",
+                ) if c in cols]
+                if not select_cols:
+                    return []
+                # Build the SELECT — order matches the dict key order below.
+                col_list = ", ".join(select_cols)
+                cur.execute(f"SELECT {col_list} FROM cron_jobs ORDER BY job_id")
+                rows = cur.fetchall()
+            finally:
+                conn.close()
+        except Exception as exc:
+            self.record(
+                "cron-jobs",
+                sqlite_path,
+                None,
+                "error",
+                f"Could not read openclaw.sqlite cron_jobs table: "
+                f"{type(exc).__name__}: {exc}. Falling back to legacy "
+                f"config.cron + cron/ detection.",
+            )
+            return None
+        # Map rows to dicts. `enabled` is INTEGER 0/1 in sqlite → bool.
+        out = []
+        for row in rows:
+            entry = dict(zip(select_cols, row))
+            # Normalize enabled to bool.
+            if "enabled" in entry:
+                entry["enabled"] = bool(entry["enabled"])
+            out.append(entry)
+        return out
 
     # ── Hooks ─────────────────────────────────────────────────
     def migrate_hooks_config(self, config: Optional[Dict[str, Any]] = None) -> None:

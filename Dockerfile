@@ -9,6 +9,18 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
 FROM debian:13.4
 
+# Build-time switch: set INCLUDE_BROWSER=false to skip the Playwright +
+# Chromium install. Saves ~800 MB–1 GB on the final image. Useful for
+# CLI-only / gateway-only / API-only deployments where browser_tool isn't
+# needed. The full image (default) and the slim image come from this single
+# Dockerfile via:
+#   docker build .                                       # full (default)
+#   docker build --build-arg INCLUDE_BROWSER=false .     # slim
+ARG INCLUDE_BROWSER=true
+# Export the build arg as a runtime env so browser_tool can distinguish an
+# intentional slim image from a stale full image missing Chromium.
+ENV HERMES_DOCKER_INCLUDE_BROWSER=${INCLUDE_BROWSER}
+
 # Disable Python stdout buffering to ensure logs are printed immediately.
 # Do not write .pyc files at runtime: /opt/hermes is immutable in the
 # published container and writable state belongs under /opt/data.
@@ -136,7 +148,11 @@ COPY apps/shared/ apps/shared/
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium --only-shell && \
+    if [ "$INCLUDE_BROWSER" = "true" ]; then \
+        npx playwright install --with-deps chromium --only-shell ; \
+    else \
+        echo "INCLUDE_BROWSER=false: skipping Playwright/Chromium install (slim image)" ; \
+    fi && \
     npm cache clean --force
 
 # ---------- Layer-cached Python dependency install ----------

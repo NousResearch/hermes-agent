@@ -147,6 +147,57 @@ jobs:
           scripts/run_tests.sh tests/docker/ --file-timeout 600
 
   # ---------------------------------------------------------------------------
+  # Slim image path (INCLUDE_BROWSER=false). amd64-only: proves the false
+  # branch of the Dockerfile conditional, the runtime env marker, and that
+  # Chromium is not present. Does not push — full multi-arch publish stays
+  # on the default (full) build job above.
+  # ---------------------------------------------------------------------------
+  build-slim:
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build slim image (INCLUDE_BROWSER=false)
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE_NAME }}:slim-test
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+            INCLUDE_BROWSER=false
+          cache-from: type=gha,scope=docker-slim-amd64
+          cache-to: ${{ (github.event_name != 'pull_request') && 'type=gha,mode=max,scope=docker-slim-amd64' || '' }}
+
+      - name: Assert slim image env marker + no Chromium tree
+        run: |
+          set -euo pipefail
+          env_blob="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${{ env.IMAGE_NAME }}:slim-test")"
+          echo "$env_blob" | grep -F 'HERMES_DOCKER_INCLUDE_BROWSER=false'
+
+          # Playwright browsers path should be empty / absent in slim builds.
+          docker run --rm --entrypoint bash "${{ env.IMAGE_NAME }}:slim-test" -lc '
+            set -euo pipefail
+            if [ -d /opt/hermes/.playwright ]; then
+              # Directory may exist empty; refuse any chromium-ish payload.
+              if find /opt/hermes/.playwright -type f 2>/dev/null | grep -qiE "chrom"; then
+                echo "ERROR: slim image contains chromium under PLAYWRIGHT_BROWSERS_PATH" >&2
+                find /opt/hermes/.playwright -type f | head -50 >&2
+                exit 1
+              fi
+            fi
+            echo "slim image OK: no chromium payload under /opt/hermes/.playwright"
+          '
+
+  # ---------------------------------------------------------------------------
   # Stitch both per-arch digests into a single tagged multi-arch manifest.
   # This is a registry-side operation — no building, no layer re-push —
   # so it runs in ~30 seconds.

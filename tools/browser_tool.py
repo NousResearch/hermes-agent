@@ -360,11 +360,7 @@ def _format_browser_timeout_error(
         )
     elif command == "open" and _is_local_mode():
         if _running_in_docker():
-            hints.append(
-                "The browser daemon may still be starting or Chromium may be "
-                "missing. Pull the latest image: "
-                "docker pull ghcr.io/nousresearch/hermes-agent:latest"
-            )
+            hints.append(_docker_chromium_missing_hint())
         else:
             hints.append(
                 "The browser daemon may still be starting, or Chromium may be "
@@ -1027,8 +1023,7 @@ def _run_chrome_fallback_command(
         if _running_in_docker():
             hint = (
                 "Chrome fallback requires Chromium, but it is missing. "
-                "You're running in Docker — pull the latest image: "
-                "docker pull ghcr.io/nousresearch/hermes-agent:latest"
+                + _docker_chromium_missing_hint()
             )
         else:
             hint = (
@@ -2303,11 +2298,7 @@ def _run_browser_command(
         and not _maybe_autoinstall_chromium()
     ):
         if _running_in_docker():
-            hint = (
-                "Chromium browser is missing. You're running in Docker — pull "
-                "the latest image to get the bundled Chromium: "
-                "docker pull ghcr.io/nousresearch/hermes-agent:latest"
-            )
+            hint = _docker_chromium_missing_hint()
         else:
             hint = (
                 "Chromium browser is missing. Install it with: "
@@ -4576,6 +4567,35 @@ def _running_in_docker() -> bool:
         return False
 
 
+def _docker_image_intentionally_slim() -> bool:
+    """True when the image was built with INCLUDE_BROWSER=false.
+
+    The Dockerfile exports ``HERMES_DOCKER_INCLUDE_BROWSER`` from the build
+    arg so runtime can distinguish an intentional slim image from a stale
+    full image that is simply missing Chromium.
+    """
+    val = (os.environ.get("HERMES_DOCKER_INCLUDE_BROWSER") or "").strip().lower()
+    return val in {"0", "false", "no", "off"}
+
+
+def _docker_chromium_missing_hint() -> str:
+    """Actionable message when Chromium is missing inside Docker."""
+    if _docker_image_intentionally_slim():
+        return (
+            "Chromium is not installed in this slim Docker image "
+            "(built with INCLUDE_BROWSER=false). Browser automation is "
+            "intentionally unavailable. Rebuild without that flag for the "
+            "full image, or use the published full tag "
+            "(ghcr.io/nousresearch/hermes-agent:latest) if you need "
+            "browser_tool."
+        )
+    return (
+        "Chromium browser is missing. You're running in Docker — pull "
+        "the latest image to get the bundled Chromium: "
+        "docker pull ghcr.io/nousresearch/hermes-agent:latest"
+    )
+
+
 def check_browser_requirements() -> bool:
     """
     Check if browser tool requirements are met.
@@ -4686,11 +4706,7 @@ if __name__ == "__main__":
                 searched = ", ".join(_chromium_search_roots()) or "(no candidate paths)"
                 print(f"     Searched: {searched}")
                 if _running_in_docker():
-                    print(
-                        "     Docker: pull the latest image — the current one "
-                        "predates the bundled Chromium install"
-                    )
-                    print("       docker pull ghcr.io/nousresearch/hermes-agent:latest")
+                    print(f"     Docker: {_docker_chromium_missing_hint()}")
                 else:
                     print("     Install it with:")
                     print("       npx agent-browser install --with-deps")

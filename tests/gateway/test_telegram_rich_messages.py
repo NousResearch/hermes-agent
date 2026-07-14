@@ -283,6 +283,81 @@ async def test_rich_messages_can_be_opted_out():
 
 
 @pytest.mark.asyncio
+async def test_metadata_rich_mode_force_safe_overrides_global_opt_out():
+    """A deterministic job can opt one safe rich payload in without enabling
+    global rich delivery for every Telegram reply."""
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send(
+        "12345",
+        RICH_CONTENT,
+        metadata={"telegram_rich_mode": "force_safe"},
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_metadata_boolean_rich_message_alias_enables_one_message():
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send(
+        "12345",
+        RICH_CONTENT,
+        metadata={"telegram_rich_message": True},
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_metadata_rich_mode_off_disables_table_auto_route():
+    """Per-message off is stronger than the default table-only auto route."""
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+
+    result = await adapter.send(
+        "12345",
+        TABLE_ONLY_CONTENT,
+        metadata={"telegram_rich_mode": "off"},
+    )
+
+    assert result.success is True
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metadata_force_safe_still_honors_cjk_guard():
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send(
+        "12345",
+        CJK_RICH_CONTENT,
+        metadata={"telegram_rich_mode": "force_safe"},
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_plain_markdown_stays_on_legacy_path():
     """Ordinary replies (no table/task-list/details/math) stay on the legacy
     MarkdownV2 path for consistent client rendering, even with rich enabled."""

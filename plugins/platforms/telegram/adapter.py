@@ -1433,14 +1433,52 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         return True
 
-    def _rich_delivery_enabled(self, content: str) -> bool:
+    def _metadata_rich_mode(self, metadata: Optional[Dict[str, Any]]) -> str:
+        """Return the per-message rich-delivery mode from send metadata.
+
+        ``telegram_rich_mode`` lets deterministic jobs opt a single message into
+        the rich path without turning on global Telegram rich delivery.  The
+        boolean ``telegram_rich_message`` alias is kept deliberately narrow for
+        cron/job templates that only need yes/no behavior.
+        """
+        if not metadata:
+            return "auto"
+        raw_mode = metadata.get("telegram_rich_mode")
+        if raw_mode is None and "telegram_rich_message" in metadata:
+            raw_mode = metadata.get("telegram_rich_message")
+        if isinstance(raw_mode, bool):
+            return "force_safe" if raw_mode else "off"
+        if raw_mode is None:
+            return "auto"
+        if isinstance(raw_mode, str):
+            mode = raw_mode.strip().lower().replace("-", "_")
+            if mode in {"", "auto", "default"}:
+                return "auto"
+            if mode in {"off", "false", "0", "no", "legacy", "markdown", "markdownv2"}:
+                return "off"
+            if mode in {"force", "force_safe", "rich", "true", "1", "yes", "on", "safe"}:
+                return "force_safe"
+        return "auto"
+
+    def _rich_delivery_enabled(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Whether rich delivery is allowed for this payload."""
+        mode = self._metadata_rich_mode(metadata)
+        if mode == "off":
+            return False
+        if mode == "force_safe":
+            # Per-message opt-in still passes through the normal rich safety
+            # guards below (CJK/Desktop, details+math, size, endpoint support).
+            return True
         return bool(
             getattr(self, "_rich_messages_enabled", True)
             or self._content_is_pipe_table_primary(content)
         )
 
-    def _rich_eligible(self, content: str) -> bool:
+    def _rich_eligible(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Capability/content eligibility for rich, ignoring ``expect_edits``.
 
         Shared core of :meth:`_should_attempt_rich` minus the per-call
@@ -1450,7 +1488,7 @@ class TelegramAdapter(BasePlatformAdapter):
         FINAL edit should still upgrade to rich when the content warrants it.
         """
         return bool(
-            self._rich_delivery_enabled(content)
+            self._rich_delivery_enabled(content, metadata=metadata)
             and not getattr(self, "_rich_send_disabled", False)
             and content
             and content.strip()
@@ -1466,7 +1504,7 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> bool:
         return bool(
             not (metadata or {}).get("expect_edits")
-            and self._rich_eligible(content)
+            and self._rich_eligible(content, metadata=metadata)
         )
 
     def prefers_fresh_final_streaming(
@@ -3957,7 +3995,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # table that exceeds the MarkdownV2 limit must not be split into legacy
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
+        if finalize and self._rich_eligible(content, metadata=metadata):
             rich_result = await self._try_edit_rich(
                 chat_id, message_id, content, metadata=metadata,
             )

@@ -610,10 +610,19 @@ def _has_code_edit_anchor(low_body: str, body: str) -> bool:
 
 
 def _is_status_query(body: str, low_body: str) -> bool:
+    """True only for *short, dedicated* status pings — never long instructions.
+
+    Meta-discussion that *mentions* status words (e.g. complaining that
+    ``진행 상황`` was wrongly triggered) must NOT classify as STATUS.
+    """
+    # Hard length gate: real status pings are short ("지금 뭐 해?", "진행상황").
+    # Anything longer is MAIN (model understands intent). Ctrl+F on long text
+    # is exactly the failure mode users hit.
+    if len(body) > 48:
+        return False
     if _contains_any(low_body, _STATUS_ANCHORS_EN) or _contains_any(body, _STATUS_ANCHORS_KO):
         return True
-    # Only a pure "?" (or whitespace) is treated as a status ping.
-    # Short questions like "블로그 돼?" are normal MAIN traffic, not status.
+    # Only a pure "?" is a status ping.
     if body.strip() in {"?", "？"}:
         return True
     return False

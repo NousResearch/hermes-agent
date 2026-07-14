@@ -271,6 +271,9 @@ def handle_concierge(
     if intent is Intent.STATUS:
         if _action_imperative:
             return None  # fall through to main agent
+        # Second belt: never answer STATUS for long/meta messages.
+        if len(text.strip()) > 48:
+            return None
         try:
             msg = _format_kanban_status(board=board)
         except Exception as exc:

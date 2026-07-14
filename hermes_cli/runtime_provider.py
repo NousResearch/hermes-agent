@@ -672,7 +672,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         # to avoid overbroad substring matches (e.g. "ai" matching
         # "api.minimax.io").  Only the first match is kept.
         if base_url_fallback is None and requested_norm not in {name_norm, menu_key}:
-            hostname = base_url.strip().lower().split("/")[0]  # strip scheme if any
+            import urllib.parse
+            parsed_url = urllib.parse.urlparse(base_url.strip().lower())
+            hostname = parsed_url.hostname or ""
             host_parts = hostname.split(".")
             if requested_norm in host_parts:
                 base_url_fallback = entry

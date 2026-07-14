@@ -256,3 +256,47 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_terminal_identical_output_warns_then_hard_stops():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"command": "echo same"}
+    result = '{"exit_code": 0, "output": "same"}'
+
+    assert controller.before_call("terminal", args).action == "allow"
+    assert controller.after_call("terminal", args, result, failed=False).action == "allow"
+    assert controller.before_call("terminal", args).action == "allow"
+    warn = controller.after_call("terminal", args, result, failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "idempotent_no_progress_warning"
+
+    blocked = controller.before_call("terminal", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_execute_code_tracks_no_progress_but_changing_output_is_not_flagged():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    code_args = {"code": "print('x')"}
+
+    controller.after_call("execute_code", code_args, "x", failed=False)
+    controller.after_call("execute_code", code_args, "x", failed=False)
+    assert controller.before_call("execute_code", code_args).action == "block"
+
+    controller.reset_for_turn()
+    for index in range(5):
+        assert controller.before_call("terminal", {"command": "date"}).action == "allow"
+        changing = controller.after_call("terminal", {"command": "date"}, str(index), failed=False)
+        assert changing.action == "allow"

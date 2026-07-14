@@ -60,6 +60,17 @@ MUTATING_TOOL_NAMES = frozenset(
 )
 
 
+# Mutating tools whose identical (args -> result) repeat still signals no progress:
+# a deterministic command re-run that returns the same output made no headway,
+# unlike write_file/send_message where an identical "ok" hides a real side effect.
+NO_PROGRESS_MUTATING_TOOLS = frozenset(
+    {
+        "terminal",
+        "execute_code",
+    }
+)
+
+
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
@@ -260,7 +271,7 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        if self._is_idempotent(tool_name):
+        if self._tracks_no_progress(tool_name):
             record = self._no_progress.get(signature)
             if record is not None:
                 _result_hash, repeat_count = record
@@ -347,7 +358,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
+        if not self._tracks_no_progress(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -373,6 +384,11 @@ class ToolCallGuardrailController:
             )
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+
+    def _tracks_no_progress(self, tool_name: str) -> bool:
+        if tool_name in NO_PROGRESS_MUTATING_TOOLS:
+            return True
+        return self._is_idempotent(tool_name)
 
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:

@@ -1196,6 +1196,7 @@ def init_agent(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        skip_tool_search_assembly=True,
     )
     
     # Show tool configuration and store valid tool names for validation
@@ -1971,6 +1972,21 @@ def init_agent(
             agent.valid_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)
+
+    # Assemble Tool Search only after every granted session-local schema family
+    # is present. This makes the first live surface identical to a rebuilt one.
+    from agent.tool_search_surface import finalize_agent_tool_surface
+
+    finalize_agent_tool_surface(
+        agent,
+        context_length=(
+            getattr(agent.context_compressor, "context_length", None)
+            or _config_context_length
+        ),
+    )
+    agent._kanban_worker_guidance = (
+        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+    )
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

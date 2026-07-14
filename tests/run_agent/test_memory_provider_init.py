@@ -25,6 +25,17 @@ class RecordingMemoryProvider:
         pass
 
 
+class ToolProvidingMemoryProvider(RecordingMemoryProvider):
+    def get_tool_schemas(self):
+        return [
+            {
+                "name": "provider_stats",
+                "description": "Show memory provider statistics",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+
+
 def test_blank_memory_provider_does_not_auto_enable_honcho():
     """Blank memory.provider should remain opt-out even if Honcho fallback looks configured."""
     cfg = {"memory": {"provider": ""}, "agent": {}}
@@ -92,6 +103,42 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["platform"] == "feishu"
     assert "warning_callback" not in provider.init_kwargs
     assert "status_callback" not in provider.init_kwargs
+
+
+def test_fresh_agent_finalizes_provider_tools_into_first_surface():
+    """#47119: provider schemas must join the first model-facing surface."""
+    provider = ToolProvidingMemoryProvider()
+    cfg = {
+        "memory": {"provider": "recording"},
+        "agent": {},
+        "tools": {"tool_search": {"enabled": "on"}},
+    }
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            enabled_toolsets=["memory"],
+        )
+
+    visible_names = {tool["function"]["name"] for tool in agent.tools}
+    assert visible_names == agent.valid_tool_names
+    # Provider-owned names are not registry tools, so they stay directly visible.
+    # PR #34523 separately owns routing provider names through tool_call.
+    assert "provider_stats" in visible_names
+    assert getattr(agent, "_tool_search_catalog", None) is None
+    assert getattr(agent, "_tool_search_allowed_names", None) is None
 
 
 class CoreShadowProvider:

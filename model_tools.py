@@ -27,7 +27,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Iterable, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
@@ -1037,6 +1037,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    tool_search_catalog: Optional[Iterable[Any]] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1102,13 +1103,26 @@ def handle_function_call(
         except Exception:
             current_defs = []
         if function_name == _ts_mod.TOOL_SEARCH_NAME:
-            return _ts_mod.dispatch_tool_search(function_args or {},
-                                                current_tool_defs=current_defs)
+            return _ts_mod.dispatch_tool_search(
+                function_args or {},
+                current_tool_defs=current_defs,
+                catalog=tool_search_catalog,
+            )
         if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
-            return _ts_mod.dispatch_tool_describe(function_args or {},
-                                                  current_tool_defs=current_defs)
+            return _ts_mod.dispatch_tool_describe(
+                function_args or {},
+                current_tool_defs=current_defs,
+                catalog=tool_search_catalog,
+            )
         if function_name == _ts_mod.TOOL_CALL_NAME:
-            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
+            catalog_names = (
+                frozenset(entry.name for entry in tool_search_catalog)
+                if tool_search_catalog is not None
+                else None
+            )
+            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(
+                function_args or {}
+            )
             if err or not underlying_name:
                 return json.dumps({"error": err or "tool_call could not be resolved"},
                                   ensure_ascii=False)
@@ -1118,7 +1132,11 @@ def handle_function_call(
             # additionally rejects any tool the session was not granted, so a
             # restricted session can never invoke an out-of-scope tool through
             # the bridge even if the catalog scoping above regressed.
-            _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
+            _scoped_deferrable = (
+                catalog_names
+                if catalog_names is not None
+                else _ts_mod.scoped_deferrable_names(current_defs)
+            )
             if underlying_name not in _scoped_deferrable:
                 return json.dumps({
                     "error": (
@@ -1141,6 +1159,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                tool_search_catalog=tool_search_catalog,
             )
 
     _tool_original_args = dict(function_args)

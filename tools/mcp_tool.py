@@ -5302,6 +5302,7 @@ def refresh_agent_mcp_tools(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
             quiet_mode=quiet_mode,
+            skip_tool_search_assembly=True,
         )
         or []
     )
@@ -5317,6 +5318,19 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Tool Search must be assembled from that same complete staged snapshot.
+    # Preparing outside the lock keeps registry/config work off the reader path;
+    # every dependent attribute is published together below.
+    from agent.tool_search_surface import prepare_agent_tool_surface
+    from tools.tool_search import BRIDGE_TOOL_NAMES
+
+    staged_surface = prepare_agent_tool_surface(
+        agent,
+        source_tool_defs=new_defs,
+        config=getattr(agent, "_tool_search_config", None),
+        context_length=getattr(agent, "_tool_search_context_length", None),
+    )
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.
@@ -5330,24 +5344,52 @@ def refresh_agent_mcp_tools(
         if snapshot_generation < published_gen:
             # A newer snapshot already won; our set is stale — drop it.
             return set()
-        current = {
+        current_visible = {
             t["function"]["name"]
             for t in (getattr(agent, "tools", None) or [])
         }
-        if new_names == current:
+        current_available = set(current_visible)
+        current_available.update(
+            entry.name for entry in (getattr(agent, "_tool_search_catalog", None) or ())
+        )
+        memory_manager = getattr(agent, "_memory_manager", None)
+        if memory_manager is not None:
+            try:
+                current_available.update(memory_manager.get_all_tool_names())
+            except Exception:
+                try:
+                    current_available.update(
+                        schema.get("name", "")
+                        for schema in memory_manager.get_all_tool_schemas()
+                        if isinstance(schema, dict)
+                    )
+                except Exception:
+                    pass
+        current_available.update(getattr(agent, "_context_engine_tool_names", None) or ())
+        current_available.difference_update(BRIDGE_TOOL_NAMES)
+
+        same_published_surface = (
+            list(getattr(agent, "tools", None) or []) == staged_surface.assembly.tool_defs
+            and tuple(getattr(agent, "_tool_search_catalog", ()) or ()) == staged_surface.assembly.catalog
+        )
+        if same_published_surface and (
+            tuple(getattr(agent, "_tool_search_source_defs", ())) == staged_surface.source_defs
+            or new_names == current_available
+        ):
             # No change → leave the live snapshot untouched (no churn), but
             # record the generation so an in-flight older caller can't clobber.
             agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
             return set()
-        agent.tools = new_defs
-        agent.valid_tool_names = new_names
+        from agent.tool_search_surface import publish_agent_tool_surface
+
+        publish_agent_tool_surface(agent, staged_surface)
         # Publish context-engine routing names atomically with the snapshot.
         engine_names = getattr(agent, "_context_engine_tool_names", None)
         if isinstance(engine_names, set):
             engine_names.clear()
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        return new_names - current
+        return set(staged_surface.visible_names) - current_visible
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:

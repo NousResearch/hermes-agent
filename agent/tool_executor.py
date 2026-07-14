@@ -230,6 +230,10 @@ def _tool_search_scoped_names(agent) -> frozenset:
     generation changes (e.g. an MCP server reconnects), so the common case is
     a dict lookup, not a full tool-defs rebuild on every tool call.
     """
+    session_names = getattr(agent, "_tool_search_allowed_names", None)
+    if session_names is not None:
+        return frozenset(session_names)
+
     try:
         import model_tools
         from tools import tool_search as _ts

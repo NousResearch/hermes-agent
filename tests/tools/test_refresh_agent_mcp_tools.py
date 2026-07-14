@@ -140,6 +140,50 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     assert added == {"mcp_new_server_tool"}
 
 
+def test_refresh_rebuilds_provider_tool_search_catalog(monkeypatch):
+    """A registry refresh must publish the full effective surface and catalog."""
+    from tools import tool_search
+    from tools.tool_search import ToolSearchConfig
+
+    agent = _agent(["tool_search", "tool_describe", "tool_call"])
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {
+                "name": "provider_stats",
+                "description": "Show memory provider statistics",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    )
+    agent._tool_search_config = ToolSearchConfig.from_raw({"enabled": "on"})
+    agent._tool_search_context_length = 204_800
+    agent._tool_search_catalog = ()
+
+    import model_tools
+    seen = {}
+
+    def _defs(**kwargs):
+        seen.update(kwargs)
+        return [_tool("read_file"), _tool("mcp_new_server_tool")]
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", _defs)
+    original_is_deferrable = tool_search.is_deferrable_tool_name
+    monkeypatch.setattr(
+        tool_search,
+        "is_deferrable_tool_name",
+        lambda name: name == "mcp_new_server_tool" or original_is_deferrable(name),
+    )
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert seen["skip_tool_search_assembly"] is True
+    assert added == {"read_file", "provider_stats"}
+    assert "provider_stats" in agent.valid_tool_names
+    assert "mcp_new_server_tool" not in added
+    assert [entry.name for entry in agent._tool_search_catalog] == [
+        "mcp_new_server_tool",
+    ]
+
+
 def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     """#5544: context-engine tools must NOT be re-injected on a restricted
     toolset. A platform with enabled_toolsets that excludes context_engine

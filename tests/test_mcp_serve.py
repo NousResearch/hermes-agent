@@ -1004,6 +1004,26 @@ class TestServerCreation:
         finally:
             registry.deregister(tool_name)
 
+    def test_registry_tool_wrapper_uses_guarded_dispatch(self, monkeypatch):
+        import mcp_serve
+        import model_tools
+
+        calls = []
+
+        def fake_handle_function_call(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr(model_tools, "handle_function_call", fake_handle_function_call)
+        wrapper = mcp_serve._make_registry_tool_wrapper("test_guarded_tool")
+
+        assert json.loads(wrapper(message="hello")) == {"ok": True}
+        assert calls[0]["function_name"] == "test_guarded_tool"
+        assert calls[0]["function_args"] == {"message": "hello"}
+        assert calls[0]["task_id"] == "mcp-serve"
+        assert calls[0]["session_id"] == "mcp-serve"
+        assert calls[0]["tool_call_id"].startswith("mcp-")
+
     def test_create_without_mcp_sdk(self, monkeypatch):
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", False)
@@ -1018,6 +1038,16 @@ class TestRunMcpServer:
         with pytest.raises(SystemExit) as exc_info:
             mcp_serve.run_mcp_server()
         assert exc_info.value.code == 1
+
+    def test_http_rejects_unauthenticated_non_loopback_bind(self, monkeypatch, capsys):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        with pytest.raises(SystemExit) as exc_info:
+            mcp_serve.run_mcp_http_server(host="0.0.0.0")
+
+        assert exc_info.value.code == 1
+        assert "restricted to loopback hosts" in capsys.readouterr().err
 
 
 class TestCliIntegration:
@@ -1117,7 +1147,18 @@ class TestCliIntegration:
 
 
 class TestHttpAuthHelpers:
-    def _make_app(self, auth_config):
+    def test_pkce_challenge_methods(self):
+        import mcp_serve
+
+        assert mcp_serve._pkce_challenge("verifier", "plain") == "verifier"
+        assert (
+            mcp_serve._pkce_challenge("verifier", "S256")
+            == "iMnq5o6zALKXGivsnlom_0F5_WYda32GHkxlV7mq7hQ"
+        )
+        assert mcp_serve._pkce_challenge("verifier", "unsupported") is None
+        assert mcp_serve._pkce_challenge("☃", "S256") is None
+
+    def _make_app(self, auth_config, host="127.0.0.1"):
         pytest.importorskip("starlette")
         from starlette.applications import Starlette
         from starlette.responses import JSONResponse
@@ -1125,6 +1166,9 @@ class TestHttpAuthHelpers:
 
         class Settings:
             streamable_http_path = "/mcp"
+
+            def __init__(self):
+                self.host = host
 
         class FakeServer:
             settings = Settings()
@@ -1143,6 +1187,10 @@ class TestHttpAuthHelpers:
             auth_config=auth_config,
             health_path="/health",
         )
+
+    def test_app_rejects_unauthenticated_non_loopback_bind(self):
+        with pytest.raises(ValueError, match="restricted to loopback hosts"):
+            self._make_app(None, host="0.0.0.0")
 
     def test_psk_auth_accepts_bearer_header_and_query(self):
         pytest.importorskip("starlette")
@@ -1186,6 +1234,7 @@ class TestHttpAuthHelpers:
         assert meta.status_code == 200
         assert meta.json()["authorization_endpoint"] == "https://mcp.example.com/mcp/authorize"
         assert "client_credentials" in meta.json()["grant_types_supported"]
+        assert meta.json()["code_challenge_methods_supported"] == ["plain", "S256"]
 
         resource = client.get("/.well-known/oauth-protected-resource/mcp")
         assert resource.status_code == 200
@@ -1212,9 +1261,82 @@ class TestHttpAuthHelpers:
         code = authorize.headers["location"].split("code=", 1)[1].split("&", 1)[0]
         code_token = client.post(
             "/mcp/token",
-            data={"grant_type": "authorization_code", "client_id": "client-as-psk", "code": code},
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "client-as-psk",
+                "code": code,
+                "redirect_uri": "https://client.example/cb",
+            },
         )
         assert code_token.status_code == 200
+
+    def test_oauth_authorization_code_s256_pkce_and_redirect_binding(self):
+        pytest.importorskip("starlette")
+        from starlette.testclient import TestClient
+        from urllib.parse import parse_qs, urlparse
+        import mcp_serve
+
+        verifier = "v" * 43
+        challenge = mcp_serve._pkce_challenge(verifier, "S256")
+        app = self._make_app(
+            mcp_serve.McpHttpAuthConfig(
+                psk="client-as-psk",
+                oauth_compatible=True,
+                public_base_url="https://mcp.example.com",
+                path="/mcp",
+                token_ttl_seconds=600,
+                code_ttl_seconds=60,
+            )
+        )
+        client = TestClient(app, follow_redirects=False)
+        redirect_uri = "https://client.example/cb"
+
+        authorize = client.get(
+            "/mcp/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "client-as-psk",
+                "redirect_uri": redirect_uri,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+        )
+        assert authorize.status_code == 302
+        code = parse_qs(urlparse(authorize.headers["location"]).query)["code"][0]
+        grant = {
+            "grant_type": "authorization_code",
+            "client_id": "client-as-psk",
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+
+        wrong_redirect = client.post(
+            "/mcp/token",
+            data={**grant, "redirect_uri": "https://attacker.example/cb", "code_verifier": verifier},
+        )
+        assert wrong_redirect.status_code == 400
+        assert wrong_redirect.json()["error"] == "invalid_grant"
+
+        wrong_verifier = client.post(
+            "/mcp/token",
+            data={**grant, "code_verifier": "x" * 43},
+        )
+        assert wrong_verifier.status_code == 400
+        assert wrong_verifier.json()["error"] == "invalid_grant"
+
+        token = client.post(
+            "/mcp/token",
+            data={**grant, "code_verifier": verifier},
+        )
+        assert token.status_code == 200
+        assert token.json()["token_type"] == "Bearer"
+
+        replay = client.post(
+            "/mcp/token",
+            data={**grant, "code_verifier": verifier},
+        )
+        assert replay.status_code == 400
+        assert replay.json()["error"] == "invalid_grant"
 
 
 # ---------------------------------------------------------------------------

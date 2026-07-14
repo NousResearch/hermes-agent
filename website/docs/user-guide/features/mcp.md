@@ -231,7 +231,7 @@ hermes mcp serve \
   --allowed-host mcp.example.com
 ```
 
-The HTTP endpoint accepts the standard Authorization bearer header and the configured PSK header (`X-Hermes-MCP-PSK` by default). For clients that cannot set headers, add `--allow-query-token` to accept `?access_token=` or `?psk=`; this disables HTTP access logs so tokenized URLs are not logged.
+The HTTP endpoint accepts the standard Authorization bearer header and the configured PSK header (`X-Hermes-MCP-PSK` by default). For clients that cannot set headers, add `--allow-query-token` to accept `?access_token=` or `?psk=`; this disables HTTP access logs so tokenized URLs are not logged. Unauthenticated HTTP serving is allowed only on loopback (`127.0.0.1`, `::1`, or `localhost`); non-loopback binds fail closed unless a PSK or OAuth credential is configured.
 
 Some hosted MCP clients ask for OAuth fields even when you are connecting to a personal bridge. Use OAuth-compatible mode for those clients:
 
@@ -256,7 +256,7 @@ This exposes:
 - Authorization-server metadata: `https://mcp.example.com/.well-known/oauth-authorization-server`
 - Protected-resource metadata: `https://mcp.example.com/.well-known/oauth-protected-resource/mcp`
 
-By default, the OAuth client id is the PSK from `--auth-token-env`, and the client secret is blank. If your client requires separate OAuth credentials, set `--oauth-client-id-env` and/or `--oauth-client-secret-env`. Tokens and authorization codes are opaque and stored in memory, so restart the process to invalidate them.
+By default, the OAuth client id is the PSK from `--auth-token-env`, and the client secret is blank. If your client requires separate OAuth credentials, set `--oauth-client-id-env` and/or `--oauth-client-secret-env`. Authorization-code clients may use PKCE `plain` or `S256`; the token endpoint binds the code to the original redirect URI and validates the code verifier before issuing a token. Tokens and authorization codes are opaque and stored in memory, so restart the process to invalidate them.
 
 This mode is intentionally generic: it works for local stdio clients like Claude Desktop via the default transport, and for remote clients that require an HTTPS MCP URL plus bearer or OAuth-shaped authentication.
 
@@ -279,7 +279,7 @@ hermes mcp serve --transport streamable-http --expose-plugin-tools
 hermes mcp serve --transport streamable-http --expose-tool tescmd_vehicle_list
 ```
 
-The MCP server preserves each tool's JSON schema and dispatches through Hermes' normal tool registry, so plugin-side validation, confirmation requirements, redaction, and audit logging still apply. For real-world-control plugins, side-effecting tools should continue to require their existing explicit confirmation arguments.
+The MCP server preserves each tool's JSON schema and invokes exposed registry tools through Hermes' normal guarded tool-call pipeline—not directly through the registry dispatcher—so request/execution middleware, plugin approval and block hooks, ACP edit approval, post-call hooks, result transforms, plugin validation, confirmation requirements, redaction, and audit logging still apply. For real-world-control plugins, side-effecting tools should continue to require their existing explicit confirmation arguments.
 
 ### OAuth-authenticated HTTP servers
 

@@ -29,7 +29,10 @@ MCP client config (e.g. claude_desktop_config.json):
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import inspect
+import ipaddress
 import json
 import logging
 import os
@@ -573,8 +576,19 @@ def _safe_identifier(name: str) -> str:
 
 def _make_registry_tool_wrapper(tool_name: str):
     def _tool(**kwargs):
-        from tools.registry import registry
-        return registry.dispatch(tool_name, dict(kwargs))
+        # Registry tools exposed through MCP must follow the same guarded
+        # execution path as model-issued tool calls. Calling registry.dispatch
+        # directly would bypass request/execution middleware, plugin approval
+        # hooks, ACP edit approval, post-call hooks, and result transforms.
+        from model_tools import handle_function_call
+
+        return handle_function_call(
+            function_name=tool_name,
+            function_args=dict(kwargs),
+            task_id="mcp-serve",
+            tool_call_id=f"mcp-{secrets.token_hex(8)}",
+            session_id="mcp-serve",
+        )
 
     _tool.__name__ = f"_mcp_registry_tool_{_safe_identifier(tool_name)}"
     return _tool
@@ -1138,6 +1152,8 @@ class _AuthorizationCode:
     client_id: str
     redirect_uri: str
     expires_at: float
+    code_challenge: Optional[str] = None
+    code_challenge_method: Optional[str] = None
 
 
 class _OAuthTokenStore:
@@ -1168,7 +1184,15 @@ class _OAuthTokenStore:
                 return False
             return True
 
-    def issue_code(self, client_id: str, redirect_uri: str, ttl_seconds: int) -> str:
+    def issue_code(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        ttl_seconds: int,
+        *,
+        code_challenge: Optional[str] = None,
+        code_challenge_method: Optional[str] = None,
+    ) -> str:
         code = secrets.token_urlsafe(24)
         with self._lock:
             self._codes[code] = _AuthorizationCode(
@@ -1176,17 +1200,35 @@ class _OAuthTokenStore:
                 client_id=client_id,
                 redirect_uri=redirect_uri,
                 expires_at=time.time() + ttl_seconds,
+                code_challenge=code_challenge,
+                code_challenge_method=code_challenge_method,
             )
         return code
 
-    def consume_code(self, code: str, client_id: str) -> bool:
+    def consume_code(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: Optional[str] = None,
+    ) -> bool:
         with self._lock:
-            issued = self._codes.pop(code, None)
+            issued = self._codes.get(code)
             if not issued:
                 return False
-            if issued.client_id != client_id:
+            if issued.expires_at < time.time():
+                self._codes.pop(code, None)
                 return False
-            return issued.expires_at >= time.time()
+            if not secrets.compare_digest(issued.client_id, client_id):
+                return False
+            if not secrets.compare_digest(issued.redirect_uri, redirect_uri):
+                return False
+            if issued.code_challenge:
+                derived = _pkce_challenge(code_verifier, issued.code_challenge_method)
+                if not derived or not secrets.compare_digest(issued.code_challenge, derived):
+                    return False
+            self._codes.pop(code, None)
+            return True
 
 
 def _normalize_path(path: str) -> str:
@@ -1230,6 +1272,32 @@ def _constant_time_equals(left: Optional[str], right: Optional[str]) -> bool:
     if not left or not right:
         return False
     return secrets.compare_digest(str(left), str(right))
+
+
+def _pkce_challenge(verifier: Optional[str], method: Optional[str]) -> Optional[str]:
+    """Return the RFC 7636 challenge for a verifier and supported method."""
+    if not verifier:
+        return None
+    if method in (None, "plain"):
+        return verifier
+    if method == "S256":
+        try:
+            digest = hashlib.sha256(verifier.encode("ascii")).digest()
+        except UnicodeEncodeError:
+            return None
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return None
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return whether *host* binds only to the local machine."""
+    value = (host or "").strip().strip("[]")
+    if value.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 def _client_secret_valid(config: McpHttpAuthConfig, supplied: Optional[str]) -> bool:
@@ -1304,6 +1372,12 @@ def create_streamable_http_app(
     if not hasattr(server, "streamable_http_app"):
         raise RuntimeError("Installed MCP SDK does not support Streamable HTTP")
 
+    bind_host = str(getattr(getattr(server, "settings", None), "host", "127.0.0.1"))
+    if auth_config is None and not _is_loopback_host(bind_host):
+        raise ValueError(
+            "Unauthenticated MCP HTTP serving is restricted to loopback hosts"
+        )
+
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
@@ -1344,6 +1418,8 @@ def create_streamable_http_app(
             redirect_uri = params.get("redirect_uri")
             response_type = params.get("response_type")
             state = params.get("state")
+            code_challenge = params.get("code_challenge")
+            code_challenge_method = params.get("code_challenge_method")
 
             if response_type != "code":
                 return JSONResponse({"error": "unsupported_response_type"}, status_code=400)
@@ -1351,8 +1427,32 @@ def create_streamable_http_app(
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
             if not redirect_uri:
                 return JSONResponse({"error": "invalid_request", "error_description": "redirect_uri is required"}, status_code=400)
+            if code_challenge:
+                code_challenge_method = code_challenge_method or "plain"
+                if code_challenge_method not in {"plain", "S256"}:
+                    return JSONResponse(
+                        {
+                            "error": "invalid_request",
+                            "error_description": "unsupported code_challenge_method",
+                        },
+                        status_code=400,
+                    )
+            elif code_challenge_method:
+                return JSONResponse(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "code_challenge is required with code_challenge_method",
+                    },
+                    status_code=400,
+                )
 
-            code = store.issue_code(client_id or "", redirect_uri, config.code_ttl_seconds)
+            code = store.issue_code(
+                client_id or "",
+                redirect_uri,
+                config.code_ttl_seconds,
+                code_challenge=code_challenge,
+                code_challenge_method=code_challenge_method,
+            )
             query = {"code": code}
             if state is not None:
                 query["state"] = state
@@ -1374,7 +1474,14 @@ def create_streamable_http_app(
                 access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
             elif grant_type == "authorization_code":
                 code = form.get("code")
-                if not store.consume_code(str(code or ""), str(client_id or "")):
+                redirect_uri = form.get("redirect_uri")
+                code_verifier = form.get("code_verifier")
+                if not store.consume_code(
+                    str(code or ""),
+                    str(client_id or ""),
+                    str(redirect_uri or ""),
+                    str(code_verifier) if code_verifier is not None else None,
+                ):
                     return JSONResponse({"error": "invalid_grant"}, status_code=400)
                 access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
             else:
@@ -1455,6 +1562,15 @@ def run_mcp_http_server(
     if (auth_token_env or oauth_compatible) and not psk and not oauth_client_id:
         print(
             "Error: HTTP auth requested but no auth token/client id was found in the configured environment variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    has_auth = bool(psk or (oauth_compatible and oauth_client_id))
+    if not has_auth and not _is_loopback_host(host):
+        print(
+            "Error: unauthenticated MCP HTTP serving is restricted to loopback hosts. "
+            "Configure a PSK/OAuth credential or bind to 127.0.0.1, ::1, or localhost.",
             file=sys.stderr,
         )
         sys.exit(1)

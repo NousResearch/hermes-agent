@@ -178,7 +178,7 @@ routes, `repo` (stripped of the `owner/` prefix) for path-param routes.
 | SAFE | GET | `/api/sprints/{label}/state-full` \| `/issue/{n}/log` \| `/state-timing` | Detail reads |
 | SAFE (SSE) | GET | `/api/sprints/{label}/live/stream` | Live sprint stream |
 | SAFE | GET | `/api/sprints/{label}/live` | Live sprint snapshot |
-| SAFE | GET | `/api/sprint-nav-status` \| `/sprint-progress` \| `/sprint-nav-summary` | Nav reads (shortcut for progress: `sprint_progress`) |
+| SAFE | GET | `/api/sprint-nav-status` \| `/sprint-progress` \| `/sprint-nav-summary` | Nav reads (shortcuts: `sprint_columns` for nav-status, `sprint_progress` for progress) — `sprint-nav-status`'s `state` is GitHub-label-derived, not live-running; use `status`/`/api/home` for that |
 | SAFE | GET | `/api/sprint-status` \| `/sprint-summary` \| `/home` \| `/sprint-history` \| `/sprint-history-content` \| `/sprints/timeline` \| `/sprints/summaries` | Summary reads |
 | WRITE | POST | `/api/sprint-status` | Post status |
 

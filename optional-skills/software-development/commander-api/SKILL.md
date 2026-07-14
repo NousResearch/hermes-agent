@@ -75,16 +75,16 @@ or (worse) silently returns an empty/wrong result with a 200:
   `advisor_suggestions`, `todos`, sprint-scoped `?project=` query params
   like `sprint_state`/`preflight`/`mis_sizing_flags`) want the **bare repo
   name**, e.g. `commander`.
-- `nav_status` (`/api/sprint-nav-status?repo=...`) and `rerun`/`rerun_preview`
+- `sprint_columns` (`/api/sprint-nav-status?repo=...`) and `rerun`/`rerun_preview`
   (`.../rerun`, `.../rerun-preview`, `?project=...`) both want the **full
   `owner/repo` string**, e.g. `zealchaiwut/commander` — despite `rerun`'s
   query param being named `project` just like the bare-repo-name group
   above, it is NOT in that group; passing the bare name 502s with
-  `expected the "[HOST/]OWNER/REPO" format`. `nav_status` fails quieter:
+  `expected the "[HOST/]OWNER/REPO" format`. `sprint_columns` fails quieter:
   the bare name or dashed id both return `{"has_sprint": false}` with a
   plain `200`, which looks like "no sprint" instead of "wrong identifier".
-  The `status` subcommand already gets `nav_status` right by reading `repo`
-  straight off `GET /api/projects`; the `nav_status`/`rerun_preview`/`rerun`
+  The `status` subcommand already gets `sprint_columns` right by reading `repo`
+  straight off `GET /api/projects`; the `sprint_columns`/`rerun_preview`/`rerun`
   shortcuts in this script all require `--repo`/`--project` in full
   `owner/repo` form for exactly this reason — don't strip the owner off out
   of habit from the other two groups.
@@ -119,7 +119,7 @@ are capped at 15 items so a single call can't blow the context budget.
 | `status` | `GET /api/home` | **Start here for "what's running/pending"** — one call, every tracked project's live `status` (idle/uat-pending/running), UAT count, real backlog count |
 | `health` | `GET /api/health` | Overall health snapshot |
 | `home` | `GET /api/home` | Same data `status` is built from, if you want the full raw payload (aggregate stats too) |
-| `nav_status --repo <owner/repo>` | `GET /api/sprint-nav-status` | Ticket-column breakdown for one project's latest GitHub-tracked sprint — **not a live-running signal**, see Pitfalls |
+| `sprint_columns --repo <owner/repo>` | `GET /api/sprint-nav-status` | Ticket-column breakdown for one project's latest GitHub-tracked sprint — **not a live-running signal**, see Pitfalls |
 | `board --project <id>` | `GET /api/board` | Kanban board for a project |
 | `running --project <id>` | `GET /api/running` | Currently-running agents/jobs for a project |
 | `sprints` | `GET /api/sprints` | List **every** sprint label ever created for the default project (not "pending" — see Pitfalls) |
@@ -145,7 +145,7 @@ This is the main use case: a remote status check standing in for opening
 the dashboard UI. Get it right in one shot.
 
 1. Run **`status`** — one call, no project resolution needed, covers every
-   tracked project. Do not call `board`, `running_sprint`, `nav_status`, or
+   tracked project. Do not call `board`, `running_sprint`, `sprint_columns`, or
    loop over guessed sprint labels for this ask; `status` already did that
    correctly. If the user named one specific project, still run `status`
    (it's one call) and just report that project's entry.
@@ -211,7 +211,7 @@ without the user explicitly saying to go ahead on *this specific sprint*.
 3. Summarize the sprint's ticket list and preflight status, then ask: "Dispatch
    `<label>` now? This spawns paid Coder/Tester agent runs." Wait for a yes.
 4. Only after that explicit yes: `call POST /api/sprints/run --json '{"sprint_label": "<label>", "project": "<repo>"}' --confirm`.
-5. Report the response and point to `nav_status`/`stream` for progress —
+5. Report the response and point to `sprint_columns`/`stream` for progress —
    don't poll in a loop unattended.
 
 **Re-running** an already-finished/failed sprint is a different call, not
@@ -225,16 +225,16 @@ Note the full `owner/repo` form here — see the identifier quirk section.
 ### Sprint Monitoring ("how's sprint X doing")
 
 1. `status` first for the live signal (is it actually running right now,
-   and for how long — see Status Check above). `nav_status --repo <owner/repo>`
+   and for how long — see Status Check above). `sprint_columns --repo <owner/repo>`
    adds ticket-column breakdown (backlog/in-progress/sit/uat/done/needs-rework)
    for the project's latest GitHub-tracked sprint, but its own `state` field
    means "has a Sprint N Executive Summary issue been posted" — not "is
-   this actively running" — don't quote `nav_status.state` as the answer to
+   this actively running" — don't quote `sprint_columns.state` as the answer to
    "is it running", only `status`'s `status` field answers that.
 2. If the user wants a live tail: `stream /api/sprints/<label>/live/stream --max-seconds 20`
    — one capped read, not an open-ended watch.
 3. Relay fields plainly; don't re-interpret `state`/`dag`/warnings into your
-   own verdict, and don't conflate `nav_status`'s GitHub-derived `state`
+   own verdict, and don't conflate `sprint_columns`'s GitHub-derived `state`
    with live process state (see Pitfalls).
 
 ### Backlog → Sprint (project is idle, add its backlog/follow-up tickets)
@@ -247,7 +247,7 @@ read the caveat before picking one.
    `"running"`, stop here and say so; Commander runs one sprint per project
    at a time, nothing can be added until it finishes. (`"uat-pending"` and
    `"idle"` both mean no agent is currently running, so planning is fine —
-   don't use `nav_status` for this check, its `state` field answers a
+   don't use `sprint_columns` for this check, its `state` field answers a
    different question, see Pitfalls.)
 2. **Auto-fill the next sprint from the backlog (preferred, multi-project
    safe):** `plan_next` isn't a named shortcut (it's a write) — check
@@ -306,7 +306,7 @@ schema straight from Commander.
 ## Pitfalls
 
 - Don't guess the project identifier — the three-format split above is real
-  and unverified assumptions will silently 404 or (for `nav_status`)
+  and unverified assumptions will silently 404 or (for `sprint_columns`)
   silently return a wrong-but-valid-looking `has_sprint: false`. Run
   `call GET /api/projects` when unsure, or just use `status`, which already
   gets this right.
@@ -314,7 +314,7 @@ schema straight from Commander.
   compute "pending" as `sprints` minus the running one, and don't guess a
   next label by incrementing the highest known number. Neither is reliable;
   see Status Check above for the actual read of `status`.
-- **`nav_status`'s `state` field is not a live-running signal — confirmed
+- **`sprint_columns`'s `state` field is not a live-running signal — confirmed
   wrong in practice, not just theoretically.** It's derived from GitHub
   issue labels ("has a Sprint N Executive Summary issue been posted"),
   cached 30s, and can read `"running"` for a project that finished its
@@ -323,7 +323,7 @@ schema straight from Commander.
   project the user could see was idle in the dashboard UI). The `status`
   command's `status` field (`idle`/`uat-pending`/`running`, sourced from
   `/api/home`, the same computation Commander's own dashboard uses) is the
-  only field to answer "is it running right now". Likewise `nav_status`'s
+  only field to answer "is it running right now". Likewise `sprint_columns`'s
   `columns.backlog` is the tiny in-sprint kanban backlog column (0-2
   tickets), not the project's real untriaged backlog — that's `status`'s
   `backlog_open` (sourced from `/api/home`'s `backlog_count`), which was
@@ -361,7 +361,7 @@ schema straight from Commander.
   covering every project from `/api/home`, each with a real `status`
   (idle/uat-pending/running) that matches what `running_sprint <repo>`
   and the dashboard UI itself report — cross-check the two if in doubt,
-  don't trust `nav_status.state` as a substitute.
+  don't trust `sprint_columns.state` as a substitute.
 - `call POST ...` without `--confirm` always exits non-zero and refuses —
   confirming the safety gate is structural, not just documented.
 - A HIGH-RISK path (e.g. `/api/sprints/run`, any `DELETE`) prints the loud

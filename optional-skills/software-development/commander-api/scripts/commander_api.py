@@ -83,13 +83,19 @@ SHORTCUTS = {
         "Full preflight report before dispatching a sprint",
     ),
     "home": ("/api/home", [], [], "Cross-project rollup: running/awaiting-UAT/backlog counts"),
-    "nav_status": (
+    # Deliberately NOT named "*status*" — that name collides with the
+    # `status` command for attention and was directly implicated in this
+    # command's `state` field being misread as live-running state (it's
+    # actually GitHub-label-derived; see the injected _warning below and
+    # SKILL.md Pitfalls). Ticket-column breakdown only; use `status` for
+    # "is it running".
+    "sprint_columns": (
         "/api/sprint-nav-status",
         [],
         [("repo", True)],  # API marks this optional but omitting it silently
         # returns an arbitrary project's data instead of erroring — require
         # it here so that footgun can't happen through this script.
-        "Current sprint + ticket-column breakdown for one project (repo must be full 'owner/repo')",
+        "Ticket-column breakdown for one project's latest tracked sprint (repo must be full 'owner/repo') — NOT a live-running signal, use `status` for that",
     ),
     "rerun_preview": (
         "/api/sprints/{sprint_label}/rerun-preview",
@@ -260,7 +266,7 @@ def main():
 
     sub.add_parser(
         "status",
-        help="Cross-project sprint status in one call (running/finished/UAT counts per project)",
+        help="THE live status command — running/idle/uat-pending + UAT/backlog counts, every project, one call",
     )
 
     sp = sub.add_parser("spec", help="Dump Commander's live OpenAPI schema")
@@ -325,6 +331,17 @@ def main():
         path = path.replace(f"{{{param}}}", getattr(args, param))
     query = {qname: getattr(args, qname) for qname, _ in query_params}
     result = request(base_url, args.token, "GET", path, query=query)
+    if args.cmd == "sprint_columns" and isinstance(result.get("body"), dict):
+        # Baked into the actual response, not just the docs, so it still
+        # surfaces even if a conversation is working from stale skill
+        # content and never re-reads the current SKILL.md — this exact
+        # field was misread as live-running status in a real bad reply.
+        result["body"]["_warning"] = (
+            "state/columns here are derived from GitHub issue labels (has a "
+            "Sprint N Executive Summary issue been posted), cached ~30s. "
+            "This is NOT whether an agent is running right now. Use the "
+            "`status` command for live running/idle/uat-pending state."
+        )
     print(json.dumps(result, indent=2))
 
 

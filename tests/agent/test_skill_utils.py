@@ -9,6 +9,7 @@ from agent.skill_utils import (
     is_excluded_skill_path,
     is_external_skill_path,
     is_skill_support_path,
+    is_valid_namespace,
     iter_skill_index_files,
     resolve_skill_config_values,
     skill_matches_platform,
@@ -345,6 +346,25 @@ class TestSkillMatchesPlatformTermux:
             assert skill_matches_platform(fm) is True
             assert skill_matches_platform_list(fm["platforms"]) is True
 
+    def test_empty_platform_tag_does_not_leak_to_other_os(self):
+        # A stray empty/whitespace tag must not make a macOS-only skill match
+        # every OS: current.startswith("") would otherwise short-circuit True.
+        for tags in (["macos", ""], ["macos", "   "]):
+            fm = {"platforms": tags}
+            with patch("agent.skill_utils.sys.platform", "linux"), patch(
+                "agent.skill_utils.is_termux", return_value=False
+            ):
+                assert skill_matches_platform(fm) is False, tags
+                assert skill_matches_platform_list(tags) is False, tags
+
+    def test_only_empty_platform_tag_matches_nothing(self):
+        fm = {"platforms": [""]}
+        with patch("agent.skill_utils.sys.platform", "linux"), patch(
+            "agent.skill_utils.is_termux", return_value=False
+        ):
+            assert skill_matches_platform(fm) is False
+            assert skill_matches_platform_list([""]) is False
+
 
 class TestNormalizeSkillLookupName:
     def test_relative_path_unchanged(self, tmp_path, monkeypatch):
@@ -386,3 +406,23 @@ class TestNormalizeSkillLookupName:
         monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: tmp_path / "skills")
         outside = str(tmp_path / "outside" / "skill")
         assert normalize_skill_lookup_name(outside) == outside
+
+
+class TestIsValidNamespace:
+    def test_valid_names(self):
+        assert is_valid_namespace("plugin") is True
+        assert is_valid_namespace("my-plugin_1") is True
+
+    def test_rejects_empty_and_none(self):
+        assert is_valid_namespace("") is False
+        assert is_valid_namespace(None) is False
+
+    def test_rejects_trailing_newline(self):
+        # re.match("...$") also accepts a single trailing newline; fullmatch
+        # (or \Z) must reject it since \n is not in the allowed charset.
+        assert is_valid_namespace("plugin\n") is False
+        assert is_valid_namespace("plu\ngin") is False
+
+    def test_rejects_disallowed_chars(self):
+        assert is_valid_namespace("plugin:skill") is False
+        assert is_valid_namespace("has space") is False

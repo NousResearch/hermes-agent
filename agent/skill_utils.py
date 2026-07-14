@@ -170,6 +170,11 @@ def skill_matches_platform_list(platforms: Any) -> bool:
     running_in_termux = is_termux()
     for platform in platforms:
         normalized = str(platform).lower().strip()
+        if not normalized:
+            # An empty/whitespace tag must not match every OS — otherwise
+            # ``current.startswith("")`` short-circuits to True and the skill
+            # leaks onto all platforms. Mirrors skill_matches_environment.
+            continue
         mapped = PLATFORM_MAP.get(normalized, normalized)
         if current.startswith(mapped):
             return True
@@ -826,4 +831,6 @@ def is_valid_namespace(candidate: Optional[str]) -> bool:
     """Check whether *candidate* is a valid namespace (``[a-zA-Z0-9_-]+``)."""
     if not candidate:
         return False
-    return bool(_NAMESPACE_RE.match(candidate))
+    # ``fullmatch`` (not ``match``): with ``$``, ``re.match`` also accepts a
+    # single trailing newline (e.g. "foo\n"), which is not in the allowed set.
+    return bool(_NAMESPACE_RE.fullmatch(candidate))

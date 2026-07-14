@@ -35,6 +35,25 @@
         -webkit-font-smoothing: antialiased;
         min-height: 100vh;
       }
+      .product-tabs {
+        display: flex; gap: 8px; margin: 0 auto 32px; padding: 5px;
+        width: fit-content; max-width: 100%; border: 1px solid var(--border);
+        border-radius: 12px; background: var(--panel);
+      }
+      .product-tab {
+        appearance: none; border: 1px solid transparent; border-radius: 8px;
+        background: transparent; color: var(--muted); cursor: pointer;
+        font: inherit; font-weight: 650; padding: 9px 16px;
+      }
+      .product-tab:hover { color: var(--text); background: var(--panel-2); }
+      .product-tab[aria-selected="true"] {
+        color: #fff; border-color: rgba(109, 139, 255, 0.55);
+        background: linear-gradient(135deg, rgba(109, 139, 255, 0.28), rgba(160, 107, 255, 0.22));
+      }
+      .product-tab:focus-visible, a:focus-visible, button:focus-visible, summary:focus-visible {
+        outline: 3px solid var(--accent); outline-offset: 3px;
+      }
+      [role="tabpanel"][hidden] { display: none; }
       .wrap { max-width: 960px; margin: 0 auto; padding: 56px 20px 80px; }
       header { text-align: center; margin-bottom: 40px; }
       .logo {
@@ -117,10 +136,55 @@
       footer { margin-top: 56px; text-align: center; color: var(--muted-2); font-size: 12px; }
       footer a { color: var(--muted); }
       .err { color: var(--warn); }
+      .qv-logo {
+        background: linear-gradient(135deg, #7c3aed, #db2777 55%, #f59e0b);
+        box-shadow: 0 12px 40px rgba(168, 85, 247, 0.32);
+      }
+      .guide { margin-top: 40px; }
+      .guide h2 { margin: 0 0 14px; font-size: 20px; }
+      .guide h3 { margin: 22px 0 8px; font-size: 15px; }
+      .guide p, .guide li { color: var(--muted); }
+      .guide ul, .guide ol { margin: 8px 0 0; padding-left: 22px; }
+      .guide li { margin: 7px 0; }
+      .guide b, .guide strong { color: var(--text); }
+      .guide code {
+        padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px;
+        background: #0a0c11; color: var(--text); font-size: 0.9em;
+      }
+      .guide-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      .guide-card {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--panel); padding: 18px;
+      }
+      .guide-card h3 { margin-top: 0; }
+      .availability {
+        margin: 20px 0 0; border: 1px solid var(--border); border-radius: 10px;
+        background: var(--panel); padding: 14px 16px; color: var(--muted);
+      }
+      .availability[data-state="ready"] { border-left: 3px solid var(--ok); }
+      .availability[data-state="waiting"] { border-left: 3px solid var(--warn); }
+      @media (max-width: 720px) {
+        .wrap { padding: 28px 14px 56px; }
+        .product-tabs { width: 100%; }
+        .product-tab { flex: 1; padding: 9px 8px; }
+        .guide-grid { grid-template-columns: 1fr; }
+        .primary-card { align-items: flex-start; }
+        .btn { width: 100%; justify-content: center; }
+      }
     </style>
   </head>
   <body>
     <div class="wrap">
+      <nav class="product-tabs" role="tablist" aria-label="Desktop app instructions">
+        <button class="product-tab" id="tab-ix" role="tab" aria-controls="panel-ix" aria-selected="true" tabindex="0">
+          IVX Admin Desktop
+        </button>
+        <button class="product-tab" id="tab-quizverse" role="tab" aria-controls="panel-quizverse" aria-selected="false" tabindex="-1">
+          QuizVerse Desktop
+        </button>
+      </nav>
+
+      <main id="panel-ix" role="tabpanel" aria-labelledby="tab-ix" tabindex="0">
       <header>
         <div class="logo">IX</div>
         <h1>Download IX Agency</h1>
@@ -231,9 +295,251 @@
         <a href="https://admin.intelli-verse-x.ai" target="_blank" rel="noreferrer">admin.intelli-verse-x.ai</a>
         · <span id="foot-ver"></span>
       </footer>
+      </main>
+
+      <main id="panel-quizverse" role="tabpanel" aria-labelledby="tab-quizverse" tabindex="0" hidden>
+        <header>
+          <div class="logo qv-logo" aria-hidden="true">QV</div>
+          <h1>QuizVerse Desktop</h1>
+          <p class="sub">
+            The learner and player app for TutorX, native games, competitions, Link &amp; Play, and player-scoped AI chat.
+            It is separate from IVX Admin Desktop and does not include agency, employee, VPN, or admin-portal tools.
+          </p>
+          <div class="verpill">
+            <span class="dot" id="qv-version-dot"></span>
+            <span>Latest version <b id="qv-version">checking…</b></span>
+            <span id="qv-reldate"></span>
+          </div>
+          <div class="availability" id="qv-availability" data-state="waiting" role="status" aria-live="polite">
+            Checking the official QuizVerse release feed. Download buttons appear only when release artifacts are published.
+          </div>
+        </header>
+
+        <div class="primary">
+          <div class="primary-card">
+            <div class="who">
+              <span class="os-ico" id="qv-primary-ico" aria-hidden="true">💻</span>
+              <div>
+                <h2 id="qv-primary-title">Detecting your platform…</h2>
+                <p id="qv-primary-desc">Choose an official installer below when the release is available.</p>
+              </div>
+            </div>
+            <a class="btn" id="qv-primary-btn" href="#qv-downloads" style="visibility: hidden">Download</a>
+          </div>
+        </div>
+
+        <div class="grid" id="qv-downloads">
+          <div class="card" id="qv-card-mac">
+            <h3>🍎 macOS <span class="tag">Apple Silicon</span></h3>
+            <div class="files" data-files>Checking…</div>
+          </div>
+          <div class="card" id="qv-card-win">
+            <h3>🪟 Windows <span class="tag">x64</span></h3>
+            <div class="files" data-files>Checking…</div>
+          </div>
+          <div class="card" id="qv-card-linux">
+            <h3>🐧 Ubuntu / Linux <span class="tag">x86_64</span></h3>
+            <div class="files" data-files>Checking…</div>
+          </div>
+        </div>
+
+        <section class="guide" aria-labelledby="qv-install-heading">
+          <h2 id="qv-install-heading">Install QuizVerse Desktop</h2>
+          <div class="guide-grid">
+            <article class="guide-card">
+              <h3>macOS</h3>
+              <ol>
+                <li>Download the <b>QuizVerse macOS .dmg</b> from this page.</li>
+                <li>Open it and drag <b>QuizVerse</b> to Applications, then launch it from Applications.</li>
+                <li>If macOS blocks an unnotarized build, first try <b>System Settings → Privacy &amp; Security → Open Anyway</b>. If it reports that the official download is damaged, run <code>xattr -cr "/Applications/QuizVerse.app"</code> once. Do not bypass warnings for a file obtained anywhere else.</li>
+              </ol>
+            </article>
+            <article class="guide-card">
+              <h3>Windows</h3>
+              <ol>
+                <li>Download the <b>.exe installer</b>; use the MSI only when your organization requires it.</li>
+                <li>Run the installer, choose the install location if prompted, and start QuizVerse from the Start menu.</li>
+                <li>If SmartScreen appears, confirm the publisher/source before choosing <b>More info → Run anyway</b>.</li>
+              </ol>
+            </article>
+            <article class="guide-card">
+              <h3>Ubuntu / Linux</h3>
+              <ol>
+                <li>For the simplest portable install, download the AppImage and run <code>chmod +x QuizVerse-*.AppImage</code>.</li>
+                <li>Launch the AppImage, or install the <code>.deb</code> on Ubuntu/Debian. An RPM is also provided for compatible distributions.</li>
+                <li>Desktop integration and microphone prompts vary by distribution and desktop environment.</li>
+              </ol>
+            </article>
+            <article class="guide-card">
+              <h3>Updates</h3>
+              <p>
+                QuizVerse checks its own release feed at launch and every four hours. Windows EXE and Linux AppImage installs
+                can download and restart in place. macOS in-place updates require a signed build; package installs such as MSI,
+                deb, and RPM may open this page so you can install the new package manually.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section class="guide" aria-labelledby="qv-first-run-heading">
+          <h2 id="qv-first-run-heading">First launch and setup</h2>
+          <ol>
+            <li><b>Let the local agent finish starting.</b> The status strip shows the agent, TutorX, player tools, and available updates. A first launch can take longer while the local runtime is prepared.</li>
+            <li><b>Open Setup.</b> Choose hosted TutorX for the managed service, or Local to run TutorX on your computer.</li>
+            <li><b>For local TutorX,</b> Python 3.11 or newer and a LiteLLM-compatible API key are required. Use <b>Install TutorX</b>, save the LiteLLM URL/key, run <b>Test LiteLLM</b>, then start TutorX. You can instead select an existing TutorX workspace.</li>
+            <li><b>For hosted TutorX,</b> use the service URL supplied by your organization. Some deployments also require a TutorX API key.</li>
+            <li><b>Connect your QuizVerse account</b> when your administrator has supplied the Cognito domain, public app client ID, and issuer. The app opens secure browser sign-in and stores resulting tokens in the operating-system keychain. Guest play remains available on surfaces marked for guests; account-only features stay locked until sign-in.</li>
+          </ol>
+          <div class="note">
+            <b>Service prerequisites:</b> internet access is required for sign-in, hosted TutorX, account data, competitions,
+            generated content, realtime matches, and AI requests. Organization-provided Cognito and model-service credentials
+            are not bundled into the installer. Do not paste credentials into chat.
+          </div>
+        </section>
+
+        <section class="guide" aria-labelledby="qv-use-heading">
+          <h2 id="qv-use-heading">What you can do</h2>
+          <div class="guide-grid">
+            <article class="guide-card">
+              <h3>TutorX</h3>
+              <p>Use Tutor, Knowledge, Memory, and Learning Space for guided study, knowledge work, review, and progress. Local mode keeps the TutorX workspace on this computer; hosted mode uses your configured service.</p>
+            </article>
+            <article class="guide-card">
+              <h3>Native Play</h3>
+              <p>Open Play for native player experiences. Words includes daily word, groups, spell, crossword, imposter, and vocabulary duel modes. Voyage is a six-planet daily workout with progress, hints, cooldowns, and entitlement-aware premium activities.</p>
+            </article>
+            <article class="guide-card">
+              <h3>Tournaments</h3>
+              <p>Browse eligible competitions, inspect rules, enter through supported paths, play server-issued packs, follow brackets and leaderboards, and claim available certificates. Account, age, eligibility, KYC, balance, and regional rules can limit actions.</p>
+            </article>
+            <article class="guide-card">
+              <h3>Link &amp; Play</h3>
+              <p>Create learning notes from supported URLs, text, documents, images, or audio; then use generated quizzes, flashcards, grounded note chat, spaced repetition, debates, mind maps, speed reading, audio, and other enabled generation tools.</p>
+            </article>
+            <article class="guide-card">
+              <h3>Chat and player tools</h3>
+              <p>Chat can read player-scoped QuizVerse and TutorX information through the bundled player-tool connection. It cannot use agency or administrator access. The Setup lamp reports whether these tools are ready and whether they are operating as a guest or connected account.</p>
+            </article>
+            <article class="guide-card">
+              <h3>Permissions and confirmations</h3>
+              <p>The app asks for microphone access only for voice features. Product writes, tournament changes, game actions, and value-bearing actions show a confirmation dialog. Review the action and payload; cancel anything you did not request. Read-only activity does not require the same confirmation.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="guide" aria-labelledby="qv-offline-heading">
+          <h2 id="qv-offline-heading">Offline use and content cache</h2>
+          <ul>
+            <li>Some native Words and Voyage routes have deterministic local fallback content and can continue without a connection.</li>
+            <li>Published Words datasets are integrity-checked and kept in an encrypted, expiring cache. A fresh cached copy may be used when the service is temporarily unreachable; the UI identifies offline or fallback provenance.</li>
+            <li>Account synchronization, new content generation, TutorX remote mode, realtime play, entitlements, purchases, leaderboards, and competitions require their services. Work that has not synchronized can remain local until connectivity returns.</li>
+            <li>Local TutorX can keep its workspace on-device, but model calls still require the configured model endpoint unless your organization provides a fully local compatible service.</li>
+          </ul>
+        </section>
+
+        <section class="guide" aria-labelledby="qv-troubleshooting-heading">
+          <h2 id="qv-troubleshooting-heading">Troubleshooting and support</h2>
+          <div class="guide-grid">
+            <article class="guide-card">
+              <h3>Status lights</h3>
+              <ul>
+                <li><b>Agent not connected:</b> restart the app and allow first-run setup to finish.</li>
+                <li><b>TutorX off/error:</b> open Setup, verify Local/Remote mode, test the model endpoint, inspect the visible TutorX log tail, and use Restart.</li>
+                <li><b>Player tools offline:</b> click Check in Setup, then reconnect the QuizVerse account if account-only tools fail.</li>
+              </ul>
+            </article>
+            <article class="guide-card">
+              <h3>Common fixes</h3>
+              <ul>
+                <li>Confirm the computer clock is correct before troubleshooting sign-in or expired sessions.</li>
+                <li>Allow QuizVerse through firewalls/proxies for the configured TutorX, Cognito, model, QuizVerse API, and realtime service endpoints.</li>
+                <li>For microphone failures, grant QuizVerse access in the operating system's privacy settings, then restart the app.</li>
+                <li>If an update cannot install in place, download the current installer from this tab and install over the existing copy.</li>
+              </ul>
+            </article>
+          </div>
+          <h3>Logs and support</h3>
+          <p>
+            Use the app's <b>Open logs</b> action when available. The main diagnostic file is
+            <code>desktop.log</code> in the isolated local profile's <code>logs</code> directory under the QuizVerse app-data
+            folder; player-tool audit events are in <code>quizverse-mcp-audit.jsonl</code> there. Remove access tokens, personal data, local paths,
+            and uploaded content before sharing logs. Contact
+            <a href="mailto:support@intelli-verse-x.ai">support@intelli-verse-x.ai</a> with the OS, app version, failing tab,
+            time of failure, and a redacted excerpt.
+          </p>
+        </section>
+
+        <section class="guide" aria-labelledby="qv-security-heading">
+          <h2 id="qv-security-heading">Privacy and security</h2>
+          <ul>
+            <li>QuizVerse uses an app-specific data directory and isolated local agent profile; it does not import IVX Admin Desktop credentials or settings.</li>
+            <li>Account and model-service secrets are encrypted with the operating system's secure storage and are not returned to the settings screen after saving.</li>
+            <li>Player tools are restricted to the current player's allowed QuizVerse operations. Writes use explicit confirmation, short-lived approval challenges, and idempotency protection; audit records stay local.</li>
+            <li>Files submitted to Link &amp; Play or other online generation features are sent to the configured QuizVerse service. Review your organization's privacy and retention policy before uploading sensitive material.</li>
+            <li>Install only artifacts exposed by this page and verify checksums shown beneath a download when required.</li>
+          </ul>
+        </section>
+
+        <section class="guide" aria-labelledby="qv-uninstall-heading">
+          <h2 id="qv-uninstall-heading">Uninstall and local data</h2>
+          <p>Typical app-data locations are:</p>
+          <ul>
+            <li><b>macOS:</b> <code>~/Library/Application Support/QuizVerse</code></li>
+            <li><b>Windows:</b> <code>%APPDATA%\QuizVerse</code></li>
+            <li><b>Linux:</b> <code>~/.config/QuizVerse</code></li>
+          </ul>
+          <p>
+            The folder contains settings, the isolated local agent profile, logs, cached Words content, local TutorX workspace
+            and managed environment (if installed), and browser/session storage. Uninstall QuizVerse through Applications,
+            Windows Settings, or your package manager. Standard OS uninstall may leave app data so a reinstall can recover it.
+            To remove everything, sign out, quit QuizVerse, back up any local TutorX work you need, uninstall the app, and then
+            delete only the QuizVerse app-data folder listed above. Never delete the IVX Admin Desktop data folder.
+          </p>
+        </section>
+
+        <footer>
+          Official QuizVerse Desktop instructions ·
+          <a href="https://quizverse.world" target="_blank" rel="noreferrer">quizverse.world</a>
+          · <span id="qv-foot-ver"></span>
+        </footer>
+      </main>
     </div>
 
     <script>
+      const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+
+      function activateTab(tab, { focus = false, updateHash = true } = {}) {
+        for (const item of tabs) {
+          const selected = item === tab;
+          item.setAttribute("aria-selected", String(selected));
+          item.tabIndex = selected ? 0 : -1;
+          document.getElementById(item.getAttribute("aria-controls")).hidden = !selected;
+        }
+        if (focus) tab.focus();
+        if (updateHash) {
+          history.replaceState(null, "", tab.id === "tab-quizverse" ? "#quizverse" : "#ivx-admin");
+        }
+      }
+
+      for (const [index, tab] of tabs.entries()) {
+        tab.addEventListener("click", () => activateTab(tab));
+        tab.addEventListener("keydown", (event) => {
+          let next = null;
+          if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length];
+          if (event.key === "ArrowLeft") next = tabs[(index - 1 + tabs.length) % tabs.length];
+          if (event.key === "Home") next = tabs[0];
+          if (event.key === "End") next = tabs[tabs.length - 1];
+          if (next) {
+            event.preventDefault();
+            activateTab(next, { focus: true });
+          }
+        });
+      }
+
+      if (location.hash.toLowerCase() === "#quizverse") {
+        activateTab(document.getElementById("tab-quizverse"), { updateHash: false });
+      }
+
       // The artifacts + electron-updater channel manifests live under ix-agency/
       // in this same bucket. We read the manifests at runtime so this page never
       // goes stale: every new release CI publishes is picked up automatically.
@@ -289,12 +595,12 @@
         return { version, releaseDate, files };
       }
 
-      function fileRow(f) {
+      function fileRow(f, feed = FEED) {
         const ext = extOf(f.url);
         const label = EXT_LABEL[ext] || ext;
         const a = document.createElement("a");
         a.className = "file";
-        a.href = FEED + f.url;
+        a.href = feed + f.url;
         a.setAttribute("download", "");
         const left = document.createElement("span");
         left.className = "ext";
@@ -397,7 +703,92 @@
         }
       }
 
+      async function loadQuizverse() {
+        const feed = "quizverse/";
+        const results = {};
+        await Promise.all(
+          Object.entries(MANIFESTS).map(async ([os, file]) => {
+            try {
+              const res = await fetch(feed + file, { cache: "no-store" });
+              if (!res.ok) throw new Error("HTTP " + res.status);
+              results[os] = parseManifest(await res.text());
+            } catch (e) {
+              results[os] = { version: "", releaseDate: "", files: [], error: String(e) };
+            }
+          })
+        );
+
+        const ver = results.mac.version || results.win.version || results.linux.version || "";
+        const availability = document.getElementById("qv-availability");
+        const version = document.getElementById("qv-version");
+        const dot = document.getElementById("qv-version-dot");
+
+        if (ver) {
+          version.textContent = ver;
+          document.getElementById("qv-foot-ver").textContent = "v" + ver;
+          availability.dataset.state = "ready";
+          availability.textContent =
+            "Official QuizVerse installers are available below. Choose the artifact for your operating system.";
+        } else {
+          version.textContent = "not yet published";
+          document.getElementById("qv-foot-ver").textContent = "release pending";
+          dot.style.background = "var(--warn)";
+          availability.dataset.state = "waiting";
+          availability.textContent =
+            "QuizVerse Desktop has not been published to the official release feed yet. No download link is available. Return to this page after the release is announced.";
+        }
+
+        const rd = results.mac.releaseDate || results.win.releaseDate || results.linux.releaseDate;
+        if (rd) {
+          const d = new Date(rd);
+          if (!isNaN(d)) document.getElementById("qv-reldate").textContent = "· " + d.toLocaleDateString();
+        }
+
+        const cards = { mac: "qv-card-mac", win: "qv-card-win", linux: "qv-card-linux" };
+        for (const [os, id] of Object.entries(cards)) {
+          const holder = document.querySelector("#" + id + " [data-files]");
+          holder.textContent = "";
+          const result = results[os];
+          if (result.error || !result.files.length) {
+            const message = document.createElement("div");
+            message.className = "err";
+            message.textContent = "No published installer";
+            holder.append(message);
+            continue;
+          }
+          const order = [...result.files].sort((a, b) => {
+            const pa = extOf(a.url) === PRIMARY_EXT[os] ? -1 : 0;
+            const pb = extOf(b.url) === PRIMARY_EXT[os] ? -1 : 0;
+            return pa - pb;
+          });
+          for (const artifact of order) holder.append(fileRow(artifact, feed));
+        }
+
+        const os = detectOS();
+        const meta = OS_META[os];
+        const btn = document.getElementById("qv-primary-btn");
+        if (os && meta && results[os] && results[os].files.length) {
+          const pick =
+            results[os].files.find((artifact) => extOf(artifact.url) === PRIMARY_EXT[os]) ||
+            results[os].files[0];
+          document.getElementById("qv-primary-ico").textContent = meta.ico;
+          document.getElementById("qv-primary-title").textContent = meta.title.replace("Download", "Download QuizVerse");
+          document.getElementById("qv-primary-desc").textContent =
+            meta.desc + " · " + humanSize(pick.size);
+          btn.href = feed + pick.url;
+          btn.setAttribute("download", "");
+          btn.textContent = "Download " + ver;
+          btn.style.visibility = "visible";
+        } else {
+          document.getElementById("qv-primary-title").textContent =
+            ver ? "Choose your platform" : "QuizVerse release pending";
+          document.getElementById("qv-primary-desc").textContent =
+            ver ? "Pick the right download for your OS below." : "Installers will appear here after the official release.";
+        }
+      }
+
       load();
+      loadQuizverse();
     </script>
   </body>
 </html>

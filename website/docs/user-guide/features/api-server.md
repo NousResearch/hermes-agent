@@ -87,7 +87,7 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 }
 ```
 
-**Inline image input:** user messages may send `content` as an array of `text` and `image_url` parts. Both remote `http(s)` URLs and `data:image/...` URLs are supported:
+**Inline image and audio input:** user messages may send `content` as an array of `text`, `image_url`, and `input_audio` parts. Images support remote `http(s)` URLs and `data:image/...` URLs. Audio is decoded, transcribed through the configured Hermes STT provider, and passed to the agent as transcript text:
 
 ```json
 {
@@ -97,12 +97,21 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
       "role": "user",
       "content": [
         {"type": "text", "text": "What is in this image?"},
-        {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}}
+        {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}},
+        {
+          "type": "input_audio",
+          "input_audio": {
+            "data": "UklGRiQAAABXQVZFZm10IBAAAAABAAEA...",
+            "format": "wav"
+          }
+        }
       ]
     }
   ]
 }
 ```
+
+Chat Completions audio accepts `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`, `ogg`, `aac`, and `flac` formats. Audio parts are supported only on the latest user message in the request. The API server keeps its existing 1 MB request-body limit, so larger audio is outside inline API-server payload support.
 
 Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
 
@@ -159,7 +168,7 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
 }
 ```
 
-Uploaded files (`input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+Uploaded files (`input_file` / `file_id`), audio parts, and non-image `data:` URLs return `400 unsupported_content_type`.
 
 #### Multi-turn with previous_response_id
 

@@ -32,6 +32,8 @@ Requires:
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -43,6 +45,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -215,13 +218,87 @@ def _normalize_chat_content(
 _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
+_AUDIO_PART_TYPES = frozenset({"input_audio"})
 
 
-def _normalize_multimodal_content(content: Any) -> Any:
+def _normalize_input_audio_format(format_value: Any) -> str:
+    """Return a safe audio extension name without a leading dot."""
+    if format_value is None:
+        audio_format = "wav"
+    elif isinstance(format_value, str):
+        audio_format = format_value.strip().lower()
+    else:
+        raise ValueError("invalid_content_part:Audio format must be a non-empty string when provided.")
+
+    if audio_format.startswith("."):
+        audio_format = audio_format[1:]
+
+    if (
+        not audio_format
+        or "/" in audio_format
+        or "\\" in audio_format
+        or "." in audio_format
+        or not re.fullmatch(r"[a-z0-9]+", audio_format)
+    ):
+        raise ValueError("invalid_content_part:Audio format must be a safe file extension.")
+
+    from tools.transcription_tools import SUPPORTED_FORMATS
+
+    extension = f".{audio_format}"
+    if extension not in SUPPORTED_FORMATS:
+        supported = ", ".join(sorted(fmt.lstrip(".") for fmt in SUPPORTED_FORMATS))
+        raise ValueError(
+            f"unsupported_content_type:Unsupported audio format {audio_format!r}. "
+            f"Supported formats: {supported}."
+        )
+
+    return audio_format
+
+
+def _decode_input_audio_payload(part: Dict[str, Any]) -> tuple[bytes, str]:
+    """Validate and decode an OpenAI ``input_audio`` content part."""
+    audio = part.get("input_audio")
+    if not isinstance(audio, dict):
+        raise ValueError("invalid_content_part:Audio parts must include an input_audio object.")
+
+    data = audio.get("data")
+    if not isinstance(data, str) or not data.strip():
+        raise ValueError("invalid_content_part:Audio parts must include non-empty base64 data.")
+
+    audio_format = _normalize_input_audio_format(audio.get("format", "wav"))
+
+    try:
+        raw = base64.b64decode(data.strip(), validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("invalid_content_part:Audio data must be valid base64.") from None
+
+    from tools.transcription_tools import MAX_FILE_SIZE
+
+    if len(raw) > MAX_FILE_SIZE:
+        raise ValueError(
+            "unsupported_content_type:Audio input is too large for transcription."
+        )
+
+    return raw, audio_format
+
+
+def _normalize_input_audio_part(part: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate an audio part and emit the canonical API-server shape."""
+    _, audio_format = _decode_input_audio_payload(part)
+    audio = part["input_audio"]
+    return {
+        "type": "input_audio",
+        "input_audio": {"data": audio["data"].strip(), "format": audio_format},
+    }
+
+
+def _normalize_multimodal_content(content: Any, *, allow_audio: bool = False) -> Any:
     """Validate and normalize multimodal content for the API server.
 
     Returns a plain string when the content is text-only, or a list of
     ``{"type": "text"|"image_url", ...}`` parts when images are present.
+    When ``allow_audio`` is true, validated ``input_audio`` parts can also be
+    retained for the Chat Completions handler to transcribe before agent entry.
     The output shape is the native OpenAI Chat Completions vision format,
     which the agent pipeline accepts verbatim (OpenAI-wire providers) or
     converts (``_preprocess_anthropic_content`` for Anthropic).
@@ -230,7 +307,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
       * ``unsupported_content_type`` — file/input_file/file_id parts, or
         non-image ``data:`` URLs.
       * ``invalid_image_url`` — missing URL or unsupported scheme.
-      * ``invalid_content_part`` — malformed text/image objects.
+      * ``invalid_content_part`` — malformed text/image/audio objects.
 
     Callers translate the ValueError into a 400 response.
     """
@@ -310,6 +387,15 @@ def _normalize_multimodal_content(content: Any) -> Any:
             normalized_parts.append(image_part)
             continue
 
+        if part_type in _AUDIO_PART_TYPES:
+            if allow_audio:
+                normalized_parts.append(_normalize_input_audio_part(part))
+                continue
+            raise ValueError(
+                "unsupported_content_type:Audio inputs are supported only for the "
+                "final user message on the Chat Completions endpoint."
+            )
+
         if part_type in _FILE_PART_TYPES:
             raise ValueError(
                 "unsupported_content_type:Inline image inputs are supported, "
@@ -318,9 +404,14 @@ def _normalize_multimodal_content(content: Any) -> Any:
 
         # Unknown part type — reject explicitly so clients get a clear error
         # instead of a silently dropped turn.
+        allowed = (
+            "Only text, image_url/input_image, and input_audio parts are supported."
+            if allow_audio
+            else "Only text and image_url/input_image parts are supported."
+        )
         raise ValueError(
             f"unsupported_content_type:Unsupported content part type {raw_type!r}. "
-            "Only text and image_url/input_image parts are supported."
+            f"{allowed}"
         )
 
     if not normalized_parts:
@@ -336,7 +427,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
 
 
 def _content_has_visible_payload(content: Any) -> bool:
-    """True when content has any text or image attachment.  Used to reject empty turns."""
+    """True when content has any text, image, or audio payload. Used to reject empty turns."""
     if isinstance(content, str):
         return bool(content.strip())
     if isinstance(content, list):
@@ -346,6 +437,8 @@ def _content_has_visible_payload(content: Any) -> bool:
                 if ptype in _TEXT_PART_TYPES and str(part.get("text") or "").strip():
                     return True
                 if ptype in _IMAGE_PART_TYPES:
+                    return True
+                if ptype in _AUDIO_PART_TYPES:
                     return True
     return False
 
@@ -1520,6 +1613,68 @@ class APIServerAdapter(BasePlatformAdapter):
         return agent
 
     # ------------------------------------------------------------------
+    # Audio input processing
+    # ------------------------------------------------------------------
+
+    async def _process_input_audio_parts(self, content: Any) -> Any:
+        """Transcribe validated input_audio parts before AIAgent sees content."""
+        if not isinstance(content, list):
+            return content
+
+        output_parts: List[Dict[str, Any]] = []
+
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype in _TEXT_PART_TYPES or ptype in _IMAGE_PART_TYPES:
+                output_parts.append(part)
+                continue
+            if ptype in _AUDIO_PART_TYPES:
+                try:
+                    text = await self._transcribe_input_audio_part(part)
+                except ValueError:
+                    raise
+                except Exception as exc:
+                    logger.warning("Audio processing failed: %s", exc)
+                    text = "[The user sent a voice message but it could not be processed.]"
+                output_parts.append({"type": "text", "text": text})
+
+        if not output_parts:
+            return ""
+        if all(p.get("type") == "text" for p in output_parts):
+            return "\n\n".join(str(p.get("text", "")) for p in output_parts if p.get("text"))
+        return output_parts
+
+    async def _transcribe_input_audio_part(self, part: Dict[str, Any]) -> str:
+        """Transcribe one input_audio part through the existing STT pipeline."""
+        from tools.transcription_tools import transcribe_audio
+
+        raw, audio_format = _decode_input_audio_payload(part)
+        tmp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(suffix=f".{audio_format}", delete=False) as tmp:
+                tmp.write(raw)
+                tmp_path = tmp.name
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, transcribe_audio, tmp_path)
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        if result.get("success"):
+            transcript = str(result.get("transcript") or "").strip()
+            if transcript:
+                return f'[The user sent a voice message. Transcript: "{transcript}"]'
+            return "[The user sent a voice message, but it transcribed to empty text.]"
+
+        error = str(result.get("error") or "unknown error")
+        return f"[The user sent a voice message but transcription failed: {error}]"
+
+    # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
 
@@ -2246,7 +2401,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
+        conversation_messages: List[Dict[str, Any]] = []
+        conversation_message_params: List[str] = []
+        last_conversation_idx = next(
+            (
+                idx
+                for idx in range(len(messages) - 1, -1, -1)
+                if isinstance(messages[idx], dict)
+                and messages[idx].get("role") in ("user", "assistant")
+            ),
+            None,
+        )
 
         for idx, msg in enumerate(messages):
             role = msg.get("role", "")
@@ -2261,17 +2426,30 @@ class APIServerAdapter(BasePlatformAdapter):
                     system_prompt = system_prompt + "\n" + content
             elif role in {"user", "assistant"}:
                 try:
-                    content = _normalize_multimodal_content(raw_content)
+                    content = _normalize_multimodal_content(
+                        raw_content,
+                        allow_audio=(role == "user" and idx == last_conversation_idx),
+                    )
                 except ValueError as exc:
                     return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
                 conversation_messages.append({"role": role, "content": content})
+                conversation_message_params.append(f"messages[{idx}].content")
 
         # Extract the last user message as the primary input
         user_message: Any = ""
         history = []
+        user_message_param = "messages.content"
         if conversation_messages:
             user_message = conversation_messages[-1].get("content", "")
             history = conversation_messages[:-1]
+            user_message_param = conversation_message_params[-1]
+
+        if conversation_messages and conversation_messages[-1].get("role") == "user":
+            try:
+                user_message = await self._process_input_audio_parts(user_message)
+            except ValueError as exc:
+                return _multimodal_validation_error(exc, param=user_message_param)
+            conversation_messages[-1]["content"] = user_message
 
         if not _content_has_visible_payload(user_message):
             return web.json_response(

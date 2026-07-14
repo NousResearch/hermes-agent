@@ -38,6 +38,8 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 
 logger = logging.getLogger(__name__)
 
+_MISSING_SESSION_REPAIR_MARKER = "_repaired_missing_session_row"
+
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
 
 
@@ -3403,6 +3405,9 @@ class SessionDB:
         crash before the gateway re-records the peer can't strand the child
         without a recoverable routing mapping (#59527).
         """
+        model_config_json = json.dumps(model_config) if model_config else None
+        source_norm = str(source or "").strip().lower()
+
         def _do(conn):
             conn.execute(
                 """INSERT INTO sessions (
@@ -3432,7 +3437,7 @@ class SessionDB:
                     chat_type,
                     thread_id,
                     model,
-                    json.dumps(model_config) if model_config else None,
+                    model_config_json,
                     system_prompt,
                     parent_session_id,
                     cwd,
@@ -3441,6 +3446,40 @@ class SessionDB:
                     time.time(),
                 ),
             )
+            if source_norm in {"", "unknown"}:
+                return
+
+            # Token accounting can provision a missing session row after the
+            # authoritative create path loses a transient SQLite lock race.
+            # Promote only rows carrying that explicit repair marker: a real
+            # imported/legacy source="unknown" row must remain first-writer-wins.
+            marker_path = f"$.{_MISSING_SESSION_REPAIR_MARKER}"
+            conn.execute(
+                """UPDATE sessions SET
+                       source = ?,
+                       user_id = COALESCE(user_id, ?),
+                       model_config = NULLIF(
+                           json_remove(
+                               COALESCE(?, model_config, '{}'),
+                               ?
+                           ),
+                           '{}'
+                       )
+                   WHERE id = ?
+                     AND source = 'unknown'
+                     AND json_valid(COALESCE(model_config, '{}'))
+                     AND json_extract(COALESCE(model_config, '{}'), ?)
+                         = 'update_token_counts'""",
+                (
+                    source,
+                    user_id,
+                    model_config_json,
+                    marker_path,
+                    session_id,
+                    marker_path,
+                ),
+            )
+
             if parent_session_id:
                 conn.execute(
                     """UPDATE sessions
@@ -4335,19 +4374,50 @@ class SessionDB:
     def update_session_meta(
         self,
         session_id: str,
-        model_config_json: str,
+        model_config_json: Optional[str],
         model: Optional[str] = None,
     ) -> None:
         """Update model_config and optionally model for an existing session.
 
         Uses COALESCE so that passing model=None leaves the stored model
         column unchanged.  Routes through _execute_write for the standard
-        BEGIN IMMEDIATE + jitter-retry + lock guarantee.
+        BEGIN IMMEDIATE + jitter-retry + lock guarantee. Repair markers from
+        a token-accounting fallback survive this metadata refresh so a later
+        authoritative create can still promote the provisional source when the
+        replacement is a valid JSON object. Malformed/non-object legacy values
+        retain update_session_meta's original replacement semantics.
         """
         def _do(conn):
+            config_to_store = model_config_json
+            current = conn.execute(
+                "SELECT source, model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if current is not None and current["source"] == "unknown":
+                try:
+                    existing_config = json.loads(current["model_config"] or "{}")
+                    replacement_config = (
+                        json.loads(model_config_json)
+                        if model_config_json is not None
+                        else None
+                    )
+                    if (
+                        isinstance(existing_config, dict)
+                        and isinstance(replacement_config, dict)
+                        and existing_config.get(_MISSING_SESSION_REPAIR_MARKER)
+                        == "update_token_counts"
+                    ):
+                        replacement_config[_MISSING_SESSION_REPAIR_MARKER] = (
+                            "update_token_counts"
+                        )
+                        config_to_store = json.dumps(replacement_config)
+                except (TypeError, ValueError):
+                    # Preserve update_session_meta's existing permissive
+                    # behavior for malformed/non-object legacy values.
+                    pass
             conn.execute(
                 "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                (model_config_json, model, session_id),
+                (config_to_store, model, session_id),
             )
         self._execute_write(_do)
 
@@ -4423,6 +4493,7 @@ class SessionDB:
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
+        source: Optional[str] = None,
     ) -> None:
         """Update token counters and backfill model if not already set.
 
@@ -4432,12 +4503,12 @@ class SessionDB:
         When *absolute* is True, values are **set directly** — use this when
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
+
+        ``source`` is optional for compatibility with non-agent callers. Agent
+        runtimes pass the resolved session source so fallback row creation can
+        preserve provenance even when a one-shot run has no later turn to
+        retry ``create_session``.
         """
-        # Ensure the session row exists so the UPDATE doesn't silently affect
-        # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
-        # initial create_session() may have failed due to SQLite locking.
-        # INSERT OR IGNORE is cheap and idempotent.
-        self._insert_session_row(session_id, "unknown", model=model)
         if absolute:
             sql = """UPDATE sessions SET
                    input_tokens = ?,
@@ -4522,8 +4593,33 @@ class SessionDB:
             or cache_write_tokens or reasoning_tokens or api_call_count
             or estimated_cost_usd
         )
+        fallback_source = str(source or "").strip()
+        source_is_unknown = not fallback_source or fallback_source.lower() == "unknown"
+        if source_is_unknown:
+            fallback_source = "unknown"
+            fallback_model_config = json.dumps(
+                {_MISSING_SESSION_REPAIR_MARKER: "update_token_counts"}
+            )
+        else:
+            fallback_model_config = None
 
         def _do(conn):
+            # Keep fallback row creation in the same write transaction as the
+            # counters. The marker lets a later authoritative create_session
+            # safely promote this provisional source without rewriting a
+            # legitimate source="unknown" row.
+            conn.execute(
+                """INSERT OR IGNORE INTO sessions
+                   (id, source, model, model_config, started_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    fallback_source,
+                    model,
+                    fallback_model_config,
+                    time.time(),
+                ),
+            )
             row = conn.execute(
                 "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?",
                 (session_id,),

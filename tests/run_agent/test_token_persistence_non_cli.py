@@ -52,6 +52,7 @@ def test_run_conversation_persists_tokens_for_telegram_sessions():
     assert result["final_response"] == "done"
     session_db.update_token_counts.assert_called_once()
     assert session_db.update_token_counts.call_args.args[0] == "telegram-session"
+    assert session_db.update_token_counts.call_args.kwargs["source"] == "telegram"
 
 
 def test_run_conversation_persists_tokens_for_cron_sessions():
@@ -63,6 +64,7 @@ def test_run_conversation_persists_tokens_for_cron_sessions():
     assert result["final_response"] == "done"
     session_db.update_token_counts.assert_called_once()
     assert session_db.update_token_counts.call_args.args[0] == "cron-session"
+    assert session_db.update_token_counts.call_args.kwargs["source"] == "cron"
 
 
 def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):

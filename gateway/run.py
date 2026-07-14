@@ -1044,6 +1044,8 @@ from agent.replay_cleanup import (  # noqa: E402
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
 _AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
+_PROVIDER_RATE_LIMIT_MAX_RESUME_DELAY_SECONDS = 90 * 24 * 60 * 60
+_PROVIDER_RATE_LIMIT_RESUME_EVENT_TOKEN = object()
 
 
 def _is_auto_continue_noise(content: Any) -> bool:
@@ -1061,6 +1063,7 @@ def _coerce_provider_rate_limit_reset_at(
     value: Any,
     *,
     now: Optional[float] = None,
+    allow_past: bool = False,
 ) -> Optional[float]:
     """Return a future unix timestamp from provider reset metadata.
 
@@ -1094,13 +1097,59 @@ def _coerce_provider_rate_limit_reset_at(
                 reset_at = parsed.timestamp()
             except ValueError:
                 return None
-    if reset_at is None or not math.isfinite(reset_at) or reset_at <= now:
+    if (
+        reset_at is None
+        or not math.isfinite(reset_at)
+        or (not allow_past and reset_at <= now)
+        or reset_at - now > _PROVIDER_RATE_LIMIT_MAX_RESUME_DELAY_SECONDS
+    ):
         return None
     try:
         datetime.fromtimestamp(reset_at)
     except (OverflowError, OSError, ValueError):
         return None
     return reset_at
+
+
+def _is_verified_provider_rate_limit_resume_event(
+    event: "MessageEvent",
+    session_entry: Any,
+    run_generation: int,
+    *,
+    now: Optional[float] = None,
+) -> bool:
+    """Validate the private identity of a due provider continuation event."""
+    if not getattr(event, "internal", False):
+        return False
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(metadata, dict):
+        return False
+    if (
+        metadata.get("_hermes_provider_rate_limit_resume")
+        is not _PROVIDER_RATE_LIMIT_RESUME_EVENT_TOKEN
+    ):
+        return False
+    if not getattr(session_entry, "resume_pending", False):
+        return False
+    if getattr(session_entry, "resume_reason", None) != "provider_rate_limit":
+        return False
+    try:
+        scheduled_generation = int(metadata["run_generation"])
+        event_reset_at = float(metadata["reset_at"])
+        durable_reset_at = float(session_entry.resume_not_before)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    if run_generation != scheduled_generation + 1:
+        return False
+    if not math.isfinite(event_reset_at) or not math.isclose(
+        event_reset_at,
+        durable_reset_at,
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        return False
+    current_time = time.time() if now is None else float(now)
+    return current_time >= durable_reset_at
 
 
 def _provider_rate_limit_reset_at(agent_result: dict) -> Optional[float]:
@@ -6914,7 +6963,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         run_generation: int,
     ) -> bool:
         """Persist then install a provider reset continuation off the event loop."""
-        reset_epoch = _coerce_provider_rate_limit_reset_at(reset_at, now=0)
+        reset_epoch = _coerce_provider_rate_limit_reset_at(
+            reset_at,
+            now=time.time(),
+            allow_past=True,
+        )
         if reset_epoch is None or not session_key or source is None:
             return False
         try:
@@ -6988,7 +7041,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Install an in-memory task for an already-persisted provider deadline."""
         # ``reset_at`` may already be in the past when restored after a gateway
         # restart.  It is still a valid deadline and should drain immediately.
-        reset_epoch = _coerce_provider_rate_limit_reset_at(reset_at, now=0)
+        reset_epoch = _coerce_provider_rate_limit_reset_at(
+            reset_at,
+            now=time.time(),
+            allow_past=True,
+        )
         if reset_epoch is None or not session_key or source is None:
             return False
 
@@ -6998,6 +7055,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._provider_rate_limit_resume_tasks = tasks
         existing = tasks.get(session_key)
         if existing is not None and not existing.done():
+            existing_identity = getattr(
+                existing,
+                "_hermes_provider_resume_identity",
+                None,
+            )
+            if existing_identity == (run_generation, reset_epoch):
+                return True
             if not getattr(existing, "_hermes_provider_resume_dispatched", False):
                 existing.cancel()
             logger.info(
@@ -7014,6 +7078,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         )
         setattr(task, "_hermes_provider_resume_dispatched", False)
+        setattr(
+            task,
+            "_hermes_provider_resume_identity",
+            (run_generation, reset_epoch),
+        )
         tasks[session_key] = task
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -7115,6 +7184,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return
 
+            # No await is allowed between this compare and the slot claim. A
+            # newer real turn may have arrived while the durable-state read
+            # above was in flight; never overwrite its generation or slot.
+            if (
+                not self._is_session_run_current(session_key, run_generation)
+                or session_key in self._running_agents
+            ):
+                logger.info(
+                    "Skipping provider rate-limit continuation for %s: newer turn claimed the session",
+                    session_key,
+                )
+                return
+
             # Claim before dispatch so a real inbound message queues behind
             # this continuation. Reuse the startup-resume helper because
             # BasePlatformAdapter.handle_message() itself returns as soon as
@@ -7129,6 +7211,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                metadata={
+                    "_hermes_provider_rate_limit_resume": (
+                        _PROVIDER_RATE_LIMIT_RESUME_EVENT_TOKEN
+                    ),
+                    "run_generation": run_generation,
+                    "reset_at": reset_at,
+                },
             )
             await self._run_startup_resume_event(adapter, event, session_key)
         except asyncio.CancelledError:
@@ -8596,16 +8685,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If the process is killed by the service manager during the
             # drain, the durable marker is already written so the next
             # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
+            _pre_drain_reason = (
+                "restart_timeout" if self._restart_requested else "shutdown_timeout"
+            )
+            _pre_drain_reasons: dict[str, str] = {}
             for _sk, _agent in list(self._running_agents.items()):
                 if _agent is _AGENT_PENDING_SENTINEL:
                     continue
                 try:
                     await self.async_session_store.mark_resume_pending(
                         _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
+                        _pre_drain_reason,
                     )
-                    _pre_drain_keys.append(_sk)
+                    _pre_drain_reasons[_sk] = _pre_drain_reason
                 except Exception as _e:
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
@@ -8633,10 +8725,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Drain completed gracefully — all running sessions finished.
                 # Clear the pre-drain resume_pending markers so sessions that
                 # completed during the drain window don't carry a stale flag.
-                for _sk in _pre_drain_keys:
+                for _sk, _reason in _pre_drain_reasons.items():
                     if _sk not in self._running_agents:
                         try:
-                            await self.async_session_store.clear_resume_pending(_sk)
+                            await self.async_session_store.clear_resume_pending(
+                                _sk,
+                                reason=_reason,
+                            )
                         except Exception as _e:
                             logger.debug(
                                 "clear_resume_pending after drain failed for %s: %s",
@@ -11307,6 +11402,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        _is_provider_resume_event = _is_verified_provider_rate_limit_resume_event(
+            event,
+            session_entry,
+            run_generation,
+        )
+        _resume_reason_for_turn = getattr(session_entry, "resume_reason", None)
+        if _resume_reason_for_turn == "provider_rate_limit" and not _is_provider_resume_event:
+            _resume_reason_for_turn = None
         # A real user turn owns the lane from this point forward.  Remove the
         # older durable provider continuation immediately; if this turn hits
         # the quota wall again it will persist a fresh reset deadline below.
@@ -12163,8 +12266,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
-                persist_user_message=persist_user_message,
+                persist_user_message=(
+                    None if _is_provider_resume_event else persist_user_message
+                ),
                 persist_user_timestamp=persist_user_timestamp,
+                provider_rate_limit_resume=_is_provider_resume_event,
+                suppress_current_user_message_persistence=_is_provider_resume_event,
             )
 
             # Stop persistent typing indicator now that the agent is done.
@@ -12272,13 +12379,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 self._clear_restart_failure_count(session_key)
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception as _e:
-                    logger.debug(
-                        "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
-                    )
+                if _resume_reason_for_turn is not None:
+                    try:
+                        await self.async_session_store.clear_resume_pending(
+                            session_key,
+                            reason=_resume_reason_for_turn,
+                        )
+                    except Exception as _e:
+                        logger.debug(
+                            "clear_resume_pending failed for %s: %s",
+                            session_key, _e,
+                        )
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
@@ -12578,55 +12689,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if is_context_overflow_failure:
                 pass  # handled above — skip all transcript writes
             elif agent_failed_early or hidden_reasoning_incomplete:
-                # Transient failure (429/timeout/5xx): persist only the user
-                # message so the next message can load a transcript that
-                # reflects what was said.  Skip the assistant error text since
-                # it's a gateway-generated hint, not model output. Hidden-
-                # reasoning-only incomplete turns follow the same persistence
-                # rule so peer-agent channels don't ingest them as completed
-                # assistant turns. (#7100, #51628)
-                _user_entry = {
-                    "role": "user",
-                    "content": (
-                        persist_user_message
-                        if persist_user_message is not None
-                        else message_text
-                    ),
-                    "timestamp": (
-                        persist_user_timestamp
-                        if persist_user_timestamp is not None
-                        else ts
-                    ),
-                }
-                if event.message_id:
-                    _user_entry["message_id"] = str(event.message_id)
-                # Dedupe: skip if this platform message_id is already in the
-                # transcript (prevents duplicate user turns on Telegram retries
-                # after transient failures). #47237
-                _skip_persist = (
-                    event.message_id
-                    and await self.async_session_store.has_platform_message_id(
-                        session_entry.session_id, str(event.message_id)
-                    )
-                )
-                if _skip_persist:
+                # The provider continuation has no new user turn. If it hits
+                # the limit or ends as a hidden-reasoning-only incomplete turn,
+                # the original user row is already durable.
+                if _is_provider_resume_event:
                     logger.info(
-                        "Skipping duplicate user turn "
-                        "(message_id=%s) in session %s",
-                        event.message_id, session_entry.session_id,
+                        "Skipping synthetic provider-resume user persistence for session %s",
+                        session_entry.session_id,
                     )
                 else:
-                    await self.async_session_store.append_to_transcript(
-                        session_entry.session_id,
-                        _user_entry,
-                        skip_db=agent_persisted,
-                    )
-            else:
-                history_len = agent_result.get("history_offset", len(history))
-                new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
-
-                # If no new messages found (edge case), fall back to simple user/assistant
-                if not new_messages:
+                    # Transient failure (429/timeout/5xx): persist only the user
+                    # message so the next message can load a transcript that
+                    # reflects what was said. Skip the assistant error text since
+                    # it's a gateway-generated hint, not model output. Hidden-
+                    # reasoning-only incomplete turns follow the same persistence
+                    # rule so peer-agent channels don't ingest them as completed
+                    # assistant turns. (#7100, #51628)
                     _user_entry = {
                         "role": "user",
                         "content": (
@@ -12642,11 +12720,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
-                    await self.async_session_store.append_to_transcript(
-                        session_entry.session_id,
-                        _user_entry,
-                        skip_db=agent_persisted,
+                    # Dedupe: skip if this platform message_id is already in the
+                    # transcript (prevents duplicate user turns on Telegram retries
+                    # after transient failures). #47237
+                    _skip_persist = (
+                        event.message_id
+                        and await self.async_session_store.has_platform_message_id(
+                            session_entry.session_id, str(event.message_id)
+                        )
                     )
+                    if _skip_persist:
+                        logger.info(
+                            "Skipping duplicate user turn "
+                            "(message_id=%s) in session %s",
+                            event.message_id, session_entry.session_id,
+                        )
+                    else:
+                        await self.async_session_store.append_to_transcript(
+                            session_entry.session_id,
+                            _user_entry,
+                            skip_db=agent_persisted,
+                        )
+            else:
+                history_len = agent_result.get("history_offset", len(history))
+                new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
+                if _is_provider_resume_event:
+                    for _idx, _msg in enumerate(new_messages):
+                        if isinstance(_msg, dict) and _msg.get("role") == "user":
+                            new_messages = new_messages[:_idx] + new_messages[_idx + 1 :]
+                            break
+
+                # If no new messages found (edge case), fall back to simple user/assistant
+                if not new_messages:
+                    if not _is_provider_resume_event:
+                        _user_entry = {
+                            "role": "user",
+                            "content": (
+                                persist_user_message
+                                if persist_user_message is not None
+                                else message_text
+                            ),
+                            "timestamp": (
+                                persist_user_timestamp
+                                if persist_user_timestamp is not None
+                                else ts
+                            ),
+                        }
+                        if event.message_id:
+                            _user_entry["message_id"] = str(event.message_id)
+                        await self.async_session_store.append_to_transcript(
+                            session_entry.session_id,
+                            _user_entry,
+                            skip_db=agent_persisted,
+                        )
                     if response:
                         await self.async_session_store.append_to_transcript(
                             session_entry.session_id,
@@ -17645,6 +17771,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        provider_rate_limit_resume: bool = False,
+        suppress_current_user_message_persistence: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -17663,6 +17791,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                provider_rate_limit_resume=provider_rate_limit_resume,
+                suppress_current_user_message_persistence=(
+                    suppress_current_user_message_persistence
+                ),
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -17674,6 +17806,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                provider_rate_limit_resume=provider_rate_limit_resume,
+                suppress_current_user_message_persistence=(
+                    suppress_current_user_message_persistence
+                ),
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -17795,6 +17931,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        provider_rate_limit_resume: bool = False,
+        suppress_current_user_message_persistence: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -19621,9 +19759,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _resume_mark_is_fresh = False
             if _resume_entry is not None and getattr(_resume_entry, "resume_pending", False):
                 if getattr(_resume_entry, "resume_reason", None) == "provider_rate_limit":
-                    # Provider deadlines may be hours or days away.  Their
-                    # explicit durable timestamp is the freshness signal.
-                    _resume_mark_is_fresh = True
+                    # Provider deadlines may be hours or days away. Only the
+                    # private, due continuation event may consume this marker;
+                    # unrelated internal events must not inherit its guidance.
+                    _resume_mark_is_fresh = provider_rate_limit_resume
                 else:
                     _resume_mark_is_fresh = _is_fresh_gateway_interruption(
                         getattr(_resume_entry, "last_resume_marked_at", None),
@@ -19727,6 +19866,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and not message.strip()
                 and _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
+                and (
+                    getattr(_resume_entry, "resume_reason", None)
+                    != "provider_rate_limit"
+                    or provider_rate_limit_resume
+                )
             ):
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
@@ -19800,6 +19944,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+                if suppress_current_user_message_persistence:
+                    _conversation_kwargs["suppress_user_message_persistence"] = True
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)

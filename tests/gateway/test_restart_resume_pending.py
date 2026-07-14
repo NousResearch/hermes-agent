@@ -1030,6 +1030,55 @@ async def test_drain_timeout_marks_resume_pending():
 
 
 @pytest.mark.asyncio
+async def test_graceful_drain_cleanup_does_not_clear_newer_provider_marker():
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    session_key = "agent:main:telegram:dm:A"
+    runner._running_agents = {session_key: MagicMock()}
+    state = {"reason": None, "not_before": None}
+
+    session_store = MagicMock()
+
+    def _mark(_key, reason="restart_timeout", not_before=None):
+        state["reason"] = reason
+        state["not_before"] = not_before
+        return True
+
+    def _clear(_key, reason=None):
+        if reason is not None and state["reason"] != reason:
+            return False
+        state["reason"] = None
+        state["not_before"] = None
+        return True
+
+    session_store.mark_resume_pending.side_effect = _mark
+    session_store.clear_resume_pending.side_effect = _clear
+    runner.session_store = session_store
+
+    async def _finish_with_provider_marker(_timeout):
+        session_store.mark_resume_pending(
+            session_key,
+            "provider_rate_limit",
+            time.time() + 3_600,
+        )
+        runner._running_agents.clear()
+        return ({session_key: MagicMock()}, False)
+
+    runner._drain_active_agents = AsyncMock(side_effect=_finish_with_provider_marker)
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    assert state["reason"] == "provider_rate_limit"
+    assert state["not_before"] is not None
+    assert session_store.clear_resume_pending.call_args_list[0].kwargs == {
+        "reason": "shutdown_timeout"
+    }
+
+
+@pytest.mark.asyncio
 async def test_drain_timeout_uses_restart_reason_when_restarting():
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()

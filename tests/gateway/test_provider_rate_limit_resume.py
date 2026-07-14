@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -10,6 +11,7 @@ from gateway.platforms.base import MessageEvent
 from gateway.run import (
     GatewayRunner,
     _coerce_provider_rate_limit_reset_at,
+    _is_verified_provider_rate_limit_resume_event,
     _provider_rate_limit_reset_at,
 )
 from gateway.session import SessionSource
@@ -104,6 +106,19 @@ def test_provider_limit_reset_time_requires_future_timestamp():
     assert _coerce_provider_rate_limit_reset_at(1e100, now=1000) is None
 
 
+def test_provider_limit_reset_time_rejects_deadlines_beyond_session_retention():
+    now = 1_000.0
+
+    assert _coerce_provider_rate_limit_reset_at(now + (90 * 24 * 60 * 60), now=now)
+    assert (
+        _coerce_provider_rate_limit_reset_at(
+            now + (90 * 24 * 60 * 60) + 1,
+            now=now,
+        )
+        is None
+    )
+
+
 def test_provider_limit_reset_only_uses_rate_limit_results():
     future_reset = time.time() + 120
     assert (
@@ -147,6 +162,35 @@ async def test_provider_limit_resume_dispatches_internal_continuation():
     assert event.internal is True
     assert event.source is source
     assert event.text == ""
+    assert event.metadata.get("_hermes_provider_rate_limit_resume") is not None
+
+    entry = SimpleNamespace(
+        resume_pending=True,
+        resume_reason="provider_rate_limit",
+        resume_not_before=0.0,
+    )
+    assert _is_verified_provider_rate_limit_resume_event(
+        event,
+        entry,
+        run_generation=8,
+        now=1.0,
+    )
+    assert not _is_verified_provider_rate_limit_resume_event(
+        MessageEvent(
+            text="unrelated",
+            source=source,
+            internal=True,
+        ),
+        entry,
+        run_generation=8,
+        now=1.0,
+    )
+    assert not _is_verified_provider_rate_limit_resume_event(
+        event,
+        entry,
+        run_generation=8,
+        now=-1.0,
+    )
 
 
 @pytest.mark.asyncio
@@ -206,6 +250,46 @@ async def test_provider_limit_resume_skips_when_newer_turn_exists():
     )
 
     assert adapter.events == []
+
+
+@pytest.mark.asyncio
+async def test_provider_limit_resume_does_not_overwrite_newer_turn_after_state_read():
+    adapter = _Adapter()
+    runner = _runner(adapter)
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", user_id="U1")
+    origin = object()
+    newer = object()
+    runner._running_agents["s1"] = origin
+
+    class _RacingAsyncStore:
+        calls = 0
+
+        def __init__(self, store):
+            self._store = store
+
+        async def is_resume_pending(self, session_key, reason=None):
+            self.calls += 1
+            if self.calls == 2:
+                runner._session_run_generation["s1"] = 8
+                runner._running_agents["s1"] = newer
+            return True
+
+    runner._async_session_store = _RacingAsyncStore(runner.session_store)
+    continuation = asyncio.create_task(
+        runner._run_provider_rate_limit_resume_after_delay(
+            session_key="s1",
+            source=source,
+            reset_at=0,
+            run_generation=7,
+        )
+    )
+    await asyncio.sleep(0.05)
+    runner._running_agents.pop("s1")
+
+    await asyncio.wait_for(continuation, timeout=1.0)
+
+    assert adapter.events == []
+    assert runner._running_agents["s1"] is newer
 
 
 @pytest.mark.asyncio
@@ -318,6 +402,34 @@ async def test_provider_limit_scheduler_does_not_cancel_dispatched_resume():
     first.cancel()
     second.cancel()
     await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_provider_limit_scheduler_deduplicates_same_dispatched_identity():
+    adapter = _Adapter()
+    runner = _runner(adapter)
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", user_id="U1")
+    reset_at = time.time() + 10_000
+
+    assert runner._install_provider_rate_limit_resume(
+        session_key="s1",
+        source=source,
+        reset_at=reset_at,
+        run_generation=7,
+    )
+    first = runner._provider_rate_limit_resume_tasks["s1"]
+    setattr(first, "_hermes_provider_resume_dispatched", True)
+
+    assert runner._install_provider_rate_limit_resume(
+        session_key="s1",
+        source=source,
+        reset_at=reset_at,
+        run_generation=7,
+    )
+
+    assert runner._provider_rate_limit_resume_tasks["s1"] is first
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
 
 
 @pytest.mark.asyncio

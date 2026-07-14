@@ -3106,7 +3106,11 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
             except (TypeError, ValueError):
                 pass
         resets_in_seconds = payload.get("resets_in_seconds")
-        if resets_in_seconds not in {None, ""} and "reset_at" not in context:
+        if (
+            resets_in_seconds is not None
+            and resets_in_seconds != ""
+            and "reset_at" not in context
+        ):
             try:
                 delay = float(resets_in_seconds)
                 if delay > 0:

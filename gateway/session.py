@@ -2202,10 +2202,11 @@ class SessionStore:
 
         Pruning is based on ``updated_at`` (last activity), not ``created_at``.
         A session that's been active within the window is kept regardless of
-        how old it is.  Entries marked ``suspended`` are kept — the user
-        explicitly paused them for later resume.  Entries held by an active
-        process (via has_active_processes_fn) are also kept so long-running
-        background work isn't orphaned.
+        how old it is.  Entries marked ``suspended`` or carrying a durable
+        provider-rate-limit deadline are kept — the user explicitly paused
+        them or the gateway owns a bounded wait task. Entri...[truncated]
+        has_active_processes_fn) are also kept so long-running background work
+        isn't orphaned.
 
         Pruning is functionally identical to a natural reset-policy expiry:
         the transcript in SQLite stays, but the session_key → session_id
@@ -2224,7 +2225,12 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
             for key, entry in list(self._entries.items()):
-                if entry.suspended:
+                has_provider_deadline = (
+                    entry.resume_pending
+                    and entry.resume_reason == "provider_rate_limit"
+                    and entry.resume_not_before is not None
+                )
+                if entry.suspended or has_provider_deadline:
                     continue
                 # Never prune sessions with an active background process
                 # attached — the user may still be waiting on output.

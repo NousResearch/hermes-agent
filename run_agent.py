@@ -1689,9 +1689,17 @@ class AIAgent:
         event time as message metadata, rather than embedding it in content.
         """
         idx = getattr(self, "_persist_user_message_idx", None)
+        suppress = getattr(self, "_suppress_current_user_message_persistence", False)
         override = getattr(self, "_persist_user_message_override", None)
         timestamp = getattr(self, "_persist_user_message_timestamp", None)
-        if idx is None or (override is None and timestamp is None):
+        if idx is None:
+            return
+        if suppress and 0 <= idx < len(messages):
+            msg = messages[idx]
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                messages.pop(idx)
+            return
+        if override is None and timestamp is None:
             return
         if 0 <= idx < len(messages):
             msg = messages[idx]
@@ -1726,19 +1734,31 @@ class AIAgent:
         # Close and turn-start persistence can run on separate CLI threads; the
         # marker test-and-append below must be one critical section or both can
         # observe the same unmarked dict and write duplicate durable rows.
+        def _persist_locked() -> None:
+            self._drop_trailing_empty_response_scaffolding(messages)
+            persisted_messages = messages
+            suppress_idx = getattr(self, "_persist_user_message_idx", None)
+            if (
+                getattr(self, "_suppress_current_user_message_persistence", False)
+                and isinstance(suppress_idx, int)
+                and 0 <= suppress_idx < len(messages)
+                and isinstance(messages[suppress_idx], dict)
+                and messages[suppress_idx].get("role") == "user"
+            ):
+                persisted_messages = (
+                    messages[:suppress_idx] + messages[suppress_idx + 1 :]
+                )
+            self._session_messages = persisted_messages
+            self._save_session_log(persisted_messages)
+            self._flush_messages_to_session_db(messages, conversation_history)
+
         persist_lock = getattr(self, "_session_persist_lock", None)
         if persist_lock is None:
-            self._drop_trailing_empty_response_scaffolding(messages)
-            self._session_messages = messages
-            self._save_session_log(messages)
-            self._flush_messages_to_session_db(messages, conversation_history)
+            _persist_locked()
             return
 
         with persist_lock:
-            self._drop_trailing_empty_response_scaffolding(messages)
-            self._session_messages = messages
-            self._save_session_log(messages)
-            self._flush_messages_to_session_db(messages, conversation_history)
+            _persist_locked()
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -1854,6 +1874,11 @@ class AIAgent:
         _ov_idx = getattr(self, "_persist_user_message_idx", None)
         _ov_content = getattr(self, "_persist_user_message_override", None)
         _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
+        _suppress_user_row = getattr(
+            self,
+            "_suppress_current_user_message_persistence",
+            False,
+        )
         try:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
@@ -1915,6 +1940,13 @@ class AIAgent:
                 # history copy, or seeded by a caller. Stamp them so future
                 # flushes skip them without consulting any id() set again.
                 if id(msg) in history_ids or id(msg) in seed_ids:
+                    msg[_DB_PERSISTED_MARKER] = True
+                    continue
+                if (
+                    _suppress_user_row
+                    and _ov_idx == _msg_idx
+                    and msg.get("role") == "user"
+                ):
                     msg[_DB_PERSISTED_MARKER] = True
                     continue
                 role = msg.get("role", "unknown")
@@ -5886,6 +5918,7 @@ class AIAgent:
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        suppress_user_message_persistence: bool = False,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
@@ -5899,6 +5932,7 @@ class AIAgent:
             persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             moa_config=moa_config,
+            suppress_user_message_persistence=suppress_user_message_persistence,
         )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:

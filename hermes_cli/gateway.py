@@ -2820,6 +2820,8 @@ _SYSTEMD_OPTIONAL_DIRECTIVES = (
     "RestartSteps",
 )
 
+_SYSTEMD_EXTERNAL_MANAGEMENT_DIRECTIVE = "X-Hermes-Managed-Externally"
+
 
 def _strip_optional_systemd_directives(text: str) -> str:
     """Remove systemd directives that older hosts silently drop."""
@@ -2833,6 +2835,28 @@ def _strip_optional_systemd_directives(text: str) -> str:
                 continue
         filtered.append(line)
     return "\n".join(filtered)
+
+
+def _systemd_unit_is_externally_managed(text: str) -> bool:
+    """Return whether another declarative manager owns this unit.
+
+    Nix, Home Manager, and similar systems intentionally install immutable
+    service definitions.  Their units may differ from Hermes' generated unit
+    while still being authoritative, so Hermes must neither report drift nor
+    attempt to rewrite them.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition("=")
+        if (
+            separator
+            and key.strip() == _SYSTEMD_EXTERNAL_MANAGEMENT_DIRECTIVE
+            and value.strip().lower() in {"1", "yes", "true", "on"}
+        ):
+            return True
+    return False
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
@@ -2878,6 +2902,9 @@ def systemd_unit_is_current(system: bool = False) -> bool:
         return False
 
     installed = unit_path.read_text(encoding="utf-8")
+    if _systemd_unit_is_externally_managed(installed):
+        return True
+
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Normalize out directives that older systemd versions silently drop

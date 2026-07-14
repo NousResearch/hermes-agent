@@ -459,6 +459,11 @@ Use the user service on laptops and dev boxes. Use the system service on VPS or 
 The unit Hermes installs already shuts the gateway down cleanly with `KillMode=mixed` + `KillSignal=SIGTERM`, and uses `Restart=always` with `RestartForceExitStatus` so updates and `/restart` respawn correctly. Do **not** add a systemd drop-in such as `ExecStopPost=/bin/kill -9 $MAINPID` — `ExecStopPost` fires on *every* stop, including clean restarts, so it `SIGKILL`s the freshly spawned instance before it stabilizes and `Restart=always` immediately respawns it. The result is an infinite restart loop (and, on Telegram, a flood of restart messages). If you've added such a drop-in, remove it: `systemctl --user edit hermes-gateway` (or `sudo systemctl edit hermes-gateway` for a system service) and delete the `ExecStopPost` line, then `systemctl --user daemon-reload`.
 :::
 
+If Nix, Home Manager, or another declarative service manager owns the complete
+unit, add `X-Hermes-Managed-Externally=true` to its `[Unit]` section. Hermes
+will treat that definition as authoritative: `gateway status` will not report
+it as outdated, and gateway lifecycle commands will not try to rewrite it.
+
 :::tip Headless VMs: user service + linger avoids root prompts
 A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
 

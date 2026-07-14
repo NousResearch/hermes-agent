@@ -139,6 +139,51 @@ WantedBy=default.target
 
 
 class TestSystemdUnitIsCurrent:
+    def test_externally_managed_unit_is_authoritative(self, tmp_path, monkeypatch):
+        """A declarative manager's marker suppresses comparison and rewrites."""
+        from hermes_cli import gateway as gw
+
+        installed = """[Unit]
+Description=Declaratively managed Hermes Gateway
+X-Hermes-Managed-Externally=true
+
+[Service]
+ExecStart=/nix/store/example/bin/hermes gateway run
+"""
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+
+        def unexpected_generate(**_kwargs):
+            raise AssertionError("externally managed units must not be regenerated")
+
+        monkeypatch.setattr(gw, "generate_systemd_unit", unexpected_generate)
+
+        assert gw.systemd_unit_is_current(system=False) is True
+        assert gw.refresh_systemd_unit_if_needed(system=False) is False
+        assert unit_file.read_text() == installed
+
+    def test_false_external_management_marker_does_not_hide_drift(self, tmp_path, monkeypatch):
+        """Only a true marker transfers service-definition authority."""
+        from hermes_cli import gateway as gw
+
+        installed = """[Unit]
+Description=Hermes Gateway
+X-Hermes-Managed-Externally=false
+"""
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(
+            gw,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: "[Unit]\nDescription=Different\n",
+        )
+
+        assert gw.systemd_unit_is_current(system=False) is False
+
     def test_unit_without_optional_directives_is_current(self, tmp_path, monkeypatch):
         """Installed unit missing RestartMaxDelaySec/RestartSteps should be
         considered current when the generated unit includes them."""

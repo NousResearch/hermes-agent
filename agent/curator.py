@@ -1985,7 +1985,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     finally:
         if review_agent is not None:
             try:
+                review_agent.shutdown_memory_provider()
+            except Exception:
+                pass
+            try:
                 review_agent.close()
+            except Exception:
+                pass
+            try:
+                from agent.auxiliary_client import cleanup_stale_async_clients
+                cleanup_stale_async_clients()
             except Exception:
                 pass
     return result_meta

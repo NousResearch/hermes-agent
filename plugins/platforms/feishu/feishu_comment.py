@@ -1060,6 +1060,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     set_doc_client(client)
     set_drive_client(client)
 
+    agent = None
     try:
         model, runtime_kwargs = _resolve_model_and_runtime()
         logger.info("[Feishu-Comment] _run_comment_agent: model=%s provider=%s base_url=%s",
@@ -1103,6 +1104,20 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         logger.exception("[Feishu-Comment] _run_comment_agent: agent failed: %s", e)
         return ""
     finally:
+        if agent is not None:
+            try:
+                agent.shutdown_memory_provider()
+            except Exception:
+                pass
+            try:
+                agent.close()
+            except Exception:
+                pass
+            try:
+                from agent.auxiliary_client import cleanup_stale_async_clients
+                cleanup_stale_async_clients()
+            except Exception:
+                pass
         set_doc_client(None)
         set_drive_client(None)
 

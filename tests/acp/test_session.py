@@ -394,6 +394,29 @@ class TestListAndCleanup:
         # Removing again returns False
         assert manager.remove_session(state.session_id) is False
 
+    def test_cleanup_closes_agents(self, manager):
+        """cleanup() must tear down each session's AIAgent, not just drop it.
+
+        Regression: cleanup() cleared the in-memory session dict without
+        calling shutdown_memory_provider()/close() on the held agents,
+        leaking memory-provider threads, HTTP clients, terminal sandboxes,
+        and browser daemons per removed session (#50197).
+        """
+        s1 = manager.create_session()
+        s2 = manager.create_session()
+        manager.cleanup()
+        s1.agent.shutdown_memory_provider.assert_called_once_with()
+        s1.agent.close.assert_called_once_with()
+        s2.agent.shutdown_memory_provider.assert_called_once_with()
+        s2.agent.close.assert_called_once_with()
+
+    def test_remove_session_closes_agent(self, manager):
+        """remove_session() must tear down the session's AIAgent (#50197)."""
+        state = manager.create_session()
+        manager.remove_session(state.session_id)
+        state.agent.shutdown_memory_provider.assert_called_once_with()
+        state.agent.close.assert_called_once_with()
+
 
 # ---------------------------------------------------------------------------
 # persistence — sessions survive process restarts (via SessionDB)

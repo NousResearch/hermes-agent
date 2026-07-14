@@ -413,6 +413,8 @@ def _run_agent(
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    configured_system_prompt = str(agent_cfg.get("system_prompt") or "").strip()
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),
@@ -423,6 +425,7 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        ephemeral_system_prompt=configured_system_prompt or None,
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
@@ -463,9 +466,12 @@ def _run_agent(
                 ", ".join(loaded_skills),
             )
         if skills_prompt:
-            agent.system_prompt = "\n\n".join(
+            agent.ephemeral_system_prompt = "\n\n".join(
                 part
-                for part in (getattr(agent, "system_prompt", ""), skills_prompt)
+                for part in (
+                    getattr(agent, "ephemeral_system_prompt", ""),
+                    skills_prompt,
+                )
                 if part
             ).strip()
         agent.preloaded_skills = loaded_skills

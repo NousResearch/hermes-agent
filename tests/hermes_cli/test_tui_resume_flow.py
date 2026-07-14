@@ -856,14 +856,14 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.session_id = "oneshot-test"
-            self.system_prompt = "base prompt"
+            self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
             self.suppress_status_output = False
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
         def run_conversation(self, prompt, **_kwargs):
             captured["prompt"] = prompt
-            captured["system_prompt"] = self.system_prompt
+            captured["ephemeral_system_prompt_at_run"] = self.ephemeral_system_prompt
             captured["preloaded_skills"] = self.preloaded_skills
             return {"final_response": "ok", "failed": False, "partial": False}
 
@@ -882,7 +882,13 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {
+                "model": {"default": "m"},
+                "agent": {"system_prompt": "base prompt"},
+            },
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -927,7 +933,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
-    assert captured["system_prompt"] == "base prompt\n\nloaded skill body"
+    assert captured["ephemeral_system_prompt_at_run"] == (
+        "base prompt\n\nloaded skill body"
+    )
     assert captured["preloaded_skills"] == ["memory-consolidation"]
 
 

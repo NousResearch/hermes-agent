@@ -2452,6 +2452,15 @@ class SessionStore:
                     ),
                     observed=bool(message.get("observed")),
                     timestamp=message.get("timestamp"),
+                    # api_content sidecar: the exact bytes sent to the API for
+                    # this message (prompt-cache-stable replay). Must survive
+                    # any gateway-side persistence path or the next turn's
+                    # replay diverges at this row.
+                    api_content=(
+                        message.get("api_content")
+                        if isinstance(message.get("api_content"), str)
+                        else None
+                    ),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)

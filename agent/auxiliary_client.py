@@ -530,9 +530,13 @@ def _resolve_provider_vision_default(provider: str) -> Optional[str]:
 # api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
 # describe as having no image_in capability. Vision lives on the separate
 # Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
+# NOTE: This is outdated — kimi-for-coding (k2.5/k2.6) DOES support vision
+# via the Anthropic Messages API on api.kimi.com/coding. The 404 errors
+# were due to using OpenAI chat.completions format instead of Anthropic
+# messages format. Removed from blacklist to enable native vision.
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
-    "kimi-coding",
-    "kimi-coding-cn",
+    # "kimi-coding",      # Removed: k2.5+ supports vision via Anthropic API
+    # "kimi-coding-cn",   # Removed: k2.5+ supports vision via Anthropic API
 })
 
 # OpenRouter app attribution headers (base — always sent).
@@ -766,6 +770,13 @@ def _to_openai_base_url(base_url: str) -> str:
         # Kimi Code uses /coding/v1/messages for Anthropic SDK (appends /v1/messages)
         # but /coding/v1/chat/completions for OpenAI SDK (appends /chat/completions)
         # Without /v1 here, OpenAI SDK hits /coding/chat/completions — a 404.
+        # NOTE: When api_mode="anthropic_messages", the caller is responsible for
+        # passing the raw base_url (without /v1) because the Anthropic SDK appends
+        # its own /v1/messages path. Adding /v1 here would produce /coding/v1/messages
+        # which is correct for Anthropic, but the _to_openai_base_url caller in the
+        # custom provider branch unconditionally adds /v1 even for Anthropic mode.
+        # The fix is applied in the caller (resolve_provider_client) — when
+        # api_mode is "anthropic_messages" we skip _to_openai_base_url entirely.
         rewritten = url + "/v1"
         logger.debug("Auxiliary client: rewrote Kimi base URL %s → %s", url, rewritten)
         return rewritten
@@ -4664,7 +4675,14 @@ def resolve_provider_client(
         custom_base = ""
         custom_key = ""
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # When api_mode is anthropic_messages, preserve the raw base_url
+            # so the Anthropic SDK can append its own /v1/messages path.
+            # _to_openai_base_url adds /v1 for OpenAI SDK compatibility which
+            # breaks Anthropic-mode endpoints like api.kimi.com/coding.
+            if api_mode == "anthropic_messages":
+                custom_base = explicit_base_url.strip().rstrip("/")
+            else:
+                custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
@@ -5348,13 +5366,19 @@ def resolve_vision_provider_client(
         provider_for_base_override = (
             requested if requested and requested not in {"", "auto"} else "custom"
         )
+        # Kimi Coding's /coding endpoint speaks Anthropic Messages — ensure
+        # the correct api_mode is passed so resolve_provider_client wraps
+        # the client in AnthropicAuxiliaryClient instead of plain OpenAI.
+        effective_api_mode = resolved_api_mode
+        if requested in {"kimi-coding", "kimi-coding-cn"} and "/coding" in (resolved_base_url or ""):
+            effective_api_mode = "anthropic_messages"
         client, final_model = resolve_provider_client(
             provider_for_base_override,
             model=resolved_model,
             async_mode=async_mode,
             explicit_base_url=resolved_base_url,
             explicit_api_key=resolved_api_key,
-            api_mode=resolved_api_mode,
+            api_mode=effective_api_mode,
         )
         if client is None:
             return provider_for_base_override, None, None
@@ -6155,7 +6179,7 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
 
 # Providers that use Anthropic-compatible endpoints (via OpenAI SDK wrapper).
 # Their image content blocks must use Anthropic format, not OpenAI format.
-_ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-oauth", "minimax-cn"})
+_ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-oauth", "minimax-cn", "kimi-coding", "kimi-coding-cn"})
 
 
 def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:

@@ -1352,6 +1352,129 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
+    def test_opaque_opus_46_uses_adaptive_thinking_and_keeps_wire_model(self):
+        kwargs = build_anthropic_kwargs(
+            model="ep-opus-46",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            anthropic_model_family="claude-opus-4-6",
+        )
+        assert kwargs["model"] == "ep-opus-46"
+        assert kwargs["thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+        }
+        assert kwargs["output_config"] == {"effort": "max"}
+        assert "budget_tokens" not in kwargs["thinking"]
+        assert "temperature" not in kwargs
+
+    def test_opaque_opus_48_preserves_xhigh_and_modern_payload(self):
+        kwargs = build_anthropic_kwargs(
+            model="ep-opus-48",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            anthropic_model_family="claude-opus-4-8",
+        )
+        assert kwargs["model"] == "ep-opus-48"
+        assert kwargs["thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+        }
+        assert kwargs["output_config"] == {"effort": "xhigh"}
+        assert "temperature" not in kwargs
+
+    def test_opaque_fable_uses_modern_claude_capabilities(self):
+        kwargs = build_anthropic_kwargs(
+            model="ep-fable",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            anthropic_model_family="claude-fable-5",
+        )
+        assert kwargs["model"] == "ep-fable"
+        assert kwargs["thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+        }
+        assert kwargs["output_config"] == {"effort": "xhigh"}
+        assert "temperature" not in kwargs
+
+    def test_fable_without_reasoning_config_omits_manual_thinking(self):
+        kwargs = build_anthropic_kwargs(
+            model="ep-fable",
+            messages=[{"role": "user", "content": "answer"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            anthropic_model_family="claude-fable-5",
+        )
+        assert kwargs["model"] == "ep-fable"
+        assert "thinking" not in kwargs
+        assert "temperature" not in kwargs
+
+    def test_family_hint_drives_output_limit(self):
+        kwargs = build_anthropic_kwargs(
+            model="ep-sonnet",
+            messages=[{"role": "user", "content": "answer"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            anthropic_model_family="claude-sonnet-4-6",
+        )
+        assert kwargs["model"] == "ep-sonnet"
+        assert kwargs["max_tokens"] == 64_000
+
+    def test_family_hint_drives_haiku_thinking_exclusion(self):
+        kwargs = build_anthropic_kwargs(
+            model="ep-haiku",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+            anthropic_model_family="claude-haiku-4-5",
+        )
+        assert kwargs["model"] == "ep-haiku"
+        assert "thinking" not in kwargs
+        assert "output_config" not in kwargs
+
+    @pytest.mark.parametrize("family", [None, "", "   ", 7])
+    def test_missing_or_invalid_family_preserves_opaque_legacy_behavior(self, family):
+        kwargs = build_anthropic_kwargs(
+            model="ep-legacy",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+            anthropic_model_family=family,
+        )
+        assert kwargs["model"] == "ep-legacy"
+        assert kwargs["thinking"]["type"] == "enabled"
+        assert kwargs["temperature"] == 1
+
+    def test_anthropic_transport_forwards_model_family(self):
+        transport = get_transport("anthropic_messages")
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_kwargs",
+            return_value={"sent": True},
+        ) as builder:
+            result = transport.build_kwargs(
+                model="ep-opus",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+                max_tokens=4096,
+                reasoning_config=None,
+                anthropic_model_family="claude-opus-4-8",
+            )
+        assert result == {"sent": True}
+        assert builder.call_args.kwargs["anthropic_model_family"] == (
+            "claude-opus-4-8"
+        )
+
     def test_fast_mode_oauth_default_omits_context_1m_beta(self):
         """Default OAuth fast-mode avoids context-1m for subscriptions without it."""
         kwargs = build_anthropic_kwargs(

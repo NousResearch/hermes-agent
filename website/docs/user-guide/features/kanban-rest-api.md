@@ -17,13 +17,33 @@ raw event payloads, run metadata/errors/summaries, and unredacted logs are not
 returned. The log endpoint returns only a bounded excerpt after Hermes secret
 redaction and absolute-path removal.
 
-Use the same authentication required by the Hermes dashboard deployment. In
-the examples below, `HERMES_DASHBOARD_TOKEN` represents the bearer credential
-issued for that deployment:
+## Authentication
+
+External controllers authenticate with a dedicated service credential.
+Provision a strong shared secret (at least 43 url-safe-base64 characters,
+e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`) and
+export it as `HERMES_KANBAN_API_SECRET` in the Hermes deployment's
+environment. The bundled `kanban_api` dashboard-auth plugin then accepts
+`Authorization: Bearer <secret>` on every endpoint documented here — on any
+bind, including gated (non-loopback) deployments where the rest of the
+dashboard requires a cookie session. A weak or short secret is rejected at
+startup (fail-closed) and the credential stays disabled.
+
+The credential is scoped to this API only: it cannot drive other service
+surfaces (for example gateway drain control), and other service credentials
+cannot drive this one. It also cannot open the interactive dashboard's own
+API under `/api/plugins/kanban/dashboard`.
+
+Note that once the secret is set, this external surface accepts *only* the
+service credential — the dashboard session token no longer authenticates
+here, even on a loopback bind. Without `HERMES_KANBAN_API_SECRET` the
+surface falls back to dashboard-session auth (loopback: the SPA session
+token; gated: a cookie session), which no headless external controller can
+use — so set the secret for any real integration.
 
 ```bash
 export HERMES_URL="http://127.0.0.1:9119"
-export AUTH="Authorization: Bearer $HERMES_DASHBOARD_TOKEN"
+export AUTH="Authorization: Bearer $HERMES_KANBAN_API_SECRET"
 ```
 
 ## Endpoints

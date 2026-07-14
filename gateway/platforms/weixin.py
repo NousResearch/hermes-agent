@@ -1335,7 +1335,8 @@ class WeixinAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     async def _poll_loop(self) -> None:
-        assert self._poll_session is not None
+        if self._poll_session is None:
+            raise RuntimeError("poll_session not initialised")
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
         timeout_ms = LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
@@ -1401,7 +1402,8 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.error("[%s] unhandled inbound error from=%s: %s", self.name, _safe_id(message.get("from_user_id")), exc, exc_info=True)
 
     async def _process_message(self, message: Dict[str, Any]) -> None:
-        assert self._poll_session is not None
+        if self._poll_session is None:
+            raise RuntimeError("poll_session not initialised")
         sender_id = str(message.get("from_user_id") or "").strip()
         if not sender_id:
             return
@@ -1833,7 +1835,8 @@ class WeixinAdapter(BasePlatformAdapter):
                 )
                 if wait > 0:
                     await asyncio.sleep(wait)
-        assert last_error is not None
+        if last_error is None:
+            raise RuntimeError("retry loop completed without capturing error")
         raise last_error
 
     async def send(
@@ -2088,7 +2091,8 @@ class WeixinAdapter(BasePlatformAdapter):
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
-        assert self._send_session is not None
+        if self._send_session is None:
+            raise RuntimeError("send_session not initialised")
         # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
         # "Timeout context manager should be used inside a task" errors.
         async def _do_fetch():
@@ -2108,7 +2112,8 @@ class WeixinAdapter(BasePlatformAdapter):
         caption: str,
         force_file_attachment: bool = False,
     ) -> str:
-        assert self._send_session is not None and self._token is not None
+        if self._send_session is None or self._token is None:
+            raise RuntimeError("send_session or token not initialised")
         plaintext = Path(path).read_bytes()
         media_type, item_builder = self._outbound_media_builder(path, force_file_attachment=force_file_attachment)
         filekey = secrets.token_hex(16)

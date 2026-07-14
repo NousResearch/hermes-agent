@@ -374,9 +374,9 @@ class TestQQWebSocketProxy:
     async def test_open_ws_no_proxy_matches_actual_gateway_host(self, monkeypatch):
         """NO_PROXY matching the *dialed* gateway host bypasses the proxy.
 
-        The bypass decision must consider the hostname of the gateway URL
-        actually being connected, not only the static QQ_PROXY_TARGET_HOSTS
-        list — Tencent may return a gateway host outside that list.
+        The bypass decision is made against the hostname of the gateway URL
+        actually being connected — Tencent may return a gateway host outside
+        the well-known QQ domains, and suffix entries still match it.
         """
         from gateway.platforms.qqbot import QQAdapter
 
@@ -440,23 +440,69 @@ class TestQQWebSocketProxy:
         assert "supersecret" not in caplog.text
         assert "127.0.0.1:7897" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_open_ws_unrelated_no_proxy_entry_still_proxies(self, monkeypatch):
+        """A NO_PROXY entry not matching the dialed gateway host keeps the proxy.
+
+        Standard NO_PROXY semantics evaluate the host actually being
+        connected. ``NO_PROXY=bots.qq.com`` (the REST token host) must not
+        bypass the proxy for a WebSocket to ``api.sgroup.qq.com``.
+        """
+        from gateway.platforms.qqbot import QQAdapter
+
+        for key in (
+            "WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy",
+            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("NO_PROXY", "bots.qq.com")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        seen_ws_kwargs = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return mock.AsyncMock(closed=False)
+
+        with mock.patch("gateway.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
+            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+
+        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
+
 
 class TestQQHttpClientProxy:
-    """Verify connect() wires the resolved proxy into httpx.AsyncClient.
+    """Guard: connect() must not set a client-level proxy on the REST client.
 
-    These tests assert on the actual constructor kwargs (same pattern as
-    ``test_connect_uses_redirect_guard_hook``) so a regression in the
-    adapter wiring — not just in the shared helper — fails the suite.
+    The shared ``httpx.AsyncClient`` also fetches non-QQ hosts (attachment
+    CDNs, configurable STT endpoints). A client-level ``proxy=`` preempts
+    httpx's per-request env handling, so a ``NO_PROXY`` entry for one of
+    those hosts would be silently overridden. REST proxy behavior comes
+    from httpx's own env semantics instead.
     """
 
-    def _connect_and_capture_kwargs(self, app_id):
+    def test_http_client_gets_no_explicit_proxy(self, monkeypatch):
         from gateway.platforms.qqbot import QQAdapter
+
+        for key in (
+            "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
 
         client = mock.AsyncMock()
         with mock.patch(
             "gateway.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client
         ) as async_client_cls:
-            adapter = QQAdapter(_make_config(app_id=app_id, client_secret="b"))
+            adapter = QQAdapter(_make_config(app_id="rest-env-1", client_secret="b"))
             adapter._ensure_token = mock.AsyncMock(
                 side_effect=RuntimeError("stop after client creation")
             )
@@ -464,47 +510,7 @@ class TestQQHttpClientProxy:
 
         assert connected is False
         assert async_client_cls.call_count == 1
-        return async_client_cls.call_args.kwargs
-
-    def test_http_client_uses_resolved_proxy_and_keeps_trust_env(self, monkeypatch):
-        """Helper resolves a proxy → passed explicitly; trust_env stays True.
-
-        ``trust_env=True`` must be preserved: httpx gates SSL_CERT_FILE /
-        SSL_CERT_DIR handling behind it, so flipping it off would break
-        operators behind corporate MITM proxies with a custom CA. An explicit
-        ``proxy=`` already preempts env proxies in httpx, so keeping
-        trust_env on does not undermine the helper's decision.
-        """
-        for key in (
-            "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
-            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
-        ):
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
-
-        kwargs = self._connect_and_capture_kwargs("proxy-wiring-1")
-        assert kwargs.get("proxy") == "http://127.0.0.1:7897"
-        assert kwargs.get("trust_env") is True
-
-    def test_http_client_defers_to_env_when_no_proxy_matches(self, monkeypatch):
-        """NO_PROXY matches QQ hosts → no explicit proxy; trust_env stays True.
-
-        With ``proxy=None`` and ``trust_env=True`` httpx applies per-request
-        env semantics: QQ hosts connect directly (httpx honors NO_PROXY),
-        while non-QQ hosts the same client fetches (media CDNs like
-        ``qpic.cn``) keep going through HTTPS_PROXY.
-        """
-        for key in (
-            "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
-            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
-        ):
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
-        monkeypatch.setenv("NO_PROXY", ".qq.com")
-
-        kwargs = self._connect_and_capture_kwargs("proxy-wiring-2")
-        assert kwargs.get("proxy") is None
-        assert kwargs.get("trust_env") is True
+        assert "proxy" not in async_client_cls.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------

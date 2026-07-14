@@ -212,6 +212,11 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
 
         cleaned = _sanitize_pasted_input(value)
         return cleaned.strip() or default or ""
+    except RuntimeError as e:
+        # Secret prompt requires TTY — provide actionable guidance
+        print()
+        print_error(str(e))
+        sys.exit(1)
     except (KeyboardInterrupt, EOFError):
         print()
         sys.exit(1)

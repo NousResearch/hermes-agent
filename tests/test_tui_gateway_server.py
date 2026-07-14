@@ -424,6 +424,43 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "risk-test",
+        {"tool_progress_mode": "all"},
+    )
+
+    server._on_tool_progress(
+        "risk-test",
+        "tool.output_risk",
+        "web_extract",
+        tool_call_id="tool-1",
+        risk_metadata={
+            "risk": "high",
+            "findings": ["prompt_injection"],
+            "redacted": False,
+        },
+    )
+
+    assert events == [(
+        "tool.output_risk",
+        "risk-test",
+        {
+            "tool_id": "tool-1",
+            "name": "web_extract",
+            "risk": "high",
+            "findings": ["prompt_injection"],
+            "redacted": False,
+        },
+    )]
+    assert "result" not in events[0][2]
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 
@@ -2738,6 +2775,95 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
     )
     assert resp_off["result"]["value"] == "0"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
+
+
+def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"approvals": {"timeout": 15}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
+    )
+    assert response["result"]["value"] == "smart"
+
+
+def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"approvals": {"mode": "sometimes"}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
+    )
+    assert response["result"]["value"] == "manual"
+
+
+def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"approvals": {"mode": False}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
+    )
+    assert response["result"]["value"] == "off"
+
+
+def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    server._sessions["sid"] = {"agent": object(), "session_key": "profile-session"}
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"key": "approvals.mode", "value": "manual"},
+            }
+        )
+    finally:
+        server._sessions.clear()
+
+    assert resp["result"] == {"key": "approvals.mode", "value": "manual"}
+    assert yaml.safe_load((tmp_path / "config.yaml").read_text())["approvals"]["mode"] == "manual"
+    assert emitted and emitted[0][0:2] == ("session.info", "sid")
+    assert emitted[0][2]["approval_mode"] == "manual"
+
+
+def test_desktop_contract_includes_approval_mode_rpc():
+    assert server.DESKTOP_BACKEND_CONTRACT >= 3
+
+
+def test_config_set_approval_mode_rejects_unknown_value():
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "approvals.mode", "value": "sometimes"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4002
 
 
 def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):

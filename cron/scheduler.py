@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -237,7 +238,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -2213,7 +2214,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR
+        from cron.jobs import get_cron_output_dir
+        output_dir = get_cron_output_dir()
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
@@ -2228,7 +2230,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 continue
             try:
-                job_output_dir = OUTPUT_DIR / source_job_id
+                job_output_dir = output_dir / source_job_id
                 if not job_output_dir.exists():
                     continue  # silent skip — no output yet
                 output_files = sorted(
@@ -2615,10 +2617,68 @@ def run_job(
 
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
+    #
+    # Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which
+    # only watches the agent's run_conversation below): SessionDB.__init__
+    # opens/migrates state.db synchronously and has no timeout of its own
+    # against a wedged sqlite3.connect (e.g. a stale flock left by a crashed
+    # sibling process). An unbounded hang here is invisible to every other
+    # cron safeguard, because it happens BEFORE _submit_with_guard's future
+    # exists — the finally block that releases the job from
+    # _running_job_ids never runs, so the job stays wedged "running" until
+    # the whole gateway process is restarted, silently skipping every
+    # scheduled fire in between with "already running — skipping".
     _session_db = None
     try:
         from hermes_state import SessionDB
-        _session_db = SessionDB()
+
+        # Resolve timeout: env override → config.yaml → default 10s.
+        # Mirrors the script_timeout_seconds resolution pattern.
+        _session_db_timeout: float | None = None
+        _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+        if _raw_env_timeout:
+            try:
+                _session_db_timeout = float(_raw_env_timeout)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                    _raw_env_timeout,
+                )
+        if _session_db_timeout is None:
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config() or {}
+                _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
+                _configured = _cron_cfg.get("session_db_timeout_seconds")
+                if _configured is not None:
+                    _session_db_timeout = float(_configured)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load cron.session_db_timeout_seconds from config: %s",
+                    exc,
+                )
+        if _session_db_timeout is None:
+            _session_db_timeout = 10.0
+
+        if _session_db_timeout > 0:
+            _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+            finally:
+                # Don't wait for a wedged connect() to unwind — abandon the
+                # worker thread (same pattern as the agent inactivity timeout
+                # further down) rather than blocking shutdown on it too.
+                _session_db_pool.shutdown(wait=False)
+        else:
+            # 0 = unlimited (legacy behavior, opt-in for debugging)
+            _session_db = SessionDB()
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
+            "without a session store for this run instead of blocking it "
+            "forever",
+            job.get("id", "?"), _session_db_timeout,
+        )
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
@@ -3096,6 +3156,39 @@ def run_job(
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
+        # Keep the one-shot run_claim fresh while the run is alive (#62002):
+        # the claim TTL is a dead-owner detector, but without a heartbeat a
+        # run that legitimately outlives it (stream stall, laptop asleep
+        # mid-run) is indistinguishable from a dead tick — another process
+        # re-dispatches it and get_due_jobs stale-removes the job record out
+        # from under the live run. Refreshing the claim from this monitor
+        # keeps "expired claim" meaning "owner died".
+        _job_schedule = job.get("schedule")
+        _is_oneshot = (
+            isinstance(_job_schedule, dict) and _job_schedule.get("kind") == "once"
+        )
+        _run_claim = job.get("run_claim")
+        _run_claim_owner = (
+            str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
+        )
+        _CLAIM_HEARTBEAT_SECONDS = 60.0
+        _last_claim_heartbeat = time.monotonic()
+
+        def _heartbeat_run_claim_if_due():
+            nonlocal _last_claim_heartbeat
+            if not _is_oneshot or not _run_claim_owner:
+                return
+            _mono = time.monotonic()
+            if _mono - _last_claim_heartbeat < _CLAIM_HEARTBEAT_SECONDS:
+                return
+            _last_claim_heartbeat = _mono
+            try:
+                heartbeat_run_claim(job_id, expected_owner=_run_claim_owner)
+            except Exception:
+                logger.debug(
+                    "Job '%s': run_claim heartbeat failed", job_name, exc_info=True
+                )
+
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
@@ -3105,8 +3198,20 @@ def run_job(
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
-                result = _cron_future.result()
+                # Unlimited — no inactivity watchdog, but a one-shot still
+                # needs its run_claim heartbeat, so poll instead of blocking.
+                if _is_oneshot:
+                    result = None
+                    while True:
+                        done, _ = concurrent.futures.wait(
+                            {_cron_future}, timeout=_POLL_INTERVAL,
+                        )
+                        if done:
+                            result = _cron_future.result()
+                            break
+                        _heartbeat_run_claim_if_due()
+                else:
+                    result = _cron_future.result()
             else:
                 result = None
                 while True:
@@ -3116,6 +3221,7 @@ def run_job(
                     if done:
                         result = _cron_future.result()
                         break
+                    _heartbeat_run_claim_if_due()
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
@@ -3509,7 +3615,14 @@ def _notify_provider_jobs_changed() -> None:
         logger.debug("on_jobs_changed notify failed: %s", e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
+def tick(
+    verbose: bool = True,
+    adapters=None,
+    loop=None,
+    sync: bool = True,
+    *,
+    can_dispatch=None,
+):
     """
     Check and run all due jobs.
     
@@ -3520,7 +3633,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+        can_dispatch: Optional synchronous gate; false leaves due jobs untouched
+            for the next allowed tick
+
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
@@ -3542,6 +3657,10 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
+        if can_dispatch is not None and not can_dispatch():
+            logger.debug("Cron dispatch paused while gateway drains existing work")
+            return 0
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:

@@ -8,7 +8,9 @@ Enhanced with UI-UX-PRO-MAX design intelligence.
 
 import json
 import datetime
+import secrets
 from typing import Any, Dict, List
+from urllib.parse import quote
 
 # --- Icons (Lucide-style SVGs) ---
 ICON_USER = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
@@ -26,6 +28,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'">
     <title>{page_title}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -566,13 +569,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <script>
+    <script nonce="{script_nonce}">
         // Session Switching
         function showSession(id) {{
             // Update Sidebar
-            document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
-            const activeItem = document.querySelector(`.session-item[data-id="${{id}}"]`);
-            if (activeItem) activeItem.classList.add('active');
+            document.querySelectorAll('.session-item').forEach(el => {{
+                el.classList.toggle('active', el.dataset.id === id);
+            }});
 
             // Update View
             document.querySelectorAll('.session-view').forEach(el => {{
@@ -582,8 +585,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             if (activeView) activeView.classList.add('active');
 
             // Store in URL hash
-            window.location.hash = id;
+            window.location.hash = encodeURIComponent(id);
         }}
+
+        document.querySelectorAll('.session-item').forEach(item => {{
+            item.addEventListener('click', (e) => {{
+                e.preventDefault();
+                showSession(item.dataset.id || '');
+            }});
+        }});
 
         // Search Filter
         const searchInput = document.getElementById('session-search');
@@ -611,7 +621,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         // Initialization
         window.addEventListener('load', () => {{
-            const hash = window.location.hash.slice(1);
+            const hash = decodeURIComponent(window.location.hash.slice(1));
             if (hash) {{
                 showSession(hash);
             }} else {{
@@ -682,8 +692,16 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
                     content_parts.append(str(part))
             content = "\n".join(content_parts)
 
-        # Build message HTML
-        msg_class = f"message message-{role} active"
+        # Build message HTML. The role feeds two sinks and for tool/MCP messages
+        # is externally influenced, so treat each sink on its own terms:
+        #  - display text: HTML-escape (prevents markup/JS injection).
+        #  - class attribute: reduce to a single safe CSS token (alnum/-/_),
+        #    so a crafted role can neither break out of the attribute nor split
+        #    into several unintended classes. Real roles (user/assistant/system/
+        #    tool) are unchanged, so the `.message-<role>` rules still match.
+        safe_role = _escape_html(role)
+        role_class = "".join(c if c.isalnum() or c in "-_" else "-" for c in str(role).lower())
+        msg_class = f"message message-{role_class} active"
         # Delay animation for initial items
         delay_style = f' style="animation-delay: {min(i * 0.05, 1.0)}s"' if i < 10 else ""
         
@@ -691,7 +709,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
         
         html = f'<div class="{msg_class}"{delay_style}>'
         html += f'  <div class="message-header">'
-        html += f'    <div class="role-badge">{chevron_html} {role_icon} {role}</div>'
+        html += f'    <div class="role-badge">{chevron_html} {role_icon} {safe_role}</div>'
         html += f'    <div class="timestamp">{timestamp}</div>'
         html += '  </div>'
         html += '  <div class="message-body">'
@@ -706,7 +724,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
                 <div class="tool-call">
                     <div class="tool-call-header">
                         {ICON_CHEVRON_RIGHT.replace('class="', 'class="chevron ')}
-                        {ICON_WRENCH} Tool Call: {fn_name}
+                        {ICON_WRENCH} Tool Call: {_escape_html(fn_name)}
                     </div>
                     <div class="tool-call-content">
                         <pre><code>{_escape_html(args)}</code></pre>
@@ -753,16 +771,17 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
     if is_multi:
         sidebar_items = []
         for s in sessions:
-            sid = s.get("id", "N/A")
+            sid = str(s.get("id", "N/A"))
+            escaped_sid = _escape_html(sid)
             title = s.get("title") or s.get("preview") or "Untitled Session"
             if len(title) > 50: title = title[:47] + "..."
             date = _format_timestamp(s.get("started_at", 0)).split(" ")[0]
             
             item = f'''
-            <a class="session-item" data-id="{sid}" onclick="showSession('{sid}')">
+            <a class="session-item" data-id="{escaped_sid}" href="#{quote(sid, safe='')}">
                 <div class="session-item-title">{_escape_html(title)}</div>
                 <div class="session-item-meta">
-                    <span>{sid[:8]}</span>
+                    <span>{_escape_html(sid[:8])}</span>
                     <span>{date}</span>
                 </div>
             </a>
@@ -789,7 +808,8 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
     # Main Content
     sessions_html_list = []
     for s in sessions:
-        sid = s.get("id", "N/A")
+        sid = str(s.get("id", "N/A"))
+        escaped_sid = _escape_html(sid)
         title = s.get("title") or "Hermes Session"
         model = s.get("model", "Unknown")
         started_at = _format_timestamp(s.get("started_at", 0))
@@ -800,7 +820,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         view_class = "session-view"
         if not is_multi: view_class += " active"
         
-        session_view_id = f"view-{sid}"
+        session_view_id = f"view-{escaped_sid}"
         
         system_prompt = s.get("system_prompt")
         system_html = ""
@@ -822,7 +842,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
             <header class="fade-in">
                 <h1>{_escape_html(title)}</h1>
                 <div class="meta">
-                    <div class="meta-item"><strong>ID:</strong> {sid}</div>
+                    <div class="meta-item"><strong>ID:</strong> {escaped_sid}</div>
                     <div class="meta-item"><strong>Model:</strong> {_escape_html(model)}</div>
                     <div class="meta-item"><strong>Started:</strong> {started_at}</div>
                 </div>
@@ -835,13 +855,15 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         '''
         sessions_html_list.append(session_html)
 
+    script_nonce = secrets.token_urlsafe(16)
     return HTML_TEMPLATE.format(
         page_title="Hermes Session Export" if is_multi else _escape_html(sessions[0].get("title", "Hermes Session")),
         sidebar_html=sidebar_html,
         sessions_html="\n".join(sessions_html_list),
         main_margin="var(--sidebar-width)" if is_multi else "0",
         layout_class="layout-multi" if is_multi else "layout-single",
-        generated_at=generated_at
+        generated_at=generated_at,
+        script_nonce=script_nonce,
     )
 
 def generate_html_export(session_data: Dict[str, Any]) -> str:

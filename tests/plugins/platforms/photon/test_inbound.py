@@ -169,6 +169,56 @@ async def test_dispatch_attachment_downloads_image(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_group_preserves_text_and_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spectrum group content from a mixed text+image iMessage must not drop text."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    raw = base64.b64decode(_PNG_1X1_B64)
+
+    event = _attachment_event(
+        {},
+        msg_id="spc-msg-mixed",
+    )
+    event["content"] = {
+        "type": "group",
+        "items": [
+            {
+                "id": "p:0/spc-msg-mixed",
+                "content": {"type": "text", "text": "请分析这张图的重点"},
+            },
+            {
+                "id": "p:1/spc-msg-mixed",
+                "content": {
+                    "type": "attachment",
+                    "name": "photo.png",
+                    "mimeType": "image/png",
+                    "size": len(raw),
+                    "data": _PNG_1X1_B64,
+                    "encoding": "base64",
+                },
+            },
+        ],
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.text == "请分析这张图的重点"
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_types == ["image/png"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.read_bytes() == raw
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
 async def test_dispatch_voice_downloads_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -290,6 +340,20 @@ def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     assert adapter._is_duplicate("id-1") is True
     assert adapter._is_duplicate("id-2") is False
     assert adapter._is_duplicate("id-1") is True  # still dup
+
+
+def test_is_duplicate_hard_size_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A burst of unique ids within the window must not grow the dedup map past
+    # its bound — evict oldest (LRU), not only expired entries.
+    import plugins.platforms.photon.adapter as ad
+
+    monkeypatch.setattr(ad, "_DEDUP_MAX_SIZE", 5)
+    adapter = _make_adapter(monkeypatch)
+    for i in range(100):
+        adapter._is_duplicate(f"id-{i}")
+    assert len(adapter._seen_messages) <= 5
+    assert adapter._is_duplicate("id-99") is True  # recent still deduped
+    assert adapter._is_duplicate("id-0") is False  # oldest evicted
 
 
 def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> None:

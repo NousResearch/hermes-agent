@@ -31,6 +31,12 @@ def _is_deepseek_thinking_model(model: str | None) -> bool:
     return m == "deepseek-reasoner"
 
 
+def _is_glm_5_2_model(model: str | None) -> bool:
+    """Detect GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
+    m = _flat_model_name(model)
+    return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+
+
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
@@ -55,6 +61,21 @@ class OpenCodeGoProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 
+        if _is_glm_5_2_model(model):
+            # GLM-5.2 on OpenCode Go uses its native OpenAI-compatible
+            # reasoning_effort knob, which has exactly two enabled levels:
+            # high and max. Map Hermes' richer scale onto those; leave the
+            # server default alone when reasoning is disabled or unset.
+            if not isinstance(reasoning_config, dict):
+                return extra_body, top_level
+            if reasoning_config.get("enabled") is False:
+                return extra_body, top_level
+            effort = (reasoning_config.get("effort") or "").strip().lower()
+            if not effort or effort == "none":
+                return extra_body, top_level
+            top_level["reasoning_effort"] = "max" if effort in {"xhigh", "max", "ultra"} else "high"
+            return extra_body, top_level
+
         if _is_kimi_k2_model(model):
             # Kimi K2 on OpenCode Go uses Moonshot's native wire shape:
             # extra_body.thinking (binary toggle) + top-level reasoning_effort
@@ -69,7 +90,7 @@ class OpenCodeGoProfile(ProviderProfile):
                 return extra_body, top_level
 
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max"}:
+            if effort in {"xhigh", "max", "ultra"}:
                 top_level["reasoning_effort"] = "high"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
@@ -93,7 +114,7 @@ class OpenCodeGoProfile(ProviderProfile):
 
         if isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max"}:
+            if effort in {"xhigh", "max", "ultra"}:
                 top_level["reasoning_effort"] = "max"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort

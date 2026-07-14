@@ -353,6 +353,14 @@ async def search_sessions(
                 source_filter=include_sources,
                 exclude_sources=exclude_list or None,
                 limit=fetch_limit,
+                fields=(
+                    "session_id",
+                    "role",
+                    "snippet",
+                    "source",
+                    "model",
+                    "session_started",
+                ),
             )
 
             for m in matches:

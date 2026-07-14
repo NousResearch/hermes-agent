@@ -656,8 +656,26 @@ class TestFTS5Search:
         assert isinstance(results[0]["context"], list)
         assert len(results[0]["context"]) > 0
 
+    def test_search_fields_project_results_without_changing_default(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Tell me about Kubernetes")
+        db.append_message("s1", role="assistant", content="Kubernetes is an orchestrator.")
 
+        projected = db.search_messages(
+            "Kubernetes", fields=("session_id", "role", "snippet")
+        )
+        default = db.search_messages("Kubernetes")
 
+        assert len(projected) == len(default) == 2
+        assert all(set(row) == {"session_id", "role", "snippet"} for row in projected)
+        assert [
+            (row["session_id"], row["role"], row["snippet"])
+            for row in projected
+        ] == [
+            (row["session_id"], row["role"], row["snippet"])
+            for row in default
+        ]
+        assert all("context" in row and row["context"] for row in default)
 
 
 

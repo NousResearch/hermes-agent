@@ -14,9 +14,8 @@ interface StatsProps extends ComponentProps<"div"> {
 /**
  * Dashboard Stats adapter.
  *
- * The shared design-system component renders its visual dot leader as text.
- * Mark that decorative separator hidden so accessibility tools do not treat
- * deliberately faint ornamentation as readable content.
+ * Render the visual dot leader as a CSS border instead of repeated text so it
+ * is decorative by construction and cannot be mistaken for readable content.
  */
 export function Stats({ className, items, flip, ...props }: StatsProps) {
   return (
@@ -45,13 +44,10 @@ export function Stats({ className, items, flip, ...props }: StatsProps) {
           >
             {flip ? labelText : valueText}
 
-            <Typography
+            <span
               aria-hidden="true"
-              className="min-w-0 overflow-hidden text-[13px] leading-[1.4] tracking-[0.4em] opacity-20"
-              expanded
-            >
-              {"·".repeat(100)}
-            </Typography>
+              className="min-w-0 border-b border-dotted border-current opacity-20"
+            />
 
             {flip ? valueText : labelText}
           </div>

@@ -495,6 +495,8 @@ export default function App() {
       </div>
 
       <div
+        role="region"
+        aria-label={t.app.brand}
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",

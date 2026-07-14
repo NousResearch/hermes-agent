@@ -105,7 +105,7 @@ function generateChannelId(scope?: string): string {
 // theme, because the TUI's skin engine already paints the content; the
 // terminal chrome just needs to sit quietly inside the dashboard.
 const DEFAULT_TERMINAL_BACKGROUND = "#000000";
-const DEFAULT_TERMINAL_FOREGROUND = "#f0e6d2";
+const DEFAULT_TERMINAL_FOREGROUND = "#fff8e7";
 
 function buildTerminalTheme(background: string, foreground: string) {
   return {
@@ -470,6 +470,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       letterSpacing: 0,
       fontWeight: "400",
       fontWeightBold: "700",
+      minimumContrastRatio: 4.5,
       macOptionIsMeta: true,
       // Hold Option (Alt on Linux/Windows) to force native text selection
       // even when the inner Hermes TUI has enabled xterm mouse-events

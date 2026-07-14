@@ -181,7 +181,7 @@ export interface DashboardTheme {
    *  Hex string. Defaults to `"#000000"` when absent. */
   terminalBackground?: string;
   /** Default text/cursor color for the embedded terminal pane (xterm.js).
-   *  Hex string. Defaults to `"#f0e6d2"` when absent. */
+   *  Hex string. Defaults to `"#fff8e7"` when absent. */
   terminalForeground?: string;
 }
 

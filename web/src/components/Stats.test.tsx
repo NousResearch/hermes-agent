@@ -10,6 +10,8 @@ describe("Stats", () => {
     );
 
     expect(markup).toContain('aria-hidden="true"');
+    expect(markup).toContain("border-dotted");
+    expect(markup).not.toContain("·");
     expect(markup).toContain("Sessions");
     expect(markup).toContain(">3<");
   });

@@ -153,20 +153,40 @@ def whoami() -> dict:
         raise
 
 
+def _fetch_input_schema(agent_id: str) -> dict:
+    """GET the agent's input schema, retrying once on a transient server
+    failure (observed live: intermittent 422 'Failed to parse input schema'
+    that succeeds on immediate retry)."""
+    try:
+        return request("GET", f"agents/{agent_id}/input-schema")
+    except ApiError as err:
+        if err.status in (422, 500, 502, 503):
+            return request("GET", f"agents/{agent_id}/input-schema")
+        raise
+
+
 def hire(agent_id: str, input_data: dict, max_credits: float | None,
          name: str | None, task_id: str | None = None) -> dict:
     """Hire an agent. The API requires inputSchema echoed verbatim from
     GET /agents/{id}/input-schema; inputData is keyed by schema field id."""
-    schema = request("GET", f"agents/{agent_id}/input-schema")
-    body: dict = {"inputSchema": schema, "inputData": input_data}
+    body: dict = {"inputSchema": _fetch_input_schema(agent_id), "inputData": input_data}
     if max_credits is not None:
         body["maxCredits"] = max_credits
     if name:
         body["name"] = name
+    path = f"agents/{agent_id}/jobs"
     if task_id:
         body["agentId"] = agent_id
-        return request("POST", f"tasks/{task_id}/jobs", body=body)
-    return request("POST", f"agents/{agent_id}/jobs", body=body)
+        path = f"tasks/{task_id}/jobs"
+    try:
+        return request("POST", path, body=body)
+    except ApiError as err:
+        if err.status == 422:
+            # The stored schema may have changed between fetch and post; a 422
+            # creates no job, so refetch once and retry.
+            body["inputSchema"] = _fetch_input_schema(agent_id)
+            return request("POST", path, body=body)
+        raise
 
 
 def wait(kind: str, item_id: str, interval: int, timeout: int, out=None) -> int:

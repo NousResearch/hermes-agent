@@ -171,6 +171,9 @@ waiting for input.
 - 401 means bad key or wrong environment (mainnet vs preprod keys are
   separate). Never echo the key back; point the user at
   https://app.sokosumi.com/connections.
+- `input-schema` can transiently return a server 422 ("Failed to parse input
+  schema"); the helper retries the fetch once, and on a 422 hire rejection it
+  refetches the schema and retries the POST once (a 422 creates no job).
 - A bare `sokosumi` command opens the interactive Ink TUI; if using the CLI,
   always pass a subcommand plus `--json`.
 - Do not send user secrets, private data, or proprietary material in

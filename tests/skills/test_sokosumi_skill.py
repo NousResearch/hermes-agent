@@ -296,6 +296,54 @@ class TestHire:
         assert body["agentId"] == "agent_123"
         assert "maxCredits" not in body and "name" not in body
 
+    def test_transient_schema_fetch_422_retried_once(self, monkeypatch):
+        # Observed live on preprod: GET input-schema intermittently 422s and
+        # succeeds on immediate retry.
+        fake = transport(
+            monkeypatch,
+            [
+                http_error(422, {"message": "Failed to parse input schema"}),
+                envelope(INPUT_SCHEMA),
+                envelope(job_fixture(status="started", result=None)),
+            ],
+        )
+        api.hire("agent_123", {"question": "q"}, None, None)
+        assert len(fake.requests) == 3
+        assert fake.requests[1].full_url.endswith("/v1/agents/agent_123/input-schema")
+
+    def test_post_422_refetches_schema_and_retries_once(self, monkeypatch):
+        changed_schema = {"input_data": [{"id": "question_v2", "type": "string",
+                                          "name": "Question", "data": None,
+                                          "validations": []}]}
+        fake = transport(
+            monkeypatch,
+            [
+                envelope(INPUT_SCHEMA),
+                http_error(422, {"message": "input schema mismatch"}),
+                envelope(changed_schema),
+                envelope(job_fixture(status="started", result=None)),
+            ],
+        )
+        api.hire("agent_123", {"question_v2": "q"}, None, None)
+        assert len(fake.requests) == 4
+        retry_body = json.loads(fake.requests[3].data.decode("utf-8"))
+        assert retry_body["inputSchema"] == changed_schema
+
+    def test_post_422_twice_raises(self, monkeypatch):
+        fake = transport(
+            monkeypatch,
+            [
+                envelope(INPUT_SCHEMA),
+                http_error(422, {"message": "invalid input"}),
+                envelope(INPUT_SCHEMA),
+                http_error(422, {"message": "invalid input"}),
+            ],
+        )
+        with pytest.raises(api.ApiError) as exc:
+            api.hire("agent_123", {"wrong_field": "q"}, None, None)
+        assert exc.value.status == 422
+        assert len(fake.requests) == 4
+
 
 # ── wait(): terminal detection across both vocabularies ────────────────────
 

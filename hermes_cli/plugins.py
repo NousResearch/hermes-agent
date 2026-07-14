@@ -48,7 +48,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, load_config_readonly
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 
 
@@ -473,8 +473,14 @@ class PluginContext:
 
     # -- message injection --------------------------------------------------
 
-    def inject_message(self, content: str, role: str = "user") -> bool:
-        """Inject a message into the active conversation.
+    def inject_message(
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        session_key: str | None = None,
+    ) -> bool:
+        """Inject a message into a CLI or gateway conversation.
 
         If the agent is idle (waiting for user input), this starts a new turn.
         If the agent is running, this interrupts and injects the message.
@@ -482,22 +488,80 @@ class PluginContext:
         This enables plugins (e.g. remote control viewers, messaging bridges)
         to send messages into the conversation from external sources.
 
+        Gateway injection requires an existing ``session_key`` and an explicit
+        ``plugins.entries.<plugin_id>.allow_gateway_injection`` config grant.
+        A ``True`` return means the live gateway accepted the request for
+        asynchronous dispatch, not that platform delivery has completed.
+
         Returns True if the message was queued successfully.
         """
         cli = self._manager._cli_ref
-        if cli is None:
-            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
-            return False
-
         msg = content if role == "user" else f"[{role}] {content}"
 
-        if getattr(cli, "_agent_running", False):
-            # Agent is mid-turn — interrupt with the message
-            cli._interrupt_queue.put(msg)
-        else:
-            # Agent is idle — queue as next input
-            cli._pending_input.put(msg)
-        return True
+        if cli is not None:
+            if getattr(cli, "_agent_running", False):
+                # Agent is mid-turn - interrupt with the message
+                cli._interrupt_queue.put(msg)
+            else:
+                # Agent is idle - queue as next input
+                cli._pending_input.put(msg)
+            return True
+
+        if not session_key:
+            logger.warning(
+                "inject_message: gateway mode requires an existing session_key"
+            )
+            return False
+        if not self._gateway_injection_allowed():
+            plugin_id = self.manifest.key or self.manifest.name
+            logger.warning(
+                "inject_message: gateway injection denied for plugin %s; set "
+                "plugins.entries.%s.allow_gateway_injection: true to allow it",
+                plugin_id,
+                plugin_id,
+            )
+            return False
+
+        if not self._manager.has_gateway_message_injector:
+            logger.warning("inject_message: no live gateway is available")
+            return False
+
+        plugin_id = self.manifest.key or self.manifest.name
+        try:
+            return bool(
+                self._manager.inject_gateway_message(
+                    session_key=session_key,
+                    content=msg,
+                    plugin_id=plugin_id,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "inject_message: gateway scheduling failed for plugin %s",
+                plugin_id,
+                exc_info=True,
+            )
+            return False
+
+    def _gateway_injection_allowed(self) -> bool:
+        """Return whether this plugin may trigger gateway session turns."""
+        try:
+            cfg = load_config_readonly() or {}
+        except Exception:
+            return False
+
+        plugin_id = self.manifest.key or self.manifest.name
+        return (
+            cfg_get(
+                cfg,
+                "plugins",
+                "entries",
+                plugin_id,
+                "allow_gateway_injection",
+                default=False,
+            )
+            is True
+        )
 
     # -- CLI command registration --------------------------------------------
 
@@ -1259,6 +1323,7 @@ class PluginManager:
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
+        self._gateway_message_injector: tuple[object, Callable] | None = None
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         # Plugin-registered auxiliary tasks: key → {key, display_name,
@@ -1275,6 +1340,32 @@ class PluginManager:
     # -----------------------------------------------------------------------
     # Public
     # -----------------------------------------------------------------------
+
+    @property
+    def has_gateway_message_injector(self) -> bool:
+        """Return whether a live gateway can accept plugin-triggered turns."""
+        return self._gateway_message_injector is not None
+
+    def set_gateway_message_injector(
+        self,
+        owner: object,
+        injector: Callable[..., bool],
+    ) -> None:
+        """Publish a live gateway injector and its lifecycle owner."""
+        self._gateway_message_injector = (owner, injector)
+
+    def clear_gateway_message_injector(self, owner: object) -> None:
+        """Clear the injector only when it still belongs to ``owner``."""
+        registered = self._gateway_message_injector
+        if registered is not None and registered[0] is owner:
+            self._gateway_message_injector = None
+
+    def inject_gateway_message(self, **kwargs: Any) -> bool:
+        """Submit a plugin-triggered turn to the live gateway."""
+        registered = self._gateway_message_injector
+        if registered is None:
+            return False
+        return bool(registered[1](**kwargs))
 
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found.

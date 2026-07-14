@@ -7342,6 +7342,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._wire_teams_pipeline_runtime()
 
         self._running = True
+        self._install_plugin_message_injector()
         self._update_runtime_status("running")
         
         # Emit gateway:startup hook
@@ -8214,6 +8215,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return time.monotonic() - _stop_started_at
 
             self._running = False
+            self._clear_plugin_message_injector()
             self._draining = True
 
             # Notify all chats with active agents BEFORE draining.
@@ -10855,6 +10857,119 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             facade = AsyncSessionStore(self.session_store)
             self._async_session_store = facade
         return facade
+
+    def _install_plugin_message_injector(self) -> None:
+        """Publish this live gateway's plugin message scheduler."""
+        from hermes_cli.plugins import get_plugin_manager
+
+        get_plugin_manager().set_gateway_message_injector(
+            self,
+            self._schedule_plugin_message_injection,
+        )
+
+    def _clear_plugin_message_injector(self) -> None:
+        """Remove this runner's scheduler without clobbering a newer owner."""
+        from hermes_cli.plugins import get_plugin_manager
+
+        get_plugin_manager().clear_gateway_message_injector(self)
+
+    def _schedule_plugin_message_injection(
+        self,
+        *,
+        session_key: str,
+        content: str,
+        plugin_id: str,
+    ) -> bool:
+        """Schedule a plugin-triggered turn on the live gateway loop."""
+        loop = getattr(self, "_gateway_loop", None)
+        if not getattr(self, "_running", False) or loop is None or loop.is_closed():
+            return False
+
+        coro = self._dispatch_plugin_message_injection(
+            session_key=session_key,
+            content=content,
+            plugin_id=plugin_id,
+        )
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if current_loop is loop:
+            try:
+                future = loop.create_task(coro)
+            except Exception:
+                coro.close()
+                logger.warning(
+                    "Plugin message injection scheduling failed",
+                    exc_info=True,
+                )
+                return False
+            self._background_tasks.add(future)
+            future.add_done_callback(self._background_tasks.discard)
+        else:
+            future = safe_schedule_threadsafe(
+                coro,
+                loop,
+                logger=logger,
+                log_message="Plugin message injection scheduling failed",
+                log_level=logging.WARNING,
+            )
+            if future is None:
+                return False
+
+        def _log_result(completed) -> None:
+            try:
+                accepted = completed.result()
+            except (asyncio.CancelledError, concurrent.futures.CancelledError):
+                return
+            except Exception:
+                logger.warning(
+                    "Plugin message injection failed: plugin=%s session=%s",
+                    plugin_id,
+                    session_key,
+                    exc_info=True,
+                )
+                return
+            if not accepted:
+                logger.warning(
+                    "Plugin message injection was not routed: plugin=%s session=%s",
+                    plugin_id,
+                    session_key,
+                )
+
+        future.add_done_callback(_log_result)
+        return True
+
+    async def _dispatch_plugin_message_injection(
+        self,
+        *,
+        session_key: str,
+        content: str,
+        plugin_id: str,
+    ) -> bool:
+        """Route a plugin-triggered turn through the session's live adapter."""
+        entry = await self.async_session_store.lookup_by_session_key(session_key)
+        if entry is None or entry.origin is None:
+            return False
+
+        source = dataclasses.replace(entry.origin)
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return False
+
+        event = MessageEvent(
+            text=content,
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+            metadata={
+                "hermes_plugin_id": plugin_id,
+                "hermes_plugin_injection": True,
+            },
+        )
+        await adapter.handle_message(event)
+        return True
 
     def _get_cached_session_source(self, session_key: str):
         if not session_key:

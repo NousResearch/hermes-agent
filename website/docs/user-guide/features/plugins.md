@@ -102,7 +102,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
-| Inject messages | `ctx.inject_message(content, role="user")` — see [Injecting Messages](#injecting-messages) |
+| Inject messages | `ctx.inject_message(content, role="user", session_key=...)` - see [Injecting Messages](#injecting-messages) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
@@ -322,25 +322,54 @@ In a running session, `/plugins` shows which plugins are currently loaded.
 
 ## Injecting Messages
 
-Plugins can inject messages into the active conversation using `ctx.inject_message()`:
+Plugins can inject messages into a CLI conversation or a known gateway session using `ctx.inject_message()`:
 
 ```python
+# Active CLI conversation
 ctx.inject_message("New data arrived from the webhook", role="user")
+
+# Existing gateway conversation
+ctx.inject_message(
+    "New data arrived from the webhook",
+    role="user",
+    session_key="agent:main:telegram:dm:123456789",
+)
 ```
 
-**Signature:** `ctx.inject_message(content: str, role: str = "user") -> bool`
+**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None) -> bool`
 
-How it works:
+In CLI mode:
 
 - If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
 - If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
 - For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
-- Returns `True` if the message was queued successfully, `False` if no CLI reference is available (e.g. in gateway mode).
+- Returns `True` if the message was queued successfully.
+
+In gateway mode:
+
+- `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
+- Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot supply a new chat route through this API.
+- The request enters the platform adapter's normal message path. Active sessions use the existing busy-session queue rather than starting a competing turn.
+- Returns `True` when the live gateway accepts the request for asynchronous dispatch. This does not confirm that the agent turn or platform delivery has completed.
+- Returns `False` when `session_key` is omitted, the permission is not granted, or no live gateway can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
 
 This enables plugins like remote control viewers, messaging bridges, or webhook receivers to feed messages into the conversation from external sources.
 
+Gateway injection can send an agent response to an external messaging platform. It is disabled by default for every plugin. Grant it per plugin in `config.yaml`:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      allow_gateway_injection: true
+```
+
+:::warning
+Only grant gateway injection to plugins you trust. Hermes checks this host API permission and restricts it to existing session routes, but Python plugins run in-process and this setting is not a sandbox.
+:::
+
 :::note
-`inject_message` is only available in CLI mode. In gateway mode, there is no CLI reference and the method returns `False`.
+This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.
 :::
 
 See the **[full guide](/developer-guide/plugins)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.

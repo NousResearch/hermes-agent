@@ -701,7 +701,7 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
-class TestSessionStoreLookupBySessionId:
+class TestSessionStoreLookup:
     @pytest.fixture()
     def store(self, tmp_path):
         config = GatewayConfig()
@@ -723,6 +723,19 @@ class TestSessionStoreLookupBySessionId:
         assert store.lookup_by_session_id(entry.session_id) is entry
         assert store.lookup_by_session_id("missing") is None
         assert store.lookup_by_session_id("") is None
+
+    def test_returns_exact_existing_route(self, store):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="42",
+            chat_type="dm",
+            user_id="42",
+        )
+        entry = store.get_or_create_session(source)
+
+        assert store.lookup_by_session_key(entry.session_key) is entry
+        assert store.lookup_by_session_key("agent:main:telegram:dm:missing") is None
+        assert store.lookup_by_session_key("") is None
 
 
 class TestWhatsAppSessionKeyConsistency:

@@ -5,40 +5,42 @@ functions previously duplicated across setup.py, tools_config.py,
 mcp_config.py, and memory_setup.py.
 """
 
-from hermes_cli.colors import Colors, color
+from hermes_cli.colors import Colors, color, RichColors, rich_color
 from hermes_cli.secret_prompt import masked_secret_prompt
-
+import rich
+from rich.prompt import Prompt
 
 # ─── Print Helpers ────────────────────────────────────────────────────────────
 
 
 def print_info(text: str) -> None:
     """Print a dim informational message."""
-    print(color(f"  {text}", Colors.DIM))
+    rich.print(rich_color(f"  {text}", RichColors.DIM))
 
 
 def print_success(text: str) -> None:
     """Print a green success message with ✓ prefix."""
-    print(color(f"✓ {text}", Colors.GREEN))
+    rich.print(rich_color(f"✓ {text}", RichColors.GREEN))
 
 
 def print_warning(text: str) -> None:
     """Print a yellow warning message with ⚠ prefix."""
-    print(color(f"⚠ {text}", Colors.YELLOW))
+    rich.print(rich_color(f"⚠ {text}", RichColors.YELLOW))
 
 
 def print_error(text: str) -> None:
     """Print a red error message with ✗ prefix."""
-    print(color(f"✗ {text}", Colors.RED))
+    rich.print(rich_color(f"✗ {text}", RichColors.RED))
 
 
 def print_header(text: str) -> None:
     """Print a bold yellow header."""
-    print(color(f"\n  {text}", Colors.YELLOW))
+    rich.print(rich_color(f"\n  {text}", RichColors.YELLOW))
 
 
 # ─── Input Prompts ────────────────────────────────────────────────────────────
-
+class CustomPrompt(Prompt):
+    prompt_suffix = ""
 
 def prompt(
     question: str,
@@ -54,13 +56,13 @@ def prompt(
     Returns empty string on Ctrl-C or EOF.
     """
     suffix = f" [{default}]" if default else ""
-    display = color(f"  {question}{suffix}: ", Colors.YELLOW)
+    display = rich_color(f"  {question}{suffix}: ", RichColors.YELLOW)
 
     try:
         if password:
             value = masked_secret_prompt(display)
         else:
-            value = input(display)
+            value = CustomPrompt.ask(display)
         value = value.strip()
         return value if value else (default or "")
     except (KeyboardInterrupt, EOFError):

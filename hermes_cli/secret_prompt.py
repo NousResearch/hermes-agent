@@ -61,8 +61,19 @@ def masked_secret_prompt(prompt: str, *, mask: str = "*") -> str:
     """
     stdin = sys.stdin
     stdout = sys.stdout
+    is_tty = _stream_is_tty(stdin) and _stream_is_tty(stdout)
 
-    if not _stream_is_tty(stdin) or not _stream_is_tty(stdout):
+    if is_tty:
+        try:
+            import rich
+            rich.print(prompt, end="", flush=True)
+            prompt = ""
+        except ImportError:
+            prompt = str(prompt)
+    else:
+        prompt = str(prompt)
+
+    if not is_tty:
         return getpass.getpass(prompt)
 
     if os.name == "nt":

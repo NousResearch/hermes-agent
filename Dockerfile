@@ -135,6 +135,13 @@ COPY apps/shared/ apps/shared/
 # guards against a future regression if the source npm version changes.
 ENV npm_config_install_links=false
 
+# Retry transient apt fetch failures instead of failing the whole layer on a
+# single 5xx.  `playwright install --with-deps` pulls in dozens of packages,
+# so without retries one flaky mirror/CDN response kills the entire build —
+# and this layer is expensive to redo (full npm install + Chromium download).
+RUN printf 'Acquire::Retries "10";\nAcquire::Retries::Delay::Maximum "15";\n' \
+    > /etc/apt/apt.conf.d/80-retries
+
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     npm cache clean --force

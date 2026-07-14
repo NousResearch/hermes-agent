@@ -7637,21 +7637,42 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                 )
                 if rebase_result.returncode != 0:
-                    # Conflict mid-rebase. The repo is in an in-progress
-                    # rebase state. Do NOT auto-abort or reset — surface
-                    # the conflict and let the user choose.
-                    print(f"✗ Rebase onto origin/{branch} hit a conflict.")
-                    if rebase_result.stderr.strip():
-                        print(f"  {rebase_result.stderr.strip()}")
-                    print("  Resolve in PROJECT_ROOT, then either:")
-                    print("    git rebase --continue   # keep local commits")
-                    print("    git rebase --abort      # discard the rebase attempt")
-                    print(
-                        "  To re-run a fresh, destructive reset (drops local commits),"
-                    )
-                    print(
-                        f"    use:  git fetch origin && git reset --hard origin/{branch}"
-                    )
+                    # Rebase failed. Check if we're actually in a rebase
+                    # state before offering conflict-resolution instructions.
+                    rebase_merge = PROJECT_ROOT / ".git" / "rebase-merge"
+                    rebase_apply = PROJECT_ROOT / ".git" / "rebase-apply"
+                    if rebase_merge.exists() or rebase_apply.exists():
+                        # Active rebase — conflict mid-rebase. Do NOT
+                        # auto-abort or reset; surface and let the user
+                        # choose.
+                        print(f"✗ Rebase onto origin/{branch} hit a conflict.")
+                        if rebase_result.stderr.strip():
+                            print(f"  {rebase_result.stderr.strip()}")
+                        print(f"  Resolve in {PROJECT_ROOT}, then either:")
+                        print("    git rebase --continue   # keep local commits")
+                        print("    git rebase --abort      # discard the rebase attempt")
+                        print(
+                            "  To re-run a fresh, destructive reset (drops local"
+                            " commits),"
+                        )
+                        print(
+                            "    use:  git fetch origin &&"
+                            f" git reset --hard origin/{branch}"
+                        )
+                    else:
+                        # No active rebase — generic failure (network error,
+                        # permission denied, etc.). Surface the error and
+                        # offer the explicit reset as a recovery fallback.
+                        print(f"✗ Rebase onto origin/{branch} failed.")
+                        if rebase_result.stderr.strip():
+                            print(f"  {rebase_result.stderr.strip()}")
+                        print(
+                            "  Rebase failed without starting. To recover, run:"
+                        )
+                        print(
+                            "    git fetch origin &&"
+                            f" git reset --hard origin/{branch}"
+                        )
                     sys.exit(1)
             update_succeeded = True
         finally:

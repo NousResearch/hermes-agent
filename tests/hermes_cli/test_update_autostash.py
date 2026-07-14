@@ -435,14 +435,15 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
-# ff-only fallback to reset --hard on diverged history
+# ff-only fallback to rebase on diverged history
 # ---------------------------------------------------------------------------
 
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
     ff_only_fails=False,
-    reset_fails=False,
+    rebase_fails=False,
+    rebase_stderr="",
     fetch_fails=False,
     fetch_stderr="",
 ):
@@ -470,17 +471,21 @@ def _make_update_side_effect(
                     returncode=128,
                 )
             return SimpleNamespace(stdout="Updating abc..def\n", stderr="", returncode=0)
-        if "reset" in joined and "--hard" in joined:
-            if reset_fails:
-                return SimpleNamespace(stdout="", stderr="error: unable to write\n", returncode=1)
-            return SimpleNamespace(stdout="HEAD is now at abc123\n", stderr="", returncode=0)
+        if "rebase" in joined:
+            if rebase_fails:
+                return SimpleNamespace(
+                    stdout="",
+                    stderr=rebase_stderr or "CONFLICT (content): Merge conflict in hermes_cli/main.py\n",
+                    returncode=1,
+                )
+            return SimpleNamespace(stdout="Successfully rebased.\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     return side_effect, recorded
 
 
-def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
-    """When --ff-only fails (diverged history), update resets to origin/{branch}."""
+def test_cmd_update_rebases_when_ff_only_fails(monkeypatch, tmp_path, capsys):
+    """When --ff-only fails (diverged history), update rebases on top of origin/{branch}."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
@@ -489,12 +494,63 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     hermes_main.cmd_update(SimpleNamespace())
 
+    rebase_calls = [c for c in recorded if "rebase" in c]
+    assert len(rebase_calls) == 1
+    assert rebase_calls[0] == ["git", "rebase", "origin/main"]
+
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
-    assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert len(reset_calls) == 0
+
+
+def test_cmd_update_rebase_conflict_exits_with_continue_abort(monkeypatch, tmp_path, capsys):
+    """When rebase hits a conflict (active rebase state), show conflict message
+    with --continue/--abort and exit."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        rebase_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    # Simulate an active rebase: create the rebase-merge marker directory.
+    (tmp_path / ".git" / "rebase-merge").mkdir(parents=True)
+
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
 
     out = capsys.readouterr().out
-    assert "Fast-forward not possible" in out
+    assert "hit a conflict" in out
+    assert "git rebase --continue" in out
+    assert "git rebase --abort" in out
+
+
+def test_cmd_update_rebase_generic_failure_shows_reset_recovery(monkeypatch, tmp_path, capsys):
+    """When rebase fails without starting (no active rebase), show generic
+    failure + reset recovery command."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        rebase_fails=True,
+        rebase_stderr="fatal: Unable to create '.git/index.lock': File exists.\n",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    # No rebase-merge or rebase-apply directory — rebase never started.
+
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "failed" in out
+    assert "without starting" in out
+    assert "git reset --hard origin/main" in out
+    # Must NOT show conflict-specific instructions.
+    assert "git rebase --continue" not in out
+    assert "git rebase --abort" not in out
 
 
 def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
@@ -640,8 +696,8 @@ def test_cmd_update_auth_error_shows_friendly_message(monkeypatch, tmp_path, cap
 # reset --hard failure — don't attempt stash restore
 # ---------------------------------------------------------------------------
 
-def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, capsys):
-    """When reset --hard fails, stash restore is skipped with a helpful message."""
+def test_cmd_update_skips_stash_restore_when_rebase_fails(monkeypatch, tmp_path, capsys):
+    """When rebase fails, stash restore is skipped with a helpful message."""
     _setup_update_mocks(monkeypatch, tmp_path)
     # Re-enable stash so it actually returns a ref
     monkeypatch.setattr(
@@ -654,7 +710,7 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
         lambda *a, **kw: restore_calls.append(1) or True,
     )
 
-    side_effect, _ = _make_update_side_effect(ff_only_fails=True, reset_fails=True)
+    side_effect, _ = _make_update_side_effect(ff_only_fails=True, rebase_fails=True)
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     with pytest.raises(SystemExit, match="1"):

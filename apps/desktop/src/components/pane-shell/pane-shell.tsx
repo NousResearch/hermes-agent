@@ -120,6 +120,10 @@ const HOVER_REVEAL_SHADOW = '0px -18px 18px -5px #00000012'
 // pane on hover and swallow its clicks (#44140).
 const HOVER_REVEAL_TRIGGER_WIDTH = 14
 const HOVER_REVEAL_EDGE_GUTTER = 'calc(0.5rem + 2px)'
+// Wider strip on the LEFT, where the visible reveal grip lives, so the grip
+// sits comfortably inside the hit zone. Gutter is unchanged → #44140 stays
+// fixed. (The right edge is handled separately — see follow-up.)
+const HOVER_REVEAL_GRIP_TRIGGER_WIDTH = 20
 
 // Fired (window CustomEvent<{ id }>) to toggle a force-collapsed pane's reveal
 // from the keyboard, since its store-open toggle is a no-op while collapsed.
@@ -502,10 +506,28 @@ export function Pane({
       >
         <div
           aria-hidden="true"
-          className="pointer-events-auto absolute inset-y-0 z-30 [-webkit-app-region:no-drag]"
+          className="pointer-events-auto absolute inset-y-0 z-30 flex items-center [-webkit-app-region:no-drag]"
           data-pane-reveal-trigger=""
-          style={{ [edge]: HOVER_REVEAL_EDGE_GUTTER, width: HOVER_REVEAL_TRIGGER_WIDTH }}
-        />
+          style={{
+            [edge]: HOVER_REVEAL_EDGE_GUTTER,
+            width: side === 'left' ? HOVER_REVEAL_GRIP_TRIGGER_WIDTH : HOVER_REVEAL_TRIGGER_WIDTH
+          }}
+        >
+          {/* Visible grip marking the collapsed LEFT pane's reveal edge, so
+              users can see where to hover instead of hunting a blind strip.
+              Styled with the same token as the resize sash so it reads as
+              native. Fades out once the pane slides in on hover or is pinned
+              open (data-forced). The right edge is handled separately. */}
+          {side === 'left' && (
+            <span
+              className={cn(
+                'absolute left-1 top-1/2 h-9 w-1 -translate-y-1/2 rounded-full bg-(--ui-stroke-secondary)',
+                'opacity-90 transition-opacity duration-150',
+                'group-hover/reveal:opacity-0 group-data-[forced]/reveal:opacity-0'
+              )}
+            />
+          )}
+        </div>
 
         {/* Keyed on side so flipping panes remounts off-screen on the new edge
             instead of transitioning the transform across the viewport. */}

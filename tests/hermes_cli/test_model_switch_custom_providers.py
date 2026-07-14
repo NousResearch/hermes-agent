@@ -7,7 +7,11 @@ only looked at `providers:`.
 
 import hermes_cli.providers as providers_mod
 import pytest
-from hermes_cli.model_switch import list_authenticated_providers, switch_model
+from hermes_cli.model_switch import (
+    _parse_configured_provider_model_input,
+    list_authenticated_providers,
+    switch_model,
+)
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -504,6 +508,111 @@ def test_available_models_routes_via_custom_prefixed_colon_form(tmp_path, monkey
     assert result.target_provider == "custom:tokenplan"
     assert result.new_model == "qwen3.7-max"
     assert result.base_url == "https://token-plan.example/v1"
+
+
+def test_aggregator_vendor_colon_precedes_same_named_custom_provider(monkeypatch):
+    """A configured provider must not steal an aggregator's vendor:model slug."""
+    monkeypatch.setattr("hermes_cli.model_switch.resolve_alias", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_provider_models",
+        lambda *_: ["glm/glm-5"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_: {
+            "api_key": "test",
+            "base_url": "",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: _MOCK_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *_: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model", lambda *_: None
+    )
+
+    result = switch_model(
+        raw_input="glm:glm-5",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4.6",
+        custom_providers=[
+            {
+                "name": "glm",
+                "base_url": "https://glm.example/v1",
+                "available_models": ["glm-5"],
+            }
+        ],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openrouter"
+    assert result.new_model == "glm/glm-5"
+
+
+def test_custom_prefixed_typo_does_not_use_bare_custom_self_heal():
+    custom_providers = [
+        {
+            "name": "tokenplan",
+            "base_url": "https://token-plan.example/v1",
+            "available_models": ["qwen3.7-max"],
+        }
+    ]
+
+    assert _parse_configured_provider_model_input(
+        "custom:tokenpln:qwen3.7-max",
+        user_providers={},
+        custom_providers=custom_providers,
+    ) is None
+
+
+def test_colon_form_routes_custom_provider_shadowing_builtin_vendor(monkeypatch):
+    """A legacy custom provider named like a vendor still owns its colon form."""
+    monkeypatch.setattr("hermes_cli.model_switch.resolve_alias", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_: {
+            "api_key": "test",
+            "base_url": "https://deepseek-proxy.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": "not listed",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *_: None
+    )
+
+    result = switch_model(
+        raw_input="deepseek:deepseek-v4-flash",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        custom_providers=[
+            {
+                "name": "deepseek",
+                "base_url": "https://deepseek-proxy.example/v1",
+                "available_models": ["deepseek-v4-flash"],
+            }
+        ],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:deepseek"
+    assert result.new_model == "deepseek-v4-flash"
+    assert result.base_url == "https://deepseek-proxy.example/v1"
 
 
 def test_available_models_routes_via_explicit_provider_flag(tmp_path, monkeypatch):

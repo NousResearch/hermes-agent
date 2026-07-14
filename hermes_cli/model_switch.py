@@ -999,10 +999,19 @@ def _parse_configured_provider_model_input(
         custom_name, sep, model = rest.partition(":")
         if sep and custom_name.strip() and model.strip():
             candidates.append((f"{first}:{custom_name.strip()}", model.strip()))
-
-    provider, sep, model = stripped.partition(":")
-    if sep and provider.strip() and model.strip():
-        candidates.append((provider.strip(), model.strip()))
+        # A malformed ``custom:<name>:<model>`` must not degrade into the
+        # bare ``custom`` provider's corrupted-state self-heal fallback.
+    else:
+        provider, sep, model = stripped.partition(":")
+        if sep and provider.strip() and model.strip():
+            provider_name = provider.strip()
+            model_name = model.strip()
+            candidates.append((provider_name, model_name))
+            # Legacy ``custom_providers`` entries resolve after built-ins, so
+            # a proxy named after a vendor (for example ``deepseek``) needs an
+            # explicit custom-prefixed fallback candidate. A ``providers:``
+            # dict entry with that name still wins through the first candidate.
+            candidates.append((f"custom:{provider_name}", model_name))
 
     for provider_name, model_name in candidates:
         pdef = resolve_provider_full(provider_name, user_providers, custom_providers)
@@ -1076,15 +1085,6 @@ def switch_model(
     new_model = raw_input.strip()
     target_provider = current_provider
     resolved_moa_preset = False
-
-    if not explicit_provider:
-        configured_pair = _parse_configured_provider_model_input(
-            new_model,
-            user_providers,
-            custom_providers,
-        )
-        if configured_pair:
-            explicit_provider, new_model = configured_pair
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -1316,8 +1316,31 @@ def switch_model(
         # detection.  Unlike step e this is deliberately NOT gated on
         # ``not is_custom`` — switching from a local/custom provider A to a
         # configured provider B that declares the typed model is the point.
-        config_routed = False
+        # Configured ``provider:model`` is a fallback after the current
+        # aggregator catalog has had the first chance to preserve its existing
+        # vendor:model -> vendor/model shorthand. This avoids a custom provider
+        # named after a vendor stealing a valid aggregator slug.
+        configured_pair = None
         if (
+            not resolved_alias
+            and not resolved_moa_preset
+            and not resolved_in_current_catalog
+        ):
+            configured_pair = _parse_configured_provider_model_input(
+                raw_input,
+                user_providers,
+                custom_providers,
+            )
+
+        config_routed = configured_pair is not None
+        if configured_pair is not None:
+            explicit_provider, new_model = configured_pair
+            target_provider = explicit_provider
+            logger.debug(
+                "Configured-provider colon input routed '%s' to %s",
+                new_model, target_provider,
+            )
+        elif (
             not resolved_alias
             and not resolved_in_current_catalog
             and target_provider == current_provider

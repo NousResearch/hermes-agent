@@ -17,6 +17,7 @@
 
 export type VimMode = 'insert' | 'normal'
 export type VimRegister = 'unnamed' | 'yank'
+type PendingCommand = 'd' | 'g' | 'y'
 
 export interface VimState {
   mode: VimMode
@@ -26,6 +27,10 @@ export interface VimState {
   redoStack: string[]
   /** Yank register */
   yankRegister: string | null
+  /** First key of documented double-key commands such as dd/yy/gg */
+  pendingCommand: PendingCommand | null
+  /** Initial text for the current insert-mode edit session, if any */
+  insertCheckpoint: string | null
 }
 
 /** Current vim state (file-level singleton — safe since Ink TUI is single-user) */
@@ -34,6 +39,8 @@ let state: VimState = {
   undoStack: [],
   redoStack: [],
   yankRegister: null,
+  pendingCommand: null,
+  insertCheckpoint: null
 }
 
 export function getVimMode(): VimMode {
@@ -58,6 +65,74 @@ function pushUndo(input: string): void {
   }
   // New mutation clears redo
   state.redoStack = []
+}
+
+export function beginVimInsertSession(): void {
+  state.insertCheckpoint = null
+  state.pendingCommand = null
+}
+
+export function recordVimInsertEdit(input: string): void {
+  if (state.insertCheckpoint !== null) {
+    return
+  }
+
+  state.insertCheckpoint = input
+  pushUndo(input)
+}
+
+function setPendingCommand(command: PendingCommand): VimActionResult {
+  state.pendingCommand = command
+  return { consumed: true }
+}
+
+function takePendingCommand(): PendingCommand | null {
+  const pending = state.pendingCommand
+  state.pendingCommand = null
+  return pending
+}
+
+function deleteLine(input: string, cursor: number): VimActionResult {
+  const pos = cursorPos(input, cursor)
+  pushUndo(input)
+  let newInput: string
+  let newCursor: number
+
+  if (pos.lineStart === 0) {
+    // First line
+    const after = input.indexOf('\n')
+    if (after < 0) {
+      // Only one line
+      newInput = ''
+      newCursor = 0
+    } else {
+      newInput = input.slice(after + 1)
+      newCursor = 0
+    }
+  } else {
+    const beforeNewline = input.lastIndexOf('\n', pos.lineStart - 2)
+    const prevLineStart = beforeNewline < 0 ? 0 : beforeNewline + 1
+    newCursor = prevLineStart
+
+    if (pos.lineEnd >= input.length) {
+      // Last line
+      newInput = input.slice(0, pos.lineStart - 1) // Remove trailing newline too
+    } else {
+      newInput = input.slice(0, pos.lineStart) + input.slice(pos.lineEnd + 1)
+    }
+  }
+
+  // Store deleted text in yank register
+  const deletedText = input.slice(pos.lineStart, pos.lineEnd)
+  state.yankRegister = deletedText
+
+  return { input: newInput, cursor: newCursor, consumed: true }
+}
+
+function yankLine(input: string, cursor: number): VimActionResult {
+  const pos = cursorPos(input, cursor)
+  state.yankRegister = input.slice(pos.lineStart, pos.lineEnd)
+  return { consumed: true }
 }
 
 /** Return cursor position within a multi-line string */
@@ -251,6 +326,24 @@ export function processVimKey(
   const input = currentInput
   let cursor = Math.min(currentCursor, input.length)
   const n = count || 1
+  const pending = takePendingCommand()
+
+  if (pending) {
+    if (pending === 'd' && ch === 'd') {
+      return deleteLine(input, cursor)
+    }
+
+    if (pending === 'y' && ch === 'y') {
+      return yankLine(input, cursor)
+    }
+
+    if (pending === 'g' && ch === 'g') {
+      cursor = 0
+      return { cursor, consumed: true }
+    }
+
+    return { consumed: true }
+  }
 
   // --- Cursor movement (don't modify text) ---
 
@@ -312,9 +405,7 @@ export function processVimKey(
   }
 
   if (ch === 'g') {
-    // gg = go to line 1
-    cursor = 0
-    return { cursor, consumed: true }
+    return setPendingCommand('g')
   }
 
   if (ch === 'G') {
@@ -360,6 +451,7 @@ export function processVimKey(
   // --- Enter insert mode ---
 
   if (ch === 'i') {
+    beginVimInsertSession()
     return { consumed: true, mode: 'insert' }
   }
 
@@ -367,18 +459,21 @@ export function processVimKey(
     // Append at end of line. Ink may report Shift+A as ch='a' with key.shift.
     const pos = cursorPos(input, cursor)
     cursor = pos.lineEnd
+    beginVimInsertSession()
     return { cursor, consumed: true, mode: 'insert' }
   }
 
   if (ch === 'a') {
     // Append: move cursor right by 1, then enter insert
     cursor = Math.min(input.length, cursor + 1)
+    beginVimInsertSession()
     return { cursor, consumed: true, mode: 'insert' }
   }
 
   if (ch === 'I') {
     // Insert at start of line (first non-whitespace)
     cursor = firstNonBlank(input, cursor)
+    beginVimInsertSession()
     return { cursor, consumed: true, mode: 'insert' }
   }
 
@@ -389,6 +484,7 @@ export function processVimKey(
     pushUndo(input)
     const newInput = input.slice(0, pos.lineEnd) + insertion + input.slice(pos.lineEnd)
     cursor = pos.lineEnd + insertion.length
+    beginVimInsertSession()
     return { input: newInput, cursor, consumed: true, mode: 'insert' }
   }
 
@@ -406,6 +502,7 @@ export function processVimKey(
       newInput = input.slice(0, pos.lineStart) + insertion + input.slice(pos.lineStart)
       newCursor = pos.lineStart + insertion.length
     }
+    beginVimInsertSession()
     return { input: newInput, cursor: newCursor, consumed: true, mode: 'insert' }
   }
 
@@ -432,48 +529,11 @@ export function processVimKey(
   }
 
   if (ch === 'd') {
-    // dd = delete line
-    const pos = cursorPos(input, cursor)
-    pushUndo(input)
-    let newInput: string
-    let newCursor: number
-
-    if (pos.lineStart === 0) {
-      // First line
-      const after = input.indexOf('\n')
-      if (after < 0) {
-        // Only one line
-        newInput = ''
-        newCursor = 0
-      } else {
-        newInput = input.slice(after + 1)
-        newCursor = 0
-      }
-    } else {
-      const beforeNewline = input.lastIndexOf('\n', pos.lineStart - 2)
-      const prevLineStart = beforeNewline < 0 ? 0 : beforeNewline + 1
-      newCursor = prevLineStart
-
-      if (pos.lineEnd >= input.length) {
-        // Last line
-        newInput = input.slice(0, pos.lineStart - 1) // Remove trailing newline too
-      } else {
-        newInput = input.slice(0, pos.lineStart) + input.slice(pos.lineEnd + 1)
-      }
-    }
-
-    // Store deleted text in yank register
-    const deletedText = input.slice(pos.lineStart, pos.lineEnd)
-    state.yankRegister = deletedText
-
-    return { input: newInput, cursor: newCursor, consumed: true }
+    return setPendingCommand('d')
   }
 
   if (ch === 'y') {
-    // yy = yank (copy) line
-    const pos = cursorPos(input, cursor)
-    state.yankRegister = input.slice(pos.lineStart, pos.lineEnd)
-    return { consumed: true }
+    return setPendingCommand('y')
   }
 
   if (ch === 'p') {
@@ -540,5 +600,7 @@ export function resetVimState(): void {
     undoStack: [],
     redoStack: [],
     yankRegister: null,
+    pendingCommand: null,
+    insertCheckpoint: null
   }
 }

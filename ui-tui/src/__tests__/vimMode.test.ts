@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { processVimKey, resetVimState } from '../app/vimMode.js'
+import { beginVimInsertSession, processVimKey, recordVimInsertEdit, resetVimState } from '../app/vimMode.js'
 import { setVimMode } from '../app/vimModeStore.js'
 import type { Key } from '@hermes/ink'
 
@@ -9,7 +9,7 @@ function makeKey(overrides: Partial<Key> = {}): Key {
     ctrl: false,
     meta: false,
     shift: false,
-    ...overrides,
+    ...overrides
   }
 }
 
@@ -18,6 +18,7 @@ function makeKey(overrides: Partial<Key> = {}): Key {
  * which sets the yank register, then returns the state.
  */
 function yy(input: string, cursor: number): void {
+  processVimKey('y', makeKey(), input, cursor, 1)
   processVimKey('y', makeKey(), input, cursor, 1)
 }
 
@@ -190,7 +191,15 @@ describe('processVimKey', () => {
   })
 
   describe('dd — delete line', () => {
+    it('does not delete on the first d', () => {
+      const r = processVimKey('d', makeKey(), 'hello world', 3, 1)
+      expect(r.consumed).toBe(true)
+      expect(r.input).toBeUndefined()
+      expect(r.cursor).toBeUndefined()
+    })
+
     it('deletes entire content for single-line input', () => {
+      processVimKey('d', makeKey(), 'hello world', 3, 1)
       const r = processVimKey('d', makeKey(), 'hello world', 3, 1)
       expect(r.consumed).toBe(true)
       expect(r.input).toBe('')
@@ -198,12 +207,14 @@ describe('processVimKey', () => {
     })
 
     it('deletes first line in multi-line input', () => {
+      processVimKey('d', makeKey(), 'hello\nworld', 2, 1)
       const r = processVimKey('d', makeKey(), 'hello\nworld', 2, 1)
       expect(r.input).toBe('world')
       expect(r.cursor).toBe(0)
     })
 
     it('deletes middle line in multi-line input', () => {
+      processVimKey('d', makeKey(), 'a\nb\nc', 3, 1)
       const r = processVimKey('d', makeKey(), 'a\nb\nc', 3, 1)
       expect(r.input).toBe('a\nc')
       // Cursor lands at start of previous line
@@ -214,6 +225,13 @@ describe('processVimKey', () => {
   // ── Yank / Paste: yy / p / P ──────────────────────────────────────
 
   describe('yy + p — yank line and paste below', () => {
+    it('does not yank on the first y', () => {
+      processVimKey('y', makeKey(), 'hello', 3, 1)
+      const r = processVimKey('p', makeKey(), 'abc', 1, 1)
+      expect(r.consumed).toBe(true)
+      expect(r.input).toBeUndefined()
+    })
+
     it('yanks the line and pastes it below cursor line', () => {
       yy('hello', 3)
       const r = processVimKey('p', makeKey(), 'abc', 1, 1)
@@ -248,6 +266,21 @@ describe('processVimKey', () => {
       expect(r2.consumed).toBe(true)
       expect(r2.input).toBe('hello')
     })
+
+    it('undoes an insert-mode typing checkpoint and redoes it', () => {
+      beginVimInsertSession()
+      recordVimInsertEdit('')
+
+      const undo = processVimKey('u', makeKey(), 'hello', 5, 1)
+      expect(undo.consumed).toBe(true)
+      expect(undo.input).toBe('')
+      expect(undo.cursor).toBe(0)
+
+      const redo = processVimKey('\u0012', { ...makeKey(), ctrl: true }, undo.input!, undo.cursor!, 1)
+      expect(redo.consumed).toBe(true)
+      expect(redo.input).toBe('hello')
+      expect(redo.cursor).toBe(0)
+    })
   })
 
   // ── Multi-line: j / k / gg / G / % ─────────────────────────────────
@@ -280,7 +313,14 @@ describe('processVimKey', () => {
   })
 
   describe('gg — go to first line', () => {
+    it('does not move on the first g', () => {
+      const r = processVimKey('g', makeKey(), 'abc\ndef\nghi', 10, 1)
+      expect(r.consumed).toBe(true)
+      expect(r.cursor).toBeUndefined()
+    })
+
     it('moves cursor to start of first line', () => {
+      processVimKey('g', makeKey(), 'abc\ndef\nghi', 10, 1)
       const r = processVimKey('g', makeKey(), 'abc\ndef\nghi', 10, 1)
       expect(r.consumed).toBe(true)
       expect(r.cursor).toBe(0)

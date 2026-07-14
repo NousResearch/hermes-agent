@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
+import { recordVimInsertEdit } from '../app/vimMode.js'
 import { $vimEnabled, $vimMode, $vimPendingCursor } from '../app/vimModeStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
@@ -792,6 +793,10 @@ export function TextInput({
     }
 
     if (track && next !== prev) {
+      if (vimModeTarget && $vimEnabled.get() && $vimMode.get() === 'insert') {
+        recordVimInsertEdit(prev)
+      }
+
       undo.current.push({ cursor: curRef.current, value: prev })
 
       if (undo.current.length > 200) {

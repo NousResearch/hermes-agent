@@ -85,6 +85,14 @@ export function shouldFallThroughForScroll(key: {
   return false
 }
 
+export function shouldConsumePlainVimNormalEscape(
+  key: { alt?: boolean; ctrl: boolean; escape?: boolean; meta: boolean; shift?: boolean; super?: boolean },
+  ch: string,
+  voiceRecordKey: Parameters<typeof isVoiceToggleKey>[2]
+): boolean {
+  return !!key.escape && !isVoiceToggleKey(key, ch, voiceRecordKey)
+}
+
 export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
   starting: boolean,
@@ -317,8 +325,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // Do not intercept while overlays/pagers are active: their handlers need
     // j/k/g/G/arrows for navigation before input-editing commands see them.
     if (!isBlocked && $vimEnabled.get() && $vimMode.get() === 'normal') {
-      // Escape always goes back to normal mode (no-op since we're already there)
-      if (key.escape) {
+      // Plain Escape is a no-op in normal mode. Modifier Escape chords may be
+      // configured voice shortcuts, so let those reach the voice branch below.
+      if (shouldConsumePlainVimNormalEscape(key, ch, voice.recordKey)) {
         return
       }
 

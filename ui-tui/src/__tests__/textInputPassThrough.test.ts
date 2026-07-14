@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldDelegateNormalModeToVim, shouldPassThroughToGlobalHandler, shouldPreserveCtrlJNewline } from '../components/textInput.js'
+import {
+  shouldDelegateNormalModeToVim,
+  shouldPassThroughToGlobalHandler,
+  shouldPreserveCtrlJNewline
+} from '../components/textInput.js'
 import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
 
 const key = (overrides: Record<string, unknown> = {}) => ({ ctrl: false, meta: false, ...overrides }) as any
@@ -28,6 +32,9 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler(' ', key({ ctrl: true }), parseVoiceRecordKey('ctrl+space'))).toBe(true)
     expect(
       shouldPassThroughToGlobalHandler('', key({ ctrl: true, return: true }), parseVoiceRecordKey('ctrl+enter'))
+    ).toBe(true)
+    expect(
+      shouldPassThroughToGlobalHandler('', key({ ctrl: true, escape: true }), parseVoiceRecordKey('ctrl+escape'))
     ).toBe(true)
   })
 

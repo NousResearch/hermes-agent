@@ -41,6 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from hermes_cli._subprocess_compat import windows_hide_flags
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -2124,6 +2125,7 @@ class QQAdapter(BasePlatformAdapter):
                 wav_path,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=windows_hide_flags(),
             )
             await asyncio.wait_for(proc.wait(), timeout=30)
             if proc.returncode != 0:

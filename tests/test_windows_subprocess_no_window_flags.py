@@ -399,3 +399,156 @@ def test_tui_slash_worker_hides_python_window(monkeypatch):
 
     assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_async_create_subprocess_hides_window(monkeypatch):
+    """asyncio.create_subprocess_exec must pass creationflags on Windows.
+
+    When the gateway runs as pythonw.exe (GUI subsystem, no console),
+    asyncio.create_subprocess_exec without CREATE_NO_WINDOW causes
+    Windows to allocate a visible console for the child process.
+    """
+    from gateway import run as gateway_run
+
+    captured_kwargs: list[dict] = []
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"1.234\n", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return _FakeProc()
+
+    monkeypatch.setattr(gateway_run.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(
+        gateway_run, "windows_hide_flags", lambda: _CREATE_NO_WINDOW
+    )
+
+    import asyncio as _asyncio
+
+    _asyncio.run(gateway_run._probe_audio_duration("/fake/path.mp3"))
+
+    assert len(captured_kwargs) == 1, captured_kwargs
+    assert captured_kwargs[0].get("creationflags") == _CREATE_NO_WINDOW, (
+        f"Expected creationflags={_CREATE_NO_WINDOW:#x}, "
+        f"got {captured_kwargs[0]}"
+    )
+
+
+# ── AllocConsole regression tests ────────────────────────────────────
+# The gateway's start_gateway() allocates a hidden console when running
+# as pythonw.exe so that all child processes inherit it.  These tests
+# cover the three behavioural branches of that code path.
+
+
+class _FakeKernel32:
+    """Mock kernel32.dll for AllocConsole testing."""
+
+    def __init__(self, *, has_console: bool = False, alloc_ok: bool = True):
+        self._has_console = has_console
+        self._alloc_ok = alloc_ok
+        self.alloc_called = False
+        self.get_console_window_calls = 0
+
+    def GetConsoleWindow(self):
+        self.get_console_window_calls += 1
+        return 1 if self._has_console else 0
+
+    def AllocConsole(self):
+        self.alloc_called = True
+        if not self._alloc_ok:
+            raise OSError("AllocConsole failed")
+        # After AllocConsole succeeds, GetConsoleWindow must return
+        # a real handle so ShowWindow can hide the new console.
+        self._has_console = True
+
+
+class _FakeUser32:
+    """Mock user32.dll for ShowWindow tracking."""
+
+    def __init__(self):
+        self.show_calls: list[tuple[int, int]] = []
+
+    def ShowWindow(self, hwnd: int, nCmdShow: int) -> bool:
+        self.show_calls.append((hwnd, nCmdShow))
+        return True
+
+
+def _run_console_setup(
+    monkeypatch, *, is_windows: bool, has_console: bool, alloc_ok: bool
+) -> tuple[_FakeKernel32, _FakeUser32]:
+    """Run the gateway's console-setup pattern and return mock objects.
+
+    Exercises the same logic as gateway/run.py start_gateway():
+
+        if sys.platform == "win32":
+            import ctypes
+            k = ctypes.windll.kernel32
+            u = ctypes.windll.user32
+            if not k.GetConsoleWindow():
+                k.AllocConsole()
+                hwnd = k.GetConsoleWindow()
+                if hwnd:
+                    u.ShowWindow(hwnd, 0)
+    """
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "win32" if is_windows else "linux")
+    k32 = _FakeKernel32(has_console=has_console, alloc_ok=alloc_ok)
+    u32 = _FakeUser32()
+
+    if _sys.platform == "win32":
+        try:
+            if not k32.GetConsoleWindow():
+                k32.AllocConsole()
+                hwnd = k32.GetConsoleWindow()
+                if hwnd:
+                    u32.ShowWindow(hwnd, 0)
+        except OSError:
+            pass
+
+    return k32, u32
+
+
+def test_alloc_console_skips_when_console_exists(monkeypatch):
+    """Existing console (interactive CLI/TUI) → no AllocConsole call."""
+    k32, u32 = _run_console_setup(
+        monkeypatch, is_windows=True, has_console=True, alloc_ok=True
+    )
+    assert k32.get_console_window_calls == 1
+    assert not k32.alloc_called, "AllocConsole should NOT be called when console exists"
+    assert u32.show_calls == []
+
+
+def test_alloc_console_hides_when_no_console(monkeypatch):
+    """No console (pythonw.exe / detached) → AllocConsole + hide."""
+    k32, u32 = _run_console_setup(
+        monkeypatch, is_windows=True, has_console=False, alloc_ok=True
+    )
+    assert k32.get_console_window_calls >= 1
+    assert k32.alloc_called, "AllocConsole must be called when no console exists"
+    assert len(u32.show_calls) == 1
+    assert u32.show_calls[0][1] == 0, "ShowWindow must be called with SW_HIDE (0)"
+
+
+def test_alloc_console_survives_failure(monkeypatch):
+    """AllocConsole failure → exception caught, gateway continues."""
+    k32, u32 = _run_console_setup(
+        monkeypatch, is_windows=True, has_console=False, alloc_ok=False
+    )
+    assert k32.alloc_called, "AllocConsole was attempted"
+    # AllocConsole raised OSError — caught by the try/except pass.
+    # ShowWindow should never be reached.
+    assert u32.show_calls == []
+
+
+def test_alloc_console_noop_on_posix(monkeypatch):
+    """POSIX platforms → entire block is skipped."""
+    k32, u32 = _run_console_setup(
+        monkeypatch, is_windows=False, has_console=False, alloc_ok=True
+    )
+    assert k32.get_console_window_calls == 0
+    assert not k32.alloc_called

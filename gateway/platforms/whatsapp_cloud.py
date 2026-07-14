@@ -52,6 +52,7 @@ import shutil
 import uuid
 from collections import OrderedDict
 from pathlib import Path
+from hermes_cli._subprocess_compat import windows_hide_flags
 from typing import Any, Dict, Optional
 
 try:
@@ -1252,6 +1253,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "-application", "voip", out_path,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=windows_hide_flags(),
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0 or not Path(out_path).exists():

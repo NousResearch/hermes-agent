@@ -57,6 +57,7 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.fallback_config import get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -2157,6 +2158,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            creationflags=windows_hide_flags(),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         if proc.returncode == 0:
@@ -10108,6 +10110,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
                                 env=sanitized_env,
+                                creationflags=windows_hide_flags(),
                             )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                             output = (stdout or stderr).decode().strip()
@@ -20581,6 +20584,35 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # in-memory module.
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
+
+    # ── Windows hidden console ───────────────────────────────────────
+    # When the gateway is launched as pythonw.exe (GUI subsystem, no
+    # console), every console-subsystem child it spawns (bash, git, cmd,
+    # powershell, ffmpeg, ffprobe, ...) allocates its own visible console
+    # → black window flash.
+    #
+    # Per-child creationflags (CREATE_NO_WINDOW) were attempted as a
+    # targeted alternative but proved insufficient: the codebase has
+    # dozens of subprocess spawn points across gateway/, tools/,
+    # platforms/, and third-party libraries.  Any unprotected path —
+    # including those added in future commits — will flash.  A hidden
+    # process-wide console ensures *all* descendants inherit it without
+    # needing to chase every spawn site.
+    #
+    # Allocate a hidden console here so descendants inherit it.  No-op
+    # on POSIX and when a console already exists (interactive CLI/TUI).
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            user32 = ctypes.windll.user32
+            if not kernel32.GetConsoleWindow():
+                kernel32.AllocConsole()
+                hwnd = kernel32.GetConsoleWindow()
+                if hwnd:
+                    user32.ShowWindow(hwnd, 0)
+        except Exception:
+            pass
 
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.

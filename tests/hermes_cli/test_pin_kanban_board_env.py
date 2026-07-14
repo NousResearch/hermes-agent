@@ -95,6 +95,27 @@ def test_pin_skips_when_allow_session_board_switch_true(monkeypatch):
     assert "HERMES_KANBAN_BOARD" not in main_mod.os.environ
 
 
+def test_pin_skips_when_allow_session_board_switch_true_even_with_env_set(monkeypatch):
+    """Config opt-out takes priority — skips even when HERMES_KANBAN_BOARD is pre-set."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"allow_session_board_switch": True}},
+    )
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "preset-by-dispatcher")
+    main_mod = importlib.import_module("hermes_cli.main")
+
+    import hermes_cli.kanban_db as kdb
+
+    def _explode():
+        raise AssertionError("get_current_board must not be called when config opt-out is set")
+
+    monkeypatch.setattr(kdb, "get_current_board", _explode)
+
+    main_mod._pin_kanban_board_env()
+    # Should NOT have been overwritten — config opt-out means we leave it alone
+    assert main_mod.os.environ.get("HERMES_KANBAN_BOARD") == "preset-by-dispatcher"
+
+
 def test_pin_does_not_skip_when_allow_session_board_switch_false(monkeypatch):
     """When kanban.allow_session_board_switch is false or absent, the env var is pinned."""
     monkeypatch.setattr(

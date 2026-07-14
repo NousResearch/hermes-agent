@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.16.0"
+version = "0.18.2"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -43,6 +43,7 @@ dependencies = [
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
   "openai==2.24.0",
+  "certifi==2026.5.20",
   "python-dotenv==1.2.2",
   "fire==0.7.1",
   "httpx[socks]==0.28.1",
@@ -61,6 +62,16 @@ dependencies = [
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
+  # ``packaging`` is imported directly on three production paths but was never
+  # declared, so it only reached users transitively (pip/uv pull it for other
+  # tools). The slim official Docker image ships without it, where the
+  # try/except-ImportError fallbacks silently degrade: Hindsight's
+  # ``_meets_minimum_version`` disables update_mode='append' (#40503),
+  # tools/lazy_deps.py treats every version constraint as satisfied, and
+  # hermes_cli/main.py drops to naive requirement parsing. Pure-Python
+  # py3-none-any wheel, no compiled extensions — safe to ship everywhere.
+  # Pinned to the version already resolved in uv.lock (no resolution churn).
+  "packaging==26.0",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
   # DEFAULT delivery path, not matrix-specific: without it both
@@ -72,7 +83,13 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.12.1",  # CVE-2026-32597
+  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
+  # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
+  # and GHSA-qccp-gfcp-xxvc (header leak across origins).
+  "urllib3>=2.7.0,<3",
+  # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
+  # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
+  "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -85,10 +102,18 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  # Browser CDP supervisor + browser_dialog import this directly. Keep core
+  # so browser tool discovery doesn't fail on lean installs.
+  "websockets==15.0.1",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
+  # Streaming multipart uploads for the dashboard file manager (NS-501).
+  # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
+  # by fastapi itself, so the dashboard's multipart upload endpoint would 500
+  # without an explicit dependency here (and in the `web` extra below).
+  "python-multipart>=0.0.9,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
@@ -99,12 +124,26 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.2.0",
+  # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
+  # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
+  # Windows whenever any other process holds an append-mode handle on
+  # ``agent.log`` (always the case in Hermes — TUI, gateway, ``hy_memory``
+  # server, MCP servers, and on-demand CLI commands all log from separate
+  # processes), pinning ``agent.log`` at the 5 MiB threshold and spamming
+  # stderr on every emit (see #44873). ``concurrent-log-handler`` wraps the
+  # rename in a cross-process file lock (via ``portalocker``: pywin32 on
+  # Windows) so only one process rotates at a time. ``hermes_logging.py``
+  # aliases it ONLY on Windows — POSIX renames an open file fine, so stdlib
+  # already works there and managed-mode perms depend on its exact lifecycle.
+  # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
+  # / pywin32 tree) ships only where it's actually used.
+  "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
-anthropic = ["anthropic==0.86.0"]
+anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
@@ -118,11 +157,11 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "pytest-timeout==2.4.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==82.0.1"]  # starlette: CVE-2026-48710
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.3", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]
+dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.3"]
-matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
+slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.14.1"]
+matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -145,6 +184,13 @@ pty = [
   # without pulling in extra packages.
 ]
 honcho = ["honcho-ai==2.0.1"]
+# Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
+# (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the
+# LAZY_DEPS pins (enforced by tests/test_project_metadata.py). Deliberately
+# excluded from [all] like honcho/hindsight so a quarantined upstream release
+# can't break fresh installs.
+supermemory = ["supermemory==3.50.0"]
+mem0 = ["mem0ai==2.0.10"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
@@ -160,8 +206,9 @@ vision = []
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
 nemo-relay = ["nemo-relay==0.3"]
-homeassistant = ["aiohttp==3.13.3"]
-sms = ["aiohttp==3.13.3"]
+homeassistant = ["aiohttp==3.14.1"]
+sms = ["aiohttp==3.14.1"]
+teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
@@ -178,6 +225,7 @@ acp = ["agent-client-protocol==0.9.0"]
 # installs (see [all] policy comment below).
 mistral = ["mistralai==2.4.8"]
 bedrock = ["boto3==1.42.89"]
+vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
@@ -201,7 +249,7 @@ termux-all = [
   "hermes-agent[web]",
 ]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
-feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
+feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs).  Declared here so packagers (Nix, Homebrew) ship them with
@@ -221,7 +269,7 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1"]
+web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1", "python-multipart==0.0.27"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
@@ -272,6 +320,20 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 # venv) drop the catalogs and gateway/CLI commands surface raw i18n keys like
 # `gateway.reset.header_default` (#27632, #35374, #23943).
 locales = ["locales/*.yaml"]
+# Shipped MCP catalog (optional-mcps/<name>/manifest.yaml). Same bare-data-dir
+# case as locales: data-files ships it in the wheel, `graft optional-mcps` in
+# MANIFEST.in ships it in the sdist. Without this, `hermes mcp catalog` and the
+# dashboard catalog screen come up empty on packaged installs even though the
+# manifests exist in the repo (hermes_cli/mcp_catalog.py:_catalog_root resolves
+# the packaged dir; list_catalog() returns [] when it's missing).
+#
+# data-files flattens every glob match into its single target dir, so each
+# catalog entry needs its OWN target to preserve the per-entry directory the
+# catalog iterates over (a shared `optional-mcps/*/*` glob would collapse all
+# manifests into one colliding optional-mcps/manifest.yaml). One target per
+# entry; tests/test_packaging_metadata.py enforces an entry per optional-mcps/<name>.
+"optional-mcps/linear" = ["optional-mcps/linear/manifest.yaml"]
+"optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
@@ -292,7 +354,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -300,12 +362,8 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
 ]
-# pytest-timeout: per-test 30s hard cap with signal method.
-# This is the fallback inside each per-file pytest subprocess (see
-# scripts/run_tests_parallel.py). Per-file isolation gives every test
-# file a fresh Python interpreter; pytest-timeout catches Python-level
-# hangs within a file.
-addopts = "-m 'not integration' --timeout=30 --timeout-method=signal"
+# integration tests take way too long to run in the normal CI environments
+addopts = "-m 'not integration'"
 
 [tool.ty.environment]
 python-version = "3.13"

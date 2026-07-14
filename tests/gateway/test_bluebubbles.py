@@ -413,6 +413,56 @@ class TestBlueBubblesWebhookParsing:
         assert [event.message_id for event in dispatched] == ["MSG-GUID-1"]
 
     @pytest.mark.asyncio
+    async def test_webhook_deduplicates_before_replayed_attachment_download(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch)
+        adapter.send_read_receipts = False
+        dispatched = []
+        downloads = []
+
+        async def fake_handle_message(event):
+            dispatched.append(event)
+
+        async def fake_download_attachment(att_guid, att_meta):
+            downloads.append((att_guid, att_meta))
+            return f"/tmp/{att_guid}.jpg"
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download_attachment)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "MSG-GUID-1",
+                "text": "photo",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "attachments": [
+                    {
+                        "guid": "ATT-GUID-1",
+                        "mimeType": "image/jpeg",
+                        "transferName": "photo.jpg",
+                    }
+                ],
+                "chats": [
+                    {
+                        "guid": "iMessage;-;user@example.com",
+                        "chatIdentifier": "user@example.com",
+                    }
+                ],
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert [guid for guid, _meta in downloads] == ["ATT-GUID-1"]
+        assert [event.message_id for event in dispatched] == ["MSG-GUID-1"]
+
+    @pytest.mark.asyncio
     async def test_webhook_allows_distinct_message_guids(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         adapter.send_read_receipts = False

@@ -86,7 +86,8 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["site"] = True
         ret["scan"] = True
         ret["deps"] = True
-        ret["mcp_catalog"] = True
+
+        # explicitly skip mcp catalog here. it's not needed unless those files are modified.
     return ret
 
 

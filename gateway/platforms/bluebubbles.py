@@ -958,6 +958,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
             or ""
         )
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        dedup_key = self._webhook_dedup_key(payload, record, message_id, text)
+        if dedup_key and self._dedup.is_duplicate(dedup_key):
+            logger.debug(
+                "[bluebubbles] duplicate webhook message ignored: %s",
+                _redact(message_id),
+            )
+            return web.Response(text="ok")
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
@@ -1048,19 +1060,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             user_name=sender,
             chat_id_alt=chat_identifier,
         )
-        message_id = self._value(
-            record.get("guid"),
-            record.get("messageGuid"),
-            record.get("id"),
-        )
-        dedup_key = self._webhook_dedup_key(payload, record, message_id, text)
-        if dedup_key and self._dedup.is_duplicate(dedup_key):
-            logger.debug(
-                "[bluebubbles] duplicate webhook message ignored: %s",
-                _redact(message_id),
-            )
-            return web.Response(text="ok")
-
         event = MessageEvent(
             text=text,
             message_type=msg_type,

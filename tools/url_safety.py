@@ -181,6 +181,12 @@ _ALWAYS_BLOCKED_NETWORKS = (
 # to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
+    # WeCom (企业微信) AI Bot image CDN — resolves to 198.18.0.0/15 behind
+    # local proxy/benchmark infrastructure.  Must be allowed for inbound
+    # image downloads in the WeCom platform adapter.
+    # Uses wildcard to match all Tencent Cloud COS CDN subdomains
+    # (e.g. ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com)
+    "*.myqcloud.com",
 })
 
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
@@ -377,8 +383,21 @@ def is_always_blocked_url(url: str) -> bool:
 
 
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
-    """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
-    return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+    """Return True when a trusted HTTPS hostname may bypass IP-class blocking.
+
+    Supports both exact matches and wildcard suffixes (e.g. ``*.myqcloud.com``)
+    so that CDN subdomains like ``ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com``
+    are matched by a single ``*.myqcloud.com`` entry.
+    """
+    if scheme != "https":
+        return False
+    if hostname in _TRUSTED_PRIVATE_IP_HOSTS:
+        return True
+    # Wildcard suffix matching: ``*.example.com`` matches ``foo.example.com``
+    for trusted in _TRUSTED_PRIVATE_IP_HOSTS:
+        if trusted.startswith("*.") and hostname.endswith(trusted[1:]):
+            return True
+    return False
 
 
 def is_safe_url(url: str) -> bool:

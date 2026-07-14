@@ -789,7 +789,15 @@ class WeComAdapter(BasePlatformAdapter):
         if kind == "image":
             ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
             try:
-                return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                # Use detected extension to determine correct MIME type
+                # when CDN returns generic content-type (e.g. application/octet-stream)
+                resolved_content_type = content_type
+                if not content_type or content_type in ("application/octet-stream", "text/plain"):
+                    resolved_content_type = self._mime_for_ext(ext, fallback="image/jpeg")
+                    # If extension also resolves to generic type, use fallback
+                    if resolved_content_type in ("application/octet-stream", "text/plain"):
+                        resolved_content_type = "image/jpeg"
+                return cache_image_from_bytes(raw, ext), resolved_content_type
             except ValueError as exc:
                 logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
                 return None
@@ -820,9 +828,15 @@ class WeComAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _guess_extension(url: str, content_type: str, fallback: str) -> str:
-        ext = mimetypes.guess_extension(content_type) if content_type else None
-        if ext:
-            return ext
+        # Skip mimetypes.guess_extension for generic content-types that
+        # would return .bin (e.g. application/octet-stream from CDN).
+        # Fall through to URL path extension or magic-byte fallback.
+        if content_type and content_type not in (
+            "application/octet-stream", "text/plain",
+        ):
+            ext = mimetypes.guess_extension(content_type)
+            if ext:
+                return ext
         path_ext = Path(urlparse(url).path).suffix
         if path_ext:
             return path_ext

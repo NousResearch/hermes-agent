@@ -7799,14 +7799,9 @@ def test_notification_poller_delivers_completion(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-    # Isolate the completion queue for the duration of this test. The poller
-    # reads process_registry.completion_queue by attribute at runtime; the
-    # event below carries no session_key, so any *other* poller (a leaked
-    # daemon thread from another test, or a concurrent one in the same xdist
-    # worker) is allowed to dequeue and dispatch it to its own session — whose
-    # agent may be a fixture double without run_conversation. A fresh Queue
-    # here fully isolates this test; monkeypatch restores the original on
-    # teardown. (Same pattern as test_notification_poller_requeues_when_busy.)
+    # Isolate the completion queue for the duration of this test. The event
+    # carries the matching session key because ownerless notification events
+    # must fail closed instead of being adopted by whichever poller wakes first.
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_poller_test")
@@ -7818,6 +7813,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
     isolated_queue.put({
         "type": "completion",
         "session_id": "proc_poller_test",
+        "session_key": sess["session_key"],
         "command": "echo hello",
         "exit_code": 0,
         "output": "hello",
@@ -7867,10 +7863,8 @@ def test_notification_poller_skips_consumed(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-    # Isolate the completion queue so a concurrent/leaked poller in the same
-    # xdist worker can't dequeue this session_key-less event before our poller
-    # does. monkeypatch restores the shared singleton on teardown. (Same
-    # pattern as test_notification_poller_requeues_when_busy.)
+    # Isolate the completion queue and bind the event to this session so this
+    # test exercises consumed-event suppression rather than orphan rejection.
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
 
@@ -7878,6 +7872,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     isolated_queue.put({
         "type": "completion",
         "session_id": "proc_already_done",
+        "session_key": sess["session_key"],
         "command": "echo x",
         "exit_code": 0,
         "output": "x",
@@ -7920,6 +7915,7 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
     evt = {
         "type": "completion",
         "session_id": "proc_busy_test",
+        "session_key": sess["session_key"],
         "command": "make build",
         "exit_code": 0,
         "output": "ok",
@@ -8051,6 +8047,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     base = {
         "type": "watch_match",
         "session_id": "proc_watch_dedup",
+        "session_key": sess["session_key"],
         "command": "tail -f app.log",
         "pattern": "READY",
         "output": "READY on port 8000",

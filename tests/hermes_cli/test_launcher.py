@@ -1,9 +1,13 @@
 """Tests for the top-level `./hermes` launcher script."""
 
+import os
 import runpy
+import subprocess
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 
 def test_launcher_delegates_to_argparse_entrypoint(monkeypatch):
@@ -15,6 +19,7 @@ def test_launcher_delegates_to_argparse_entrypoint(monkeypatch):
 
     def fake_main():
         called.append("hermes_cli.main")
+        return 7
 
     fake_main_module.main = fake_main
     monkeypatch.setitem(sys.modules, "hermes_cli.main", fake_main_module)
@@ -37,6 +42,29 @@ def test_launcher_delegates_to_argparse_entrypoint(monkeypatch):
 
     monkeypatch.setattr(sys, "argv", [str(launcher_path), "gateway", "status"])
 
-    runpy.run_path(str(launcher_path), run_name="__main__")
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(str(launcher_path), run_name="__main__")
 
     assert called == ["hermes_cli.main"]
+    assert exc.value.code == 7
+
+
+def test_launcher_propagates_cron_failure(tmp_path):
+    """The tracked launcher must preserve failures returned by delegated commands."""
+    repo_root = Path(__file__).resolve().parents[2]
+    launcher_path = repo_root / "hermes"
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, str(launcher_path), "cron", "pause", "definitely-missing-job"],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Job with ID or name 'definitely-missing-job' not found" in result.stdout

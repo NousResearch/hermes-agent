@@ -503,6 +503,28 @@ def interruptible_api_call(agent, api_kwargs: dict):
         if _codex_floor:
             _stale_timeout = max(_stale_timeout, _codex_floor)
 
+    # ── Codex absolute hard ceiling (#64507) ──────────────────────────
+    # For large Codex requests the no-byte TTFB watchdog is intentionally
+    # disabled (so legitimate backend admission / prefill isn't killed), and
+    # ``openai_codex_stale_timeout_floor`` *raises* the stale timeout (up to
+    # 1200s at >100k tokens) so healthy gateway-scale payloads aren't aborted.
+    # That combination means a request that is genuinely stalled at the
+    # backend — no first byte AND no events, exactly the issue-64507 symptom —
+    # is only reclaimed at the (high) stale floor, so a session can hang for
+    # many minutes with an idle worker and no ended_at. Add a flat, finite
+    # hard ceiling on total request time that ALWAYS applies to openai-codex
+    # requests regardless of the TTFB/stale interaction, so a stalled large
+    # request is recovered (retry loop / visible failure) instead of hanging
+    # indefinitely. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
+    # disable the ceiling entirely; that restores the pre-fix behavior).
+    _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 600.0)
+    if (
+        _codex_watchdog_enabled
+        and _openai_codex_backend
+        and _codex_hard_timeout > 0
+    ):
+        _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
+
     if _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
     elif _est_tokens_for_codex_watchdog > 50_000:

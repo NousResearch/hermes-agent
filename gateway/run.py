@@ -7184,6 +7184,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
+                    # Wire voice input callback at connect time so voice
+                    # transcription is forwarded without requiring /voice join.
+                    if hasattr(adapter, "_voice_input_callback"):
+                        adapter._voice_input_callback = self._handle_voice_channel_input
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
@@ -8014,6 +8018,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
+                        # Wire voice input callback on reconnect as well (#60623).
+                        if hasattr(adapter, "_voice_input_callback"):
+                            adapter._voice_input_callback = self._handle_voice_channel_input
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(

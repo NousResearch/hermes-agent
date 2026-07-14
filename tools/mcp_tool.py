@@ -3949,9 +3949,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 for block in (result.content or []):
                     if hasattr(block, "text"):
                         error_text += block.text
+                sanitized = _sanitize_error(
+                    error_text or "MCP tool returned an error"
+                )
                 return json.dumps({
-                    "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
+                    "error": (
+                        sanitized
+                        + " Do not bypass this with terminal or direct "
+                        "filesystem operations — that skips the validation "
+                        "and access controls the MCP server enforces."
                     )
                 }, ensure_ascii=False)
 

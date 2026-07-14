@@ -107,6 +107,44 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/live"})]
 
 
+def test_terminal_endpoint_blocks_relative_write_from_live_cwd(tmp_path, monkeypatch):
+    safe_root = tmp_path / "safe"
+    live_cwd = tmp_path / "outside"
+    safe_root.mkdir()
+    live_cwd.mkdir()
+    calls = []
+
+    class FakeEnv:
+        env = {}
+        cwd = str(live_cwd)
+
+        def execute(self, command, **kwargs):
+            calls.append((command, kwargs))
+            return {"output": "unexpected", "returncode": 0}
+
+    task_id = "session-live-cwd-write"
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": str(live_cwd)}})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd=str(safe_root)))
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+
+    result = json.loads(
+        terminal_tool.terminal_tool(command="echo data > relative.txt", task_id=task_id)
+    )
+
+    assert result["status"] == "blocked"
+    assert "Blocked" in result["error"]
+    assert calls == []
+
+
 def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch):
     """Background process launches must also use the live session cwd."""
 

@@ -286,6 +286,56 @@ def _check_all_guards(command: str, env_type: str,
                                   has_host_access=has_host_access)
 
 
+# ---------------------------------------------------------------------------
+# HERMES_WRITE_SAFE_ROOT heuristic guard for shell commands
+# ---------------------------------------------------------------------------
+
+_SAFE_ROOT_REDIRECT_RE = re.compile(r'(?:>>?|[12&]>)\s*([^\s;|&]+)')
+_SAFE_ROOT_TEE_RE = re.compile(r'\btee\s+(?:-a\s+)?([^\s;|&]+)')
+_SAFE_ROOT_CP_MV_RE = re.compile(r'\b(?:cp|mv)\s+(?:-[a-zA-Z]+\s+)*\S+\s+([^\s;|&]+)')
+_SAFE_ROOT_PYTHON_OPEN_RE = re.compile(
+    r"open\s*\(\s*['\"]([^'\"]+)['\"]\s*(?:,\s*['\"]([^'\"]*)['\"])?"
+)
+_SAFE_ROOT_CAT_REDIRECT_RE = re.compile(r'cat\s+>\s*([^\s<;|&]+)')
+
+
+def _check_write_safe_root(command: str, cwd: str) -> str | None:
+    """Block literal shell writes outside HERMES_WRITE_SAFE_ROOT."""
+    from agent.file_safety import get_safe_write_roots, is_write_denied
+
+    safe_roots = get_safe_write_roots()
+    if not safe_roots:
+        return None
+    safe_root_display = os.pathsep.join(sorted(safe_roots))
+    candidates = [
+        *[match.group(1) for match in _SAFE_ROOT_REDIRECT_RE.finditer(command)],
+        *[match.group(1) for match in _SAFE_ROOT_TEE_RE.finditer(command)],
+        *[match.group(1) for match in _SAFE_ROOT_CP_MV_RE.finditer(command)],
+        *[match.group(1) for match in _SAFE_ROOT_CAT_REDIRECT_RE.finditer(command)],
+    ]
+    for match in _SAFE_ROOT_PYTHON_OPEN_RE.finditer(command):
+        path, mode = match.groups()
+        if mode and not any(char in mode for char in ("w", "x", "a", "+")):
+            continue
+        if not mode:
+            continue
+        candidates.append(path)
+    resolved_cwd = os.path.expanduser(cwd)
+    for target in candidates:
+        expanded = os.path.expanduser(target)
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(resolved_cwd, expanded)
+        if is_write_denied(expanded):
+            return (
+                f"Blocked: command attempts to write to {target!r}, which is "
+                f"outside HERMES_WRITE_SAFE_ROOT ({safe_root_display!r}). "
+                "Writes must stay inside the configured safe root. "
+                "(Defense-in-depth, not a security boundary; regex matching "
+                "may miss obfuscated write targets.)"
+            )
+    return None
+
+
 # Allowlist: characters that can legitimately appear in directory paths.
 # Covers alphanumeric, path separators, Windows drive/UNC separators, tilde,
 # dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
@@ -2370,6 +2420,13 @@ def terminal_tool(
                 env=env,
                 default_cwd=cwd,
             )
+            if safe_root_error := _check_write_safe_root(command, effective_cwd):
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": safe_root_error,
+                    "status": "blocked",
+                }, ensure_ascii=False)
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -2630,6 +2687,13 @@ def terminal_tool(
                         env=env,
                         default_cwd=cwd,
                     )
+                    if safe_root_error := _check_write_safe_root(command, command_cwd):
+                        return json.dumps({
+                            "output": "",
+                            "exit_code": -1,
+                            "error": safe_root_error,
+                            "status": "blocked",
+                        }, ensure_ascii=False)
                     execute_kwargs = {
                         "timeout": effective_timeout,
                         "cwd": command_cwd,

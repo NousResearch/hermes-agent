@@ -72,8 +72,14 @@ async def test_clarify_with_choices_mirrors_question_into_content():
 
     result = await adapter.send_clarify(
         chat_id="555",
-        question="Which environment should I deploy to?",
-        choices=["staging", "production"],
+        question=(
+            "Context:\nProduction currently serves users; staging is isolated."
+            "\n\nQuestion:\nWhich environment should I deploy to?"
+        ),
+        choices=[
+            "Staging — deploy safely without user impact",
+            "Production — deploy directly to live users",
+        ],
         clarify_id="cl1",
         session_key="discord:555",
     )
@@ -81,8 +87,11 @@ async def test_clarify_with_choices_mirrors_question_into_content():
     assert result.success is True
     assert sent["view"] is not None
     assert "Hermes needs your input" in sent["content"]
+    assert "Production currently serves users" in sent["content"]
     assert "Which environment should I deploy to?" in sent["content"]
-    assert "Pick one below" in sent["content"]
+    assert "**1.** Staging — deploy safely without user impact" in sent["content"]
+    assert "**2.** Production — deploy directly to live users" in sent["content"]
+    assert "Pick a button below" in sent["content"]
 
 
 @pytest.mark.asyncio

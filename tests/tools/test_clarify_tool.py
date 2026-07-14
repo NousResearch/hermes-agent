@@ -13,6 +13,9 @@ from tools.clarify_tool import (
 )
 
 
+TEST_CONTEXT = "The user needs this background to make an informed decision."
+
+
 class TestClarifyToolBasics:
     """Basic functionality tests for clarify_tool."""
 
@@ -31,18 +34,64 @@ class TestClarifyToolBasics:
     def test_question_with_choices(self):
         """Should pass choices to callback and return response."""
         def mock_callback(question: str, choices: Optional[List[str]]) -> str:
-            assert question == "Pick a number"
+            assert question == f"Context:\n{TEST_CONTEXT}\n\nQuestion:\nPick a number"
             assert choices == ["1", "2", "3"]
             return "2"
 
         result = json.loads(clarify_tool(
             "Pick a number",
             choices=["1", "2", "3"],
-            callback=mock_callback
+            callback=mock_callback,
+            context=TEST_CONTEXT,
         ))
         assert result["question"] == "Pick a number"
         assert result["choices_offered"] == ["1", "2", "3"]
         assert result["user_response"] == "2"
+
+    def test_multiple_choice_requires_context(self):
+        """A decision card without context must never reach the user."""
+        called = False
+
+        def mock_callback(question, choices):
+            nonlocal called
+            called = True
+            return "ignored"
+
+        result = json.loads(clarify_tool(
+            "Which option?",
+            choices=["Approve — apply the change", "Revise — change nothing"],
+            callback=mock_callback,
+        ))
+
+        assert called is False
+        assert "context" in result["error"].lower()
+
+    def test_context_is_rendered_before_question(self):
+        """Every surface receives explicit context above the decision."""
+        seen = []
+
+        def mock_callback(prompt, choices):
+            seen.append((prompt, choices))
+            return choices[0]
+
+        result = json.loads(clarify_tool(
+            "Do you authorize these exact changes?",
+            context=TEST_CONTEXT,
+            choices=[
+                "Approve — apply only the described changes",
+                "Revise — change nothing and request edits",
+            ],
+            callback=mock_callback,
+        ))
+
+        assert seen == [(
+            f"Context:\n{TEST_CONTEXT}\n\nQuestion:\nDo you authorize these exact changes?",
+            [
+                "Approve — apply only the described changes",
+                "Revise — change nothing and request edits",
+            ],
+        )]
+        assert result["context"] == TEST_CONTEXT
 
     def test_empty_question_returns_error(self):
         """Should return error for empty question."""
@@ -74,7 +123,10 @@ class TestClarifyToolChoicesValidation:
             return "picked"
 
         many_choices = ["a", "b", "c", "d", "e", "f", "g"]
-        clarify_tool("Pick one", choices=many_choices, callback=mock_callback)
+        clarify_tool(
+            "Pick one", choices=many_choices, callback=mock_callback,
+            context=TEST_CONTEXT,
+        )
 
         assert len(choices_passed) == MAX_CHOICES
 
@@ -99,7 +151,10 @@ class TestClarifyToolChoicesValidation:
             choices_received.extend(choices or [])
             return "answer"
 
-        clarify_tool("Pick", choices=["valid", "  ", "", "also valid"], callback=mock_callback)
+        clarify_tool(
+            "Pick", choices=["valid", "  ", "", "also valid"],
+            callback=mock_callback, context=TEST_CONTEXT,
+        )
         assert choices_received == ["valid", "also valid"]
 
     def test_invalid_choices_type_returns_error(self):
@@ -120,7 +175,10 @@ class TestClarifyToolChoicesValidation:
             choices_received.extend(choices or [])
             return "answer"
 
-        clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
+        clarify_tool(
+            "Pick", choices=[1, 2, 3], callback=mock_callback,
+            context=TEST_CONTEXT,
+        )  # type: ignore
         assert choices_received == ["1", "2", "3"]
 
 
@@ -217,6 +275,7 @@ class TestClarifyDictChoices:
                 "A plain string choice",
             ],
             callback=cb,
+            context=TEST_CONTEXT,
         ))  # type: ignore
         assert seen == [
             "Tight, covers all 3 points",
@@ -244,6 +303,18 @@ class TestClarifySchema:
     def test_schema_question_required(self):
         """Question parameter should be required."""
         assert "question" in CLARIFY_SCHEMA["parameters"]["required"]
+
+    def test_schema_requires_self_contained_context(self):
+        required = CLARIFY_SCHEMA["parameters"]["required"]
+        assert "context" in required
+        description = CLARIFY_SCHEMA["parameters"]["properties"]["context"]["description"].lower()
+        assert "self-contained" in description
+        assert "unseen" in description
+
+    def test_schema_choices_define_short_label_and_full_explanation(self):
+        description = CLARIFY_SCHEMA["parameters"]["properties"]["choices"]["description"].lower()
+        assert "short label" in description
+        assert "explanation" in description
 
     def test_schema_choices_optional(self):
         """Choices parameter should be optional."""

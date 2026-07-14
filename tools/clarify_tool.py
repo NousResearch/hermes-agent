@@ -57,25 +57,19 @@ def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
+    context: Optional[str] = None,
 ) -> str:
-    """
-    Ask the user a question, optionally with multiple-choice options.
+    """Ask the user a question with the context needed to answer it.
 
-    Args:
-        question: The question text to present.
-        choices:  Up to 4 predefined answer choices. When omitted the
-                  question is purely open-ended.
-        callback: Platform-provided function that handles the actual UI
-                  interaction. Signature: callback(question, choices) -> str.
-                  Injected by the agent runner (cli.py / gateway).
-
-    Returns:
-        JSON string with the user's response.
+    ``context`` is rendered above ``question`` on every platform. Multiple-choice
+    prompts require non-empty context so a decision never depends only on a
+    clipped button label or on reasoning that the user cannot see.
     """
     if not question or not question.strip():
         return tool_error("Question text is required.")
 
     question = question.strip()
+    context = str(context or "").strip()
 
     # Validate and trim choices
     if choices is not None:
@@ -92,14 +86,24 @@ def clarify_tool(
         if not choices:
             choices = None  # empty list → open-ended
 
+    if choices and not context:
+        return tool_error(
+            "Context is required for multiple-choice clarification so the user "
+            "can make an informed decision."
+        )
+
     if callback is None:
         return json.dumps(
             {"error": "Clarify tool is not available in this execution context."},
             ensure_ascii=False,
         )
 
+    display_prompt = question
+    if context:
+        display_prompt = f"Context:\n{context}\n\nQuestion:\n{question}"
+
     try:
-        user_response = callback(question, choices)
+        user_response = callback(display_prompt, choices)
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},
@@ -108,6 +112,7 @@ def clarify_tool(
 
     return json.dumps({
         "question": question,
+        "context": context or None,
         "choices_offered": choices,
         "user_response": str(user_response).strip(),
     }, ensure_ascii=False)
@@ -121,7 +126,6 @@ def check_clarify_requirements() -> bool:
 # =============================================================================
 # OpenAI Function-Calling Schema
 # =============================================================================
-
 CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
@@ -131,12 +135,14 @@ CLARIFY_SCHEMA = {
         "or types their own answer via a 5th 'Other' option.\n"
         "2. **Open-ended** — omit choices entirely. The user types a free-form "
         "response.\n\n"
+        "CONTEXT: every prompt must be self-contained. Provide all visible "
+        "facts, consequences, constraints, recommendations, and artifact "
+        "summaries needed to decide. Never refer to an unseen diff, proposal, "
+        "file, or earlier internal reasoning.\n\n"
         "CRITICAL: when you are offering options, put each option ONLY in the "
         "`choices` array — NEVER enumerate the options inside the `question` "
         "text. The UI renders `choices` as selectable rows; options written "
-        "into the question string render as dead prose the user can't pick. "
-        "Right: question='Which deployment target?', choices=['staging', "
-        "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
+        "into the question string render as dead prose the user can't pick.\n\n"
         "Use this tool when:\n"
         "- The task is ambiguous and you need the user to choose an approach\n"
         "- You want post-task feedback ('How did that work out?')\n"
@@ -149,12 +155,21 @@ CLARIFY_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "context": {
+                "type": "string",
+                "description": (
+                    "A concise, self-contained decision brief containing all "
+                    "facts, consequences, constraints, recommendations, and "
+                    "artifact summaries the user needs. Never refer to an "
+                    "unseen diff, proposal, file, or hidden agent context."
+                ),
+            },
             "question": {
                 "type": "string",
                 "description": (
-                    "The question itself, and ONLY the question (e.g. 'Which "
-                    "deployment target?'). Do NOT embed the answer options here "
-                    "— pass them as separate elements in `choices`."
+                    "The focused question to answer after reading the context. "
+                    "Do not enumerate answer options here; put each option only "
+                    "in the choices array."
                 ),
             },
             "choices": {
@@ -162,15 +177,16 @@ CLARIFY_SCHEMA = {
                 "items": {"type": "string"},
                 "maxItems": MAX_CHOICES,
                 "description": (
-                    "REQUIRED whenever you are presenting selectable options: "
-                    "each distinct option is its own array element (up to 4). "
-                    "The UI renders these as pickable rows and auto-appends an "
-                    "'Other (type your answer)' option. Omit this parameter "
-                    "entirely ONLY for a genuinely open-ended free-text question."
+                    "Selectable options, up to 4. Write each as "
+                    "'Short label — full explanation of the outcome and key "
+                    "consequence'. Do not number the items; the UI numbers "
+                    "them. The full choice is shown in the message while "
+                    "interactive controls may use the short label. Omit "
+                    "choices only for a genuinely open-ended question."
                 ),
             },
         },
-        "required": ["question"],
+        "required": ["context", "question"],
     },
 }
 
@@ -185,7 +201,8 @@ registry.register(
     handler=lambda args, **kw: clarify_tool(
         question=args.get("question", ""),
         choices=args.get("choices"),
-        callback=kw.get("callback")),
+        callback=kw.get("callback"),
+        context=args.get("context")),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

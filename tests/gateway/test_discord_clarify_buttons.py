@@ -5,7 +5,7 @@ override and the ``ClarifyChoiceView`` callbacks. Discord uses ``discord.ui.View
 button callbacks (closures) rather than a string-prefixed callback_query
 dispatcher like Telegram — the auth + resolution path is the same:
 
-  · numeric choice → resolve_gateway_clarify(clarify_id, choice_text)
+  · choice button → resolve_gateway_clarify(clarify_id, choice_text)
   · "Other" button → mark_awaiting_text(clarify_id) so the text-intercept
     captures the next user message in this session
   · already-resolved or unauthorized → ephemeral "this prompt..." reply
@@ -99,25 +99,33 @@ def _make_interaction(*, user_id="42", display_name="Tester", roles=None,
 # ===========================================================================
 
 class TestClarifyChoiceViewConstruction:
-    """The view should build numeric buttons plus an Other button."""
+    """The view should build short action buttons plus an Other button."""
 
     def test_renders_n_choice_buttons_plus_other(self):
         view = ClarifyChoiceView(
-            choices=["apple", "banana", "cherry"],
+            choices=[
+                "Approve — apply the exact visible change",
+                "Revise — change nothing and request edits",
+                "Show diff — display the exact patch before deciding",
+            ],
             clarify_id="cidX",
             allowed_user_ids={"42"},
         )
-        # 3 numeric + 1 "Other"
+        # 3 short action labels + 1 "Other"
         assert len(view.children) == 4
         labels = [b.label for b in view.children]
-        # Buttons are short numeric indices — the full choice text is
-        # mirrored in the message body / embed field instead (see
-        # send_clarify), since Discord's 80-char label cap is already wider
-        # than what mobile clients render before truncating/wrapping.
-        assert labels[0] == "1"
-        assert labels[1] == "2"
-        assert labels[2] == "3"
+        # The number links each short button to the complete numbered row in
+        # the message body. The explanatory tail never lives only on a button.
+        assert labels[0] == "1 · Approve"
+        assert labels[1] == "2 · Revise"
+        assert labels[2] == "3 · Show diff"
         assert "Other" in labels[3]
+        # Equal-significance choices follow Discord's secondary-button guidance.
+        other_style = getattr(view.children[-1], "style", None)
+        assert all(
+            getattr(button, "style", None) == other_style
+            for button in view.children[:-1]
+        )
         # custom_ids encode clarify_id + index/other
         ids = [b.custom_id for b in view.children]
         assert ids[0] == "clarify:cidX:0"
@@ -136,10 +144,7 @@ class TestClarifyChoiceViewConstruction:
         assert len(view.children) == 25
         assert "Other" in view.children[-1].label
 
-    def test_button_label_is_short_index_regardless_of_choice_length(self):
-        # Button labels never carry choice text anymore — they're always
-        # just the option number, so length/truncation of the underlying
-        # choice text can never affect button legibility.
+    def test_button_label_uses_short_preview_when_choice_has_no_separator(self):
         long_choice = "x" * 200
         view = ClarifyChoiceView(
             choices=[long_choice],
@@ -147,7 +152,9 @@ class TestClarifyChoiceViewConstruction:
             allowed_user_ids=set(),
         )
         first_label = view.children[0].label
-        assert first_label == "1"
+        assert first_label.startswith("1 · ")
+        assert first_label.endswith("…")
+        assert len(first_label.encode("utf-16-le")) // 2 <= 38
 
     def test_button_label_short_for_emoji_choice(self):
         long_choice = "\U0001f600" * 80
@@ -157,11 +164,13 @@ class TestClarifyChoiceViewConstruction:
             allowed_user_ids=set(),
         )
         first_label = view.children[0].label
-        assert first_label == "1"
+        assert first_label.startswith("1 · ")
+        assert first_label.endswith("…")
+        assert len(first_label.encode("utf-16-le")) // 2 <= 38
 
-    def test_button_label_short_for_multiword_choice(self):
+    def test_button_label_uses_text_before_explanation_separator(self):
         long_choice = (
-            "Tight, well-illustrated, covers all 3 audiences "
+            "Tight layout — well-illustrated and covers all 3 audiences "
             "(patients, families, curious general readers)"
         )
         view = ClarifyChoiceView(
@@ -170,7 +179,7 @@ class TestClarifyChoiceViewConstruction:
             allowed_user_ids=set(),
         )
         first_label = view.children[0].label
-        assert first_label == "1"
+        assert first_label == "1 · Tight layout"
 
 
 # ===========================================================================
@@ -446,8 +455,8 @@ class TestDiscordSendClarify:
         view = kwargs["view"]
         # Only 1 real choice + 1 Other = 2 children
         assert len(view.children) == 2
-        # Button label is just the index; full text lives in the embed.
-        assert view.children[0].label == "1"
+        # Short action label is linked to the complete row by its number.
+        assert view.children[0].label == "1 · real-choice"
         embed = kwargs["embed"]
         assert "real-choice" in _choices_field_value(embed)
 
@@ -487,9 +496,14 @@ class TestDiscordSendClarify:
         assert "Use label key" in option_text
         assert "Use text key" in option_text
         assert "normal-string" in option_text
-        # Button labels remain short numeric indices regardless.
+        # Button labels keep a compact preview of the same numbered choices.
         labels = [b.label for b in kwargs["view"].children[:-1]]
-        assert labels == ["1", "2", "3", "4"]
+        assert labels == [
+            "1 · Tight, well-illustrated",
+            "2 · Use label key",
+            "3 · Use text key",
+            "4 · normal-string",
+        ]
 
     @pytest.mark.asyncio
     async def test_unwrap_prefers_description_over_name_in_multi_key_dict(self):

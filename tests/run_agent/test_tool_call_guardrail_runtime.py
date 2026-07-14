@@ -353,3 +353,32 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_sequential_clarify_forwards_context_to_platform_callback():
+    """The executor must not drop context before the platform renders it."""
+    agent = _make_agent("clarify")
+    agent.clarify_callback = MagicMock(return_value="Approve — apply it")
+    args = {
+        "context": "The patch changes only the Discord clarify renderer.",
+        "question": "Should I apply it?",
+        "choices": [
+            "Approve — apply the exact visible patch",
+            "Revise — change nothing and request edits",
+        ],
+    }
+    tool_call = _mock_tool_call("clarify", json.dumps(args), "c-clarify")
+    message = SimpleNamespace(content="", tool_calls=[tool_call])
+    results = []
+
+    agent._execute_tool_calls_sequential(message, results, "task-clarify")
+
+    agent.clarify_callback.assert_called_once_with(
+        "Context:\nThe patch changes only the Discord clarify renderer."
+        "\n\nQuestion:\nShould I apply it?",
+        args["choices"],
+    )
+    assert len(results) == 1
+    payload = json.loads(results[0]["content"])
+    assert payload["context"] == args["context"]
+    assert payload["user_response"] == "Approve — apply it"

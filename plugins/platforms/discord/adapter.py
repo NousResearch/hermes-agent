@@ -55,6 +55,10 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 _DISCORD_MAX_APP_COMMANDS = 100
 _DISCORD_SELECT_FIELD_LIMIT = 100
 _DISCORD_BUTTON_LABEL_LIMIT = 80
+# Discord recommends concise button labels (about 38 characters without an
+# icon). Clarify buttons include an option number, so the whole visible label
+# stays within that mobile-friendly budget even though the API allows 80.
+_DISCORD_CLARIFY_BUTTON_SOFT_LIMIT = 38
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
@@ -131,6 +135,33 @@ from tools.url_safety import is_safe_url
 def _truncate_discord_component_text(text: str, limit: int) -> str:
     """Return text within Discord's UTF-16 component field budget."""
     return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
+
+
+def _clarify_choice_button_label(index: int, choice: str) -> str:
+    """Build ``1 · Approve`` from ``Approve — full explanation``.
+
+    The full canonical choice remains in the message body and callback. This
+    compact label is only a mobile-friendly pointer to the matching numbered
+    row, never the sole source of decision context.
+    """
+    prefix = f"{index + 1} · "
+    text = " ".join(str(choice or "").split())
+    short = text
+    for separator in (" — ", " – ", " - ", ": "):
+        head, found, _tail = text.partition(separator)
+        if found and head.strip():
+            short = head.strip()
+            break
+
+    budget = _DISCORD_CLARIFY_BUTTON_SOFT_LIMIT - utf16_len(prefix)
+    if utf16_len(short) > budget:
+        short = (
+            _prefix_within_utf16_limit(
+                short, budget - utf16_len(_DISCORD_ELLIPSIS)
+            ).rstrip()
+            + _DISCORD_ELLIPSIS
+        )
+    return f"{prefix}{short}"
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -5803,10 +5834,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Mirror the full choice text as a numbered list, same as the
                 # Telegram/WhatsApp adapters. Button labels are capped at 80
                 # chars by Discord and become unreadable on mobile long before
-                # that (see ClarifyChoiceView), so the button is just a short
-                # index — the full text the user needs to make an informed
-                # decision lives here, in the embed field / message body,
-                # which has a much higher cap (1024 for embed fields).
+                # that (see ClarifyChoiceView), so the button carries only the
+                # option number plus a short action label — the full text the
+                # user needs to make an informed decision lives here, in the
+                # embed field / message body, which has a much higher cap
+                # (1024 for embed fields).
                 option_lines_full = "\n".join(
                     f"**{i + 1}.** {c}" for i, c in enumerate(clean_choices)
                 )
@@ -7556,7 +7588,7 @@ def _define_discord_view_classes() -> None:
         """Interactive button view for the clarify tool's multiple-choice prompts.
 
         Renders one button per choice (max 24) plus a final ``✏️ Other`` button.
-        Picking a numeric choice resolves the gateway clarify entry immediately;
+        Picking a choice button resolves the gateway clarify entry immediately;
         picking ``Other`` flips the entry into text-capture mode so the next
         user message in the session becomes the response (the gateway's
         text-intercept handles the resolution).
@@ -7582,22 +7614,14 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
 
             for index, choice in enumerate(self.choices):
-                # Button labels are just the option number ("1", "2", ...).
-                # The full choice text is unreadable on Discord buttons no
-                # matter how we truncate it: the 80-char API cap is already
-                # much wider than what mobile clients render before
-                # wrapping/cutting a second line (~40 visible chars), so any
-                # truncation strategy here still garbles longer choices.
-                # send_clarify() now mirrors the full, untruncated choice
-                # text as a numbered list in the embed/message body (mirrors
-                # the Telegram/WhatsApp adapters' approach) — the button only
-                # needs to carry the index so the label is always short and
-                # legible, and the real text lives where there's room to
-                # read it.
-                label_body = str(index + 1)
+                # The message body carries the complete numbered choices. The
+                # button repeats the same number plus the short action label so
+                # the relationship is obvious without sacrificing mobile
+                # legibility. Clicking still returns the canonical full choice.
+                label_body = _clarify_choice_button_label(index, choice)
                 button = discord.ui.Button(
                     label=label_body,
-                    style=discord.ButtonStyle.primary,
+                    style=discord.ButtonStyle.secondary,
                     custom_id=f"clarify:{clarify_id}:{index}",
                 )
                 button.callback = self._make_choice_callback(index, choice)

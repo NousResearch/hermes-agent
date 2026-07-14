@@ -42,7 +42,25 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports two modes: 1. **Multiple choice** — provide up to 4 choices. The user picks one or types their own answer via a 5th 'Other' option. 2.… | — |
+| `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports open-ended and multiple-choice prompts with explicit decision context. | — |
+
+Each call includes a self-contained `context` plus one focused `question`. For
+multiple-choice prompts, write every option as `Short label — full explanation`.
+Hermes shows the complete numbered options in the message. Discord buttons use
+the same number and short label (for example, `1 · Approve`) while returning the
+complete canonical choice after a click. Never ask the user to approve an unseen
+diff, file, proposal, or internal agent reasoning.
+
+```json
+{
+  "context": "The patch changes only the Discord clarify renderer.",
+  "question": "Should I apply it?",
+  "choices": [
+    "Approve — apply the exact visible patch",
+    "Revise — change nothing and request edits"
+  ]
+}
+```
 
 ## `code_execution` toolset
 

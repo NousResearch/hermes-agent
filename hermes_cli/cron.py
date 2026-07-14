@@ -48,6 +48,29 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
+def _cron_inference_args(args, existing_job=None):
+    """Return CLI provider/model values with model-tool resolution parity.
+
+    The model-callable cron surface pins the active config provider when a
+    model is supplied without ``provider``. Keep the standalone CLI on the
+    same config-backed path so a model-only pin cannot silently follow later
+    interactive provider switches. Explicit empty strings still mean clear.
+    """
+    provider = getattr(args, "provider", None)
+    model = getattr(args, "model", None)
+    existing_provider = str((existing_job or {}).get("provider") or "").strip()
+    if (
+        provider is None
+        and isinstance(model, str)
+        and model.strip()
+        and not existing_provider
+    ):
+        from tools.cronjob_tools import _resolve_model_override
+
+        return _resolve_model_override({"model": model})
+    return provider, model
+
+
 def _active_cron_provider_name() -> str:
     """Name of the resolved cron scheduler provider ('builtin', 'chronos', …).
 
@@ -94,6 +117,16 @@ def _warn_if_gateway_not_running() -> None:
     print(color("     Start it with: hermes gateway install", Colors.DIM))
     print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
     print(color("     Check status:  hermes cron status", Colors.DIM))
+
+
+def _print_inference_routing(job, indent: str = "    ") -> None:
+    """Show whether an agent-backed job is pinned or inherits global config."""
+    if job.get("no_agent"):
+        return
+    provider = str(job.get("provider") or "").strip() or "inherited"
+    model = str(job.get("model") or "").strip() or "inherited"
+    print(f"{indent}Provider:  {provider}")
+    print(f"{indent}Model:     {model}")
 
 
 def cron_list(show_all: bool = False):
@@ -160,6 +193,8 @@ def cron_list(show_all: bool = False):
             print(f"    Script:    {script}")
         if job.get("no_agent"):
             print(f"    Mode:      {color('no-agent', Colors.DIM)} (script stdout delivered directly)")
+        else:
+            _print_inference_routing(job)
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
@@ -298,6 +333,7 @@ def cron_create(args):
     # raises GatewayLifecycleBlocked, the `cronjob` tool wrapper catches it and
     # returns it as result["error"], and the `if not result.get("success")`
     # branch below prints it in red and exits 1 — same UX as before.
+    provider, model = _cron_inference_args(args)
     result = _cron_api(
         action="create",
         schedule=args.schedule,
@@ -305,6 +341,8 @@ def cron_create(args):
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
+        provider=provider,
+        model=model,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
@@ -324,6 +362,8 @@ def cron_create(args):
         print(f"  Script: {job_data['script']}")
     if job_data.get("no_agent"):
         print("  Mode: no-agent (script stdout delivered directly)")
+    else:
+        _print_inference_routing(job_data, indent="  ")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
     print(f"  Next run: {result['next_run_at']}")
@@ -361,6 +401,7 @@ def cron_edit(args):
             if skill not in final_skills:
                 final_skills.append(skill)
 
+    provider, model = _cron_inference_args(args, existing_job=job)
     result = _cron_api(
         action="update",
         job_id=args.job_id,
@@ -369,6 +410,8 @@ def cron_edit(args):
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
+        provider=provider,
+        model=model,
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
@@ -390,6 +433,8 @@ def cron_edit(args):
         print(f"  Script: {updated['script']}")
     if updated.get("no_agent"):
         print("  Mode: no-agent (script stdout delivered directly)")
+    else:
+        _print_inference_routing(updated, indent="  ")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
     return 0

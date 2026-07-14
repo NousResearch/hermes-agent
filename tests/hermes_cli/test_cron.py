@@ -121,6 +121,132 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
+    def test_create_edit_list_model_provider_pin_lifecycle(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+        rc = cron_cli.cron_create(
+            SimpleNamespace(
+                schedule="every 1h",
+                prompt="Run background maintenance",
+                name="Background maintenance",
+                deliver=None,
+                repeat=None,
+                provider=" local ",
+                model=" cheap/model ",
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+            )
+        )
+        assert rc == 0
+        job = list_jobs()[0]
+        assert job["provider"] == "local"
+        assert job["model"] == "cheap/model"
+
+        cron_cli.cron_list(show_all=True)
+        listed = capsys.readouterr().out
+        assert "Provider:  local" in listed
+        assert "Model:     cheap/model" in listed
+
+        # Omitted flags preserve both pins while another field changes.
+        rc = cron_cli.cron_edit(
+            SimpleNamespace(job_id=job["id"], name="Renamed maintenance")
+        )
+        assert rc == 0
+        preserved = get_job(job["id"])
+        assert preserved["provider"] == "local"
+        assert preserved["model"] == "cheap/model"
+
+        # A model-only edit preserves the existing provider pin, even when the
+        # global config names another provider.
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n  default: global/model\n",
+            encoding="utf-8",
+        )
+        rc = cron_cli.cron_edit(
+            SimpleNamespace(job_id=job["id"], model="replacement/model")
+        )
+        assert rc == 0
+        model_changed = get_job(job["id"])
+        assert model_changed["provider"] == "local"
+        assert model_changed["model"] == "replacement/model"
+
+        # Empty strings follow the existing script/workdir clearing UX and
+        # clear only the axis named by the caller.
+        rc = cron_cli.cron_edit(
+            SimpleNamespace(job_id=job["id"], model="")
+        )
+        assert rc == 0
+        model_cleared = get_job(job["id"])
+        assert model_cleared["provider"] == "local"
+        assert model_cleared["model"] is None
+
+        rc = cron_cli.cron_edit(
+            SimpleNamespace(job_id=job["id"], provider="")
+        )
+        assert rc == 0
+        provider_cleared = get_job(job["id"])
+        assert provider_cleared["provider"] is None
+        assert provider_cleared["model"] is None
+
+    def test_list_labels_legacy_missing_model_provider_as_inherited(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        from cron.jobs import load_jobs, save_jobs
+
+        monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+        job = create_job(
+            prompt="Legacy job",
+            schedule="every 1h",
+            provider="local",
+            model="cheap/model",
+        )
+        jobs = load_jobs()
+        jobs[0].pop("provider", None)
+        jobs[0].pop("model", None)
+        save_jobs(jobs)
+
+        cron_cli.cron_list(show_all=True)
+
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "Provider:  inherited" in out
+        assert "Model:     inherited" in out
+
+    def test_model_only_cli_pin_uses_configured_provider(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        from hermes_constants import get_hermes_home
+
+        monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+        home = get_hermes_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n  default: global/model\n",
+            encoding="utf-8",
+        )
+
+        rc = cron_cli.cron_create(
+            SimpleNamespace(
+                schedule="every 1h",
+                prompt="Pinned model job",
+                model="background/model",
+            )
+        )
+
+        assert rc == 0
+        job = list_jobs()[0]
+        assert job["model"] == "background/model"
+        assert job["provider"] == "openrouter"
+
     def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
         """A one-shot job can be persisted with ``"repeat": null``. `cron
         list` must render it as ∞ rather than crashing on .get(...)\\.get."""

@@ -631,6 +631,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_copilot_acp,
     _model_flow_kimi,
     _model_flow_stepfun,
+    _model_flow_xiaomi,
     _model_flow_bedrock_api_key,
     _model_flow_bedrock,
     _model_flow_vertex,
@@ -3158,6 +3159,8 @@ def select_provider_and_model(args=None):
         _model_flow_kimi(config, current_model)
     elif selected_provider == "stepfun":
         _model_flow_stepfun(config, current_model)
+    elif selected_provider == "xiaomi":
+        _model_flow_xiaomi(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
     elif selected_provider == "vertex":
@@ -3178,7 +3181,6 @@ def select_provider_and_model(args=None):
         "opencode-go",
         "alibaba",
         "huggingface",
-        "xiaomi",
         "arcee",
         "gmi",
         "nvidia",
@@ -4127,6 +4129,30 @@ def _stepfun_base_url_for_region(region: str) -> str:
         if region == "china"
         else STEPFUN_STEP_PLAN_INTL_BASE_URL
     )
+
+
+def _infer_xiaomi_region(base_url: str) -> str:
+    """Infer the current Xiaomi MiMo Token Plan cluster from the configured endpoint."""
+    normalized = (base_url or "").strip().lower()
+    if "token-plan-cn" in normalized:
+        return "cn"
+    if "token-plan-ams" in normalized:
+        return "ams"
+    return "sgp"
+
+
+def _xiaomi_base_url_for_region(region: str) -> str:
+    """Return the Xiaomi MiMo Token Plan base URL for the given cluster."""
+    from hermes_cli.auth import (
+        XIAOMI_TOKEN_PLAN_AMS_BASE_URL,
+        XIAOMI_TOKEN_PLAN_CN_BASE_URL,
+        XIAOMI_TOKEN_PLAN_SGP_BASE_URL,
+    )
+
+    return {
+        "cn": XIAOMI_TOKEN_PLAN_CN_BASE_URL,
+        "ams": XIAOMI_TOKEN_PLAN_AMS_BASE_URL,
+    }.get(region, XIAOMI_TOKEN_PLAN_SGP_BASE_URL)
 
 
 

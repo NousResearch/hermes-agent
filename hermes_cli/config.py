@@ -3700,7 +3700,7 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
     },
     "XIAOMI_BASE_URL": {
-        "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
+        "description": "Xiaomi MiMo base URL override (default: https://token-plan-sgp.xiaomimimo.com/v1)",
         "prompt": "Xiaomi base URL (leave empty for default)",
         "url": None,
         "password": False,

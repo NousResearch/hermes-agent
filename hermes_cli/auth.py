@@ -99,6 +99,18 @@ DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
+
+# ── Xiaomi MiMo Token Plan cluster endpoints ─────────────────────────
+# Keys are region/cluster-bound; users must pick the cluster that matches
+# their subscription.  See: https://platform.xiaomimimo.com
+XIAOMI_TOKEN_PLAN_SGP_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
+XIAOMI_TOKEN_PLAN_CN_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
+XIAOMI_TOKEN_PLAN_AMS_BASE_URL = "https://token-plan-ams.xiaomimimo.com/v1"
+XIAOMI_TOKEN_PLAN_CLUSTERS: dict[str, str] = {
+    "sgp": XIAOMI_TOKEN_PLAN_SGP_BASE_URL,
+    "cn": XIAOMI_TOKEN_PLAN_CN_BASE_URL,
+    "ams": XIAOMI_TOKEN_PLAN_AMS_BASE_URL,
+}
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 try:  # Version tag for the Codex token-endpoint User-Agent; fall back if unavailable.
@@ -406,7 +418,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="xiaomi",
         name="Xiaomi MiMo",
         auth_type="api_key",
-        inference_base_url="https://api.xiaomimimo.com/v1",
+        inference_base_url="https://token-plan-sgp.xiaomimimo.com/v1",
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),

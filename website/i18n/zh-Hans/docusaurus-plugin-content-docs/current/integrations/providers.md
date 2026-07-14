@@ -260,6 +260,16 @@ model:
 使用 Z.AI / GLM 提供商时，Hermes 会自动探测多个端点（全球版、中国版、编程版）以找到接受你 API key 的端点。无需手动设置 `GLM_BASE_URL`——可用端点会被自动检测并缓存。
 :::
 
+:::tip 小米 MiMo Token Plan 集群选择
+小米 MiMo Token Plan API key 是区域特定的。当你运行 `hermes setup` 并选择小米 MiMo 时，系统会提示你选择集群：
+
+- **新加坡** (`token-plan-sgp.xiaomimimo.com`) — 大多数用户的默认选项
+- **中国** (`token-plan-cn.xiaomimimo.com`) — 用于中国区 key
+- **欧洲 / 阿姆斯特丹** (`token-plan-ams.xiaomimimo.com`) — 用于欧盟区 key
+
+集群选择器会自动检测你当前活跃的集群并标记。如果你的 key 静默失败，请尝试在 `hermes setup` 中切换集群。
+:::
+
 ### xAI（Grok）— Responses API + Prompt 缓存
 
 xAI 通过 Responses API（`codex_responses` 传输）接入，自动支持 Grok 4 模型的推理——无需 `reasoning_effort` 参数，服务端默认进行推理。在 `~/.hermes/.env` 中设置 `XAI_API_KEY` 并在 `hermes model` 中选择 xAI，或直接用 `grok` 作为快捷方式输入 `/model grok-4-1-fast-reasoning`。

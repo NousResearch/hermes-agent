@@ -1291,7 +1291,11 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         default = 10
         try:
-            from hermes_cli.config import cfg_get, load_config
+            from hermes_cli.config import (
+                PinnedEffectiveConfigError,
+                cfg_get,
+                load_config,
+            )
 
             raw = cfg_get(
                 load_config(),
@@ -1301,6 +1305,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 default=default,
             )
             value = int(raw)
+        except PinnedEffectiveConfigError:
+            # The isolated process pin is an authority boundary. Falling back
+            # to 10 here could widen a sealed max_concurrent_runs: 1 policy.
+            raise
         except Exception:
             return default
         return max(0, value)

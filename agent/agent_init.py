@@ -47,7 +47,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolGuardrailDecision,
 )
-from hermes_cli.config import cfg_get
+from hermes_cli.config import PinnedEffectiveConfigError, cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches, is_truthy_value
@@ -380,6 +380,14 @@ def init_agent(
             identity even when skip_context_files=True. Project context files from the cwd
             remain skipped.
     """
+    # The sealed process projection must be live before any client, routing,
+    # timeout, tool, or prompt-related state is derived from it. Semantic config
+    # reads below consume only the approved in-memory snapshot; this explicit
+    # boundary owns filesystem/path/hash/parse attestation.
+    from hermes_cli.config import attest_pinned_effective_config_projection
+
+    attest_pinned_effective_config_projection()
+
     _install_safe_stdio()
 
     agent.model = model
@@ -620,6 +628,8 @@ def init_agent(
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
+    except PinnedEffectiveConfigError:
+        raise
     except Exception:
         pass
 
@@ -883,6 +893,8 @@ def init_agent(
                     agent._bedrock_guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
                 if _gr.get("trace"):
                     agent._bedrock_guardrail_config["trace"] = _gr["trace"]
+        except PinnedEffectiveConfigError:
+            raise
         except Exception:
             pass
         agent.client = None
@@ -1095,6 +1107,11 @@ def init_agent(
                 _cp_base_url,
                 _cp_entries,
             )
+        except PinnedEffectiveConfigError:
+            # A transient-looking read failure is still a breach of the sealed
+            # process authority. It must stop init at the first occurrence;
+            # a later successful read cannot retroactively attest this client.
+            raise
         except Exception:
             logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 
@@ -1251,6 +1268,8 @@ def init_agent(
         from hermes_cli.config import load_config as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+    except PinnedEffectiveConfigError:
+        raise
     except Exception:
         pass
     # logs_dir is retained unconditionally for request_dump_*.json (debug
@@ -1310,6 +1329,11 @@ def init_agent(
     try:
         from hermes_cli.config import load_config as _load_agent_config
         _agent_cfg = _load_agent_config()
+    except PinnedEffectiveConfigError:
+        # An explicit process pin is a runtime authority, not a best-effort user
+        # preference. Continuing with {} would silently resurrect hardcoded
+        # behavior after sealed path/hash/content drift.
+        raise
     except Exception:
         _agent_cfg = {}
     try:

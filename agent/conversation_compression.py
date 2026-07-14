@@ -465,6 +465,14 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # Compression may make an auxiliary model call before the main turn call.
+    # Re-attest the same process authority at this boundary so post-pin config
+    # drift cannot be downgraded by the compressor's model-fallback handling.
+    # No conversation or prompt state is touched by this check.
+    from hermes_cli.config import attest_pinned_effective_config_projection
+
+    attest_pinned_effective_config_projection()
+
     # Codex app-server sessions: the codex agent owns the real thread context;
     # Hermes' summarizer would only rewrite a local mirror without shrinking
     # the actual thread (#36801). Route compaction to the app server's own

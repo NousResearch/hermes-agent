@@ -1989,6 +1989,11 @@ Use this exact structure:
 FOCUS TOPIC: "{focus_topic}"
 This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
+        from hermes_cli.config import (
+            PinnedEffectiveConfigError,
+            attest_pinned_effective_config_projection,
+        )
+
         try:
             call_kwargs = {
                 "task": "compression",
@@ -2019,6 +2024,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             # marker, losing the real handoff (#23975). Re-entrant: a main-model
             # retry (_generate_summary recursion) re-enters harmlessly.
             with aux_interrupt_protection():
+                # This is the actual auxiliary-provider boundary. The earlier
+                # compress_context entry check protects setup; re-attesting here
+                # closes drift during token pruning/lock acquisition and stays
+                # outside all provider fallback semantics.
+                attest_pinned_effective_config_projection()
                 response = call_llm(**call_kwargs)
             # ``_validate_llm_response`` only guarantees ``choices[0].message``
             # exists, not that it's an object with ``.content``. Some
@@ -2069,6 +2079,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_summary_auth_failure = False
             self._last_summary_network_failure = False
             return self._with_summary_prefix(summary)
+        except PinnedEffectiveConfigError:
+            raise
         except Exception as e:
             # ``call_llm`` raises ``RuntimeError`` for two very different cases:
             #   1. No provider configured ("No LLM provider configured ...") —

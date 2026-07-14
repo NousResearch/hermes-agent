@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -37,6 +38,10 @@ logger = logging.getLogger(__name__)
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
+
+
+class PinnedEffectiveConfigError(RuntimeError):
+    """The process-pinned effective config can no longer be proven exact."""
 
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
@@ -255,6 +260,20 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+
+
+@dataclass(frozen=True)
+class _PinnedEffectiveConfig:
+    """One-way process authority for an exact on-disk config projection."""
+
+    path: Path
+    path_chain_identity: Tuple[Tuple[int, int, int], ...]
+    raw_sha256: str
+    raw_bytes: bytes
+    projection: Dict[str, Any]
+
+
+_PINNED_EFFECTIVE_CONFIG: Optional[_PinnedEffectiveConfig] = None
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -6673,6 +6692,370 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
+_MAX_PINNED_CONFIG_BYTES = 2 * 1024 * 1024
+
+
+def _pinned_config_fs_error(action: str, exc: OSError) -> PinnedEffectiveConfigError:
+    """Normalize a filesystem failure without disclosing the sealed path."""
+    wrapped = PinnedEffectiveConfigError(
+        f"pinned effective config filesystem {action} failed"
+    )
+    wrapped.__cause__ = exc
+    return wrapped
+
+
+def _pinned_path_chain_identity(
+    config_path: Path,
+) -> Tuple[Tuple[int, int, int], ...]:
+    """Return exact non-symlink identities from the filesystem root to config."""
+    path = Path(config_path)
+    if not path.is_absolute() or not path.anchor:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config path is not absolute"
+        )
+    parts = path.parts
+    if not parts or parts[0] != path.anchor or any(
+        part in {"", ".", ".."} for part in parts[1:]
+    ):
+        raise PinnedEffectiveConfigError(
+            "pinned effective config path is not canonical"
+        )
+
+    current = Path(path.anchor)
+    chain: List[Tuple[int, int, int]] = []
+    for index, part in enumerate((path.anchor, *parts[1:])):
+        if index:
+            current /= part
+        try:
+            item = os.lstat(current)
+        except OSError as exc:
+            raise _pinned_config_fs_error("path inspection", exc)
+        if stat.S_ISLNK(item.st_mode):
+            raise PinnedEffectiveConfigError(
+                "pinned effective config path contains a symbolic link"
+            )
+        is_final = index == len(parts) - 1
+        if (not is_final and not stat.S_ISDIR(item.st_mode)) or (
+            is_final and not stat.S_ISREG(item.st_mode)
+        ):
+            raise PinnedEffectiveConfigError(
+                "pinned effective config path type is invalid"
+            )
+        chain.append(
+            (
+                int(item.st_dev),
+                int(item.st_ino),
+                int(stat.S_IFMT(item.st_mode)),
+            )
+        )
+    return tuple(chain)
+
+
+def _read_stable_pinned_config_bytes(
+    config_path: Path,
+    *,
+    expected_path_chain: Optional[Tuple[Tuple[int, int, int], ...]] = None,
+) -> bytes:
+    """Read pinned bytes and preserve every filesystem/cleanup failure."""
+    before_chain = _pinned_path_chain_identity(config_path)
+    if expected_path_chain is not None and before_chain != expected_path_chain:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config path identity drifted"
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(config_path, flags)
+    except OSError as exc:
+        raise _pinned_config_fs_error("open", exc)
+
+    result: Optional[bytes] = None
+    primary_error: Optional[BaseException] = None
+    try:
+        try:
+            before = os.fstat(fd)
+        except OSError as exc:
+            raise _pinned_config_fs_error("fstat", exc)
+        opened_identity = (
+            int(before.st_dev),
+            int(before.st_ino),
+            int(stat.S_IFMT(before.st_mode)),
+        )
+        if not before_chain or opened_identity != before_chain[-1]:
+            raise PinnedEffectiveConfigError(
+                "pinned effective config path changed before open"
+            )
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not 0 < before.st_size <= _MAX_PINNED_CONFIG_BYTES
+        ):
+            raise PinnedEffectiveConfigError(
+                "pinned effective config metadata is invalid"
+            )
+        chunks: List[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            try:
+                chunk = os.read(fd, min(remaining, 128 * 1024))
+            except OSError as exc:
+                raise _pinned_config_fs_error("read", exc)
+            if not chunk:
+                raise PinnedEffectiveConfigError(
+                    "pinned effective config was truncated"
+                )
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        try:
+            grew = os.read(fd, 1)
+        except OSError as exc:
+            raise _pinned_config_fs_error("read", exc)
+        if grew:
+            raise PinnedEffectiveConfigError(
+                "pinned effective config grew during read"
+            )
+        try:
+            after = os.fstat(fd)
+        except OSError as exc:
+            raise _pinned_config_fs_error("fstat", exc)
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if before_identity != after_identity:
+            raise PinnedEffectiveConfigError(
+                "pinned effective config changed during read"
+            )
+        after_chain = _pinned_path_chain_identity(config_path)
+        if after_chain != before_chain or (
+            expected_path_chain is not None
+            and after_chain != expected_path_chain
+        ):
+            raise PinnedEffectiveConfigError(
+                "pinned effective config path identity drifted during read"
+            )
+        result = b"".join(chunks)
+    except OSError as exc:
+        primary_error = _pinned_config_fs_error("read", exc)
+    except BaseException as exc:
+        # Preserve our typed boundary failures and unexpected interpreter
+        # failures while still guaranteeing that the descriptor is closed.
+        primary_error = exc
+
+    close_error: Optional[PinnedEffectiveConfigError] = None
+    try:
+        os.close(fd)
+    except OSError as exc:
+        close_error = _pinned_config_fs_error("close", exc)
+
+    if primary_error is not None and close_error is not None:
+        group_type = (
+            ExceptionGroup
+            if isinstance(primary_error, Exception)
+            else BaseExceptionGroup
+        )
+        combined = group_type(
+            "pinned effective config read and descriptor cleanup both failed",
+            [primary_error, close_error],
+        )
+        raise PinnedEffectiveConfigError(
+            "pinned effective config read and cleanup failed"
+        ) from combined
+    if primary_error is not None:
+        raise primary_error
+    if close_error is not None:
+        raise close_error
+    if result is None:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config read produced no bytes"
+        )
+    return result
+
+
+def _parse_pinned_effective_config(raw_bytes: bytes) -> Dict[str, Any]:
+    """Parse pinned bytes with no fallback, normalization, or env expansion."""
+    try:
+        text = raw_bytes.decode("utf-8", errors="strict")
+        parsed = fast_safe_load(text)
+    except Exception as exc:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config parse failed"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise PinnedEffectiveConfigError(
+            "pinned effective config root is not a mapping"
+        )
+    return parsed
+
+
+def _pinned_effective_config_snapshot() -> Optional[Dict[str, Any]]:
+    """Return a defensive copy of the immutable in-memory authority."""
+    pin = _PINNED_EFFECTIVE_CONFIG
+    if pin is None:
+        return None
+    # The private projection is never returned by reference. In pinned mode all
+    # semantic reads consume this exact approved snapshot; filesystem state is
+    # checked only at explicit authority boundaries so legacy best-effort config
+    # catches cannot turn a transient I/O fault into defaults or alternate
+    # routing.
+    return copy.deepcopy(pin.projection)
+
+
+def _attest_pinned_effective_config() -> Optional[str]:
+    """Re-attest path, bytes, digest, and parse state for an active pin."""
+    pin = _PINNED_EFFECTIVE_CONFIG
+    if pin is None:
+        return None
+    if get_config_path() != pin.path:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config path drifted"
+        )
+
+    from hermes_cli import managed_scope
+
+    if managed_scope.get_managed_dir() is not None:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config managed scope appeared"
+        )
+    current_raw = _read_stable_pinned_config_bytes(
+        pin.path,
+        expected_path_chain=pin.path_chain_identity,
+    )
+    if current_raw != pin.raw_bytes:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config raw content drifted"
+        )
+    if hashlib.sha256(current_raw).hexdigest() != pin.raw_sha256:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config raw SHA-256 drifted"
+        )
+    if _parse_pinned_effective_config(current_raw) != pin.projection:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config parsed projection drifted"
+        )
+    return pin.raw_sha256
+
+
+def pin_effective_config_projection(
+    *,
+    config_path: Path,
+    raw_bytes: bytes,
+    raw_sha256: str,
+    exact_mapping: Mapping[str, Any],
+) -> str:
+    """One-way pin ``load_config`` to an exact, already-validated projection.
+
+    This is an explicit runtime boundary, not an environment-controlled mode.
+    The caller supplies strict raw bytes, their independently computed SHA-256,
+    and the exact mapping already approved by its own schema validator. Once
+    active, semantic config reads receive only defensive copies of this exact
+    in-memory projection. Explicit runtime authority boundaries call
+    :func:`attest_pinned_effective_config_projection` to recheck path,
+    managed-scope, bytes, digest, parse, and mapping state. The normal defaults,
+    managed overlay, last-known-good fallback, normalization, and env expansion
+    pipeline remains untouched when no process pin is active.
+    """
+    global _PINNED_EFFECTIVE_CONFIG
+
+    path = Path(config_path)
+    if not path.is_absolute() or path != get_config_path():
+        raise PinnedEffectiveConfigError(
+            "effective config pin path is not the active config path"
+        )
+    if not isinstance(raw_bytes, bytes) or not raw_bytes:
+        raise PinnedEffectiveConfigError(
+            "effective config pin raw bytes are invalid"
+        )
+    claimed_sha256 = str(raw_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", claimed_sha256):
+        raise PinnedEffectiveConfigError(
+            "effective config pin SHA-256 is invalid"
+        )
+    actual_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    if actual_sha256 != claimed_sha256:
+        raise PinnedEffectiveConfigError(
+            "effective config pin SHA-256 does not match raw bytes"
+        )
+    if not isinstance(exact_mapping, Mapping):
+        raise PinnedEffectiveConfigError(
+            "effective config pin projection is not a mapping"
+        )
+    projection = copy.deepcopy(dict(exact_mapping))
+
+    with _CONFIG_LOCK:
+        from hermes_cli import managed_scope
+
+        if managed_scope.get_managed_dir() is not None:
+            raise PinnedEffectiveConfigError(
+                "effective config pin rejects managed scope"
+            )
+        path_chain_identity = _pinned_path_chain_identity(path)
+        current_raw = _read_stable_pinned_config_bytes(
+            path,
+            expected_path_chain=path_chain_identity,
+        )
+        if current_raw != raw_bytes:
+            raise PinnedEffectiveConfigError(
+                "effective config changed before pin activation"
+            )
+        if _parse_pinned_effective_config(current_raw) != projection:
+            raise PinnedEffectiveConfigError(
+                "effective config pin projection does not match raw bytes"
+            )
+
+        candidate = _PinnedEffectiveConfig(
+            path=path,
+            path_chain_identity=path_chain_identity,
+            raw_sha256=claimed_sha256,
+            raw_bytes=raw_bytes,
+            projection=projection,
+        )
+        existing = _PINNED_EFFECTIVE_CONFIG
+        if existing is not None and existing != candidate:
+            raise PinnedEffectiveConfigError(
+                "effective config projection is already pinned"
+            )
+        _PINNED_EFFECTIVE_CONFIG = candidate
+        path_key = str(path)
+        _LOAD_CONFIG_CACHE.pop(path_key, None)
+        _RAW_CONFIG_CACHE.pop(path_key, None)
+        _LAST_EXPANDED_CONFIG_BY_PATH.pop(path_key, None)
+        # Activate only after the same explicit authority attestation used at
+        # runtime succeeds, then prove the semantic snapshot is exact.
+        if (
+            _attest_pinned_effective_config() != claimed_sha256
+            or _pinned_effective_config_snapshot() != projection
+        ):
+            raise PinnedEffectiveConfigError(
+                "effective config projection attestation failed"
+            )
+        return claimed_sha256
+
+
+def effective_config_projection_is_pinned() -> bool:
+    """Return whether the one-way process config authority is active."""
+    with _CONFIG_LOCK:
+        return _PINNED_EFFECTIVE_CONFIG is not None
+
+
+def attest_pinned_effective_config_projection() -> Optional[str]:
+    """Re-attest an active pin and return its SHA-256, or ``None`` when inactive."""
+    with _CONFIG_LOCK:
+        return _attest_pinned_effective_config()
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
@@ -6687,6 +7070,9 @@ def read_raw_config() -> Dict[str, Any]:
     mutate the result before passing to ``save_config()``.
     """
     with _CONFIG_LOCK:
+        pinned = _pinned_effective_config_snapshot()
+        if pinned is not None:
+            return pinned
         try:
             config_path = get_config_path()
             st = config_path.stat()
@@ -6775,6 +7161,12 @@ def load_config() -> Dict[str, Any]:
     Read-only callers should use ``load_config_readonly()`` to skip the
     defensive deepcopy — that path matters in agent-loop hot spots like
     ``get_provider_request_timeout`` which is called once per API turn.
+
+    A process may explicitly activate an exact effective-config projection via
+    :func:`pin_effective_config_projection`. In that mode this function bypasses
+    the ordinary defaults/overlay/fallback pipeline and returns a defensive copy
+    of the exact in-memory authority without filesystem I/O. Runtime boundaries
+    re-attest it explicitly via :func:`attest_pinned_effective_config_projection`.
     """
     return _load_config_impl(want_deepcopy=True)
 
@@ -6798,6 +7190,9 @@ def load_config_readonly() -> Dict[str, Any]:
     Note: this returns a plain ``dict`` (not ``MappingProxyType``) so
     existing ``isinstance(x, dict)`` guards downstream keep working. The
     safety guarantee is purely documented, not enforced — be careful.
+
+    Process-pinned projections are the exception: they always return a
+    defensive copy so a readonly caller cannot mutate the sealed authority.
     """
     return _load_config_impl(want_deepcopy=False)
 
@@ -6921,6 +7316,9 @@ def apply_terminal_config_to_env(
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
+        pinned = _pinned_effective_config_snapshot()
+        if pinned is not None:
+            return pinned
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)

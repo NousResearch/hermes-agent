@@ -554,6 +554,18 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    # A process-pinned effective config is live runtime authority. Re-attest
+    # before the turn prologue so drift cannot reach preflight compression,
+    # plugin hooks, MCP refresh, or the codex app-server early-return path.
+    # This reads no prompt/message state and therefore cannot affect prefix
+    # caching or role alternation.
+    from hermes_cli.config import (
+        PinnedEffectiveConfigError,
+        attest_pinned_effective_config_projection,
+    )
+
+    attest_pinned_effective_config_projection()
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
@@ -620,6 +632,7 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        attest_pinned_effective_config_projection()
         return agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
@@ -1141,6 +1154,12 @@ def run_conversation(
                 except Exception:
                     pass  # Never let rate guard break the agent loop
 
+            # An explicit effective-config pin is a live runtime authority, not
+            # merely startup validation. Re-attest outside the provider retry
+            # handler so path/content/hash/parse drift can never be classified
+            # as a transient API error or followed by an LLM call.
+            attest_pinned_effective_config_projection()
+
             try:
                 agent._reset_stream_delivery_tracking()
                 # api_messages is built once, before this retry loop, while the
@@ -1347,6 +1366,11 @@ def run_conversation(
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
                         )
+                    # Execution middleware may perform arbitrary work before
+                    # invoking this closure. Re-attest at the final transport
+                    # boundary so drift after request construction can never
+                    # reach either streaming or non-streaming provider I/O.
+                    attest_pinned_effective_config_projection()
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
@@ -2345,6 +2369,11 @@ def run_conversation(
                 agent._persist_session(messages, conversation_history)
                 break
 
+            except PinnedEffectiveConfigError:
+                # A sealed runtime-authority violation is not a provider
+                # failure. Never retry, route to fallback, or downgrade it to
+                # a user-facing API error.
+                raise
             except Exception as api_error:
                 # Stop spinner silently — retry status is buffered and
                 # only flushed when every retry+fallback is exhausted.
@@ -5258,6 +5287,11 @@ def run_conversation(
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break
             
+        except PinnedEffectiveConfigError:
+            # Post-tool compression runs inside this outer loop guard. A
+            # sealed-config violation from that provider boundary must retain
+            # the same fail-closed semantics as main-call and prologue checks.
+            raise
         except Exception as e:
             error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
             try:

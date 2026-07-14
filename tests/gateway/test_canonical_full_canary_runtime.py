@@ -1806,6 +1806,11 @@ def _prepare_required_gateway_config_test(
     monkeypatch: pytest.MonkeyPatch,
 ):
     from gateway import run
+    from hermes_cli import config as config_module
+
+    # The production pin is intentionally one-way for the life of a process.
+    # Each test gets its own synthetic process authority via monkeypatch.
+    monkeypatch.setattr(config_module, "_PINNED_EFFECTIVE_CONFIG", None)
 
     gateway_home = tmp_path / "gateway-home"
     profile_home = gateway_home / ".hermes"
@@ -1838,14 +1843,47 @@ def test_required_gateway_config_accepts_only_exact_effective_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from hermes_cli import config as config_module
+
     run, config, _environment, _disabled = _prepare_required_gateway_config_test(
         tmp_path,
         monkeypatch,
+    )
+    monkeypatch.setitem(
+        config_module.DEFAULT_CONFIG,
+        "future_semantic_default",
+        {"must_not_enter_isolated_runtime": True},
     )
     parsed = run._load_required_canonical_gateway_config(str(config))
     assert parsed.platforms[run.Platform.API_SERVER].enabled is True
     assert parsed.isolated_runtime is True
     assert parsed.isolated_plugin_allowlist == ("muncho_canary_evidence",)
+
+    expected = _gateway_config()
+    effective = config_module.load_config()
+    assert effective == expected
+    assert config_module.load_config_readonly() == expected
+    assert config_module.read_raw_config() == expected
+    assert run._load_gateway_config() == expected
+    assert run._load_gateway_runtime_config() == expected
+    assert "future_semantic_default" not in effective
+    assert effective["agent"]["adaptive_reasoning"] == {
+        "enabled": True,
+        "max_effort": "xhigh",
+    }
+    assert effective["kanban"] == {
+        "auxiliary_planning_enabled": False,
+        "auto_decompose": False,
+        "dispatch_in_gateway": False,
+    }
+    assert effective["platform_toolsets"] == {
+        "api_server": ["canonical_brain", "todo"]
+    }
+
+    # Consumers receive defensive copies; no in-process caller can rewrite the
+    # process authority without changing the sealed bytes.
+    effective["agent"]["reasoning_effort"] = "low"
+    assert config_module.load_config()["agent"]["reasoning_effort"] == "high"
 
 
 @pytest.mark.parametrize(
@@ -1884,6 +1922,8 @@ def test_required_gateway_config_rejects_managed_overlay_or_effective_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from hermes_cli import config as config_module
+
     run, config, environment, disabled = _prepare_required_gateway_config_test(
         tmp_path,
         monkeypatch,
@@ -1895,10 +1935,168 @@ def test_required_gateway_config_rejects_managed_overlay_or_effective_drift(
     disabled.rmdir()
     drifted = _gateway_config()
     drifted["model"] = {"default": "other-model", "provider": "custom"}
-    monkeypatch.setattr(run, "_load_gateway_config", lambda: drifted)
+    monkeypatch.setattr(config_module, "load_config", lambda: drifted)
     assert environment["HERMES_MANAGED_DIR"] == str(disabled)
     with pytest.raises(RuntimeError, match="effective config drifted"):
         run._load_required_canonical_gateway_config(str(config))
+
+
+def test_effective_config_pin_rejects_claimed_raw_sha_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli import config as config_module
+
+    _run, config, _environment, _disabled = _prepare_required_gateway_config_test(
+        tmp_path,
+        monkeypatch,
+    )
+    raw = config.read_bytes()
+    sealed = _validate_gateway_config(raw)
+
+    with pytest.raises(
+        config_module.PinnedEffectiveConfigError,
+        match="SHA-256 does not match raw bytes",
+    ):
+        config_module.pin_effective_config_projection(
+            config_path=config,
+            raw_bytes=raw,
+            raw_sha256="0" * 64,
+            exact_mapping=sealed,
+        )
+    assert config_module.effective_config_projection_is_pinned() is False
+
+
+def test_post_pin_raw_or_path_drift_stays_out_of_snapshot_and_fails_at_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli import config as config_module
+
+    run, config, _environment, _disabled = _prepare_required_gateway_config_test(
+        tmp_path,
+        monkeypatch,
+    )
+    run._load_required_canonical_gateway_config(str(config))
+    assert config_module.effective_config_projection_is_pinned() is True
+
+    drifted = _gateway_config()
+    drifted["future_semantic_default"] = {"enabled": True}
+    config.write_bytes(_yaml_bytes(drifted))
+
+    expected = _gateway_config()
+    readers = (
+        config_module.load_config,
+        config_module.load_config_readonly,
+        config_module.read_raw_config,
+        run._load_gateway_config,
+        run._load_gateway_runtime_config,
+    )
+    for reader in readers:
+        assert reader() == expected
+    with pytest.raises(
+        config_module.PinnedEffectiveConfigError,
+        match="raw content drifted",
+    ):
+        config_module.attest_pinned_effective_config_projection()
+
+    config.write_bytes(_yaml_bytes(_gateway_config()))
+    monkeypatch.setattr(
+        config_module,
+        "get_config_path",
+        lambda: tmp_path / "other" / "config.yaml",
+    )
+    assert config_module.load_config() == expected
+    with pytest.raises(
+        config_module.PinnedEffectiveConfigError,
+        match="path drifted",
+    ):
+        config_module.attest_pinned_effective_config_projection()
+
+
+def test_post_pin_parse_failure_and_managed_scope_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli import config as config_module
+
+    run, config, _environment, disabled = _prepare_required_gateway_config_test(
+        tmp_path,
+        monkeypatch,
+    )
+    run._load_required_canonical_gateway_config(str(config))
+
+    def fail_parse(_stream):
+        raise ValueError("synthetic parser failure")
+
+    with monkeypatch.context() as parse_patch:
+        parse_patch.setattr(config_module, "fast_safe_load", fail_parse)
+        assert config_module.load_config() == _gateway_config()
+        with pytest.raises(
+            config_module.PinnedEffectiveConfigError,
+            match="parse failed",
+        ):
+            config_module.attest_pinned_effective_config_projection()
+
+    disabled.mkdir()
+    assert config_module.load_config() == _gateway_config()
+    with pytest.raises(
+        config_module.PinnedEffectiveConfigError,
+        match="managed scope appeared",
+    ):
+        config_module.attest_pinned_effective_config_projection()
+
+
+def test_post_pin_drift_cannot_bypass_gateway_budget_or_provider_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli import config as config_module
+    from hermes_cli import runtime_provider
+
+    run, config, environment, _disabled = _prepare_required_gateway_config_test(
+        tmp_path,
+        monkeypatch,
+    )
+    run._load_required_canonical_gateway_config(str(config))
+
+    drifted = _gateway_config()
+    drifted["agent"]["max_turns"] = 999
+    drifted["provider_routing"] = {"order": ["attacker"]}
+    drifted["fallback_model"] = {
+        "provider": "custom",
+        "model": "attacker-model",
+    }
+    config.write_bytes(_yaml_bytes(drifted))
+    environment["HERMES_MAX_ITERATIONS"] = "90"
+
+    run._bridge_max_turns_from_config(config.parent)
+    assert environment["HERMES_MAX_ITERATIONS"] == "90"
+
+    assert run.GatewayRunner._load_provider_routing() == {}
+    assert run.GatewayRunner._load_fallback_model() is None
+
+    prior_fallback = [{"provider": "sealed", "model": "sealed-model"}]
+    runner = SimpleNamespace(_fallback_model=prior_fallback)
+    refresh = run.GatewayRunner._refresh_fallback_model.__get__(runner)
+    assert refresh() is None
+    assert runner._fallback_model is None
+
+    def must_not_resolve_provider(**_kwargs):
+        raise AssertionError("drifted fallback route reached provider resolution")
+
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        must_not_resolve_provider,
+    )
+    assert run._try_resolve_fallback_provider() is None
+
+    with pytest.raises(
+        config_module.PinnedEffectiveConfigError,
+        match="raw content drifted",
+    ):
+        config_module.attest_pinned_effective_config_projection()
 
 
 def test_plugin_readiness_binds_authenticated_frame_and_live_gateway(

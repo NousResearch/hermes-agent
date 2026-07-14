@@ -1389,28 +1389,49 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     _bridge_max_turns_from_config(_hermes_home)
 
 
+def _load_pinned_effective_config_if_active() -> dict | None:
+    """Return the exact process projection when explicitly pinned.
+
+    The caller must keep this check outside any ordinary fail-open YAML read
+    handler so the sealed snapshot can never be replaced by a default or
+    last-known-good value.
+    """
+    from hermes_cli.config import (
+        effective_config_projection_is_pinned,
+        load_config,
+    )
+
+    if not effective_config_projection_is_pinned():
+        return None
+    return load_config()
+
+
 def _bridge_max_turns_from_config(home: "Path") -> None:
     """Bridge config.yaml agent.max_turns into HERMES_MAX_ITERATIONS (a global)."""
-    config_path = home / 'config.yaml'
-    if not config_path.exists():
-        return
-    try:
-        import yaml as _yaml
-        with open(config_path, encoding="utf-8") as f:
-            cfg = _yaml.safe_load(f) or {}
-        from hermes_cli.config import _expand_env_vars
-        cfg = _expand_env_vars(cfg)
-        # Managed scope: keep administrator-pinned values authoritative on every
-        # turn too. This per-turn reload re-bridges config→env, so without the
-        # overlay a managed agent.max_turns / timezone / redact_secrets would be
-        # replaced by the user's value after the first turn. Fail-open.
+    pinned_cfg = _load_pinned_effective_config_if_active()
+    if pinned_cfg is not None:
+        cfg = pinned_cfg
+    else:
+        config_path = home / 'config.yaml'
+        if not config_path.exists():
+            return
         try:
-            from hermes_cli import managed_scope
-            cfg = managed_scope.apply_managed_overlay(cfg)
+            import yaml as _yaml
+            with open(config_path, encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+            from hermes_cli.config import _expand_env_vars
+            cfg = _expand_env_vars(cfg)
+            # Managed scope: keep administrator-pinned values authoritative on every
+            # turn too. This per-turn reload re-bridges config→env, so without the
+            # overlay a managed agent.max_turns / timezone / redact_secrets would be
+            # replaced by the user's value after the first turn. Fail-open.
+            try:
+                from hermes_cli import managed_scope
+                cfg = managed_scope.apply_managed_overlay(cfg)
+            except Exception:
+                pass
         except Exception:
-            pass
-    except Exception:
-        return
+            return
 
     agent_cfg = cfg.get("agent", {})
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
@@ -1998,54 +2019,60 @@ def _credential_pool_for_provider(provider: Optional[str]):
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    try:
-        import yaml as _y
-        cfg_path = _hermes_home / "config.yaml"
-        if not cfg_path.exists():
-            return None
-        with open(cfg_path, encoding="utf-8") as _f:
-            cfg = _y.safe_load(_f) or {}
+
+    pinned_cfg = _load_pinned_effective_config_if_active()
+    if pinned_cfg is not None:
+        cfg = pinned_cfg
         fb_list = get_fallback_chain(cfg)
-        if not fb_list:
+    else:
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if not cfg_path.exists():
+                return None
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _y.safe_load(_f) or {}
+            fb_list = get_fallback_chain(cfg)
+        except Exception:
             return None
-        for entry in fb_list:
-            try:
-                explicit_api_key = entry.get("api_key")
-                if not explicit_api_key:
-                    key_env = str(
-                        entry.get("key_env") or entry.get("api_key_env") or ""
-                    ).strip()
-                    if key_env:
-                        explicit_api_key = os.getenv(key_env, "").strip() or None
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"),
-                    explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=explicit_api_key,
-                )
-                # Log the literal `provider` key from config, not the resolved
-                # runtime category — an Ollama fallback resolves through the
-                # OpenAI-compatible path and would otherwise be logged as
-                # "openrouter", contradicting the operator's config (#32790).
-                logger.info(
-                    "Fallback provider resolved: %s model=%s",
-                    entry.get("provider") or runtime.get("provider"),
-                    entry.get("model"),
-                )
-                return {
-                    "api_key": runtime.get("api_key"),
-                    "base_url": runtime.get("base_url"),
-                    "provider": runtime.get("provider"),
-                    "api_mode": runtime.get("api_mode"),
-                    "command": runtime.get("command"),
-                    "args": list(runtime.get("args") or []),
-                    "credential_pool": runtime.get("credential_pool"),
-                    "model": entry.get("model"),
-                }
-            except Exception as fb_exc:
-                logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
-                continue
-    except Exception:
-        pass
+    if not fb_list:
+        return None
+    for entry in fb_list:
+        try:
+            explicit_api_key = entry.get("api_key")
+            if not explicit_api_key:
+                key_env = str(
+                    entry.get("key_env") or entry.get("api_key_env") or ""
+                ).strip()
+                if key_env:
+                    explicit_api_key = os.getenv(key_env, "").strip() or None
+            runtime = resolve_runtime_provider(
+                requested=entry.get("provider"),
+                explicit_base_url=entry.get("base_url"),
+                explicit_api_key=explicit_api_key,
+            )
+            # Log the literal `provider` key from config, not the resolved
+            # runtime category — an Ollama fallback resolves through the
+            # OpenAI-compatible path and would otherwise be logged as
+            # "openrouter", contradicting the operator's config (#32790).
+            logger.info(
+                "Fallback provider resolved: %s model=%s",
+                entry.get("provider") or runtime.get("provider"),
+                entry.get("model"),
+            )
+            return {
+                "api_key": runtime.get("api_key"),
+                "base_url": runtime.get("base_url"),
+                "provider": runtime.get("provider"),
+                "api_mode": runtime.get("api_mode"),
+                "command": runtime.get("command"),
+                "args": list(runtime.get("args") or []),
+                "credential_pool": runtime.get("credential_pool"),
+                "model": entry.get("model"),
+            }
+        except Exception as fb_exc:
+            logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
+            continue
     return None
 
 
@@ -2374,8 +2401,17 @@ def _load_gateway_config() -> dict:
 
     Managed scope is overlaid on the result (via the shared helper) so the
     gateway honors administrator-pinned values — neither read_raw_config nor a
-    direct yaml.safe_load carries the managed merge on its own. Fail-open.
+    direct yaml.safe_load carries the managed merge on its own. The ordinary
+    path remains fail-open; an explicit process pin returns only its sealed
+    snapshot. Live filesystem attestation happens at runtime authority
+    boundaries before model work.
     """
+    pinned_cfg = _load_pinned_effective_config_if_active()
+    if pinned_cfg is not None:
+        # The explicit process pin is already the full effective authority.
+        # Do not re-enter the ordinary raw/managed/normalization pipeline.
+        return pinned_cfg
+
     config_home = _gateway_config_home()
     config_path = config_home / 'config.yaml'
     raw: dict = {}
@@ -2438,6 +2474,11 @@ def _load_gateway_runtime_config() -> dict:
     Expansion failures are intentionally NOT swallowed — silently returning
     the unexpanded dict would mask the very bug this helper exists to fix.
     """
+    pinned_cfg = _load_pinned_effective_config_if_active()
+    if pinned_cfg is not None:
+        # A pinned projection is already exact. Expanding environment
+        # references here would create a second, unattested effective config.
+        return pinned_cfg
     cfg = _load_gateway_config()
     if not isinstance(cfg, dict) or not cfg:
         return {}
@@ -5174,6 +5215,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _load_provider_routing() -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
+        pinned_cfg = _load_pinned_effective_config_if_active()
+        if pinned_cfg is not None:
+            return pinned_cfg.get("provider_routing", {}) or {}
         try:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
@@ -5193,6 +5237,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         legacy ``fallback_model`` entries. ``fallback_providers`` stays first
         when both keys are present.
         """
+        pinned_cfg = _load_pinned_effective_config_if_active()
+        if pinned_cfg is not None:
+            return get_fallback_chain(pinned_cfg) or None
         try:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
@@ -5220,6 +5267,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cached agent's working fallback for that turn.  Only a successful read
         that genuinely lacks the key clears the chain.
         """
+        pinned_cfg = _load_pinned_effective_config_if_active()
+        if pinned_cfg is not None:
+            self._fallback_model = get_fallback_chain(pinned_cfg) or None
+            return self._fallback_model
         try:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
@@ -21994,6 +22045,10 @@ def _load_required_canonical_gateway_config(config_path: str) -> GatewayConfig:
         gateway_effective_environment_is_sealed,
     )
     from hermes_cli import managed_scope
+    from hermes_cli.config import (
+        load_config,
+        pin_effective_config_projection,
+    )
 
     path = Path(config_path)
     if path != DEFAULT_GATEWAY_CONFIG or path != _gateway_config_home() / "config.yaml":
@@ -22033,11 +22088,23 @@ def _load_required_canonical_gateway_config(config_path: str) -> GatewayConfig:
 
     first_raw = _read_stable_required_canonical_gateway_config(path)
     sealed = _validate_gateway_config(first_raw)
-    effective = _load_gateway_config()
+    raw_sha256 = hashlib.sha256(first_raw).hexdigest()
+    pinned_sha256 = pin_effective_config_projection(
+        config_path=path,
+        raw_bytes=first_raw,
+        raw_sha256=raw_sha256,
+        exact_mapping=sealed,
+    )
+    effective = load_config()
     second_raw = _read_stable_required_canonical_gateway_config(path)
-    if second_raw != first_raw or effective != sealed:
+    if (
+        pinned_sha256 != raw_sha256
+        or hashlib.sha256(second_raw).hexdigest() != raw_sha256
+        or second_raw != first_raw
+        or effective != sealed
+    ):
         raise RuntimeError("required canonical gateway effective config drifted")
-    return GatewayConfig.from_dict(dict(sealed))
+    return GatewayConfig.from_dict(dict(effective))
 
 
 def main():

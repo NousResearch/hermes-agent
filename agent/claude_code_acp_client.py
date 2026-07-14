@@ -55,11 +55,19 @@ _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*
 
 
 def _resolve_command() -> str:
-    return (
+    override = (
         os.getenv("HERMES_CLAUDE_ACP_COMMAND", "").strip()
         or os.getenv("CLAUDE_CODE_ACP_PATH", "").strip()
-        or "claude-code-acp"
     )
+    if override:
+        return override
+    import shutil
+    # Prefer the maintained package bin (@agentclientprotocol/claude-agent-acp);
+    # fall back to the original @zed-industries/claude-code-acp bin.
+    for candidate in ("claude-agent-acp", "claude-code-acp"):
+        if shutil.which(candidate):
+            return candidate
+    return "claude-agent-acp"
 
 
 def _resolve_args() -> list[str]:
@@ -520,7 +528,7 @@ class ClaudeCodeACPClient:
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"Could not start the Claude Code ACP bridge '{self._acp_command}'. "
-                "Install it with `npm install -g @zed-industries/claude-code-acp` "
+                "Install it with `npm install -g @agentclientprotocol/claude-agent-acp` "
                 "and make sure the Claude Code CLI is logged in (`claude` / "
                 "`claude setup-token`), or point Hermes at the bridge explicitly "
                 "with HERMES_CLAUDE_ACP_COMMAND / CLAUDE_CODE_ACP_PATH."

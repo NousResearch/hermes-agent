@@ -18,6 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **Claude Code ACP** | `hermes model` (drives the local Claude Code CLI via the ACP bridge — inference stays on your Claude plan, no metered API) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
@@ -209,6 +210,28 @@ model:
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+
+**`claude-code-acp` — Claude Code on your Claude plan (ACP)**. Drives the local Claude Code CLI through the vendor ACP bridge, so inference is billed against your Claude Pro/Max plan instead of the metered API:
+
+```bash
+hermes chat --provider claude-code-acp --model claude-sonnet-4-6
+# Requires: npm install -g @agentclientprotocol/claude-agent-acp
+# and a logged-in Claude Code CLI (`claude` / `claude setup-token`)
+```
+
+Why not the plain `anthropic` provider: pointing the HTTP `anthropic` transport at a Claude Code OAuth token is treated as third-party API usage and fails with HTTP 400 (*"third-party apps draw from your extra usage, not your plan limits"*). The ACP bridge runs the real Claude Code CLI, keeping inference on your plan. No API key is used — auth is your existing local Claude Code login (keychain / `~/.claude`).
+
+**Permanent config:**
+```yaml
+model:
+  provider: "claude-code-acp"
+  default: "claude-sonnet-4-6"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `HERMES_CLAUDE_ACP_COMMAND` | Override the ACP bridge binary (default: `claude-agent-acp`, falls back to `claude-code-acp`) |
+| `HERMES_CLAUDE_ACP_ARGS` | Override ACP args (default: none) |
 
 ### First-Class API-Key Providers
 
@@ -1479,7 +1502,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `claude-code-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

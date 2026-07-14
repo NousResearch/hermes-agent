@@ -6528,13 +6528,18 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
         command = (
             os.getenv("HERMES_CLAUDE_ACP_COMMAND", "").strip()
             or os.getenv("CLAUDE_CODE_ACP_PATH", "").strip()
-            or "claude-code-acp"
         )
+        if not command:
+            # Prefer the maintained package bin, fall back to the original.
+            command = next(
+                (c for c in ("claude-agent-acp", "claude-code-acp") if shutil.which(c)),
+                "claude-agent-acp",
+            )
         raw_args = os.getenv("HERMES_CLAUDE_ACP_ARGS", "").strip()
         args = shlex.split(raw_args) if raw_args else []
         _cli_label = "Claude Code ACP bridge"
         _install_hint = (
-            "Install it with `npm install -g @zed-industries/claude-code-acp` "
+            "Install it with `npm install -g @agentclientprotocol/claude-agent-acp` "
             "(and log in with the Claude Code CLI), or set "
             "HERMES_CLAUDE_ACP_COMMAND/CLAUDE_CODE_ACP_PATH."
         )

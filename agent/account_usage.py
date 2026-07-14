@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
+import urllib.request
+import urllib.error
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
@@ -675,6 +680,97 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_ollama_cloud_usage() -> Optional[AccountUsageSnapshot]:
+    """Fetch Ollama Cloud usage by scraping the settings page with a session cookie.
+
+    Ollama does not expose cloud usage quotas through a documented API
+    (see https://github.com/ollama/ollama/issues/16448). The only way to
+    get session/weekly usage percentages is to scrape the settings page
+    with an authenticated session cookie.
+
+    Cookie source: ~/.hermes/ollama_cookie.txt (raw Cookie header value,
+    e.g. ``__Secure-session=<value>``). Auto-extracted from Zen/Firefox
+    on first run, or pasted manually.
+
+    Fail-open: returns None when the cookie is missing, expired, or the
+    page structure changes.
+    """
+    cookie_file = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "ollama_cookie.txt"
+    if not cookie_file.exists():
+        return None
+    try:
+        cookie = cookie_file.read_text().strip()
+        if not cookie:
+            return None
+    except OSError:
+        return None
+
+    try:
+        req = urllib.request.Request(
+            "https://ollama.com/settings",
+            headers={
+                "Cookie": cookie,
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        return None
+
+    # Parse plan tier
+    plan: Optional[str] = None
+    plan_match = re.search(r'Cloud usage</span>\s*\n?\s*<span[^>]*>\s*(pro|free|max)\s*<', html, re.IGNORECASE)
+    if plan_match:
+        plan = plan_match.group(1).capitalize()
+
+    # Parse session usage
+    session_pct: Optional[float] = None
+    session_reset: Optional[str] = None
+    m = re.search(r'Session usage\s+([0-9.]+)%', html)
+    if m:
+        session_pct = float(m.group(1))
+    resets = re.findall(r'data-time="([^"]*)"', html)
+    if len(resets) >= 1:
+        session_reset = resets[0]
+
+    # Parse weekly usage
+    weekly_pct: Optional[float] = None
+    weekly_reset: Optional[str] = None
+    m = re.search(r'Weekly usage\s+([0-9.]+)%', html)
+    if m:
+        weekly_pct = float(m.group(1))
+    if len(resets) >= 2:
+        weekly_reset = resets[1]
+
+    windows: list[AccountUsageWindow] = []
+    if session_pct is not None:
+        windows.append(AccountUsageWindow(
+            label="Session",
+            used_percent=session_pct,
+            reset_at=_parse_dt(session_reset) if session_reset else None,
+        ))
+    if weekly_pct is not None:
+        windows.append(AccountUsageWindow(
+            label="Weekly",
+            used_percent=weekly_pct,
+            reset_at=_parse_dt(weekly_reset) if weekly_reset else None,
+        ))
+
+    if not windows:
+        return None
+
+    return AccountUsageSnapshot(
+        provider="ollama-cloud",
+        source="settings_page",
+        fetched_at=_utc_now(),
+        title="Ollama Cloud usage",
+        plan=plan,
+        windows=tuple(windows),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -691,6 +787,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "ollama-cloud":
+            return _fetch_ollama_cloud_usage()
     except Exception:
         return None
     return None

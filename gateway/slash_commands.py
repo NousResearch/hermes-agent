@@ -3899,6 +3899,30 @@ class GatewaySlashCommandsMixin:
             lines.append("Complete your top-up in the browser — credits will appear in /credits shortly.")
         return "\n".join(lines)
 
+    async def _handle_ollama_command(self, event: MessageEvent) -> str:
+        """Handle /ollama -- show Ollama Cloud usage (session + weekly quotas).
+
+        Fetches usage data by scraping the settings page with a session cookie.
+        Fail-open: returns a helpful message when the cookie is missing or expired.
+        """
+        from agent.account_usage import _fetch_ollama_cloud_usage, render_account_usage_lines
+
+        try:
+            snapshot = await asyncio.to_thread(_fetch_ollama_cloud_usage)
+        except Exception:
+            snapshot = None
+
+        if not snapshot:
+            return (
+                "Ollama Cloud usage: unavailable.\n"
+                "To set up, save your session cookie:\n"
+                "  echo '__Secure-session=<value>' > ~/.hermes/ollama_cookie.txt\n"
+                "Get the value from ollama.com/settings while logged in."
+            )
+
+        lines = render_account_usage_lines(snapshot, markdown=True)
+        return "\n".join(lines)
+
     def _context_breakdown_lines(self, agent, source) -> list[str]:
         """Render the per-category context breakdown for /usage.
 

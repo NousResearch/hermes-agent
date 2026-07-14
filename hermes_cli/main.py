@@ -13087,6 +13087,12 @@ def main():
     _add_portal_parser(subparsers)
 
     # =========================================================================
+    # ollama command — Ollama Cloud usage and account info
+    # =========================================================================
+    from hermes_cli.ollama_cli import add_parser as _add_ollama_parser
+    _add_ollama_parser(subparsers)
+
+    # =========================================================================
     # kanban command — multi-profile collaboration board
     # =========================================================================
     from hermes_cli.kanban import build_parser as _build_kanban_parser

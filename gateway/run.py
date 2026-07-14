@@ -9967,6 +9967,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "credits":
             return await self._handle_credits_command(event)
 
+        if canonical == "ollama":
+            return await self._handle_ollama_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 

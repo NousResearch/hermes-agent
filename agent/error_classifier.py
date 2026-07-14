@@ -180,6 +180,7 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "try again",
     "retry",
     "resets at",
+    "resets in",
     "reset in",
     "wait",
     "requests remaining",
@@ -980,6 +981,25 @@ def _classify_by_status(
                 should_rotate_credential=False,
                 should_fallback=True,
                 error_context=ctx,
+            )
+        has_usage_limit = any(p in error_msg for p in (
+            "usage limit",
+            "quota",
+        ))
+        if has_usage_limit:
+            has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+            if has_transient_signal:
+                return result_fn(
+                    FailoverReason.rate_limit,
+                    retryable=True,
+                    should_rotate_credential=True,
+                    should_fallback=True,
+                )
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
             )
         return result_fn(
             FailoverReason.rate_limit,

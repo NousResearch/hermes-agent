@@ -1682,6 +1682,11 @@ class TestIsPaymentError:
         setattr(exc, "status_code", 429)
         assert _is_payment_error(exc) is True
 
+    def test_429_usage_limit_reached_is_payment(self):
+        exc = Exception("The usage limit has been reached")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
     def test_404_generic_not_found_is_not_payment(self):
         exc = Exception("Not Found")
         exc.status_code = 404
@@ -1741,6 +1746,11 @@ class TestIsPaymentError:
     def test_429_transient_rate_limit_not_quota(self):
         """Transient 429 rate limit without quota keywords is NOT a payment error."""
         exc = Exception("Rate limit exceeded. Retry after 10s.")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+    def test_429_usage_limit_with_reset_is_not_payment(self):
+        exc = Exception("Weekly usage limit reached. Resets in 6hr 29min.")
         exc.status_code = 429
         assert _is_payment_error(exc) is False
 
@@ -1936,6 +1946,16 @@ class TestIsRateLimitError:
         exc = Exception("you can only afford 1000 tokens")
         exc.status_code = 429
         assert _is_rate_limit_error(exc) is False
+
+    def test_429_usage_limit_reached_is_not_rate_limit(self):
+        exc = Exception("The usage limit has been reached")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+
+    def test_429_usage_limit_with_reset_is_rate_limit(self):
+        exc = Exception("Weekly usage limit reached. Resets in 6hr 29min.")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
 
     def test_402_is_not_rate_limit(self):
         exc = Exception("Payment Required")
@@ -3681,7 +3701,7 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 class TestAuxiliaryPoolRotationRetry:
-    def test_call_llm_rotates_explicit_codex_pool_on_429(self):
+    def test_call_llm_rotates_explicit_codex_pool_on_usage_limit_without_retrying_same_key(self):
         rate_err = Exception("usage limit reached")
         rate_err.status_code = 429
 
@@ -3724,14 +3744,14 @@ class TestAuxiliaryPoolRotationRetry:
             )
 
         assert resp.choices[0].message.content == "rotated-sync"
-        assert stale_client.chat.completions.create.call_count == 2
+        assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
         assert len(pool.rotate_calls) == 1
         assert pool.rotate_calls[0]["status_code"] == 429
         mock_fallback.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_async_call_llm_rotates_explicit_codex_pool_on_429(self):
+    async def test_async_call_llm_rotates_explicit_codex_pool_on_usage_limit_without_retrying_same_key(self):
         rate_err = Exception("usage limit reached")
         rate_err.status_code = 429
 
@@ -3774,7 +3794,7 @@ class TestAuxiliaryPoolRotationRetry:
             )
 
         assert resp.choices[0].message.content == "rotated-async"
-        assert stale_client.chat.completions.create.await_count == 2
+        assert stale_client.chat.completions.create.await_count == 1
         assert fresh_client.chat.completions.create.await_count == 1
         assert len(pool.rotate_calls) == 1
         assert pool.rotate_calls[0]["status_code"] == 429

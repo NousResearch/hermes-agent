@@ -67,6 +67,16 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+class TestHermesAgentHelpGuidance:
+    def test_stable_prompt_keeps_direct_skill_pointer_without_skills_tools(self):
+        stable = _stable_prompt(_make_agent())
+
+        assert "https://hermes-agent.nousresearch.com/docs" in stable
+        assert "skill_view(name='hermes-agent')" in stable
+        assert "docs as the source of truth when the two differ" in stable
+        assert "If that same skill is already loaded for the current task or thread" in stable
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""

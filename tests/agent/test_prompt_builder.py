@@ -415,7 +415,7 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
-    def test_skills_prompt_avoids_hard_load_mandates(self, monkeypatch, tmp_path):
+    def test_skills_prompt_requires_relevant_skill_loading(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skills_dir = tmp_path / "skills" / "coding" / "python-debug"
         skills_dir.mkdir(parents=True)
@@ -425,13 +425,13 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
 
-        assert "MUST load" not in result
-        assert "Err on the side of loading" not in result
-        assert "load the `hermes-agent` skill first" not in result
-        assert (
-            "Only proceed without loading a skill if genuinely none are relevant"
-            not in result
-        )
+        assert "## Skills (mandatory)" in result
+        assert "matches or is even partially relevant" in result
+        assert "MUST load it with skill_view(name)" in result
+        assert "Err on the side of loading" in result
+        assert "If that same relevant skill is already loaded" in result
+        assert "load the `hermes-agent` skill first" in result
+        assert "Only proceed without loading a skill if genuinely none are relevant" in result
 
     def test_skills_prompt_preserves_index_and_hermes_hint(
         self, monkeypatch, tmp_path
@@ -447,11 +447,9 @@ class TestBuildSkillsSystemPrompt:
 
         assert "<available_skills>" in result
         assert "- hermes-agent: Hermes Agent workflow help" in result
-        assert (
-            "For Hermes Agent configuration, setup, troubleshooting, or feature work"
-            in result
-        )
-        assert "reuse that context instead of loading it again" in result
+        assert "load the `hermes-agent` skill first" in result
+        assert "If that same relevant skill is already loaded" in result
+        assert "Only proceed without loading a skill if genuinely none are relevant" in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

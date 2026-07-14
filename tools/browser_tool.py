@@ -1519,6 +1519,9 @@ def _emergency_cleanup_all_sessions():
     # never used the browser — uses owner_pid liveness to avoid reaping
     # daemons owned by other live hermes processes.
     try:
+        _reap_orphaned_browser_chromes(
+            min_age_seconds=BROWSER_SESSION_INACTIVITY_TIMEOUT
+        )
         _reap_orphaned_browser_sessions()
     except Exception as e:
         logger.debug("Orphan reap on exit failed: %s", e)
@@ -1574,44 +1577,38 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
     an OSError here just falls back to the legacy ``tracked_names``
     heuristic in the reaper.
     """
+    temp_path: Optional[str] = None
     try:
         path = os.path.join(socket_dir, f"{session_name}.owner_pid")
-        with open(path, "w", encoding="utf-8") as f:
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f".{session_name}.owner_pid.", dir=socket_dir
+        )
+        os.close(fd)
+        with open(temp_path, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
+            f.flush()
+        os.replace(temp_path, path)
+        temp_path = None
     except OSError as exc:
         logger.debug("Could not write owner_pid file for %s: %s",
                      session_name, exc)
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
-                                    session_name: str) -> bool:
-    """Confirm a live PID is genuinely *this* session's agent-browser daemon.
+                                    session_name: str) -> Optional[int]:
+    """Return a verified daemon kernel-start fingerprint, or fail closed.
 
-    The orphan reaper scans world-writable, predictably-named temp paths
-    (``/tmp/agent-browser-h_*`` etc.) and reads a daemon PID from a ``.pid``
-    file we do not write ourselves — the agent-browser daemon writes it.  A
-    same-user actor can therefore plant a fake socket dir whose ``.pid`` points
-    at an arbitrary victim process, or a recycled PID can land on an unrelated
-    process after the real daemon exits.  Either way, terminating that PID
-    (a *tree* kill via ``_terminate_host_pid``) is an arbitrary-process DoS.
-
-    Before reaping we require, via ``psutil`` (a hard dependency, cross-platform
-    for same-user processes — the only processes the reaper can signal):
-
-      1. **Identity** — the process looks like agent-browser: ``agent-browser``
-         appears in its name or command line.
-      2. **Binding** — the process is bound to *this* session's socket dir: the
-         socket dir path (or its basename) appears in the command line, or in
-         ``AGENT_BROWSER_SOCKET_DIR`` in the process environment.
-
-    Requirement (2) is the real spoof defense: a planted process pointing at a
-    victim PID will not have the victim's cmdline/environ referencing our
-    socket dir.  An attacker would need a process that genuinely embeds this
-    exact session path — i.e. a real daemon they already own and could signal
-    directly.  Fail-closed: any ambiguity (unreadable cmdline, no match) means
-    we refuse to reap and leave the process and its socket dir alone.
-
-    Returns ``True`` only when both checks pass.
+    The PID comes from metadata inside a predictable temporary directory. A
+    planted file or PID reuse must never turn the tree-termination helper into
+    an arbitrary-process kill. Capture the kernel start time before inspecting
+    identity, require an agent-browser process bound to this exact socket
+    directory, and return the fingerprint for revalidation at signal time.
     """
     try:
         import psutil
@@ -1620,30 +1617,33 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
             "Refusing to reap browser daemon PID %d (session %s): "
             "psutil unavailable for identity verification",
             daemon_pid, session_name)
-        return False
+        return None
+
+    from gateway.status import get_process_start_time
+    expected_start = get_process_start_time(daemon_pid)
+    if expected_start is None:
+        return None
 
     try:
         proc = psutil.Process(daemon_pid)
         name = (proc.name() or "").lower()
         cmdline = " ".join(proc.cmdline() or []).lower()
     except psutil.NoSuchProcess:
-        # Vanished between the liveness check and now — nothing to reap.
-        return False
+        return None
     except (psutil.AccessDenied, OSError) as exc:
         logger.warning(
             "Refusing to reap browser daemon PID %d (session %s): "
             "could not read process identity (%s)",
             daemon_pid, session_name, exc)
-        return False
+        return None
 
     looks_like_browser = "agent-browser" in name or "agent-browser" in cmdline
     if not looks_like_browser:
         logger.warning(
             "Refusing to reap PID %d (session %s): not an agent-browser "
             "process (name=%r)", daemon_pid, session_name, name)
-        return False
+        return None
 
-    # Binding check: the live process must reference *this* socket dir.
     socket_dir_l = socket_dir.lower()
     socket_base_l = os.path.basename(socket_dir).lower()
     bound = socket_dir_l in cmdline or (
@@ -1655,8 +1655,6 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
             bound = bool(env_dir) and os.path.normpath(env_dir) == \
                 os.path.normpath(socket_dir)
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
-            # environ() can be denied even same-user on some platforms.
-            # cmdline already failed to bind — fail closed.
             bound = False
 
     if not bound:
@@ -1664,9 +1662,9 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
             "Refusing to reap agent-browser PID %d: not bound to session "
             "socket dir %s (possible recycled PID or planted pid file)",
             daemon_pid, socket_dir)
-        return False
+        return None
 
-    return True
+    return expected_start
 
 
 def _reap_orphaned_browser_sessions():
@@ -1721,77 +1719,342 @@ def _reap_orphaned_browser_sessions():
         if not session_name:
             continue
 
-        # Ownership check: prefer owner_pid file (cross-process safe).
+        # Ownership check: present-but-unreadable metadata fails closed. Only a
+        # genuinely absent owner file may use the legacy in-process fallback.
         owner_pid_file = os.path.join(socket_dir, f"{session_name}.owner_pid")
-        owner_alive: Optional[bool] = None  # None = owner_pid missing/unreadable
-        if os.path.isfile(owner_pid_file):
+        owner_metadata_present = os.path.lexists(owner_pid_file)
+        if owner_metadata_present:
+            if os.path.islink(owner_pid_file) or not os.path.isfile(owner_pid_file):
+                continue
             try:
                 owner_pid = int(Path(owner_pid_file).read_text(encoding="utf-8").strip())
-                # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484).
-                # Use the cross-platform existence check.
                 from gateway.status import _pid_exists
-                owner_alive = _pid_exists(owner_pid)
+                if _pid_exists(owner_pid):
+                    continue
             except (ValueError, OSError):
-                owner_alive = None  # corrupt file — fall through
-
-        if owner_alive is True:
-            # Owner is alive — this session belongs to a live hermes process.
+                continue
+        elif session_name in tracked_names:
             continue
 
-        if owner_alive is None:
-            # No owner_pid file (legacy daemon).  Fall back to in-process
-            # tracking: if this process knows about the session, leave alone.
-            if session_name in tracked_names:
-                continue
-
-        # owner_alive is False (dead owner) OR legacy daemon not tracked here.
+        # The owner is dead, or this is an untracked legacy session.
         pid_file = os.path.join(socket_dir, f"{session_name}.pid")
         if not os.path.isfile(pid_file):
-            # No daemon PID file — just a stale dir, remove it
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            _remove_browser_socket_dir_if_safe(socket_dir, session_name)
             continue
 
         try:
             daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
         except (ValueError, OSError):
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            _remove_browser_socket_dir_if_safe(socket_dir, session_name)
             continue
 
-        # Check if the daemon is still alive. ``os.kill(pid, 0)`` on Windows
-        # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            _remove_browser_socket_dir_if_safe(socket_dir, session_name)
             continue
 
-        # The PID is live — but the .pid file lives in a world-writable,
-        # predictably-named temp dir we don't write ourselves, and PIDs get
-        # recycled after the real daemon exits.  Verify the process really is
-        # *this* session's agent-browser daemon before tree-killing it; refuse
-        # otherwise (don't touch the process, leave the socket dir for a later
-        # sweep once the imposter PID is gone).  Fixes the arbitrary same-user
-        # process DoS in issue #14073.
-        if not _verify_reapable_browser_daemon(
-                daemon_pid, socket_dir, session_name):
+        expected_start = _verify_reapable_browser_daemon(
+            daemon_pid, socket_dir, session_name
+        )
+        if expected_start is None:
             continue
 
-        # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
-        # Use the process-tree termination helper so Chromium children
-        # (renderer, GPU, etc.) are cleaned up, not just the daemon parent.
         try:
             from tools.process_registry import ProcessRegistry
-            ProcessRegistry._terminate_host_pid(daemon_pid)
-            logger.info("Reaped orphaned browser daemon PID %d (session %s)",
-                        daemon_pid, session_name)
-            reaped += 1
-        except (ProcessLookupError, PermissionError, OSError):
+            ProcessRegistry._terminate_host_pid(
+                daemon_pid, expected_start=expected_start
+            )
+        except ProcessLookupError:
             pass
+        except (PermissionError, OSError):
+            continue
 
-        # Clean up the socket directory
-        shutil.rmtree(socket_dir, ignore_errors=True)
+        # The termination helper may refuse a recycled PID without raising.
+        # Revalidate liveness before deleting the discovery metadata/profile.
+        if _pid_exists(daemon_pid):
+            logger.warning(
+                "Browser daemon PID %d survived cleanup; preserving socket dir %s",
+                daemon_pid, socket_dir,
+            )
+            continue
+
+        logger.info("Reaped orphaned browser daemon PID %d (session %s)",
+                    daemon_pid, session_name)
+        reaped += 1
+        _remove_browser_socket_dir_if_safe(socket_dir, session_name)
 
     if reaped:
         logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
+
+
+def _managed_chrome_profile(socket_dir: str, session_name: str) -> Optional[Path]:
+    """Return this Hermes session's managed Chromium profile path.
+
+    New local sessions pass this path through agent-browser's official
+    ``--profile`` option.  Keeping the profile beneath the unique, mode-0700
+    Hermes socket directory gives cleanup a durable ownership binding even if
+    both the CLI and daemon disappear before Chromium exits.
+    """
+    try:
+        socket_path = Path(socket_dir)
+        temp_root = Path(_socket_safe_tmpdir()).resolve(strict=False)
+        if socket_path.is_symlink():
+            return None
+        resolved_socket = socket_path.resolve(strict=False)
+        if resolved_socket.parent != temp_root:
+            return None
+        if resolved_socket.name != f"agent-browser-{session_name}":
+            return None
+        profile = resolved_socket / f"agent-browser-chrome-{session_name}"
+        if profile.is_symlink():
+            return None
+        if profile.resolve(strict=False).parent != resolved_socket:
+            return None
+        return profile
+    except (OSError, RuntimeError):
+        return None
+
+
+def _managed_profile_in_use(profile: Path) -> bool:
+    """Return whether any process still names *profile*; ambiguity preserves it."""
+    try:
+        import psutil
+        processes = psutil.process_iter(["name", "cmdline"])
+    except Exception:
+        return True
+
+    try:
+        for proc in processes:
+            raw_cmdline = proc.info.get("cmdline")
+            if raw_cmdline is None:
+                name = str(proc.info.get("name") or "").lower()
+                if not name or any(
+                    marker in name
+                    for marker in ("chrome", "chromium", "agent-browser")
+                ):
+                    return True
+                continue
+            cmdline = [str(arg) for arg in raw_cmdline]
+            try:
+                if any(
+                    Path(value).expanduser().resolve(strict=False) == profile
+                    for value in _cmdline_profile_values(cmdline)
+                ):
+                    return True
+            except (OSError, RuntimeError):
+                continue
+    except Exception:
+        return True
+    return False
+
+
+def _remove_browser_socket_dir_if_safe(socket_dir: str, session_name: str) -> bool:
+    """Remove session metadata only when no process still references its profile."""
+    profile = _managed_chrome_profile(socket_dir, session_name)
+    if profile is None or _managed_profile_in_use(profile):
+        logger.warning(
+            "Preserving browser socket dir %s: managed profile may still be in use",
+            socket_dir,
+        )
+        return False
+    try:
+        shutil.rmtree(socket_dir)
+    except OSError as exc:
+        logger.warning("Could not remove browser socket dir %s: %s", socket_dir, exc)
+        return False
+    return not os.path.exists(socket_dir)
+
+
+def _cmdline_profile_values(cmdline: List[str]) -> List[str]:
+    values: List[str] = []
+    for index, arg in enumerate(cmdline):
+        if arg.startswith("--user-data-dir="):
+            values.append(arg.split("=", 1)[1])
+        elif arg == "--user-data-dir" and index + 1 < len(cmdline):
+            values.append(cmdline[index + 1])
+    return values
+
+
+def _cmdline_uses_profile(cmdline: List[str], expected_profile: Path) -> bool:
+    """Require exactly one user-data-dir and bind it to *expected_profile*."""
+    values = _cmdline_profile_values(cmdline)
+    if len(values) != 1:
+        return False
+    try:
+        if expected_profile.is_symlink():
+            return False
+        return Path(values[0]).expanduser().resolve(strict=False) == expected_profile
+    except (OSError, RuntimeError):
+        return False
+
+
+def _has_live_agent_browser_ancestor(proc: Any) -> bool:
+    """Return True when *proc* is still owned by a live agent-browser daemon.
+
+    Fail closed: an unreadable ancestor is treated as live so cleanup never
+    kills a browser tree whose ownership cannot be established.
+    """
+    try:
+        parent = proc.parent()
+        for _ in range(8):
+            if parent is None:
+                return False
+            name = (parent.name() or "").lower()
+            cmdline = [str(arg) for arg in (parent.cmdline() or [])]
+            executable_args = [os.path.basename(arg).lower() for arg in cmdline[:2]]
+            if "agent-browser" in name or any(
+                "agent-browser" in arg for arg in executable_args
+            ):
+                return True
+            parent = parent.parent()
+    except Exception:
+        return True
+    return False
+
+
+def _reap_session_chromium(
+    socket_dir: str, session_name: str, *, min_age_seconds: float
+) -> int:
+    """Reap only Chromium bound to one positively-owned Hermes session.
+
+    Identity, username, start time, command line, profile path, and ancestry are
+    revalidated immediately before termination.  Any ambiguity fails closed.
+    """
+    try:
+        import psutil
+    except ImportError:
+        logger.warning("Cannot scan managed Chromium processes: psutil unavailable")
+        return 0
+
+    profile = _managed_chrome_profile(socket_dir, session_name)
+    if profile is None:
+        return 0
+    try:
+        current_username = psutil.Process(os.getpid()).username()
+    except Exception:
+        return 0
+
+    now = time.time()
+    reaped = 0
+    try:
+        processes = psutil.process_iter(["pid", "name", "cmdline", "create_time"])
+    except Exception as exc:
+        logger.debug("Could not enumerate managed Chromium processes: %s", exc)
+        return 0
+
+    for proc in processes:
+        try:
+            info = proc.info
+            pid = int(info["pid"])
+            cmdline = [str(arg) for arg in (info.get("cmdline") or [])]
+            name = str(info.get("name") or "").lower()
+            executable = os.path.basename(cmdline[0]).lower() if cmdline else ""
+            if not ("chrome" in name or "chromium" in name or
+                    "chrome" in executable or "chromium" in executable):
+                continue
+            if any(arg.startswith("--type=") for arg in cmdline):
+                continue
+            if not _cmdline_uses_profile(cmdline, profile):
+                # Ambiguous/duplicate flags are never killable, but if any value
+                # resolves to our profile the directory is still in use and must
+                # not be removed as stale.
+                continue
+
+            expected_start = float(info.get("create_time") or 0.0)
+            if expected_start <= 0 or now - expected_start < max(float(min_age_seconds), 0.0):
+                continue
+            from gateway.status import get_process_start_time
+            expected_kernel_start = get_process_start_time(pid)
+            if expected_kernel_start is None:
+                continue
+            if proc.username() != current_username:
+                continue
+            if _has_live_agent_browser_ancestor(proc):
+                continue
+
+            # Kill-boundary revalidation protects against PID reuse and path
+            # replacement between enumeration and termination.
+            current = psutil.Process(pid)
+            if abs(float(current.create_time()) - expected_start) > 0.001:
+                continue
+            if current.username() != current_username:
+                continue
+            current_cmdline = [str(arg) for arg in (current.cmdline() or [])]
+            if not _cmdline_uses_profile(current_cmdline, profile):
+                continue
+            if _has_live_agent_browser_ancestor(current):
+                continue
+
+            from tools.process_registry import ProcessRegistry
+            ProcessRegistry._terminate_host_pid(
+                pid, expected_start=expected_kernel_start
+            )
+
+            try:
+                survivor = psutil.Process(pid)
+                if abs(float(survivor.create_time()) - expected_start) <= 0.001:
+                    logger.warning(
+                        "Managed Chromium PID %d survived cleanup; preserving profile %s",
+                        pid, profile.name,
+                    )
+                    continue
+            except psutil.NoSuchProcess:
+                pass
+
+            logger.info(
+                "Reaped orphaned managed Chromium PID %d (session %s)",
+                pid, session_name,
+            )
+            reaped += 1
+        except Exception:
+            continue
+
+    # Re-scan after all termination attempts. Any process role that still names
+    # the profile (root, renderer, GPU, or ambiguous duplicate flags) preserves
+    # it; profile deletion is a single postcondition, never a per-PID side effect.
+    profile_in_use = _managed_profile_in_use(profile)
+
+    if not profile_in_use and profile.exists() and not profile.is_symlink():
+        try:
+            profile_age = now - profile.stat().st_mtime
+            if reaped or profile_age >= max(float(min_age_seconds), 0.0):
+                shutil.rmtree(profile)
+            if profile.exists():
+                logger.warning("Managed profile still exists after cleanup: %s", profile)
+        except OSError as exc:
+            logger.warning("Could not remove stale managed profile %s: %s", profile, exc)
+    return reaped
+
+
+def _reap_orphaned_browser_chromes(*, min_age_seconds: float) -> None:
+    """Reap stale Chromium only from dead-owner Hermes socket directories."""
+    import glob
+
+    reaped = 0
+    tmpdir = _socket_safe_tmpdir()
+    patterns = ["agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*"]
+    for pattern in patterns:
+        for socket_dir in glob.glob(os.path.join(tmpdir, pattern)):
+            session_name = os.path.basename(socket_dir).removeprefix("agent-browser-")
+            if not session_name:
+                continue
+            owner_file = Path(socket_dir) / f"{session_name}.owner_pid"
+            # Managed Chromium ownership was introduced with owner_pid metadata.
+            # Legacy/unreadable directories are not safe enough to process-kill.
+            if not owner_file.is_file() or owner_file.is_symlink():
+                continue
+            try:
+                owner_pid = int(owner_file.read_text(encoding="utf-8").strip())
+                from gateway.status import _pid_exists
+                if _pid_exists(owner_pid):
+                    continue
+            except (OSError, ValueError):
+                continue
+            reaped += _reap_session_chromium(
+                socket_dir, session_name, min_age_seconds=min_age_seconds
+            )
+    if reaped:
+        logger.info("Reaped %d orphaned managed Chromium tree(s)", reaped)
 
 
 def _browser_cleanup_thread_worker():
@@ -1804,6 +2067,9 @@ def _browser_cleanup_thread_worker():
     """
     # One-time orphan reap on startup
     try:
+        _reap_orphaned_browser_chromes(
+            min_age_seconds=BROWSER_SESSION_INACTIVITY_TIMEOUT
+        )
         _reap_orphaned_browser_sessions()
     except Exception as e:
         logger.warning("Orphan reap error: %s", e)
@@ -2371,6 +2637,16 @@ def _run_browser_command(
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
 
+    # Give each task its own socket directory to prevent concurrency conflicts.
+    # The managed Chromium profile lives beneath that same unique directory, so
+    # session-end and crash recovery never need a host-global Chrome scan.
+    task_socket_dir = os.path.join(
+        _socket_safe_tmpdir(),
+        f"agent-browser-{session_info['session_name']}"
+    )
+    os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
+    browser_env = _build_browser_env()
+
     # Build the command with the appropriate backend flag.
     # Cloud mode: --cdp <websocket_url> connects to Browserbase.
     # Local mode: --session <name> launches a local headless Chromium.
@@ -2381,10 +2657,19 @@ def _run_browser_command(
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
     else:
-        # Local mode — launch Chromium (headless by default, headed when configured)
+        # Local mode — launch Chromium (headless by default, headed when configured).
+        # Respect an explicit persistent user profile; otherwise use a
+        # Hermes-owned ephemeral profile under this session's socket directory.
         backend_args = ["--session", session_info["session_name"]]
         if _is_headed_mode():
             backend_args.append("--headed")
+        if not browser_env.get("AGENT_BROWSER_PROFILE"):
+            managed_profile = _managed_chrome_profile(
+                task_socket_dir, session_info["session_name"]
+            )
+            if managed_profile is not None:
+                backend_args += ["--profile", str(managed_profile)]
+                session_info["managed_chrome_profile"] = str(managed_profile)
 
     # Lightpanda engine injection (local mode only, agent-browser v0.25.3+).
     # Use the resolved session backend rather than global cloud-provider state:
@@ -2409,21 +2694,11 @@ def _run_browser_command(
     ] + args
 
     try:
-        # Give each task its own socket directory to prevent concurrency conflicts.
-        # Without this, parallel workers fight over the same default socket path,
-        # causing "Failed to create socket directory: Permission denied" errors.
-        task_socket_dir = os.path.join(
-            _socket_safe_tmpdir(),
-            f"agent-browser-{session_info['session_name']}"
-        )
-        os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
         # Record this hermes PID as the session owner (cross-process safe
         # orphan detection — see _write_owner_pid).
         _write_owner_pid(task_socket_dir, session_info['session_name'])
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
-
-        browser_env = _build_browser_env()
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.
@@ -4479,22 +4754,53 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 except Exception as e:
                     logger.warning("Could not close cloud browser session: %s", e)
 
-        # Kill the daemon process and clean up socket directory
+        # Kill only this session's verified daemon, then reap only the Chromium
+        # bound to this session's managed profile before removing its directory.
         session_name = session_info.get("session_name", "")
         if session_name:
             socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{session_name}")
             if os.path.exists(socket_dir):
-                # agent-browser writes {session}.pid in the socket dir
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
-                if os.path.isfile(pid_file):
+                daemon_gone = not os.path.isfile(pid_file)
+                if not daemon_gone:
                     try:
+                        from gateway.status import _pid_exists
                         from tools.process_registry import ProcessRegistry
                         daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
-                        ProcessRegistry._terminate_host_pid(daemon_pid)
-                        logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
-                    except (ProcessLookupError, ValueError, PermissionError, OSError):
-                        logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
-                shutil.rmtree(socket_dir, ignore_errors=True)
+                        if not _pid_exists(daemon_pid):
+                            daemon_gone = True
+                        else:
+                            expected_start = _verify_reapable_browser_daemon(
+                                daemon_pid, socket_dir, session_name
+                            )
+                            if expected_start is not None:
+                                ProcessRegistry._terminate_host_pid(
+                                    daemon_pid, expected_start=expected_start
+                                )
+                                daemon_gone = not _pid_exists(daemon_pid)
+                                if daemon_gone:
+                                    logger.debug(
+                                        "Killed verified daemon pid %s for %s",
+                                        daemon_pid, session_name,
+                                    )
+                    except ProcessLookupError:
+                        daemon_gone = True
+                    except (ValueError, PermissionError, OSError):
+                        logger.debug(
+                            "Could not kill daemon pid for %s (revalidation failed)",
+                            session_name,
+                        )
+
+                _reap_session_chromium(
+                    socket_dir, session_name, min_age_seconds=0
+                )
+                if daemon_gone:
+                    _remove_browser_socket_dir_if_safe(socket_dir, session_name)
+                else:
+                    logger.warning(
+                        "Preserving browser socket dir %s because its daemon may survive",
+                        socket_dir,
+                    )
 
         logger.debug("Removed task %s from active sessions", task_id)
     else:

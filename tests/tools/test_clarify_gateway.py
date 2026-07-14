@@ -250,3 +250,84 @@ class TestGatewayTextIntercept:
         
         # Clean up
         cm.clear_session("sk-tf")
+
+
+class TestSelectManyPrimitive:
+    """Multi-select reuses the clarify wait/index lifecycle without single-select coercion."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_card_selection_resolves_wait_with_list(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register_select_many(
+            "many-1",
+            "sk-many-1",
+            "Pick directories",
+            ["cache", "dist", "node_modules"],
+        )
+
+        assert entry.multiple is True
+        assert cm.resolve_gateway_select_many(
+            "many-1", ["cache", "node_modules"]
+        )
+        assert cm.wait_for_response("many-1", timeout=0.1) == [
+            "cache",
+            "node_modules",
+        ]
+
+    def test_cancel_resolves_with_empty_list(self):
+        from tools import clarify_gateway as cm
+
+        cm.register_select_many("many-2", "sk-many-2", "Pick", ["A", "B"])
+
+        assert cm.cancel_gateway_select_many("many-2")
+        assert cm.wait_for_response("many-2", timeout=0.1) == []
+
+    def test_typed_numbers_map_to_canonical_choices(self):
+        from tools import clarify_gateway as cm
+
+        cm.register_select_many(
+            "many-3", "sk-many-3", "Pick", ["A", "B", "C"]
+        )
+
+        assert cm.resolve_text_response_for_session("sk-many-3", "1 3")
+        assert cm.wait_for_response("many-3", timeout=0.1) == ["A", "C"]
+
+    def test_typed_numbers_accept_commas_and_dedupe(self):
+        from tools import clarify_gateway as cm
+
+        cm.register_select_many(
+            "many-4", "sk-many-4", "Pick", ["A", "B", "C"]
+        )
+
+        assert cm.resolve_text_response_for_session("sk-many-4", "3, 1, 3")
+        assert cm.wait_for_response("many-4", timeout=0.1) == ["C", "A"]
+
+    def test_invalid_typed_selection_stays_pending(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register_select_many(
+            "many-5", "sk-many-5", "Pick", ["A", "B"]
+        )
+
+        assert not cm.resolve_text_response_for_session("sk-many-5", "1 9")
+        assert not entry.event.is_set()
+        assert cm.get_pending_for_session("sk-many-5", include_choice_prompts=True) is entry
+
+    def test_typed_cancel_resolves_empty_selection(self):
+        from tools import clarify_gateway as cm
+
+        cm.register_select_many("many-6", "sk-many-6", "Pick", ["A", "B"])
+
+        assert cm.resolve_text_response_for_session("sk-many-6", "cancel")
+        assert cm.wait_for_response("many-6", timeout=0.1) == []
+
+    def test_single_resolver_cannot_change_multi_select_entry(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register_select_many("many-7", "sk-many-7", "Pick", ["A"])
+
+        assert not cm.resolve_gateway_clarify("many-7", "A")
+        assert not entry.event.is_set()

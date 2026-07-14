@@ -3195,6 +3195,43 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
 
+    async def send_multi_select(
+        self,
+        chat_id: str,
+        question: str,
+        choices: list,
+        select_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a multi-select prompt, falling back to numbered text.
+
+        Rich adapters may override this with a native form. The callback must
+        resolve through ``tools.clarify_gateway.resolve_gateway_select_many``
+        or ``cancel_gateway_select_many``. The portable fallback accepts a
+        space/comma-separated list of one-based option numbers.
+        """
+        lines = [f"☑ {question}", ""]
+        for index, choice in enumerate(choices, start=1):
+            lines.append(f"  {index}. {choice}")
+        lines.extend(
+            [
+                "",
+                (
+                    "Reply with one or more numbers separated by spaces "
+                    "(for example: 1 2 3), or reply `cancel`."
+                ),
+            ]
+        )
+        from tools.clarify_gateway import mark_awaiting_text
+
+        mark_awaiting_text(select_id)
+        return await self.send(
+            chat_id=chat_id,
+            content="\n".join(lines),
+            metadata=metadata,
+        )
+
     async def send_private_notice(
         self,
         chat_id: str,

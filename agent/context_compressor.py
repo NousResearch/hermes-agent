@@ -792,8 +792,8 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if tool_name == "todo":
         return "[todo] updated task list"
 
-    if tool_name == "clarify":
-        return "[clarify] asked user a question"
+    if tool_name in {"clarify", "select_many"}:
+        return f"[{tool_name}] asked user a question"
 
     if tool_name == "text_to_speech":
         return f"[text_to_speech] generated audio ({content_len:,} chars)"

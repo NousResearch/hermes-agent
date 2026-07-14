@@ -57,7 +57,10 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
+    {
+        "todo", "session_search", "memory", "clarify", "select_many",
+        "read_terminal", "delegate_task",
+    }
 )
 
 
@@ -2383,6 +2386,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
                     callback=agent.clarify_callback,
+                ),
+                next_args,
+            )
+    elif function_name == "select_many":
+        def _execute(next_args: dict) -> Any:
+            from tools.select_many_tool import select_many_tool as _select_many_tool
+            return _finish_agent_tool(
+                _select_many_tool(
+                    question=next_args.get("question", ""),
+                    choices=next_args.get("choices"),
+                    callback=getattr(agent, "select_many_callback", None),
                 ),
                 next_args,
             )

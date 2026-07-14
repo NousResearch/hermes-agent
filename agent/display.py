@@ -438,7 +438,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
         "execute_code": "code", "delegate_task": "goal",
-        "clarify": "question", "skill_manage": "name",
+        "clarify": "question", "select_many": "question", "skill_manage": "name",
     }
 
     # delegate_task: show goal (single) or individual task goals (batch)
@@ -591,6 +591,7 @@ _TOOL_VERBS: dict[str, str] = {
     "delegate_task": "Delegating",
     "cronjob": "Scheduling",
     "clarify": "Asking",
+    "select_many": "Asking",
     "memory": "Updating memory",
     "todo": "Updating tasks",
 }
@@ -1460,5 +1461,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

@@ -2732,6 +2732,62 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_normalizes_mobile_unsafe_markdown(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_mobile_markdown"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "## 当前能力\r\n\r\n"
+            "  | 能力 | 状态 |\r\n"
+            "  | :--- | ---: |\r\n"
+            "  | 单选 clarify 按钮 | ✅ |\r\n"
+            "  | 多选 `select_many` | **✅** |\r\n\r\n"
+            "---\r\n\r\n"
+            "- 保留列表和 `行内代码`"
+        )
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        rendered = payload["zh_cn"]["content"][0][0]["text"]
+        self.assertIn("**当前能力**", rendered)
+        self.assertIn("**单选 clarify 按钮**", rendered)
+        self.assertIn("• 状态: ✅", rendered)
+        self.assertIn("**多选 `select_many`**", rendered)
+        self.assertIn("• 状态: **✅**", rendered)
+        self.assertIn("- 保留列表和 `行内代码`", rendered)
+        self.assertIn("• 状态: **✅**\n\n- 保留列表", rendered)
+        self.assertNotIn("##", rendered)
+        self.assertNotIn("| 能力 | 状态 |", rendered)
+        self.assertNotIn("| :--- |", rendered)
+        self.assertNotIn("\n---\n", rendered)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -2950,7 +3006,7 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_uses_post_for_advanced_markdown_lines(self):
+    def test_send_normalizes_advanced_markdown_lines(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -2990,7 +3046,7 @@ class TestAdapterBehavior(unittest.TestCase):
         rows = payload["zh_cn"]["content"]
         self.assertEqual(
             rows,
-            [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
+            [[{"tag": "md", "text": "1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
 
 

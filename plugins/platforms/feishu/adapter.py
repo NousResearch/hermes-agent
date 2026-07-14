@@ -111,6 +111,10 @@ try:
         CallBackCard,
         P2CardActionTriggerResponse,
     )
+    try:
+        from lark_oapi.event.callback.model.p2_card_action_trigger import CallBackToast
+    except ImportError:
+        CallBackToast = None  # type: ignore[assignment]
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
     from lark_oapi.ws import Client as FeishuWSClient
 
@@ -119,6 +123,7 @@ except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
+    CallBackToast = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
@@ -141,6 +146,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.platforms.helpers import convert_table_to_bullets
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
@@ -155,9 +161,8 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.+?)\s*#*\s*$")
+_MARKDOWN_HORIZONTAL_RULE_RE = re.compile(r"^\s*-{3,}\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -215,6 +220,7 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+_MULTI_SELECT_CHECKER_NAME_PREFIX = "selected_choice_"
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once",
@@ -255,6 +261,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_SENDER_IDENTITY_CACHE_SIZE = 2048   # ID aliases seen on admitted inbound messages
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -465,6 +472,47 @@ def _sender_identity(sender: Any) -> frozenset:
 # ---------------------------------------------------------------------------
 # Markdown rendering helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalize_markdown_for_feishu(content: str) -> str:
+    """Rewrite markdown constructs that Feishu mobile renders inconsistently."""
+    converted = convert_table_to_bullets(
+        content.replace("\r\n", "\n").replace("\r", "\n")
+    )
+    lines: List[str] = []
+    in_code_block = False
+    skip_blank_after_rule = False
+
+    for line in converted.splitlines():
+        stripped = line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped)
+        )
+        if is_fence:
+            in_code_block = not in_code_block
+            skip_blank_after_rule = False
+            lines.append(line)
+            continue
+
+        if not in_code_block:
+            if skip_blank_after_rule and not stripped:
+                continue
+            skip_blank_after_rule = False
+            heading = _MARKDOWN_HEADING_RE.match(line)
+            if heading:
+                title = heading.group(1).strip()
+                line = title if title.startswith("**") and title.endswith("**") else f"**{title}**"
+            elif _MARKDOWN_HORIZONTAL_RULE_RE.match(line):
+                if lines and lines[-1]:
+                    lines.append("")
+                skip_blank_after_rule = True
+                continue
+
+        lines.append(line)
+
+    return "\n".join(lines).strip("\n")
 
 
 def _escape_markdown_text(text: str) -> str:
@@ -1385,6 +1433,10 @@ def check_feishu_requirements() -> bool:
         from lark_oapi.event.callback.model.p2_card_action_trigger import (
             CallBackCard, P2CardActionTriggerResponse,
         )
+        try:
+            from lark_oapi.event.callback.model.p2_card_action_trigger import CallBackToast
+        except ImportError:
+            CallBackToast = None
         from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
         from lark_oapi.ws import Client as FeishuWSClient
         return {
@@ -1410,6 +1462,7 @@ def check_feishu_requirements() -> bool:
             "LARK_DOMAIN": LARK_DOMAIN,
             "BaseRequest": BaseRequest,
             "CallBackCard": CallBackCard,
+            "CallBackToast": CallBackToast,
             "P2CardActionTriggerResponse": P2CardActionTriggerResponse,
             "EventDispatcherHandler": EventDispatcherHandler,
             "FeishuWSClient": FeishuWSClient,
@@ -1481,6 +1534,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._sender_identity_aliases: "OrderedDict[str, frozenset[str]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -1492,6 +1546,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        # Clarify button state (clarify_id → session/chat/message/question/choices)
+        self._clarify_state: Dict[str, Dict[str, Any]] = {}
+        # Multi-select form state (select_id → session/chat/message/question/choices)
+        self._multi_select_state: Dict[str, Dict[str, Any]] = {}
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
@@ -1976,6 +2034,270 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a clarify prompt as an interactive card when choices exist."""
+        if not choices:
+            return await super().send_clarify(
+                chat_id=chat_id,
+                question=question,
+                choices=choices,
+                clarify_id=clarify_id,
+                session_key=session_key,
+                metadata=metadata,
+            )
+        if not self._client:
+            logger.error(
+                "[Feishu] Clarify interactive card send failed "
+                "(id=%s, chat=%s): not connected",
+                clarify_id,
+                chat_id,
+            )
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            normalized_choices = [str(choice) for choice in choices]
+
+            def _btn(label: str, choice_index: Any, btn_type: str = "default") -> dict:
+                return {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "type": btn_type,
+                    "value": {
+                        "hermes_action": "clarify",
+                        "clarify_id": clarify_id,
+                        "choice_index": choice_index,
+                    },
+                }
+
+            option_lines = "\n".join(
+                f"{idx + 1}. {choice}"
+                for idx, choice in enumerate(normalized_choices)
+            )
+            actions = [
+                _btn(str(idx + 1), idx)
+                for idx in range(len(normalized_choices))
+            ]
+            actions.append(_btn("✏️ Other (type answer)", "other"))
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": "❓ Clarification needed", "tag": "plain_text"},
+                    "template": "blue",
+                },
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"**{question}**\n\n{option_lines}",
+                    },
+                    {"tag": "action", "actions": actions},
+                ],
+            }
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_clarify failed")
+            if result.success:
+                self._clarify_state[clarify_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                    "question": question,
+                    "choices": normalized_choices,
+                }
+                logger.info(
+                    "[Feishu] Sent clarify interactive card "
+                    "(id=%s, chat=%s, choices=%d, message_id=%s)",
+                    clarify_id,
+                    chat_id,
+                    len(normalized_choices),
+                    result.message_id or "<unknown>",
+                )
+            else:
+                logger.error(
+                    "[Feishu] Clarify interactive card send failed "
+                    "(id=%s, chat=%s): %s",
+                    clarify_id,
+                    chat_id,
+                    result.error or "unknown Feishu API error",
+                )
+            return result
+        except Exception as exc:
+            logger.exception(
+                "[Feishu] Clarify interactive card send raised "
+                "(id=%s, chat=%s): %s",
+                clarify_id,
+                chat_id,
+                exc,
+            )
+            return SendResult(success=False, error=str(exc))
+
+    async def send_multi_select(
+        self,
+        chat_id: str,
+        question: str,
+        choices: list,
+        select_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send visible Card 2.0 checkers with submit and cancel."""
+        if not self._client:
+            return await super().send_multi_select(
+                chat_id=chat_id,
+                question=question,
+                choices=choices,
+                select_id=select_id,
+                session_key=session_key,
+                metadata=metadata,
+            )
+
+        normalized_choices = [str(choice) for choice in choices]
+        checker_elements = [
+            {
+                "tag": "checker",
+                "name": f"{_MULTI_SELECT_CHECKER_NAME_PREFIX}{index}",
+                "checked": False,
+                "text": {
+                    "tag": "plain_text",
+                    "content": choice,
+                },
+                "overall_checkable": True,
+            }
+            for index, choice in enumerate(normalized_choices)
+        ]
+        card = {
+            "schema": "2.0",
+            "config": {
+                "update_multi": True,
+                "width_mode": "default",
+            },
+            "header": {
+                "title": {"content": "Select items", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "body": {
+                "direction": "vertical",
+                "padding": "12px 12px 20px 12px",
+                "vertical_spacing": "12px",
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"**{question}**",
+                    },
+                    {
+                        "tag": "form",
+                        "name": f"hermes_select_many_{select_id}",
+                        "vertical_spacing": "8px",
+                        "elements": [
+                            *checker_elements,
+                            {
+                                "tag": "button",
+                                "name": f"select_many_submit_{select_id}",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": "Confirm",
+                                },
+                                "type": "primary_filled",
+                                "width": "fill",
+                                "form_action_type": "submit",
+                                "behaviors": [
+                                    {
+                                        "type": "callback",
+                                        "value": {
+                                            "hermes_action": "select_many_submit",
+                                            "select_id": select_id,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "button",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": "Cancel",
+                        },
+                        "type": "default",
+                        "width": "fill",
+                        "behaviors": [
+                            {
+                                "type": "callback",
+                                "value": {
+                                    "hermes_action": "select_many_cancel",
+                                    "select_id": select_id,
+                                },
+                            }
+                        ],
+                    },
+                ],
+            },
+        }
+
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_multi_select failed")
+            if result.success:
+                self._multi_select_state[select_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                    "question": question,
+                    "choices": normalized_choices,
+                }
+                logger.info(
+                    "[Feishu] Sent multi-select checker card "
+                    "(id=%s, chat=%s, choices=%d, message_id=%s)",
+                    select_id,
+                    chat_id,
+                    len(normalized_choices),
+                    result.message_id or "<unknown>",
+                )
+                return result
+            logger.warning(
+                "[Feishu] Multi-select card send failed; using text fallback "
+                "(id=%s, chat=%s): %s",
+                select_id,
+                chat_id,
+                result.error or "unknown Feishu API error",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] Multi-select card send raised; using text fallback "
+                "(id=%s, chat=%s): %s",
+                select_id,
+                chat_id,
+                exc,
+                exc_info=True,
+            )
+
+        return await super().send_multi_select(
+            chat_id=chat_id,
+            question=question,
+            choices=normalized_choices,
+            select_id=select_id,
+            session_key=session_key,
+            metadata=metadata,
+        )
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -2133,6 +2455,86 @@ class FeishuAdapter(BasePlatformAdapter):
                 {
                     "tag": "markdown",
                     "content": f"{icon} **{label}** by {user_name}",
+                },
+            ],
+        }
+
+    @staticmethod
+    def _build_resolved_clarify_card(
+        *,
+        question: str,
+        choice: str,
+        user_name: str,
+    ) -> Dict[str, Any]:
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✅ Answer recorded", "tag": "plain_text"},
+                "template": "green",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**{question}**\n\n**{user_name}:** {choice}",
+                },
+            ],
+        }
+
+    @staticmethod
+    def _build_resolved_multi_select_card(
+        *,
+        question: str,
+        choices: Sequence[str],
+        user_name: str,
+        cancelled: bool,
+    ) -> Dict[str, Any]:
+        if cancelled:
+            title = "Cancelled"
+            template = "grey"
+            content = f"**{question}**\n\n{user_name} cancelled this selection."
+        else:
+            title = "Selection recorded"
+            template = "green"
+            selected_lines = "\n".join(f"- {choice}" for choice in choices)
+            content = (
+                f"**{question}**\n\n"
+                f"**{user_name} selected {len(choices)}:**\n{selected_lines}"
+            )
+        return {
+            "schema": "2.0",
+            "config": {
+                "update_multi": True,
+                "width_mode": "default",
+            },
+            "header": {
+                "title": {"content": title, "tag": "plain_text"},
+                "template": template,
+            },
+            "body": {
+                "padding": "12px 12px 20px 12px",
+                "elements": [{"tag": "markdown", "content": content}],
+            },
+        }
+
+    @staticmethod
+    def _build_awaiting_text_clarify_card(
+        *,
+        question: str,
+        user_name: str,
+    ) -> Dict[str, Any]:
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✏️ Awaiting typed response", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": (
+                        f"**{question}**\n\n"
+                        f"{user_name}, type your answer in the chat as your next message."
+                    ),
                 },
             ],
         }
@@ -2382,8 +2784,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return fallback
 
     def format_message(self, content: str) -> str:
-        """Feishu text messages are plain text by default."""
-        return content.strip()
+        """Normalize markdown for Feishu's mobile renderer."""
+        return _normalize_markdown_for_feishu(content)
 
     # =========================================================================
     # Inbound event handlers
@@ -2638,9 +3040,10 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_card_action_trigger(self, data: Any) -> Any:
         """Handle card-action callback from the Feishu SDK (synchronous).
 
-        For approval actions: parses the event once, returns the resolved card
-        inline (the only reliable way to sync all clients), and schedules a
-        lightweight async method to actually unblock the agent.
+        For Hermes prompt actions: parses the event once and returns the
+        resolved card inline (the only reliable way to sync all clients).
+        Approval resolution is scheduled on the adapter loop; clarify
+        resolution uses its thread-safe gateway primitive directly.
 
         For other card actions: delegates to ``_handle_card_action_event``.
         """
@@ -2658,6 +3061,17 @@ class FeishuAdapter(BasePlatformAdapter):
             if isinstance(action_value, dict) else None
         )
 
+        if hermes_action == "clarify":
+            return self._handle_clarify_card_action(
+                event=event,
+                action_value=action_value,
+            )
+        if hermes_action in {"select_many_submit", "select_many_cancel"}:
+            return self._handle_multi_select_card_action(
+                event=event,
+                action_value=action_value,
+                form_value=getattr(action, "form_value", None),
+            )
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
@@ -2691,15 +3105,508 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
-        """Return whether this card-action operator may answer gated prompts."""
-        normalized = str(open_id or "").strip()
-        if not normalized:
+    @staticmethod
+    def _raw_sender_identities(sender_id: Any) -> frozenset[str]:
+        if isinstance(sender_id, str):
+            values = (sender_id,)
+        else:
+            values = (
+                getattr(sender_id, "open_id", None),
+                getattr(sender_id, "user_id", None),
+                getattr(sender_id, "union_id", None),
+            )
+        return frozenset(
+            str(value).strip()
+            for value in values
+            if str(value or "").strip()
+        )
+
+    def _remember_identity_aliases(self, sender_id: Any) -> None:
+        """Cache equivalent Feishu IDs from an admitted inbound event."""
+        identities = set(self._raw_sender_identities(sender_id))
+        if not identities:
+            return
+        cache = getattr(self, "_sender_identity_aliases", None)
+        if cache is None:
+            cache = OrderedDict()
+            self._sender_identity_aliases = cache
+        for identity in tuple(identities):
+            identities.update(cache.get(identity, ()))
+        aliases = frozenset(identities)
+        for identity in identities:
+            cache[identity] = aliases
+            cache.move_to_end(identity)
+        while len(cache) > _FEISHU_SENDER_IDENTITY_CACHE_SIZE:
+            cache.popitem(last=False)
+
+    def _known_sender_identities(self, sender_id: Any) -> frozenset[str]:
+        identities = set(self._raw_sender_identities(sender_id))
+        cache = getattr(self, "_sender_identity_aliases", None) or {}
+        for identity in tuple(identities):
+            identities.update(cache.get(identity, ()))
+        return frozenset(identities)
+
+    @staticmethod
+    def _session_chat_type(session_key: str) -> str:
+        parts = str(session_key or "").split(":")
+        if len(parts) >= 4 and parts[0] == "agent" and parts[2] == "feishu":
+            return parts[3]
+        return ""
+
+    def _is_interactive_prompt_authorized(
+        self,
+        operator: Any,
+        *,
+        chat_id: str,
+        session_key: str,
+    ) -> bool:
+        """Apply DM or group admission semantics to a card-action operator."""
+        if not self._known_sender_identities(operator):
+            return False
+        if self._session_chat_type(session_key) == "dm":
+            # A Feishu p2p chat has one human peer. The callback chat-id check
+            # binds this click to the same DM that received the card.
+            return True
+        return (
+            self._allow_group_message(operator, chat_id, is_bot=False)
+            and self._is_interactive_operator_authorized(operator)
+        )
+
+    def _is_interactive_operator_authorized(self, sender_id: Any) -> bool:
+        """Match a callback operator against every known Feishu ID variant."""
+        identities = self._known_sender_identities(sender_id)
+        if not identities:
             return False
         allowed_ids = set(self._admins) | set(self._allowed_group_users)
         if not allowed_ids:
             return True
-        return "*" in allowed_ids or normalized in allowed_ids
+        return "*" in allowed_ids or bool(identities & allowed_ids)
+
+    @staticmethod
+    def _build_clarify_action_response(
+        *,
+        card_data: Optional[Dict[str, Any]] = None,
+        toast_type: Optional[str] = None,
+        toast_content: Optional[str] = None,
+    ) -> Any:
+        """Build the synchronous Feishu response used to update a clarify card."""
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if card_data is not None and CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = card_data
+            response.card = card
+        if toast_content and CallBackToast is not None:
+            toast = CallBackToast()
+            toast.type = toast_type or "info"
+            toast.content = toast_content
+            response.toast = toast
+        return response
+
+    def _handle_clarify_card_action(
+        self,
+        *,
+        event: Any,
+        action_value: Dict[str, Any],
+    ) -> Any:
+        """Validate and resolve a clarify button in the synchronous callback."""
+        token = str(getattr(event, "token", "") or "")
+        if token and self._is_card_action_duplicate(token):
+            logger.debug("[Feishu] Dropping duplicate clarify action token: %s", token)
+            return self._build_clarify_action_response(
+                toast_content="This clarify action was already processed.",
+            )
+
+        clarify_id = str(action_value.get("clarify_id", "") or "").strip()
+        if not clarify_id:
+            logger.warning("[Feishu] Clarify card action missing clarify_id")
+            return self._build_clarify_action_response(
+                toast_type="error",
+                toast_content="This clarify action is invalid. Please ask Hermes to try again.",
+            )
+
+        state = self._clarify_state.get(clarify_id)
+        if not state:
+            logger.warning("[Feishu] Clarify %s already resolved or expired", clarify_id)
+            return self._build_clarify_action_response(
+                toast_type="warning",
+                toast_content="This clarify prompt expired or was already answered.",
+            )
+
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        callback_chat_id = str(
+            getattr(getattr(event, "context", None), "open_chat_id", "") or ""
+        )
+        if not callback_chat_id or (
+            expected_chat_id and callback_chat_id != expected_chat_id
+        ):
+            logger.warning(
+                "[Feishu] Clarify callback chat mismatch for %s (expected=%s, got=%s)",
+                clarify_id,
+                expected_chat_id,
+                callback_chat_id,
+            )
+            return self._build_clarify_action_response(
+                toast_type="error",
+                toast_content="This clarify prompt belongs to a different chat session.",
+            )
+
+        session_key = str(state.get("session_key", "") or "")
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        if not self._is_interactive_prompt_authorized(
+            operator,
+            chat_id=expected_chat_id,
+            session_key=session_key,
+        ):
+            logger.warning(
+                "[Feishu] Unauthorized clarify click by %s for %s",
+                open_id or "<unknown>",
+                clarify_id,
+            )
+            return self._build_clarify_action_response(
+                toast_type="error",
+                toast_content="You are not authorized to answer this clarify prompt.",
+            )
+
+        try:
+            from tools.clarify_gateway import get_pending_for_session
+
+            pending = get_pending_for_session(
+                session_key,
+                include_choice_prompts=True,
+            )
+        except Exception as exc:
+            logger.error(
+                "[Feishu] Failed to validate clarify %s session: %s",
+                clarify_id,
+                exc,
+                exc_info=True,
+            )
+            return self._build_clarify_action_response(
+                toast_type="error",
+                toast_content="Could not process this clarify response. Please try again.",
+            )
+
+        if pending is None or pending.clarify_id != clarify_id:
+            self._clarify_state.pop(clarify_id, None)
+            logger.warning(
+                "[Feishu] Clarify %s is not pending for session %s",
+                clarify_id,
+                session_key,
+            )
+            return self._build_clarify_action_response(
+                toast_type="warning",
+                toast_content="This clarify prompt expired or the session changed.",
+            )
+
+        choice_index = action_value.get("choice_index")
+        choices = state.get("choices") or []
+        if choice_index != "other":
+            try:
+                choice_index = int(choice_index) if choice_index is not None else -1
+            except (TypeError, ValueError):
+                choice_index = -1
+            if not 0 <= choice_index < len(choices):
+                logger.warning(
+                    "[Feishu] Clarify %s received invalid choice index %r",
+                    clarify_id,
+                    action_value.get("choice_index"),
+                )
+                return self._build_clarify_action_response(
+                    toast_type="error",
+                    toast_content="That clarify choice is invalid. Please choose another option.",
+                )
+
+        # Claim the prompt before resolving so simultaneous clicks cannot race
+        # and overwrite the response with a second choice.
+        if self._clarify_state.pop(clarify_id, None) is None:
+            return self._build_clarify_action_response(
+                toast_content="This clarify action was already processed.",
+            )
+
+        user_name = self._get_cached_sender_name(open_id) or open_id or "User"
+        question = str(state.get("question", "") or "")
+        if choice_index == "other":
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+
+                marked = mark_awaiting_text(clarify_id)
+            except Exception as exc:
+                logger.error(
+                    "[Feishu] Failed to mark clarify %s for text input: %s",
+                    clarify_id,
+                    exc,
+                    exc_info=True,
+                )
+                marked = False
+            if not marked:
+                logger.warning("[Feishu] Clarify %s expired before text input", clarify_id)
+                return self._build_clarify_action_response(
+                    toast_type="warning",
+                    toast_content="This clarify prompt expired or the session changed.",
+                )
+            logger.info(
+                "Feishu clarify is awaiting typed response (id=%s, session=%s, user=%s)",
+                clarify_id,
+                session_key,
+                user_name,
+            )
+            return self._build_clarify_action_response(
+                card_data=self._build_awaiting_text_clarify_card(
+                    question=question,
+                    user_name=user_name,
+                ),
+                toast_content="Type your answer as your next message.",
+            )
+
+        choice = str(choices[choice_index])
+        try:
+            from tools.clarify_gateway import resolve_gateway_clarify
+
+            resolved = resolve_gateway_clarify(clarify_id, choice)
+        except Exception as exc:
+            logger.error(
+                "[Feishu] Failed to resolve clarify %s: %s",
+                clarify_id,
+                exc,
+                exc_info=True,
+            )
+            resolved = False
+        if not resolved:
+            logger.warning(
+                "[Feishu] resolve_gateway_clarify returned False for %s",
+                clarify_id,
+            )
+            return self._build_clarify_action_response(
+                toast_type="warning",
+                toast_content="This clarify prompt expired or the session changed.",
+            )
+
+        logger.info(
+            "Feishu clarify button resolved (id=%s, choice=%r, session=%s, user=%s)",
+            clarify_id,
+            choice,
+            session_key,
+            user_name,
+        )
+        return self._build_clarify_action_response(
+            card_data=self._build_resolved_clarify_card(
+                question=question,
+                choice=choice,
+                user_name=user_name,
+            ),
+            toast_type="success",
+            toast_content=f"Selected: {choice[:60]}",
+        )
+
+    def _handle_multi_select_card_action(
+        self,
+        *,
+        event: Any,
+        action_value: Dict[str, Any],
+        form_value: Any,
+    ) -> Any:
+        """Validate a form submission and resolve the multi-select wait."""
+        token = str(getattr(event, "token", "") or "")
+        if token and self._is_card_action_duplicate(token):
+            logger.debug("[Feishu] Dropping duplicate multi-select token: %s", token)
+            return self._build_clarify_action_response(
+                toast_content="This selection was already processed.",
+            )
+
+        select_id = str(action_value.get("select_id", "") or "").strip()
+        if not select_id:
+            logger.warning("[Feishu] Multi-select action missing select_id")
+            return self._build_clarify_action_response(
+                toast_type="error",
+                toast_content="This selection is invalid. Please ask Hermes to try again.",
+            )
+
+        state = self._multi_select_state.get(select_id)
+        if not state:
+            logger.warning("[Feishu] Multi-select %s already resolved or expired", select_id)
+            return self._build_clarify_action_response(
+                toast_type="warning",
+                toast_content="This selection expired or was already submitted.",
+            )
+
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        callback_chat_id = str(
+            getattr(getattr(event, "context", None), "open_chat_id", "") or ""
+        )
+        if not callback_chat_id or (
+            expected_chat_id and callback_chat_id != expected_chat_id
+        ):
+            logger.warning(
+                "[Feishu] Multi-select callback chat mismatch for %s "
+                "(expected=%s, got=%s)",
+                select_id,
+                expected_chat_id,
+                callback_chat_id,
+            )
+            return self._build_clarify_action_response(
+                toast_type="error",
+                toast_content="This selection belongs to a different chat session.",
+            )
+
+        session_key = str(state.get("session_key", "") or "")
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        if not self._is_interactive_prompt_authorized(
+            operator,
+            chat_id=expected_chat_id,
+            session_key=session_key,
+        ):
+            logger.warning(
+                "[Feishu] Unauthorized multi-select click by %s for %s",
+                open_id or "<unknown>",
+                select_id,
+            )
+            return self._build_clarify_action_response(
+                toast_type="error",
+                toast_content="You are not authorized to answer this selection.",
+            )
+
+        try:
+            from tools.clarify_gateway import get_pending_for_session
+
+            pending = get_pending_for_session(
+                session_key,
+                include_choice_prompts=True,
+            )
+        except Exception as exc:
+            logger.error(
+                "[Feishu] Failed to validate multi-select %s session: %s",
+                select_id,
+                exc,
+                exc_info=True,
+            )
+            return self._build_clarify_action_response(
+                toast_type="error",
+                toast_content="Could not process this selection. Please try again.",
+            )
+
+        if (
+            pending is None
+            or pending.clarify_id != select_id
+            or not getattr(pending, "multiple", False)
+        ):
+            self._multi_select_state.pop(select_id, None)
+            logger.warning(
+                "[Feishu] Multi-select %s is not pending for session %s",
+                select_id,
+                session_key,
+            )
+            return self._build_clarify_action_response(
+                toast_type="warning",
+                toast_content="This selection expired or the session changed.",
+            )
+
+        cancelled = action_value.get("hermes_action") == "select_many_cancel"
+        choices = [str(choice) for choice in (state.get("choices") or [])]
+        selected: List[str] = []
+        if not cancelled:
+            raw_selected = None
+            if isinstance(form_value, dict):
+                legacy_selected = form_value.get("selected_choices")
+                if isinstance(legacy_selected, (list, tuple)):
+                    raw_selected = legacy_selected
+                else:
+                    raw_selected = [
+                        name.removeprefix(_MULTI_SELECT_CHECKER_NAME_PREFIX)
+                        for name, checked in form_value.items()
+                        if isinstance(name, str)
+                        and name.startswith(_MULTI_SELECT_CHECKER_NAME_PREFIX)
+                        and _to_boolean(checked)
+                    ]
+            if not isinstance(raw_selected, (list, tuple)) or not raw_selected:
+                return self._build_clarify_action_response(
+                    toast_type="error",
+                    toast_content="Select at least one item before confirming.",
+                )
+            for raw_index in raw_selected:
+                value = str(raw_index).strip()
+                if not value.isdigit():
+                    index = -1
+                else:
+                    index = int(value)
+                if not 0 <= index < len(choices):
+                    logger.warning(
+                        "[Feishu] Multi-select %s received invalid option index %r",
+                        select_id,
+                        raw_index,
+                    )
+                    return self._build_clarify_action_response(
+                        toast_type="error",
+                        toast_content="That selection is invalid. Please choose again.",
+                    )
+                choice = choices[index]
+                if choice not in selected:
+                    selected.append(choice)
+
+        # Claim the form before unblocking the agent so concurrent submissions
+        # cannot replace the first accepted result.
+        if self._multi_select_state.pop(select_id, None) is None:
+            return self._build_clarify_action_response(
+                toast_content="This selection was already processed.",
+            )
+
+        try:
+            if cancelled:
+                from tools.clarify_gateway import cancel_gateway_select_many
+
+                resolved = cancel_gateway_select_many(select_id)
+            else:
+                from tools.clarify_gateway import resolve_gateway_select_many
+
+                resolved = resolve_gateway_select_many(select_id, selected)
+        except Exception as exc:
+            logger.error(
+                "[Feishu] Failed to resolve multi-select %s: %s",
+                select_id,
+                exc,
+                exc_info=True,
+            )
+            resolved = False
+
+        if not resolved:
+            logger.warning(
+                "[Feishu] Multi-select resolver returned False for %s",
+                select_id,
+            )
+            return self._build_clarify_action_response(
+                toast_type="warning",
+                toast_content="This selection expired or the session changed.",
+            )
+
+        user_name = self._get_cached_sender_name(open_id) or open_id or "User"
+        question = str(state.get("question", "") or "")
+        logger.info(
+            "Feishu multi-select resolved "
+            "(id=%s, choices=%r, cancelled=%s, session=%s, user=%s)",
+            select_id,
+            selected,
+            cancelled,
+            session_key,
+            user_name,
+        )
+        return self._build_clarify_action_response(
+            card_data=self._build_resolved_multi_select_card(
+                question=question,
+                choices=selected,
+                user_name=user_name,
+                cancelled=cancelled,
+            ),
+            toast_type="info" if cancelled else "success",
+            toast_content=(
+                "Selection cancelled."
+                if cancelled
+                else f"Selected {len(selected)} item(s)."
+            ),
+        )
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
@@ -2715,20 +3622,24 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
-            logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
         callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
         expected_chat_id = str(state.get("chat_id", "") or "")
-        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+        if not callback_chat_id or (
+            expected_chat_id and callback_chat_id != expected_chat_id
+        ):
             logger.warning(
                 "[Feishu] Approval callback chat mismatch for %s (expected=%s, got=%s)",
                 approval_id,
                 expected_chat_id,
                 callback_chat_id,
             )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not self._is_interactive_prompt_authorized(
+            operator,
+            chat_id=expected_chat_id,
+            session_key=str(state.get("session_key", "") or ""),
+        ):
+            logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         user_name = self._get_cached_sender_name(open_id) or open_id
@@ -2775,20 +3686,24 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
-            logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
         callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
         expected_chat_id = str(state.get("chat_id", "") or "")
-        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+        if not callback_chat_id or (
+            expected_chat_id and callback_chat_id != expected_chat_id
+        ):
             logger.warning(
                 "[Feishu] Update prompt callback chat mismatch for %s (expected=%s, got=%s)",
                 prompt_id,
                 expected_chat_id,
                 callback_chat_id,
             )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not self._is_interactive_prompt_authorized(
+            operator,
+            chat_id=expected_chat_id,
+            session_key=str(state.get("session_key", "") or ""),
+        ):
+            logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         user_name = self._get_cached_sender_name(open_id) or open_id
@@ -2828,7 +3743,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return
-        if not self._is_interactive_operator_authorized(open_id):
+        session_key = str(state.get("session_key", "") or "")
+        if self._session_chat_type(session_key) == "dm":
+            authorized = bool(str(open_id or "").strip())
+        else:
+            authorized = self._is_interactive_operator_authorized(open_id)
+        if not authorized:
             logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
             return
         expected_chat_id = str(state.get("chat_id", "") or "")
@@ -2867,8 +3787,20 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return
         if open_id:
-            sender_id = SimpleNamespace(open_id=open_id, user_id="")
-            if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            session_key = str(state.get("session_key", "") or "")
+            if self._session_chat_type(session_key) == "dm":
+                authorized = self._is_interactive_prompt_authorized(
+                    open_id,
+                    chat_id=str(state.get("chat_id", "") or ""),
+                    session_key=session_key,
+                )
+            else:
+                authorized = self._allow_group_message(
+                    SimpleNamespace(open_id=open_id, user_id=""),
+                    state.get("chat_id", ""),
+                    is_bot=False,
+                )
+            if not authorized:
                 logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
                 return
         expected_chat_id = str(state.get("chat_id", "") or "")
@@ -3236,6 +4168,7 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id: str,
         is_bot: bool = False,
     ) -> None:
+        self._remember_identity_aliases(sender_id)
         text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
 
         if inbound_type == MessageType.TEXT:
@@ -4296,9 +5229,7 @@ class FeishuAdapter(BasePlatformAdapter):
         is_bot: bool = False,
     ) -> bool:
         """Per-group policy gate for non-DM traffic."""
-        sender_open_id = getattr(sender_id, "open_id", None)
-        sender_user_id = getattr(sender_id, "user_id", None)
-        sender_ids = {sender_open_id, sender_user_id} - {None}
+        sender_ids = set(self._known_sender_identities(sender_id))
 
         if sender_ids and self._admins and (sender_ids & self._admins):
             return True
@@ -4527,12 +5458,6 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

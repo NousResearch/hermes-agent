@@ -9425,6 +9425,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+                if getattr(_pending_clarify, "multiple", False):
+                    return _clarify_mod.select_many_text_help(_pending_clarify)
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
@@ -19166,20 +19168,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # explaining that no response arrived (so the agent can adapt
             # rather than hang forever).
             # ------------------------------------------------------------------
-            def _clarify_callback_sync(question: str, choices) -> str:
+            def _interactive_prompt_callback_sync(
+                question: str,
+                choices,
+                *,
+                multiple: bool,
+            ):
                 from tools import clarify_gateway as _clarify_mod
                 import uuid as _uuid
 
                 if not _status_adapter:
+                    if multiple:
+                        raise RuntimeError("Multi-select prompt has no platform adapter")
                     return ""
 
                 clarify_id = _uuid.uuid4().hex[:10]
-                _clarify_mod.register(
-                    clarify_id=clarify_id,
-                    session_key=session_key or "",
-                    question=question,
-                    choices=list(choices) if choices else None,
-                )
+                normalized_choices = list(choices) if choices else None
+                if multiple:
+                    _clarify_mod.register_select_many(
+                        select_id=clarify_id,
+                        session_key=session_key or "",
+                        question=question,
+                        choices=normalized_choices or [],
+                    )
+                else:
+                    _clarify_mod.register(
+                        clarify_id=clarify_id,
+                        session_key=session_key or "",
+                        question=question,
+                        choices=normalized_choices,
+                    )
 
                 # Pause typing — like approval, we don't want a "thinking..."
                 # status to obscure the prompt or block the user from typing
@@ -19191,18 +19209,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
                 send_ok = False
-                fut = safe_schedule_threadsafe(
-                    _status_adapter.send_clarify(
+                if multiple:
+                    send_coro = _status_adapter.send_multi_select(
                         chat_id=_status_chat_id,
                         question=question,
-                        choices=list(choices) if choices else None,
+                        choices=normalized_choices or [],
+                        select_id=clarify_id,
+                        session_key=session_key or "",
+                        metadata=_status_thread_metadata,
+                    )
+                    prompt_label = "Multi-select"
+                else:
+                    send_coro = _status_adapter.send_clarify(
+                        chat_id=_status_chat_id,
+                        question=question,
+                        choices=normalized_choices,
                         clarify_id=clarify_id,
                         session_key=session_key or "",
                         metadata=_status_thread_metadata,
-                    ),
+                    )
+                    prompt_label = "Clarify"
+                fut = safe_schedule_threadsafe(
+                    send_coro,
                     _loop_for_step,
                     logger=logger,
-                    log_message="Clarify send failed to schedule",
+                    log_message=f"{prompt_label} send failed to schedule",
                 )
                 if fut is None:
                     send_ok = False
@@ -19210,8 +19241,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         result = fut.result(timeout=15)
                         send_ok = bool(getattr(result, "success", False))
+                        if not send_ok:
+                            adapter_type = type(_status_adapter)
+                            logger.warning(
+                                "%s send returned failure "
+                                "(adapter=%s.%s, id=%s): %s",
+                                prompt_label,
+                                adapter_type.__module__,
+                                adapter_type.__qualname__,
+                                clarify_id,
+                                getattr(result, "error", None) or "unknown send error",
+                            )
                     except Exception as exc:
-                        logger.warning("Clarify send failed: %s", exc)
+                        logger.warning(
+                            "%s send raised (adapter=%s.%s, id=%s): %s",
+                            prompt_label,
+                            type(_status_adapter).__module__,
+                            type(_status_adapter).__qualname__,
+                            clarify_id,
+                            exc,
+                            exc_info=True,
+                        )
                         send_ok = False
 
                 if not send_ok:
@@ -19219,16 +19269,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # sentinel so the agent can fall back to a sensible
                     # default rather than hanging.
                     _clarify_mod.clear_session(session_key or "")
+                    if multiple:
+                        raise RuntimeError("Multi-select prompt could not be delivered")
                     return "[clarify prompt could not be delivered]"
 
                 timeout = _clarify_mod.get_clarify_timeout()
                 response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
                 if response is None or response == "":
                     # Timeout or session-boundary cancellation
+                    if multiple:
+                        raise TimeoutError(
+                            f"User did not respond to multi-select within {int(timeout / 60)}m"
+                        )
                     return f"[user did not respond within {int(timeout / 60)}m]"
                 return response
 
+            def _clarify_callback_sync(question: str, choices) -> str:
+                return str(
+                    _interactive_prompt_callback_sync(
+                        question,
+                        choices,
+                        multiple=False,
+                    )
+                )
+
+            def _select_many_callback_sync(question: str, choices) -> list[str]:
+                response = _interactive_prompt_callback_sync(
+                    question,
+                    choices,
+                    multiple=True,
+                )
+                if not isinstance(response, list):
+                    raise RuntimeError("Multi-select prompt returned an invalid response")
+                return response
+
             agent.clarify_callback = _clarify_callback_sync
+            agent.select_many_callback = _select_many_callback_sync
 
             # Show assistant thinking between tool calls — independent of
             # tool_progress mode. Mattermost needs an explicit per-platform

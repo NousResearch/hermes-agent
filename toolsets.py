@@ -235,6 +235,12 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    "select_many": {
+        "description": "Ask the user to select and confirm multiple choices",
+        "tools": ["select_many"],
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
@@ -516,6 +522,7 @@ TOOLSETS = {
     "hermes-feishu": {
         "description": "Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)",
         "tools": _HERMES_CORE_TOOLS + [
+            "select_many",
             "feishu_doc_read",
             "feishu_drive_list_comments",
             "feishu_drive_list_comment_replies",

@@ -32,10 +32,11 @@ Two delivery paths from the adapter:
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,9 @@ class _ClarifyEntry:
     question: str
     choices: Optional[List[str]]
     event: threading.Event = field(default_factory=threading.Event)
-    response: Optional[str] = None
+    response: Optional[Any] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    multiple: bool = False
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -61,6 +63,7 @@ class _ClarifyEntry:
             "session_key": self.session_key,
             "question": self.question,
             "choices": list(self.choices) if self.choices else None,
+            "multiple": self.multiple,
         }
 
 
@@ -80,6 +83,8 @@ def register(
     session_key: str,
     question: str,
     choices: Optional[List[str]],
+    *,
+    multiple: bool = False,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
@@ -93,6 +98,7 @@ def register(
         choices=list(choices) if choices else None,
         # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
+        multiple=multiple,
     )
     with _lock:
         _entries[clarify_id] = entry
@@ -100,7 +106,23 @@ def register(
     return entry
 
 
-def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
+def register_select_many(
+    select_id: str,
+    session_key: str,
+    question: str,
+    choices: List[str],
+) -> _ClarifyEntry:
+    """Register an explicit multi-select request in the shared wait queue."""
+    return register(
+        clarify_id=select_id,
+        session_key=session_key,
+        question=question,
+        choices=choices,
+        multiple=True,
+    )
+
+
+def wait_for_response(clarify_id: str, timeout: float) -> Optional[Any]:
     """Block on the entry's event until resolved or timeout fires.
 
     Polls in 1-second slices so the agent's inactivity heartbeat keeps
@@ -155,11 +177,37 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
     """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None:
+        if entry is None or entry.multiple:
             return False
     entry.response = str(response) if response is not None else ""
     entry.event.set()
     return True
+
+
+def resolve_gateway_select_many(select_id: str, responses: Sequence[str]) -> bool:
+    """Resolve a multi-select request with canonical offered choice labels."""
+    if not isinstance(responses, (list, tuple)):
+        return False
+    with _lock:
+        entry = _entries.get(select_id)
+        if entry is None or not entry.multiple or entry.event.is_set():
+            return False
+        offered = set(entry.choices or [])
+        selected: List[str] = []
+        for response in responses:
+            value = str(response).strip()
+            if value not in offered:
+                return False
+            if value not in selected:
+                selected.append(value)
+        entry.response = selected
+        entry.event.set()
+        return True
+
+
+def cancel_gateway_select_many(select_id: str) -> bool:
+    """Resolve a multi-select request as an explicit user cancellation."""
+    return resolve_gateway_select_many(select_id, [])
 
 
 def get_pending_for_session(
@@ -203,11 +251,53 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
     return text
 
 
+def _coerce_select_many_text(
+    entry: _ClarifyEntry,
+    response: str,
+) -> Optional[List[str]]:
+    """Parse a numbered multi-select reply, returning None when it is invalid."""
+    text = str(response or "").strip()
+    if text.casefold() in {"cancel", "cancelled", "canceled", "取消"}:
+        return []
+    if not text or not entry.choices:
+        return None
+
+    tokens = [token for token in re.split(r"[\s,，、]+", text) if token]
+    if not tokens:
+        return None
+
+    selected: List[str] = []
+    for token in tokens:
+        if not token.isdigit():
+            return None
+        index = int(token) - 1
+        if not 0 <= index < len(entry.choices):
+            return None
+        choice = str(entry.choices[index])
+        if choice not in selected:
+            selected.append(choice)
+    return selected
+
+
+def select_many_text_help(entry: _ClarifyEntry) -> str:
+    """Return retry guidance for an invalid numbered multi-select reply."""
+    count = len(entry.choices or [])
+    return (
+        f"Reply with one or more numbers from 1 to {count}, separated by spaces "
+        "(for example: 1 2 3), or reply `cancel`."
+    )
+
+
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
     """Resolve the oldest pending clarify in ``session_key`` from typed text."""
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     if entry is None:
         return False
+    if entry.multiple:
+        selected = _coerce_select_many_text(entry, response)
+        if selected is None:
+            return False
+        return resolve_gateway_select_many(entry.clarify_id, selected)
     return resolve_gateway_clarify(
         entry.clarify_id,
         _coerce_text_response(entry, response),

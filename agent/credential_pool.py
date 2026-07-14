@@ -36,6 +36,7 @@ from hermes_cli.auth import (
     _save_provider_state,
     _store_provider_state,
     read_credential_pool,
+    read_credential_pool_with_source,
     write_credential_pool,
 )
 
@@ -560,9 +561,19 @@ def _write_through_provider_state_to_global_root(
 
 
 class CredentialPool:
-    def __init__(self, provider: str, entries: List[PooledCredential]):
+    def __init__(
+        self,
+        provider: str,
+        entries: List[PooledCredential],
+        *,
+        auth_source_path: Optional[Path] = None,
+    ):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
+        self._auth_source_path = auth_source_path
+        self._persisted_entries_by_id = {
+            entry.id: entry.to_dict() for entry in self._entries
+        }
         self._current_id: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
         self._lock = threading.Lock()
@@ -592,11 +603,45 @@ class CredentialPool:
                 return
 
     def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+        payloads = [entry.to_dict() for entry in self._entries]
+        codex_source = (
+            self._auth_source_path
+            if self.provider == "openai-codex"
+            else None
+        )
         write_credential_pool(
             self.provider,
-            [entry.to_dict() for entry in self._entries],
+            payloads,
             removed_ids=removed_ids,
+            baseline_entries=(
+                self._persisted_entries_by_id
+                if codex_source is not None
+                else None
+            ),
+            target_path=codex_source,
         )
+        if codex_source is not None:
+            # Adopt the merged canonical snapshot so a later write from this
+            # process cannot reintroduce another process's stale row.
+            auth_store = _load_auth_store(codex_source)
+            pool = auth_store.get("credential_pool")
+            rows = pool.get("openai-codex") if isinstance(pool, dict) else None
+            if isinstance(rows, list):
+                self._entries = sorted(
+                    [
+                        PooledCredential.from_dict("openai-codex", row)
+                        for row in rows
+                        if isinstance(row, dict)
+                    ],
+                    key=lambda entry: entry.priority,
+                )
+                if self._current_id and not any(
+                    entry.id == self._current_id for entry in self._entries
+                ):
+                    self._current_id = None
+        self._persisted_entries_by_id = {
+            entry.id: entry.to_dict() for entry in self._entries
+        }
 
     def _is_terminal_auth_failure(
         self,
@@ -724,9 +769,18 @@ class CredentialPool:
         if self.provider != "openai-codex" or entry.source != "device_code":
             return entry
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "openai-codex")
+            source_path = self._auth_source_path
+            with _auth_store_lock(auth_file=source_path):
+                auth_store = _load_auth_store(source_path)
+                if source_path is None:
+                    state = _load_provider_state(auth_store, "openai-codex")
+                else:
+                    providers = auth_store.get("providers")
+                    state = (
+                        providers.get("openai-codex")
+                        if isinstance(providers, dict)
+                        else None
+                    )
             if not isinstance(state, dict):
                 return entry
             tokens = state.get("tokens")
@@ -767,6 +821,35 @@ class CredentialPool:
         except Exception as exc:
             logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
         return entry
+
+    def _reload_codex_entry_from_pool(
+        self, entry: PooledCredential,
+    ) -> Optional[PooledCredential]:
+        """Reload one Codex row from its canonical store while refresh-locked.
+
+        OpenAI refresh tokens are single-use. A second process may have rotated
+        and persisted this exact pool row before this process acquired the
+        canonical lock. Refreshing the stale in-memory row would replay an
+        invalid token, especially for manual and pool-only credentials.
+        """
+        if self.provider != "openai-codex" or self._auth_source_path is None:
+            return entry
+        auth_store = _load_auth_store(self._auth_source_path)
+        pool = auth_store.get("credential_pool")
+        rows = pool.get("openai-codex") if isinstance(pool, dict) else None
+        if not isinstance(rows, list):
+            self._persisted_entries_by_id.pop(entry.id, None)
+            return None
+        for payload in rows:
+            if not isinstance(payload, dict) or payload.get("id") != entry.id:
+                continue
+            updated = PooledCredential.from_dict("openai-codex", payload)
+            if updated != entry:
+                self._replace_entry(entry, updated)
+            self._persisted_entries_by_id[updated.id] = updated.to_dict()
+            return updated
+        self._persisted_entries_by_id.pop(entry.id, None)
+        return None
 
     def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync an xAI OAuth pool entry from auth.json if tokens differ.
@@ -926,6 +1009,41 @@ class CredentialPool:
         # device-code sources (nous, openai-codex, xAI) use ``device_code``.
         if entry.source != "device_code":
             return
+        if self.provider == "openai-codex" and self._auth_source_path is not None:
+            try:
+                source_path = self._auth_source_path
+                with _auth_store_lock(auth_file=source_path):
+                    auth_store = _load_auth_store(source_path)
+                    providers = auth_store.get("providers")
+                    state = (
+                        providers.get("openai-codex")
+                        if isinstance(providers, dict)
+                        else None
+                    )
+                    if not isinstance(state, dict):
+                        return
+                    tokens = state.get("tokens")
+                    if not isinstance(tokens, dict):
+                        return
+                    tokens["access_token"] = entry.access_token
+                    if entry.refresh_token:
+                        tokens["refresh_token"] = entry.refresh_token
+                    if entry.last_refresh:
+                        state["last_refresh"] = entry.last_refresh
+                    _store_provider_state(
+                        auth_store,
+                        "openai-codex",
+                        state,
+                        set_active=False,
+                    )
+                    _save_auth_store(auth_store, target_path=source_path)
+                return
+            except Exception as exc:
+                logger.debug(
+                    "Failed to sync Codex pool entry to canonical auth store: %s",
+                    exc,
+                )
+                return
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
@@ -1035,12 +1153,24 @@ class CredentialPool:
                 float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
                 float(refresh_timeout_seconds) + 5.0,
             )
-            with _auth_store_lock(timeout_seconds=lock_timeout):
+            with _auth_store_lock(
+                timeout_seconds=lock_timeout,
+                auth_file=self._auth_source_path,
+            ):
+                synced = self._reload_codex_entry_from_pool(entry)
+                if synced is None:
+                    self._entries = [
+                        item for item in self._entries if item.id != entry.id
+                    ]
+                    if self._current_id == entry.id:
+                        self._current_id = None
+                    return None
+                entry = synced
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
-                    if not force and not self._entry_needs_refresh(entry):
-                        return entry
+                if not force and not self._entry_needs_refresh(entry):
+                    return entry
                 return self._refresh_entry_impl(entry, force=force)
         return self._refresh_entry_impl(entry, force=force)
 
@@ -1267,9 +1397,25 @@ class CredentialPool:
                         "Codex OAuth refresh token is terminally invalid; clearing local token state"
                     )
                     try:
-                        with _auth_store_lock():
-                            auth_store = _load_auth_store()
-                            state = _load_provider_state(auth_store, "openai-codex") or {}
+                        source_path = self._auth_source_path
+                        with _auth_store_lock(auth_file=source_path):
+                            auth_store = _load_auth_store(source_path)
+                            if source_path is None:
+                                state = _load_provider_state(
+                                    auth_store, "openai-codex"
+                                ) or {}
+                            else:
+                                providers = auth_store.get("providers")
+                                raw_state = (
+                                    providers.get("openai-codex")
+                                    if isinstance(providers, dict)
+                                    else None
+                                )
+                                state = (
+                                    dict(raw_state)
+                                    if isinstance(raw_state, dict)
+                                    else {}
+                                )
                             if isinstance(state, dict):
                                 tokens = state.get("tokens") or {}
                                 if isinstance(tokens, dict):
@@ -1288,7 +1434,10 @@ class CredentialPool:
                                             "at": datetime.now(timezone.utc).isoformat(),
                                         }
                                         _save_provider_state(auth_store, "openai-codex", state)
-                                        _save_auth_store(auth_store)
+                                        _save_auth_store(
+                                            auth_store,
+                                            target_path=source_path,
+                                        )
                     except Exception as clear_exc:
                         logger.debug(
                             "Failed to clear terminal Codex OAuth state: %s", clear_exc
@@ -1711,11 +1860,7 @@ class CredentialPool:
             replace(entry, priority=new_priority)
             for new_priority, entry in enumerate(self._entries)
         ]
-        write_credential_pool(
-            self.provider,
-            [entry.to_dict() for entry in self._entries],
-            removed_ids=[removed.id],
-        )
+        self._persist(removed_ids=[removed.id])
         if self._current_id == removed.id:
             self._current_id = None
         return removed
@@ -2397,9 +2542,14 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
-    raw_entries = read_credential_pool(provider)
-    disk_ids = {
-        entry.get("id")
+    auth_source_path: Optional[Path] = None
+    if provider == "openai-codex":
+        raw_entries, auth_source_path = read_credential_pool_with_source(provider)
+    else:
+        raw_pool = read_credential_pool(provider)
+        raw_entries = raw_pool if isinstance(raw_pool, list) else []
+    disk_ids: Set[str] = {
+        str(entry.get("id"))
         for entry in raw_entries
         if isinstance(entry, dict) and entry.get("id")
     }
@@ -2457,5 +2607,10 @@ def load_pool(provider: str) -> CredentialPool:
             provider,
             [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
             removed_ids=disk_ids - new_ids,
+            target_path=auth_source_path,
         )
-    return CredentialPool(provider, entries)
+    return CredentialPool(
+        provider,
+        entries,
+        auth_source_path=auth_source_path,
+    )

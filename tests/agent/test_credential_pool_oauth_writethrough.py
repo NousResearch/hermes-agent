@@ -256,3 +256,262 @@ def test_codex_pool_refresh_holds_auth_store_lock_across_post(monkeypatch, tmp_p
     # The invariant: the single-use token POST ran inside the auth-store lock.
     assert lock_held["during_post"] is True
 
+
+def test_inherited_codex_pool_refresh_updates_only_root(
+    profile_and_root, monkeypatch
+):
+    """A loaded inherited Codex pool keeps root as its canonical owner."""
+    profile_path, root_path = profile_and_root
+    _write_store(
+        profile_path,
+        {"version": 1, "providers": {}, "credential_pool": {}},
+    )
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "root-access-old",
+                        "refresh_token": "root-refresh-old",
+                    },
+                    "last_refresh": "2020-01-01T00:00:00Z",
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": "default",
+                    "label": "default",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "device_code",
+                    "access_token": "root-access-old",
+                    "refresh_token": "root-refresh-old",
+                }]
+            },
+        },
+    )
+    monkeypatch.setattr(
+        A,
+        "refresh_codex_oauth_pure",
+        lambda access_token, refresh_token, **kwargs: {
+            "access_token": "root-access-new",
+            "refresh_token": "root-refresh-new",
+            "last_refresh": "2020-01-02T00:00:00Z",
+        },
+    )
+
+    pool = CP.load_pool("openai-codex")
+    entry = pool.entries()[0]
+    refreshed = pool._refresh_entry(entry, force=True)
+
+    assert refreshed is not None
+    assert refreshed.refresh_token == "root-refresh-new"
+    root = _read_store(root_path)
+    assert (
+        root["providers"]["openai-codex"]["tokens"]["refresh_token"]
+        == "root-refresh-new"
+    )
+    assert (
+        root["credential_pool"]["openai-codex"][0]["refresh_token"]
+        == "root-refresh-new"
+    )
+    profile = _read_store(profile_path)
+    assert "openai-codex" not in profile.get("providers", {})
+    assert "openai-codex" not in profile.get("credential_pool", {})
+
+
+def test_two_loaded_inherited_manual_codex_pools_reload_rotated_row(
+    profile_and_root, monkeypatch
+):
+    """A waiter must not replay a manual pool row's consumed refresh token."""
+    profile_path, root_path = profile_and_root
+    _write_store(
+        profile_path,
+        {"version": 1, "providers": {}, "credential_pool": {}},
+    )
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": "manual-1",
+                    "label": "manual",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:device_code",
+                    "access_token": "access-0",
+                    "refresh_token": "refresh-0",
+                }]
+            },
+        },
+    )
+    submitted = []
+
+    def fake_refresh(access_token, refresh_token, **kwargs):
+        submitted.append((access_token, refresh_token))
+        generation = len(submitted)
+        return {
+            "access_token": f"access-{generation}",
+            "refresh_token": f"refresh-{generation}",
+            "last_refresh": f"2020-01-0{generation + 1}T00:00:00Z",
+        }
+
+    monkeypatch.setattr(A, "refresh_codex_oauth_pure", fake_refresh)
+    first_pool = CP.load_pool("openai-codex")
+    second_pool = CP.load_pool("openai-codex")
+
+    assert first_pool._refresh_entry(first_pool.entries()[0], force=True)
+    assert second_pool._refresh_entry(second_pool.entries()[0], force=True)
+
+    assert submitted == [
+        ("access-0", "refresh-0"),
+        ("access-1", "refresh-1"),
+    ]
+    root = _read_store(root_path)
+    assert (
+        root["credential_pool"]["openai-codex"][0]["refresh_token"]
+        == "refresh-2"
+    )
+    profile = _read_store(profile_path)
+    assert "openai-codex" not in profile.get("credential_pool", {})
+
+
+def test_remove_from_inherited_codex_pool_updates_root_without_shadow(
+    profile_and_root,
+):
+    profile_path, root_path = profile_and_root
+    _write_store(
+        profile_path,
+        {"version": 1, "providers": {}, "credential_pool": {}},
+    )
+    rows = [
+        {
+            "id": entry_id,
+            "label": entry_id,
+            "auth_type": "oauth",
+            "priority": priority,
+            "source": "manual:device_code",
+            "access_token": f"access-{priority}",
+            "refresh_token": f"refresh-{priority}",
+        }
+        for priority, entry_id in enumerate(("first", "second"))
+    ]
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {"openai-codex": rows},
+        },
+    )
+
+    pool = CP.load_pool("openai-codex")
+    removed = pool.remove_index(1)
+
+    assert removed is not None and removed.id == "first"
+    root = _read_store(root_path)
+    assert [
+        item["id"] for item in root["credential_pool"]["openai-codex"]
+    ] == ["second"]
+    profile = _read_store(profile_path)
+    assert "openai-codex" not in profile.get("credential_pool", {})
+
+
+def test_refreshing_different_rows_preserves_concurrent_rotation(
+    profile_and_root, monkeypatch
+):
+    """Writing row B must not overwrite a newer on-disk version of row A."""
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    rows = [
+        {
+            "id": entry_id,
+            "label": entry_id,
+            "auth_type": "oauth",
+            "priority": priority,
+            "source": "manual:device_code",
+            "access_token": f"access-{entry_id}-0",
+            "refresh_token": f"refresh-{entry_id}-0",
+        }
+        for priority, entry_id in enumerate(("a", "b"))
+    ]
+    _write_store(root_path, {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {"openai-codex": rows},
+    })
+
+    def fake_refresh(access_token, refresh_token, **kwargs):
+        return {
+            "access_token": f"{access_token}-new",
+            "refresh_token": f"{refresh_token}-new",
+            "last_refresh": "2020-01-02T00:00:00Z",
+        }
+
+    monkeypatch.setattr(A, "refresh_codex_oauth_pure", fake_refresh)
+    first_pool = CP.load_pool("openai-codex")
+    second_pool = CP.load_pool("openai-codex")
+
+    assert first_pool._refresh_entry(first_pool.entries()[0], force=True)
+    assert second_pool._refresh_entry(second_pool.entries()[1], force=True)
+
+    root = _read_store(root_path)
+    final = {
+        item["id"]: item["refresh_token"]
+        for item in root["credential_pool"]["openai-codex"]
+    }
+    assert final == {
+        "a": "refresh-a-0-new",
+        "b": "refresh-b-0-new",
+    }
+
+
+def test_stale_snapshot_removal_preserves_other_row_rotation(
+    profile_and_root, monkeypatch
+):
+    """Removing row B must not roll back concurrently refreshed row A."""
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    rows = [
+        {
+            "id": entry_id,
+            "label": entry_id,
+            "auth_type": "oauth",
+            "priority": priority,
+            "source": "manual:device_code",
+            "access_token": f"access-{entry_id}-0",
+            "refresh_token": f"refresh-{entry_id}-0",
+        }
+        for priority, entry_id in enumerate(("a", "b"))
+    ]
+    _write_store(root_path, {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {"openai-codex": rows},
+    })
+    monkeypatch.setattr(
+        A,
+        "refresh_codex_oauth_pure",
+        lambda access_token, refresh_token, **kwargs: {
+            "access_token": f"{access_token}-new",
+            "refresh_token": f"{refresh_token}-new",
+            "last_refresh": "2020-01-02T00:00:00Z",
+        },
+    )
+    refreshing_pool = CP.load_pool("openai-codex")
+    removing_pool = CP.load_pool("openai-codex")
+
+    assert refreshing_pool._refresh_entry(refreshing_pool.entries()[1], force=True)
+    removed = removing_pool.remove_index(1)
+
+    assert removed is not None and removed.id == "a"
+    root = _read_store(root_path)
+    final_rows = root["credential_pool"]["openai-codex"]
+    assert len(final_rows) == 1
+    assert final_rows[0]["id"] == "b"
+    assert final_rows[0]["priority"] == 0
+    assert final_rows[0]["refresh_token"] == "refresh-b-0-new"

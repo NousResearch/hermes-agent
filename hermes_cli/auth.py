@@ -980,8 +980,8 @@ def _load_global_auth_store() -> Dict[str, Any]:
         return {}
 
 
-def _auth_lock_path() -> Path:
-    return _auth_file_path().with_suffix(".lock")
+def _auth_lock_path(auth_file: Optional[Path] = None) -> Path:
+    return (auth_file or _auth_file_path()).with_suffix(".lock")
 
 
 _auth_lock_holder = threading.local()
@@ -996,29 +996,38 @@ def _file_lock(
 ):
     """Cross-process advisory flock helper.
 
-    Reentrant per-thread via ``holder.depth``. Falls back to a depth-only
-    guard when neither ``fcntl`` nor ``msvcrt`` is available (rare).
-    Callers supply their own ``threading.local`` so independent locks
-    (e.g. profile auth.json vs shared Nous store) don't share reentrancy
-    state — that would let one lock's reentrant acquisition silently skip
-    the other's kernel-level flock.
+    Reentrant per-thread and per normalized lock path. Different paths must
+    acquire distinct kernel locks even when nested in the same thread; treating
+    a root auth lock as reentrant while holding a profile auth lock would leave
+    rotating OAuth refresh tokens unprotected across profiles. Falls back to a
+    path-scoped depth guard when neither ``fcntl`` nor ``msvcrt`` is available.
     """
-    if getattr(holder, "depth", 0) > 0:
-        holder.depth += 1
+    try:
+        lock_key = str(lock_path.resolve(strict=False))
+    except Exception:
+        lock_key = str(lock_path)
+    depths = getattr(holder, "depths", None)
+    if not isinstance(depths, dict):
+        depths = {}
+        holder.depths = depths
+    if depths.get(lock_key, 0) > 0:
+        depths[lock_key] += 1
         try:
             yield
         finally:
-            holder.depth -= 1
+            depths[lock_key] -= 1
+            if depths[lock_key] <= 0:
+                depths.pop(lock_key, None)
         return
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     if fcntl is None and msvcrt is None:
-        holder.depth = 1
+        depths[lock_key] = 1
         try:
             yield
         finally:
-            holder.depth = 0
+            depths.pop(lock_key, None)
         return
 
     # On Windows, msvcrt.locking needs the file to have content and the
@@ -1041,11 +1050,11 @@ def _file_lock(
                     raise TimeoutError(timeout_message)
                 time.sleep(0.05)
 
-        holder.depth = 1
+        depths[lock_key] = 1
         try:
             yield
         finally:
-            holder.depth = 0
+            depths.pop(lock_key, None)
             if fcntl:
                 try:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -1060,7 +1069,10 @@ def _file_lock(
 
 
 @contextmanager
-def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+def _auth_store_lock(
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+    auth_file: Optional[Path] = None,
+):
     """Cross-process advisory lock for auth.json reads+writes.  Reentrant.
 
     Lock ordering invariant: when this lock is held together with
@@ -1070,7 +1082,7 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     against a concurrent import on the shared store.
     """
     with _file_lock(
-        _auth_lock_path(),
+        _auth_lock_path(auth_file),
         _auth_lock_holder,
         timeout_seconds,
         "Timed out waiting for auth store lock",
@@ -1366,11 +1378,66 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
+def read_credential_pool_with_source(
+    provider_id: str,
+) -> tuple[List[Dict[str, Any]], Path]:
+    """Return one provider's pool entries and the auth store that owns them.
+
+    A local provider singleton is ownership even when its pool has not been
+    seeded yet. Otherwise a non-empty global pool or global singleton is owned
+    by the global root. Rotating OAuth refresh paths can therefore update one
+    canonical store instead of creating a profile-local shadow.
+    """
+    local_path = _auth_file_path()
+    local_store = _load_auth_store(local_path)
+    local_pool = local_store.get("credential_pool")
+    local_entries = (
+        local_pool.get(provider_id) if isinstance(local_pool, dict) else None
+    )
+    local_providers = local_store.get("providers")
+    local_state = (
+        local_providers.get(provider_id)
+        if isinstance(local_providers, dict)
+        else None
+    )
+    if (isinstance(local_entries, list) and local_entries) or isinstance(
+        local_state, dict
+    ):
+        return (
+            list(local_entries) if isinstance(local_entries, list) else [],
+            local_path,
+        )
+
+    global_path = _global_auth_file_path()
+    global_store = _load_global_auth_store()
+    global_pool = global_store.get("credential_pool") if global_store else None
+    global_entries = (
+        global_pool.get(provider_id) if isinstance(global_pool, dict) else None
+    )
+    global_providers = global_store.get("providers") if global_store else None
+    global_state = (
+        global_providers.get(provider_id)
+        if isinstance(global_providers, dict)
+        else None
+    )
+    if global_path is not None and (
+        (isinstance(global_entries, list) and global_entries)
+        or isinstance(global_state, dict)
+    ):
+        return (
+            list(global_entries) if isinstance(global_entries, list) else [],
+            global_path,
+        )
+    return [], local_path
+
+
 def write_credential_pool(
     provider_id: str,
     entries: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    baseline_entries: Optional[Dict[str, Dict[str, Any]]] = None,
+    target_path: Optional[Path] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1385,10 +1452,17 @@ def write_credential_pool(
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
     merge does not resurrect them from the on-disk copy.
+
+    When ``baseline_entries`` is supplied, perform a three-way merge per row:
+    fields changed by this caller relative to its baseline are authoritative,
+    while fields changed only on disk are preserved. This prevents a stale
+    snapshot from rolling back another process's rotated OAuth token when the
+    local operation changed an unrelated field such as priority or status.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+
+    with _auth_store_lock(auth_file=target_path):
+        auth_store = _load_auth_store(target_path)
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
@@ -1405,7 +1479,39 @@ def write_credential_pool(
             for entry in sanitized_entries
             if isinstance(entry, dict) and entry.get("id")
         }
-        merged: List[Dict[str, Any]] = list(sanitized_entries)
+        existing_by_id = {
+            entry.get("id"): entry
+            for entry in existing_list
+            if isinstance(entry, dict) and entry.get("id")
+        }
+        merged: List[Dict[str, Any]] = []
+        for incoming in sanitized_entries:
+            incoming_id = incoming.get("id") if isinstance(incoming, dict) else None
+            if (
+                baseline_entries is not None
+                and isinstance(incoming_id, str)
+                and incoming_id
+                and incoming_id in baseline_entries
+                and incoming_id in existing_by_id
+            ):
+                baseline = baseline_entries[incoming_id]
+                disk_entry = existing_by_id[incoming_id]
+                three_way = dict(disk_entry)
+                missing = object()
+                for key in set(baseline) | set(incoming):
+                    baseline_value = baseline.get(key, missing)
+                    incoming_value = incoming.get(key, missing)
+                    if incoming_value == baseline_value:
+                        continue
+                    if incoming_value is missing:
+                        three_way.pop(key, None)
+                    else:
+                        three_way[key] = incoming_value
+                merged.append(
+                    sanitize_borrowed_credential_payload(three_way, provider_id)
+                )
+            else:
+                merged.append(incoming)
         for disk_entry in existing_list:
             if not isinstance(disk_entry, dict):
                 continue
@@ -1414,7 +1520,7 @@ def write_credential_pool(
                 continue
             merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
         pool[provider_id] = merged
-        return _save_auth_store(auth_store)
+        return _save_auth_store(auth_store, target_path=target_path)
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
@@ -3229,19 +3335,30 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
-def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
-    """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
-    
-    Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
-    Raises AuthError if no Codex tokens are stored.
-    """
+def _read_codex_tokens_with_source(
+    *,
+    _lock: bool = True,
+    auth_file: Optional[Path] = None,
+) -> tuple[Dict[str, Any], Path]:
+    """Read validated Codex tokens plus the exact auth store that owns them."""
     if _lock:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
+        with _auth_store_lock(auth_file=auth_file):
+            auth_store = _load_auth_store(auth_file)
     else:
-        auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "openai-codex")
-    if not state:
+        auth_store = _load_auth_store(auth_file)
+    if auth_file is None:
+        state, source_path = _load_provider_state_with_source(
+            auth_store, "openai-codex",
+        )
+    else:
+        providers = auth_store.get("providers")
+        state = (
+            providers.get("openai-codex")
+            if isinstance(providers, dict)
+            else None
+        )
+        source_path = auth_file
+    if not state or source_path is None:
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
             provider="openai-codex",
@@ -3275,7 +3392,13 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     return {
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),
-    }
+    }, source_path
+
+
+def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    """Read Codex tokens while preserving the historical return shape."""
+    data, _source_path = _read_codex_tokens_with_source(_lock=_lock)
+    return data
 
 
 def _sync_codex_pool_entries(
@@ -3379,13 +3502,31 @@ def _sync_codex_pool_entries(
         entry["last_error_reset_at"] = None
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
+def _save_codex_tokens(
+    tokens: Dict[str, str],
+    last_refresh: Optional[str] = None,
+    label: Optional[str] = None,
+    *,
+    target_path: Optional[Path] = None,
+    _lock: bool = True,
+) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "openai-codex") or {}
+
+    def _persist() -> None:
+        auth_store = _load_auth_store(target_path)
+        state: Dict[str, Any]
+        if target_path is None:
+            state = _load_provider_state(auth_store, "openai-codex") or {}
+        else:
+            providers = auth_store.get("providers")
+            raw_state = (
+                providers.get("openai-codex")
+                if isinstance(providers, dict)
+                else None
+            )
+            state = dict(raw_state) if isinstance(raw_state, dict) else {}
         # Capture the previous singleton tokens BEFORE overwriting them.  The
         # pool-sync step uses this to distinguish legacy singleton-aliases
         # (which should be refreshed) from independent accounts that
@@ -3404,10 +3545,21 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             last_refresh,
             previous_singleton_tokens=previous_singleton_tokens,
         )
-        _save_auth_store(auth_store)
+        _save_auth_store(auth_store, target_path=target_path)
+
+    if _lock:
+        with _auth_store_lock(auth_file=target_path):
+            _persist()
+    else:
+        _persist()
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+def _recover_codex_tokens_from_cli(
+    reason: str,
+    *,
+    target_path: Optional[Path] = None,
+    _lock: bool = True,
+) -> Optional[Dict[str, str]]:
     """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
     imported = _import_codex_cli_tokens()
     # Require BOTH tokens before adopting: persisting a payload without a
@@ -3419,7 +3571,7 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     ):
         return None
     logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
-    _save_codex_tokens(imported)
+    _save_codex_tokens(imported, target_path=target_path, _lock=_lock)
     return dict(imported)
 
 
@@ -3560,6 +3712,9 @@ def refresh_codex_oauth_pure(
 def _refresh_codex_auth_tokens(
     tokens: Dict[str, str],
     timeout_seconds: float,
+    *,
+    target_path: Optional[Path] = None,
+    _lock: bool = True,
 ) -> Dict[str, str]:
     """Refresh Codex access token using the refresh token.
     
@@ -3587,7 +3742,9 @@ def _refresh_codex_auth_tokens(
         if not getattr(exc, "relogin_required", False):
             raise
         imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
+            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}",
+            target_path=target_path,
+            _lock=_lock,
         )
         if not imported:
             raise
@@ -3597,7 +3754,11 @@ def _refresh_codex_auth_tokens(
     updated_tokens["access_token"] = refreshed["access_token"]
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
-    _save_codex_tokens(updated_tokens)
+    _save_codex_tokens(
+        updated_tokens,
+        target_path=target_path,
+        _lock=_lock,
+    )
     return updated_tokens
 
 
@@ -3653,18 +3814,36 @@ def resolve_codex_runtime_credentials(
     credential. See issue #32992.
     """
     read_error: Optional[AuthError] = None
+    source_path = _auth_file_path()
     try:
-        data = _read_codex_tokens()
+        data, source_path = _read_codex_tokens_with_source()
     except AuthError as exc:
         read_error = exc
+        # Validation can fail after ownership was discovered. Preserve that
+        # ownership so Codex CLI recovery repairs the inherited root instead of
+        # creating a profile-local shadow.
+        try:
+            _state, discovered_source = _load_provider_state_with_source(
+                _load_auth_store(), "openai-codex",
+            )
+            if discovered_source is not None:
+                source_path = discovered_source
+        except Exception:
+            pass
         if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
             "codex_auth_missing_access_token",
             "codex_auth_missing_refresh_token",
             "codex_auth_invalid_shape",
         }:
-            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
+            imported = _recover_codex_tokens_from_cli(
+                str(getattr(exc, "code", None) or "auth_error"),
+                target_path=source_path,
+            )
             if imported:
-                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
+                data = {
+                    "tokens": imported,
+                    "last_refresh": imported.get("last_refresh"),
+                }
             else:
                 data = None
         else:
@@ -3722,9 +3901,19 @@ def resolve_codex_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        # Re-read under lock to avoid racing with other Hermes processes
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_codex_tokens(_lock=False)
+        # Re-read under the canonical source lock to avoid racing with another
+        # profile that is rotating the same single-use refresh token.
+        with _auth_store_lock(
+            timeout_seconds=max(
+                float(AUTH_LOCK_TIMEOUT_SECONDS),
+                refresh_timeout_seconds + 5.0,
+            ),
+            auth_file=source_path,
+        ):
+            data, _locked_source = _read_codex_tokens_with_source(
+                _lock=False,
+                auth_file=source_path,
+            )
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
 
@@ -3733,7 +3922,12 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                tokens = _refresh_codex_auth_tokens(
+                    tokens,
+                    refresh_timeout_seconds,
+                    target_path=source_path,
+                    _lock=False,
+                )
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (
@@ -3778,14 +3972,7 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-        pool = auth_store.get("credential_pool")
-        if not isinstance(pool, dict):
-            return None
-        entries = pool.get("openai-codex")
-        if not isinstance(entries, list):
-            return None
+        entries, _source_path = read_credential_pool_with_source("openai-codex")
         now = time.time()
         for entry in entries:
             if not isinstance(entry, dict):
@@ -3835,14 +4022,7 @@ def _pool_codex_access_token() -> str:
     the original AuthError).
     """
     try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-        pool = auth_store.get("credential_pool")
-        if not isinstance(pool, dict):
-            return ""
-        entries = pool.get("openai-codex")
-        if not isinstance(entries, list):
-            return ""
+        entries, _source_path = read_credential_pool_with_source("openai-codex")
 
         def _entry_usable(entry: Dict[str, Any]) -> bool:
             if not isinstance(entry, dict):

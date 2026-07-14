@@ -2067,3 +2067,51 @@ class Test408RequestTimeout:
         assert result.retryable is True
         assert result.should_compress is False
 
+
+class TestLMStudioModelUnloaded:
+    """LM Studio "model unloaded" / "no models loaded" is non-retryable AND
+    declines fallback (should_fallback=False) — same form as the 409
+    model-pool-lock case. Distinct from a generic missing model, which stays
+    retryable=False but should_fallback=True. See _MODEL_UNLOADED_PATTERNS in
+    agent/error_classifier.py for the rationale.
+    """
+
+    def test_404_model_unloaded_no_fallback(self):
+        e = MockAPIError("Model unloaded", status_code=404)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_400_no_models_loaded_no_fallback(self):
+        e = MockAPIError("No models loaded", status_code=400)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_statusless_no_models_loaded_no_fallback(self):
+        # LM Studio can surface this without an HTTP status (local shim / SSE
+        # error frame), so the message-pattern path must catch it too.
+        e = Exception("No models loaded")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_no_chat_capable_models(self):
+        e = MockAPIError("No chat-capable models are loaded", status_code=404)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_genuine_model_not_found_still_falls_back(self):
+        # Regression: a real missing model keeps should_fallback=True. The
+        # unloaded override is scoped to _MODEL_UNLOADED_PATTERNS only.
+        e = MockAPIError("model not found", status_code=404)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+

@@ -848,6 +848,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # loop overlap in one outgoing stream instead of stop-and-swap.
         self._voice_mixers: Dict[int, Any] = {}  # guild_id -> VoiceMixer
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
+        self._voice_channels_enabled: bool = self._load_voice_channels_enabled()
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
@@ -1044,7 +1045,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 any(entry != "*" and not entry.isdigit() for entry in self._allowed_user_ids)
                 or bool(self._allowed_role_ids)  # Need members intent for role lookup
             )
-            intents.voice_states = True
+            # Voice state events are required by every Discord voice-channel
+            # path, including the legacy one-shot playback used when voice_fx is
+            # disabled. Text-only bots can opt out explicitly; tying this to the
+            # mixer flag would break /voice channel under its default settings.
+            intents.voice_states = self._voice_channels_enabled
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
@@ -2694,6 +2699,25 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Voice channel methods (join / leave / play)
     # ------------------------------------------------------------------
+
+    def _load_voice_channels_enabled(self) -> bool:
+        """Whether Discord voice-channel commands and state tracking are enabled.
+
+        This defaults to True to preserve the existing ``/voice channel``
+        behavior. Text-only bots can set
+        ``discord.voice_channels.enabled: false`` to avoid requesting the
+        voice-states gateway intent.
+        """
+        try:
+            from hermes_cli.config import read_raw_config
+
+            cfg = read_raw_config() or {}
+            voice_channels = ((cfg.get("discord") or {}).get("voice_channels") or {})
+            if isinstance(voice_channels, dict):
+                return bool(voice_channels.get("enabled", True))
+        except Exception as e:
+            logger.debug("Could not load discord.voice_channels config: %s", e)
+        return True
 
     def _load_voice_fx_config(self) -> Dict[str, Any]:
         """Read voice mixer / ambient / ack settings from config.yaml.

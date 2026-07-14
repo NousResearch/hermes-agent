@@ -688,6 +688,16 @@ Hermes Agent supports Discord voice messages:
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 
+Voice-channel support remains enabled by default for backwards compatibility. If a bot is text-only, disable the capability so Hermes does not request Discord's voice-state gateway events:
+
+```yaml
+discord:
+  voice_channels:
+    enabled: false
+```
+
+Disabling this also disables the state information required by `/voice join`, `/voice channel`, and `/voice leave`. The separate `voice_fx` setting below controls only the optional mixer and does not enable or disable voice channels.
+
 For the full setup and operational guide, see:
 - [Voice Mode](/user-guide/features/voice-mode)
 - [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)

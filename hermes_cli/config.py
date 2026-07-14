@@ -2475,6 +2475,13 @@ DEFAULT_CONFIG = {
         # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
         # pings.
         "approval_mentions": False,
+        # Discord voice-channel capability. ON by default for backwards
+        # compatibility with /voice join|channel|leave and legacy one-shot
+        # playback. Text-only bots can disable it to avoid requesting the
+        # voice-states gateway intent.
+        "voice_channels": {
+            "enabled": True,
+        },
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and

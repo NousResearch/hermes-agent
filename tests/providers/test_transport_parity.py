@@ -306,3 +306,70 @@ class TestCustomOllamaParity:
             reasoning_config={"enabled": False, "effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
+
+
+class TestDashScopeParity:
+    """Alibaba DashScope: enable_thinking + reasoning_effort as top-level params.
+
+    DashScope uses enable_thinking (bool) and reasoning_effort (str) as
+    top-level api_kwargs, NOT in extra_body.reasoning. Effort values are
+    passed through directly; DashScope handles its own server-side mapping
+    (low/medium → high, xhigh → max).
+    """
+
+    DS_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    def _ds_kwargs(self, transport, **overrides):
+        defaults = {
+            "model": "deepseek-v4-pro",
+            "messages": _simple_messages(),
+            "tools": None,
+            "base_url": self.DS_BASE_URL,
+        }
+        defaults.update(overrides)
+        return transport.build_kwargs(**defaults)
+
+    def test_enable_thinking_true_when_xhigh(self, transport):
+        """xhigh: enable_thinking=True + reasoning_effort=xhigh top-level."""
+        kw = self._ds_kwargs(
+            transport,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kw.get("enable_thinking") is True
+        assert kw.get("reasoning_effort") == "xhigh"
+        assert "enable_thinking" not in kw.get("extra_body", {})
+        assert "reasoning_effort" not in kw.get("extra_body", {})
+        assert "reasoning" not in kw.get("extra_body", {})
+
+    def test_enable_thinking_false_when_disabled(self, transport):
+        """Disabled: enable_thinking=False, no reasoning_effort."""
+        kw = self._ds_kwargs(
+            transport,
+            reasoning_config={"enabled": False},
+        )
+        assert kw.get("enable_thinking") is False
+        assert "reasoning_effort" not in kw
+
+    def test_passthrough_high_effort(self, transport):
+        """high effort value is passed through directly."""
+        kw = self._ds_kwargs(
+            transport,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw.get("enable_thinking") is True
+        assert kw.get("reasoning_effort") == "high"
+
+    def test_no_reasoning_effort_when_not_specified(self, transport):
+        """When no effort specified, enable_thinking=True, no reasoning_effort."""
+        kw = self._ds_kwargs(
+            transport,
+            reasoning_config={"enabled": True},
+        )
+        assert kw.get("enable_thinking") is True
+        assert "reasoning_effort" not in kw
+
+    def test_default_when_no_reasoning_config(self, transport):
+        """Without reasoning_config: enable_thinking=True, no reasoning_effort."""
+        kw = self._ds_kwargs(transport)
+        assert kw.get("enable_thinking") is True
+        assert "reasoning_effort" not in kw

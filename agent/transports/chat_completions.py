@@ -16,6 +16,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from utils import base_url_host_matches
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -416,6 +417,29 @@ class ChatCompletionsTransport(ProviderTransport):
                     if _e in {"low", "medium", "high"}:
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
+
+        # Alibaba DashScope: enable_thinking + reasoning_effort (top-level params).
+        # DashScope handles effort mapping server-side (low/medium → high, xhigh → max),
+        # so we pass through the raw effort value directly.
+        _is_dashscope = base_url_host_matches(
+            str(params.get("base_url") or ""), "dashscope.aliyuncs.com"
+        )
+        if _is_dashscope:
+            _ds_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if _ds_thinking_off:
+                api_kwargs["enable_thinking"] = False
+            else:
+                api_kwargs["enable_thinking"] = True
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e:
+                        api_kwargs["reasoning_effort"] = _e
+                # If no effort specified, omit reasoning_effort — DashScope
+                # defaults to "high" server-side.
 
         # LM Studio: top-level reasoning_effort. Only emit when the model
         # declares reasoning support via /api/v1/models capabilities (gated

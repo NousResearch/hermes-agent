@@ -5406,6 +5406,8 @@ class AIAgent:
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
+        if base_url_host_matches(self._base_url_lower, "dashscope.aliyuncs.com"):
+            return True
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:

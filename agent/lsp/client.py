@@ -62,6 +62,7 @@ from agent.lsp.protocol import (
     make_response,
     read_message,
 )
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger("agent.lsp.client")
 
@@ -263,13 +264,16 @@ class LSPClient:
             cmd = self._win_wrap_cmd(cmd)
 
         try:
-            # start_new_session=True detaches the LSP server into its own
-            # process group / session. Without this, the LSP server inherits
-            # the gateway's pgid (= TUI parent PID). When mcp_tool's
-            # _kill_orphaned_mcp_children races with LSP spawn and sweeps the
-            # gateway's child set, it captures the LSP PID, records the
-            # inherited pgid, and killpg() then kills the TUI parent itself.
-            # See tui_gateway_crash.log "killpg → SIGTERM received" stacks.
+            # POSIX needs a separate session so an orphan-child sweep cannot
+            # kill the TUI's process group. Windows ignores
+            # start_new_session, so use CREATE_NO_WINDOW there instead: LSP
+            # servers are stdio-only background children and must not open a
+            # transient console, while their pipes and lifecycle stay intact.
+            session_kwargs: Dict[str, Any] = (
+                {"creationflags": windows_hide_flags()}
+                if sys.platform == "win32"
+                else {"start_new_session": True}
+            )
             self._proc = await asyncio.create_subprocess_exec(
                 cmd[0],
                 *cmd[1:],
@@ -278,7 +282,7 @@ class LSPClient:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=self._cwd,
-                start_new_session=True,
+                **session_kwargs,
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(

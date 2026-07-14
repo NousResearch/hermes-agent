@@ -66,7 +66,7 @@ jobs:
       - name: Verify bundled app is universal
         run: |
           set -euo pipefail
-          app_path="apps/bootstrap-installer/src-tauri/target/universal-apple-darwin/release/bundle/macos/Hermes Setup.app"
+          app_path="apps/bootstrap-installer/src-tauri/target/universal-apple-darwin/release/bundle/macos/Hermes.app"
           bin_path="${app_path}/Contents/MacOS/Hermes-Setup"
           if [ ! -x "${bin_path}" ]; then
             echo "::error::Expected executable not found at ${bin_path}"

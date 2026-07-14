@@ -4105,6 +4105,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
+        from gateway.session_context import get_session_env
+
+        _uid = get_session_env("HERMES_SESSION_USER_ID")
+        if _uid and server_name == "jarvis-mcp":
+            args = {**args, "user_id": _uid}
 
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:

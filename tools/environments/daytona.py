@@ -10,6 +10,7 @@ import math
 import os
 import shlex
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 from tools.environments.base import (
@@ -218,7 +219,8 @@ class DaytonaEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None):
+                  stdin_data: str | None = None,
+                  env_overrides: Mapping[str, str] | None = None):
         """Return a _ThreadedProcessHandle wrapping a blocking Daytona SDK call."""
         sandbox = self._sandbox
         lock = self._lock
@@ -236,7 +238,12 @@ class DaytonaEnvironment(BaseEnvironment):
             shell_cmd = f"bash -c {shlex.quote(cmd_string)}"
 
         def exec_fn() -> tuple[str, int]:
-            response = sandbox.process.exec(shell_cmd, timeout=timeout)
+            if env_overrides:
+                response = sandbox.process.exec(
+                    shell_cmd, env=dict(env_overrides), timeout=timeout
+                )
+            else:
+                response = sandbox.process.exec(shell_cmd, timeout=timeout)
             return (response.result or "", response.exit_code)
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)

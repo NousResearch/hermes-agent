@@ -83,6 +83,27 @@ Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a refer
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
+## Optional Credential Broker
+
+Hermes keeps secrets in `.env` by default. For commands that need one of those secrets without broadly forwarding it to every terminal call, you can opt into the small credential broker. The broker is disabled unless `credentials.broker.enabled` is `true`, supports env-backed secrets, and only injects a named secret when the requesting tool and command match an explicit allow rule.
+
+```yaml
+credentials:
+  broker:
+    enabled: true
+    secrets:
+      github_token:
+        source: env
+        name: GITHUB_TOKEN
+        allow:
+          tools: [terminal]
+          commands: [gh]
+```
+
+Then a terminal tool call can request `credentials: ["github_token"]`; Hermes injects the secret only for that invocation. Credentialed terminal calls must be one simple command. Hermes rejects shell chaining, pipelines, command/process substitution, grouping, background operators, and redirections so an allow rule for `gh` cannot authorize a second process. Allowlisted executables are matched exactly, so an entry for `gh` does not authorize `/tmp/gh`. Before injecting credentials, Hermes resolves that executable against the backend's baseline process `PATH` and executes the resulting absolute path, preventing a prior terminal command from shadowing an allowlisted name through the persistent shell snapshot.
+
+Invocation-scoped credentials are supported by the local, Docker, SSH, direct Modal, Daytona, and Singularity backends, including their background launch paths. Managed Modal fails closed because its gateway does not currently expose a per-execution environment channel. This is intentionally a lightweight local broker, not a Vault/KMS replacement.
+
 ### Provider Timeouts
 
 You can set `providers.<id>.request_timeout_seconds` for a provider-wide request timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, rebuilds after credential rotation, and (for OpenAI-wire) the per-request timeout kwarg — so the configured value wins over the legacy `HERMES_API_TIMEOUT` env var.

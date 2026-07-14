@@ -2018,6 +2018,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    credentials: Optional[List[str]] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2033,6 +2034,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        credentials: Optional names from credentials.broker.secrets to inject for this one command when the broker policy allows terminal access.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2143,6 +2145,7 @@ def terminal_tool(
         _start_cleanup_thread()
 
         # Get or create environment.
+        env = None
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
@@ -2246,6 +2249,8 @@ def terminal_tool(
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+
+        assert env is not None, "terminal environment was not initialized"
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the
@@ -2359,6 +2364,39 @@ def terminal_tool(
         except Exception:
             pass
 
+        brokered_env_overrides = {}
+        if credentials:
+            try:
+                from agent.credential_broker import (
+                    canonicalize_command,
+                    requested_executable,
+                    resolve_env_overrides,
+                )
+
+                executable = requested_executable(command)
+                command = canonicalize_command(command)
+                brokered_env_overrides = resolve_env_overrides(
+                    credentials,
+                    requester="terminal",
+                    command=command,
+                )
+                resolver = getattr(env, "resolve_executable", None)
+                if not callable(resolver):
+                    raise RuntimeError(
+                        "terminal backend does not support trusted executable resolution"
+                    )
+                command = canonicalize_command(
+                    command,
+                    executable_path=resolver(executable),
+                )
+            except Exception as e:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Credential broker denied request: {e}",
+                    "status": "blocked",
+                }, ensure_ascii=False)
+
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
@@ -2372,13 +2410,34 @@ def terminal_tool(
             )
             try:
                 if env_type == "local":
-                    proc_session = process_registry.spawn_local(
+                    local_env_vars = dict(env.env) if hasattr(env, "env") else {}
+                    if brokered_env_overrides:
+                        proc_session = process_registry.spawn_local(
+                            command=command,
+                            cwd=effective_cwd,
+                            task_id=effective_task_id,
+                            session_key=session_key,
+                            env_vars=local_env_vars,
+                            env_overrides=brokered_env_overrides,
+                            use_pty=effective_pty,
+                        )
+                    else:
+                        proc_session = process_registry.spawn_local(
+                            command=command,
+                            cwd=effective_cwd,
+                            task_id=effective_task_id,
+                            session_key=session_key,
+                            env_vars=local_env_vars,
+                            use_pty=effective_pty,
+                        )
+                elif brokered_env_overrides:
+                    proc_session = process_registry.spawn_via_env(
+                        env=env,
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
-                        use_pty=effective_pty,
+                        env_overrides=brokered_env_overrides,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -2630,11 +2689,19 @@ def terminal_tool(
                         env=env,
                         default_cwd=cwd,
                     )
-                    execute_kwargs = {
-                        "timeout": effective_timeout,
-                        "cwd": command_cwd,
-                    }
-                    result = env.execute(command, **execute_kwargs)
+                    if brokered_env_overrides:
+                        result = env.execute(
+                            command,
+                            timeout=effective_timeout,
+                            cwd=command_cwd,
+                            env_overrides=brokered_env_overrides,
+                        )
+                    else:
+                        result = env.execute(
+                            command,
+                            timeout=effective_timeout,
+                            cwd=command_cwd,
+                        )
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
@@ -2999,6 +3066,11 @@ TERMINAL_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Strings to watch for in background process output. HARD RATE LIMIT: at most 1 notification per 15 seconds per process — matches arriving inside the cooldown are dropped. After 3 consecutive 15-second windows with dropped matches, watch_patterns is automatically disabled for that process and promoted to notify_on_complete behavior (one notification on exit, no more mid-process spam). USE ONLY for truly rare, one-shot mid-process signals on LONG-LIVED processes that will never exit on their own — e.g. ['Application startup complete'] on a server so you know when to hit its endpoint, or ['migration done'] on a daemon. DO NOT use for: (1) end-of-run markers like 'DONE'/'PASS' — use notify_on_complete instead; (2) error patterns like 'ERROR'/'Traceback' in loops or multi-item batch jobs — they fire on every iteration and you'll hit the strike limit fast; (3) anything you'd ever combine with notify_on_complete. When in doubt, choose notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both."
+            },
+            "credentials": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional credential broker secret names to inject only for this command. Credentialed terminal calls must be one simple command; shell chaining, pipelines, substitutions, grouping, background operators, and redirections are rejected. Requires credentials.broker.enabled=true and an allow rule for tool 'terminal' and, when configured, the exact command executable. Managed Modal does not currently support brokered credentials."
             }
         },
         "required": ["command"]
@@ -3017,6 +3089,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        credentials=args.get("credentials"),
     )
 
 

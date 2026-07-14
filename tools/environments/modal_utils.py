@@ -18,7 +18,7 @@ import time
 import uuid
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from tools.environments.base import BaseEnvironment
 from tools.interrupt import is_interrupted
@@ -80,11 +80,16 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
+        env_overrides: Mapping[str, str] | None = None,
     ) -> dict:
         # Managed/remote modal transports execute commands via explicit transport
         # and do not rely on shell background rewriters. Keep parameter for
         # compatibility with BaseEnvironment callers.
         _ = rewrite_compound_background
+        if env_overrides:
+            return self._error_result(
+                "Managed Modal does not support invocation-scoped environment overrides"
+            )
         self._before_execute()
         prepared = self._prepare_modal_exec(
             command,

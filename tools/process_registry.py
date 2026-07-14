@@ -51,6 +51,14 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _copy_env_overrides(overrides: dict[str, str] | None) -> dict[str, str]:
+    copied = {str(key): str(value) for key, value in (overrides or {}).items()}
+    for key in copied:
+        if not key.isidentifier() or not key.isascii():
+            raise ValueError(f"Invalid environment override name: {key!r}")
+    return copied
+
+
 # Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 
@@ -693,6 +701,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         env_vars: dict = None,
+        env_overrides: dict[str, str] | None = None,
         use_pty: bool = False,
     ) -> ProcessSession:
         """
@@ -705,6 +714,7 @@ class ProcessRegistry:
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
         """
+        invocation_env = _copy_env_overrides(env_overrides)
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -723,6 +733,7 @@ class ProcessRegistry:
                     from ptyprocess import PtyProcess as _PtyProcessCls
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
+                pty_env.update(invocation_env)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
                     [user_shell, "-lic", f"set +m; {command}"],
@@ -765,6 +776,7 @@ class ProcessRegistry:
         # during background execution (libraries like tqdm/datasets buffer when
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
+        bg_env.update(invocation_env)
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
@@ -833,6 +845,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        env_overrides: dict[str, str] | None = None,
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -845,6 +858,7 @@ class ProcessRegistry:
         This is less capable than local spawn (no live stdout pipe, no stdin),
         but it ensures the command runs in the correct sandbox context.
         """
+        invocation_env = _copy_env_overrides(env_overrides)
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -874,11 +888,19 @@ class ProcessRegistry:
         )
 
         try:
-            result = env.execute(
-                bg_command,
-                timeout=timeout,
-                rewrite_compound_background=False,
-            )
+            if invocation_env:
+                result = env.execute(
+                    bg_command,
+                    timeout=timeout,
+                    rewrite_compound_background=False,
+                    env_overrides=invocation_env,
+                )
+            else:
+                result = env.execute(
+                    bg_command,
+                    timeout=timeout,
+                    rewrite_compound_background=False,
+                )
             output = result.get("output", "").strip()
             # Try to extract the PID from the output
             for line in output.splitlines():

@@ -145,6 +145,35 @@ def test_managed_modal_execute_polls_until_completed(monkeypatch):
     assert any(call[0] == "POST" and call[1].endswith("/execs") for call in calls)
 
 
+def test_managed_modal_fails_closed_for_invocation_environment(monkeypatch):
+    _install_fake_tools_package()
+    managed_modal = _load_tool_module(
+        "tools.environments.managed_modal", "environments/managed_modal.py"
+    )
+    calls = []
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        calls.append((method, url, json, timeout))
+        if method == "POST" and url.endswith("/v1/sandboxes"):
+            return _FakeResponse(200, {"id": "sandbox-1"})
+        if method == "POST" and url.endswith("/terminate"):
+            return _FakeResponse(200, {"status": "terminated"})
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    monkeypatch.setattr(managed_modal.requests, "request", fake_request)
+
+    env = managed_modal.ManagedModalEnvironment(image="python:3.11")
+    result = env.execute(
+        "echo hello",
+        env_overrides={"GITHUB_TOKEN": "brokered-token"},
+    )
+    env.cleanup()
+
+    assert result["returncode"] == 1
+    assert "does not support" in result["output"]
+    assert not any(call[1].endswith("/execs") for call in calls)
+
+
 def test_managed_modal_create_sends_a_stable_idempotency_key(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")

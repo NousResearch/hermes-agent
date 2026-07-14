@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _popen_bash
@@ -342,9 +343,16 @@ class SSHEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  env_overrides: Mapping[str, str] | None = None) -> subprocess.Popen:
         """Spawn an SSH process that runs bash on the remote host."""
         cmd = self._build_ssh_command()
+        if env_overrides:
+            cmd.append("env")
+            cmd.extend(
+                f"{key}={shlex.quote(value)}"
+                for key, value in env_overrides.items()
+            )
         if login:
             cmd.extend(["bash", "-l", "-c", shlex.quote(cmd_string)])
         else:

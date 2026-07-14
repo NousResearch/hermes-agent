@@ -25,7 +25,7 @@ class _TestableEnv(BaseEnvironment):
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
 
-    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None, env_overrides=None):
         raise NotImplementedError("Use mock")
 
     def cleanup(self):

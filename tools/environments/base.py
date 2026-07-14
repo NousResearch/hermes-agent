@@ -18,7 +18,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import IO, Callable, Protocol
+from typing import IO, Callable, Mapping, Protocol, Sequence
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -337,6 +337,7 @@ class BaseEnvironment(ABC):
         login: bool = False,
         timeout: int = 120,
         stdin_data: str | None = None,
+        env_overrides: Mapping[str, str] | None = None,
     ) -> ProcessHandle:
         """Spawn a bash process to run *cmd_string*.
 
@@ -344,6 +345,28 @@ class BaseEnvironment(ABC):
         Must be overridden by every backend.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement _run_bash()")
+
+    def resolve_executable(self, executable: str) -> str:
+        """Resolve via the backend's baseline PATH, bypassing its shell snapshot."""
+
+        timeout = min(self.timeout, 30)
+        proc = self._run_bash(
+            f"command -v -- {shlex.quote(executable)}",
+            login=False,
+            timeout=timeout,
+            stdin_data=None,
+        )
+        result = self._wait_for_process(proc, timeout=timeout)
+        resolved = str(result.get("output", "")).strip()
+        if result.get("returncode") != 0 or not resolved.startswith("/"):
+            raise RuntimeError(
+                f"credential broker could not resolve trusted executable {executable!r}"
+            )
+        if "\n" in resolved or "\r" in resolved:
+            raise RuntimeError(
+                f"credential broker received ambiguous executable path for {executable!r}"
+            )
+        return resolved
 
     @abstractmethod
     def cleanup(self):
@@ -497,7 +520,12 @@ class BaseEnvironment(ABC):
         """
         return shlex.quote(path)
 
-    def _wrap_command(self, command: str, cwd: str) -> str:
+    def _wrap_command(
+        self,
+        command: str,
+        cwd: str,
+        env_override_names: Sequence[str] = (),
+    ) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
@@ -517,6 +545,13 @@ class BaseEnvironment(ABC):
 
         parts = []
 
+        # Backends provide override values through the process environment. Save
+        # them before sourcing the persistent snapshot, which may contain older
+        # values for the same names.
+        for index, name in enumerate(env_override_names):
+            parts.append(f"__hermes_override_value_{index}=\"${{{name}-}}\"")
+            parts.append(f"unset {name}")
+
         # Source snapshot (env vars from previous commands).
         # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
         # Homebrew bash builds) sourcing a file containing ``declare -x``
@@ -526,6 +561,20 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
+            )
+
+        # Save snapshot state, then apply the invocation value after sourcing.
+        for index, name in enumerate(env_override_names):
+            parts.extend(
+                [
+                    f"if [[ ${{{name}+x}} ]]; then",
+                    f"  __hermes_override_was_set_{index}=1",
+                    f"  __hermes_override_previous_{index}=\"${{{name}}}\"",
+                    "else",
+                    f"  __hermes_override_was_set_{index}=0",
+                    "fi",
+                    f"export {name}=\"$__hermes_override_value_{index}\"",
+                ]
             )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
@@ -540,6 +589,22 @@ class BaseEnvironment(ABC):
         # Restrict Hermes metadata files without changing the user's command
         # umask. Snapshot files may contain env-carried secrets.
         parts.append("umask 077")
+
+        # Restore snapshot state before refreshing it, so an override neither
+        # persists nor deletes a pre-existing value with the same name.
+        for index, name in enumerate(env_override_names):
+            parts.extend(
+                [
+                    f"if [[ $__hermes_override_was_set_{index} == 1 ]]; then",
+                    f"  export {name}=\"$__hermes_override_previous_{index}\"",
+                    "else",
+                    f"  unset {name}",
+                    "fi",
+                    f"unset __hermes_override_value_{index}",
+                    f"unset __hermes_override_was_set_{index}",
+                    f"unset __hermes_override_previous_{index}",
+                ]
+            )
 
         # Re-dump env vars to snapshot (atomic replacement to avoid races).
         # Chain mv on the export succeeding so a failed/partial dump never
@@ -932,8 +997,9 @@ class BaseEnvironment(ABC):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
+        env_overrides: Mapping[str, str] | None = None,
     ) -> dict:
-        """Execute a command, return {"output": str, "returncode": int}."""
+        """Execute a command with optional invocation-scoped environment values."""
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
@@ -959,15 +1025,38 @@ class BaseEnvironment(ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd)
+        invocation_env = {
+            str(key): str(value) for key, value in (env_overrides or {}).items()
+        }
+        for key in invocation_env:
+            if not key.isidentifier() or not key.isascii():
+                raise ValueError(f"Invalid environment override name: {key!r}")
+
+        wrapped = self._wrap_command(
+            exec_command,
+            effective_cwd,
+            tuple(invocation_env),
+        )
 
         # Use login shell if snapshot failed (so user's profile still loads),
         # unless login itself is broken — then non-login is the only path.
         login = not self._snapshot_ready and not self._prefer_nonlogin
 
-        proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
-        )
+        if invocation_env:
+            proc = self._run_bash(
+                wrapped,
+                login=login,
+                timeout=effective_timeout,
+                stdin_data=effective_stdin,
+                env_overrides=invocation_env,
+            )
+        else:
+            proc = self._run_bash(
+                wrapped,
+                login=login,
+                timeout=effective_timeout,
+                stdin_data=effective_stdin,
+            )
         result = self._wait_for_process(proc, timeout=effective_timeout)
         self._update_cwd(result)
 

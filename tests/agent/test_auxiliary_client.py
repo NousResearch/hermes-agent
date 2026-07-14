@@ -1128,7 +1128,10 @@ class TestExplicitProviderRouting:
         assert client is None
         assert model is None
         mock_openai.assert_not_called()
-        mock_mark.assert_called_once_with("openrouter", ttl=60)
+        mock_mark.assert_called_once_with(
+            "openrouter", ttl=60,
+            reason="no credentials configured", level=logging.DEBUG,
+        )
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
@@ -2258,7 +2261,9 @@ class TestStaleFallbackCandidateSkip:
         assert result.choices[0].message.content == "openrouter-serves"
         assert mock_fb.call_count == 2
         assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
-        mock_mark.assert_called_once_with("anthropic")
+        mock_mark.assert_called_once_with(
+            "anthropic", reason="stale/unrefreshable credential",
+        )
         assert stale_fb.chat.completions.create.call_count == 1
         assert healthy_fb.chat.completions.create.call_count == 1
 
@@ -5136,6 +5141,101 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestAuxUnhealthyReasonLabeling:
+    """The unhealthy-mark log must state the real quarantine reason.
+
+    A local-only setup with zero cloud credentials used to see repeated
+    WARNINGs claiming a "payment / credit error" on providers it never
+    configured, because the absent-credentials branches shared the
+    payment-path log line. The quarantine behavior is identical; only the
+    wording and severity differ per reason.
+    """
+
+    def setup_method(self):
+        from agent.auxiliary_client import _reset_aux_unhealthy_cache
+        _reset_aux_unhealthy_cache()
+
+    def teardown_method(self):
+        from agent.auxiliary_client import _reset_aux_unhealthy_cache
+        _reset_aux_unhealthy_cache()
+
+    def test_absent_openrouter_key_marks_at_debug_without_payment_label(
+            self, monkeypatch, caplog):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry",
+                   return_value=(False, None)), \
+             caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+            client, model = _try_openrouter()
+        assert client is None
+        assert model is None
+        marks = [r for r in caplog.records
+                 if "marking openrouter unhealthy" in r.message]
+        assert marks, "expected an unhealthy-mark log line"
+        assert all(r.levelno == logging.DEBUG for r in marks)
+        assert any("no credentials configured" in r.message for r in marks)
+        assert not any("payment" in r.message.lower() for r in caplog.records)
+
+    def test_absent_nous_auth_marks_at_debug_without_payment_label(
+            self, monkeypatch, caplog):
+        from agent.auxiliary_client import _try_nous
+        with patch("agent.nous_rate_guard.nous_rate_limit_remaining",
+                   return_value=None), \
+             patch("agent.auxiliary_client._read_nous_auth",
+                   return_value=None), \
+             patch("agent.auxiliary_client._resolve_nous_runtime_api",
+                   return_value=None), \
+             caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+            client, model = _try_nous()
+        assert client is None
+        assert model is None
+        marks = [r for r in caplog.records
+                 if "marking nous unhealthy" in r.message]
+        assert marks, "expected an unhealthy-mark log line"
+        assert all(r.levelno == logging.DEBUG for r in marks)
+        assert any("no credentials configured" in r.message for r in marks)
+        assert not any("payment" in r.message.lower() for r in caplog.records)
+
+    def test_default_mark_still_warns_payment(self, caplog):
+        """The confirmed-402 paths in call_llm/acall_llm call with defaults —
+        those must keep the payment wording at WARNING."""
+        from agent.auxiliary_client import _mark_provider_unhealthy
+        with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _mark_provider_unhealthy("openrouter")
+        marks = [r for r in caplog.records
+                 if "marking openrouter unhealthy" in r.message]
+        assert marks, "expected an unhealthy-mark log line"
+        assert all(r.levelno == logging.WARNING for r in marks)
+        assert any("payment / credit error" in r.message for r in marks)
+
+    def test_skip_log_echoes_mark_reason(self, caplog):
+        from agent.auxiliary_client import (
+            _mark_provider_unhealthy,
+            _log_skip_unhealthy,
+        )
+        _mark_provider_unhealthy(
+            "openrouter", ttl=60,
+            reason="no credentials configured", level=logging.DEBUG,
+        )
+        with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+            _log_skip_unhealthy("openrouter", task="compression")
+        skips = [r for r in caplog.records if "skipping openrouter" in r.message]
+        assert skips, "expected a skip log line"
+        assert any("no credentials configured" in r.message for r in skips)
+        assert not any("payment" in r.message.lower() for r in skips)
+
+    def test_skip_log_default_reason_stays_payment(self, caplog):
+        from agent.auxiliary_client import (
+            _mark_provider_unhealthy,
+            _log_skip_unhealthy,
+        )
+        _mark_provider_unhealthy("openrouter")
+        with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+            _log_skip_unhealthy("openrouter", task="compression")
+        skips = [r for r in caplog.records if "skipping openrouter" in r.message]
+        assert skips, "expected a skip log line"
+        assert any("payment / credit error" in r.message for r in skips)
 
 
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────

@@ -1986,7 +1986,13 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
+        # Absent key is an expected configuration state, not a billing
+        # failure — quarantine quietly so local-only setups don't see
+        # payment warnings for a provider they never configured.
+        _mark_provider_unhealthy(
+            "openrouter", ttl=60,
+            reason="no credentials configured", level=logging.DEBUG,
+        )
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -2018,7 +2024,9 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
                 _remaining,
             )
-            _mark_provider_unhealthy("nous", ttl=_remaining)
+            _mark_provider_unhealthy(
+                "nous", ttl=_remaining, reason="rate limited",
+            )
             return None, None
     except Exception:
         pass
@@ -2030,7 +2038,12 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             "Auxiliary Nous client unavailable: no Nous authentication found "
             "(run: hermes auth)."
         )
-        _mark_provider_unhealthy("nous", ttl=60)
+        # The warning above already names the real cause; the quarantine
+        # itself is routine bookkeeping, not a payment failure.
+        _mark_provider_unhealthy(
+            "nous", ttl=60,
+            reason="no credentials configured", level=logging.DEBUG,
+        )
         return None, None
     if runtime is None and nous:
         logger.debug(
@@ -2078,7 +2091,10 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary Nous client unavailable: no usable inference JWT found "
                 "(run: hermes auth add nous)."
             )
-            _mark_provider_unhealthy("nous", ttl=60)
+            _mark_provider_unhealthy(
+                "nous", ttl=60,
+                reason="no usable credentials", level=logging.DEBUG,
+            )
             return None, None
         base_url = str((nous or {}).get("inference_base_url") or _nous_base_url()).rstrip("/")
     return (
@@ -2781,6 +2797,10 @@ def _get_provider_chain() -> List[tuple]:
 _AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
 _aux_unhealthy_until: Dict[str, float] = {}
 _aux_unhealthy_logged_at: Dict[str, float] = {}
+# Why each label was quarantined ("payment / credit error", "no credentials
+# configured", ...). Echoed by the mark/skip log lines so the log never
+# claims a billing problem on a provider the user simply never configured.
+_aux_unhealthy_reason: Dict[str, str] = {}
 
 # Map provider names that show up in resolved_provider / explicit-config
 # back to the chain labels used by _get_provider_chain(). Keep in sync
@@ -2807,21 +2827,35 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
-def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
-    """Mark ``provider`` as recently-402'd, hidden from chain iteration
-    until the TTL expires. Called from the payment-fallback branches in
-    ``call_llm`` and ``acall_llm`` after a confirmed payment error.
+def _mark_provider_unhealthy(
+    provider: str,
+    ttl: Optional[float] = None,
+    reason: str = "payment / credit error",
+    level: int = logging.WARNING,
+) -> None:
+    """Hide ``provider`` from chain iteration until the TTL expires.
+
+    ``reason`` names why the provider was quarantined and is echoed in the
+    mark and skip log lines. The default matches the confirmed-payment
+    branches in ``call_llm`` / ``acall_llm``; callers quarantining for any
+    other reason (absent credentials, stale auth, rate limits) must pass a
+    truthful ``reason`` so the log never claims a billing problem the user
+    cannot have. ``level`` sets the mark log severity: expected states such
+    as a provider the user never configured belong at DEBUG, not WARNING.
     """
     label = _normalize_chain_label(provider)
     if not label:
         return
     expires_at = time.time() + (ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS)
     _aux_unhealthy_until[label] = expires_at
-    logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+    _aux_unhealthy_reason[label] = reason
+    logger.log(
+        level,
+        "Auxiliary: marking %s unhealthy for %ds (%s). "
         "Subsequent auxiliary calls will skip it until %s.",
         label,
         int(ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS),
+        reason,
         time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
@@ -2838,6 +2872,7 @@ def _is_provider_unhealthy(label: str) -> bool:
     if time.time() >= expires_at:
         _aux_unhealthy_until.pop(label, None)
         _aux_unhealthy_logged_at.pop(label, None)
+        _aux_unhealthy_reason.pop(label, None)
         return False
     return True
 
@@ -2853,8 +2888,10 @@ def _log_skip_unhealthy(label: str, task: Optional[str] = None) -> None:
         _aux_unhealthy_logged_at[label] = now
         expires_at = _aux_unhealthy_until.get(label, now)
         logger.info(
-            "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
-            task or "call", label, max(0, int(expires_at - now)),
+            "Auxiliary %s: skipping %s (%s, retry in %ds)",
+            task or "call", label,
+            _aux_unhealthy_reason.get(label, "recently marked unhealthy"),
+            max(0, int(expires_at - now)),
         )
 
 
@@ -2863,6 +2900,7 @@ def _reset_aux_unhealthy_cache() -> None:
     user trigger (e.g. ``hermes config aux reset``)."""
     _aux_unhealthy_until.clear()
     _aux_unhealthy_logged_at.clear()
+    _aux_unhealthy_reason.clear()
 
 
 def _is_payment_error(exc: Exception) -> bool:
@@ -3686,7 +3724,9 @@ def _call_fallback_candidate_sync(
         # the token is dead (expired setup token with no refresh token).
         # Quarantine the candidate so subsequent chain walks skip it, and
         # let the caller move on instead of aborting the whole task.
-        _mark_provider_unhealthy(fb_provider or fb_label)
+        _mark_provider_unhealthy(
+            fb_provider or fb_label, reason="stale/unrefreshable credential",
+        )
         logger.warning(
             "Auxiliary %s: fallback candidate %s has a stale/unrefreshable "
             "credential (%s) — skipping to next fallback",
@@ -3738,7 +3778,9 @@ async def _call_fallback_candidate_async(
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
-        _mark_provider_unhealthy(fb_provider or fb_label)
+        _mark_provider_unhealthy(
+            fb_provider or fb_label, reason="stale/unrefreshable credential",
+        )
         logger.warning(
             "Auxiliary %s (async): fallback candidate %s has a stale/unrefreshable "
             "credential (%s) — skipping to next fallback",

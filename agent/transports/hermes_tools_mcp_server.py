@@ -44,6 +44,7 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -105,6 +106,57 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+async def _call_with_raw_arguments(
+    fn: Any,
+    fn_is_async: bool,
+    arguments: dict[str, Any],
+    arguments_to_pass_directly: dict[str, Any] | None,
+) -> Any:
+    """Call a dynamically-dispatched Hermes tool without FastMCP arg-model validation.
+
+    Hermes already owns the authoritative JSON schema for these tools. FastMCP's
+    reflected arg model only sees ``**kwargs`` on the trampoline function, so it
+    would reject the structured arguments that match the advertised schema.
+    """
+    kwargs = dict(arguments or {})
+    if arguments_to_pass_directly:
+        kwargs.update(arguments_to_pass_directly)
+
+    result = fn(**kwargs)
+    if fn_is_async or inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+def _install_tool_schema_override(
+    mcp: Any,
+    name: str,
+    params_schema: dict[str, Any],
+) -> bool:
+    """Install Hermes' schema on a FastMCP tool registered via a kwargs trampoline."""
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    get_tool = getattr(tool_manager, "get_tool", None)
+    if not callable(get_tool):
+        return False
+
+    registered = get_tool(name)
+    if registered is None:
+        return False
+
+    object.__setattr__(registered, "parameters", params_schema)
+
+    fn_metadata = getattr(registered, "fn_metadata", None)
+    if fn_metadata is None:
+        return False
+
+    object.__setattr__(
+        fn_metadata,
+        "call_fn_with_arg_validation",
+        _call_with_raw_arguments,
+    )
+    return True
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -154,11 +206,11 @@ def _build_server() -> Any:
         description = spec.get("description") or f"Hermes {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
-        # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
+        # FastMCP wants a Python callable. Build a closure that accepts the
+        # model-provided arguments, dispatches via handle_function_call, and
+        # returns the result string. The authoritative input schema is patched
+        # onto the registered tool below, because FastMCP currently reflects
+        # this dynamic **kwargs trampoline as {"kwargs": "string"}.
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
@@ -175,15 +227,13 @@ def _build_server() -> Any:
                 _make_handler(name),
                 name=name,
                 description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
             )
         except TypeError:
             # Older mcp SDK signature — fall back to decorator-style.
             handler = _make_handler(name)
             handler = mcp.tool(name=name, description=description)(handler)
 
+        _install_tool_schema_override(mcp, name, params_schema)
         exposed_count += 1
 
     logger.info(

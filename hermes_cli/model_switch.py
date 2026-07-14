@@ -1279,7 +1279,12 @@ def switch_model(
     # API /v1/models may not list cloud/aliased models even though the server supports them.
     if not validation.get("accepted"):
         if validation.get("hard_reject"):
-            msg = validation.get("message", "Invalid model")
+            validation_message = validation.get("message")
+            msg = (
+                validation_message
+                if isinstance(validation_message, str)
+                else "Invalid model"
+            )
             return ModelSwitchResult(
                 success=False,
                 new_model=new_model,

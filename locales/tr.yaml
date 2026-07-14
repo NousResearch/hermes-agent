@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ Durduruldu. Ajan henüz başlamamıştı — bu oturuma devam edebilirsin."
-    stopped:               "⚡ Durduruldu. Bu oturuma devam edebilirsin."
+    stopped:               "⚡ Durduruluyor — geçerli adım tamamlanıp durduruluyor. Bu oturuma devam edebilirsiniz."
     no_active:             "Durdurulacak aktif görev yok."
 
   title:

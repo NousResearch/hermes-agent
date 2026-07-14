@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ Gestoppt. Der Agent hatte noch nicht begonnen — Sie können diese Sitzung fortsetzen."
-    stopped:               "⚡ Gestoppt. Sie können diese Sitzung fortsetzen."
+    stopped:               "⚡ Wird gestoppt — der aktuelle Schritt wird beendet und angehalten. Sie können diese Sitzung fortsetzen."
     no_active:             "Keine aktive Aufgabe zum Stoppen."
 
   title:

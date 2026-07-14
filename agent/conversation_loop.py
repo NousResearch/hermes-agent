@@ -589,6 +589,57 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
+def _return_interrupted(
+    agent,
+    messages: list,
+    conversation_history,
+    api_call_count: int,
+    interrupt_text: str,
+    *,
+    effective_task_id=None,
+    close_tail: bool = True,
+):
+    """Shared interrupt-unwind for the conversation loop.
+
+    Closes any dangling tool tail into an API-valid turn, tears down any
+    task-scoped resources acquired during the turn (open VMs / browser
+    sessions / remote agents — otherwise a /stop that halts mid-turn leaks
+    them), persists the truncated transcript, clears the cooperative interrupt
+    flag, and returns the standard interrupted result dict. Used by BOTH the
+    top-of-fallback-loop checkpoint and the API-error-branch interrupt handler
+    so the two returns cannot drift.
+
+    Unlike the normal loop exit (`finalize_turn`), an early interrupt `return`
+    from inside the retry loop bypasses the finalizer, so cleanup must be done
+    here — matching the other early returns in this loop (e.g. the
+    content-policy block) that call `_cleanup_task_resources` before returning.
+
+    ``interrupt_text`` MUST describe the actual site (the error-branch text
+    names the API error; the loop-top text says "before the next model call") —
+    do NOT reuse the error-branch text at loop-top, where ``error_type`` /
+    ``api_error`` don't exist.
+    """
+    close_interrupted_tool_sequence(
+        messages,
+        interrupt_text,
+        interrupted_assistant_tail=close_tail,
+    )
+    if effective_task_id is not None:
+        try:
+            agent._cleanup_task_resources(effective_task_id)
+        except Exception:
+            logger.debug("interrupt cleanup: _cleanup_task_resources failed", exc_info=True)
+    agent._persist_session(messages, conversation_history)
+    agent.clear_interrupt()
+    return {
+        "final_response": interrupt_text,
+        "messages": messages,
+        "api_calls": api_call_count,
+        "completed": False,
+        "interrupted": True,
+    }
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -1217,6 +1268,31 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
+            # ── Interrupt checkpoint (top of the retry/fallback loop) ──
+            # A /stop sets the cooperative `_interrupt_requested` flag. The
+            # OUTER tool loop checks it before each model call, but this INNER
+            # retry/fallback loop resets `retry_count = 0` and `continue`s on
+            # every `_try_activate_fallback()` (rate-limit / empty-malformed)
+            # WITHOUT returning to the outer check — so a turn bouncing across
+            # fallback providers can spin here, ignoring the stop and appending
+            # rows, until a call finally succeeds. This checkpoint closes that
+            # gap: halt before issuing the next model call. Site-specific text
+            # (NOT the error-branch text, whose error_type/api_error locals
+            # don't exist here). See PRD "Honest /stop + fallback checkpoint".
+            if agent._interrupt_requested:
+                agent._vprint(
+                    f"{agent.log_prefix}⚡ Interrupt detected before next model call, halting.",
+                    force=True,
+                )
+                return _return_interrupted(
+                    agent,
+                    messages,
+                    conversation_history,
+                    api_call_count,
+                    "Operation interrupted before the next model call (stop requested).",
+                    effective_task_id=effective_task_id,
+                    close_tail=True,
+                )
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
@@ -3198,20 +3274,15 @@ def run_conversation(
                 if agent._interrupt_requested:
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
                     _interrupt_text = f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))})."
-                    close_interrupted_tool_sequence(
+                    return _return_interrupted(
+                        agent,
                         messages,
+                        conversation_history,
+                        api_call_count,
                         _interrupt_text,
-                        interrupted_assistant_tail=True,
+                        effective_task_id=effective_task_id,
+                        close_tail=True,
                     )
-                    agent._persist_session(messages, conversation_history)
-                    agent.clear_interrupt()
-                    return {
-                        "final_response": _interrupt_text,
-                        "messages": messages,
-                        "api_calls": api_call_count,
-                        "completed": False,
-                        "interrupted": True,
-                    }
                 
                 # Check for 413 payload-too-large BEFORE generic 4xx handler.
                 # A 413 is a payload-size error — the correct response is to

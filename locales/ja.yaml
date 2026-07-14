@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ 停止しました。エージェントはまだ開始していません — このセッションを続行できます。"
-    stopped:               "⚡ 停止しました。このセッションを続行できます。"
+    stopped:               "⚡ 停止中 — 現在のステップを完了して停止します。このセッションを続行できます。"
     no_active:             "停止できるアクティブなタスクはありません。"
 
   title:

@@ -352,7 +352,7 @@ gateway:
 
   stop:
     stopped_pending:       "⚡ Detenido. El agente aún no había comenzado — puedes continuar esta sesión."
-    stopped:               "⚡ Detenido. Puedes continuar esta sesión."
+    stopped:               "⚡ Deteniéndose — terminando el paso actual y deteniéndose. Puedes continuar esta sesión."
     no_active:             "No hay ninguna tarea activa que detener."
 
   title:

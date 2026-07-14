@@ -366,7 +366,7 @@ gateway:
 
   stop:
     stopped_pending:       "⚡ Stopped. The agent hadn't started yet — you can continue this session."
-    stopped:               "⚡ Stopped. You can continue this session."
+    stopped:               "⚡ Stopping — finishing the current step and halting. You can continue this session."
     no_active:             "No active task to stop."
 
   title:

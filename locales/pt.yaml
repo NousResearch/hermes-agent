@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ Parado. O agente ainda não tinha começado — podes continuar esta sessão."
-    stopped:               "⚡ Parado. Podes continuar esta sessão."
+    stopped:               "⚡ Parando — concluindo a etapa atual e parando. Você pode continuar esta sessão."
     no_active:             "Não há nenhuma tarefa ativa para parar."
 
   title:

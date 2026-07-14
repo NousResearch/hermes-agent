@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ Gestop. Die agent het nog nie begin nie — jy kan met hierdie sessie voortgaan."
-    stopped:               "⚡ Gestop. Jy kan met hierdie sessie voortgaan."
+    stopped:               "⚡ Stop tans — voltooi die huidige stap en stop. Jy kan hierdie sessie voortsit."
     no_active:             "Geen aktiewe taak om te stop nie."
 
   title:

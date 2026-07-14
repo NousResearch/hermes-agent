@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ Fermato. L'agente non era ancora partito — puoi continuare questa sessione."
-    stopped:               "⚡ Fermato. Puoi continuare questa sessione."
+    stopped:               "⚡ Arresto in corso — completamento del passaggio corrente e arresto. Puoi continuare questa sessione."
     no_active:             "Nessuna attività attiva da fermare."
 
   title:

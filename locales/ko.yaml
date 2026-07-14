@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다."
-    stopped:               "⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다."
+    stopped:               "⚡ 중지 중 — 현재 단계를 완료하고 중지합니다. 이 세션을 계속할 수 있습니다."
     no_active:             "중지할 활성 작업이 없습니다."
 
   title:

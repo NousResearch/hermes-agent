@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."
-    stopped:               "⚡ Leállítva. Folytathatod ezt a munkamenetet."
+    stopped:               "⚡ Leállítás — az aktuális lépés befejezése és leállás. Folytathatja ezt a munkamenetet."
     no_active:             "Nincs leállítható aktív feladat."
 
   title:

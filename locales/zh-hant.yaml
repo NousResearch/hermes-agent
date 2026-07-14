@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。"
-    stopped:               "⚡ 已停止。你可以繼續此工作階段。"
+    stopped:               "⚡ 正在停止 — 完成目前步驟後停止。你可以繼續此工作階段。"
     no_active:             "沒有可停止的作用中任務。"
 
   title:

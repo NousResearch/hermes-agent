@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ Остановлено. Агент ещё не начинал — вы можете продолжить этот сеанс."
-    stopped:               "⚡ Остановлено. Вы можете продолжить этот сеанс."
+    stopped:               "⚡ Останавливается — завершается текущий шаг. Вы можете продолжить этот сеанс."
     no_active:             "Нет активной задачи для остановки."
 
   title:

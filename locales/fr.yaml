@@ -355,7 +355,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   stop:
     stopped_pending:       "⚡ Arrêté. L'agent n'avait pas encore commencé — vous pouvez continuer cette session."
-    stopped:               "⚡ Arrêté. Vous pouvez continuer cette session."
+    stopped:               "⚡ Arrêt en cours — l'étape actuelle se termine puis s'arrête. Vous pouvez continuer cette session."
     no_active:             "Aucune tâche active à arrêter."
 
   title:

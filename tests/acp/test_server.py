@@ -1860,3 +1860,70 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+class TestEditApprovalPolicyYolo:
+    """Verify --yolo / HERMES_YOLO_MODE overrides ACP edit approval policy."""
+
+    def test_yolo_mode_overrides_ask_policy(self, monkeypatch):
+        """With HERMES_YOLO_MODE=1, default 'ask' policy becomes 'session'."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        from acp_adapter.server import HermesACPAgent
+
+        agent = HermesACPAgent(
+            session_manager=SessionManager(agent_factory=lambda: MagicMock())
+        )
+        state = SimpleNamespace(mode="default", cwd="/workspace")
+        policy, cwd = agent._edit_approval_policy_for_state(state)
+        assert policy == "session"
+        assert cwd == "/workspace"
+
+    def test_without_yolo_mode_keeps_ask_policy(self, monkeypatch):
+        """Without HERMES_YOLO_MODE, default mode stays 'ask'."""
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        from acp_adapter.server import HermesACPAgent
+
+        agent = HermesACPAgent(
+            session_manager=SessionManager(agent_factory=lambda: MagicMock())
+        )
+        state = SimpleNamespace(mode="default", cwd="/workspace")
+        policy, cwd = agent._edit_approval_policy_for_state(state)
+        assert policy == "ask"
+
+    def test_yolo_does_not_override_explicit_accept_edits(self, monkeypatch):
+        """HERMES_YOLO_MODE doesn't change a non-ask policy."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        from acp_adapter.server import HermesACPAgent
+
+        agent = HermesACPAgent(
+            session_manager=SessionManager(agent_factory=lambda: MagicMock())
+        )
+        state = SimpleNamespace(mode="accept_edits", cwd="/workspace")
+        policy, cwd = agent._edit_approval_policy_for_state(state)
+        assert policy == "workspace_session"
+
+    def test_yolo_does_not_override_explicit_dont_ask(self, monkeypatch):
+        """HERMES_YOLO_MODE doesn't change an already autonomous policy."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        from acp_adapter.server import HermesACPAgent
+
+        agent = HermesACPAgent(
+            session_manager=SessionManager(agent_factory=lambda: MagicMock())
+        )
+        state = SimpleNamespace(mode="dont_ask", cwd="/workspace")
+        policy, cwd = agent._edit_approval_policy_for_state(state)
+        assert policy == "session"
+
+    def test_yolo_frozen_at_init_time(self, monkeypatch):
+        """HERMES_YOLO_MODE is frozen at server init, not read per-call."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        from acp_adapter.server import HermesACPAgent
+
+        agent = HermesACPAgent(
+            session_manager=SessionManager(agent_factory=lambda: MagicMock())
+        )
+        # Remove env var after init — frozen value should still be True
+        monkeypatch.delenv("HERMES_YOLO_MODE")
+        state = SimpleNamespace(mode="default", cwd="/workspace")
+        policy, _ = agent._edit_approval_policy_for_state(state)
+        assert policy == "session"

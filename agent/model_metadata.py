@@ -974,6 +974,100 @@ def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "
     return context_length if isinstance(context_length, int) else None
 
 
+def _resolve_profile_context_length(
+    profile: Any,
+    model: str,
+    base_url: str,
+    api_key: str = "",
+) -> Optional[int]:
+    """Resolve context length through a provider profile's catalog hook."""
+    try:
+        entries = profile.fetch_model_metadata(
+            api_key=api_key,
+            base_url=base_url or None,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Provider %s live metadata lookup failed: %s",
+            getattr(profile, "name", "unknown"),
+            exc,
+        )
+        return None
+    if not entries:
+        return None
+
+    matched = next(
+        (
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("id") == model
+        ),
+        None,
+    )
+    if matched is None:
+        valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+        if len(valid_entries) == 1:
+            matched = valid_entries[0]
+        else:
+            matched = next(
+                (
+                    entry
+                    for entry in valid_entries
+                    if isinstance(entry.get("id"), str)
+                    and (model in entry["id"] or entry["id"] in model)
+                ),
+                None,
+            )
+    return _extract_context_length(matched) if matched else None
+
+
+def _resolve_profile_context_length(
+    profile: Any,
+    model: str,
+    base_url: str,
+    api_key: str = "",
+) -> Optional[int]:
+    """Resolve context length through a provider profile's catalog hook."""
+    try:
+        entries = profile.fetch_model_metadata(
+            api_key=api_key,
+            base_url=base_url or None,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Provider %s live metadata lookup failed: %s",
+            getattr(profile, "name", "unknown"),
+            exc,
+        )
+        return None
+    if not entries:
+        return None
+
+    matched = next(
+        (
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("id") == model
+        ),
+        None,
+    )
+    if matched is None:
+        valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+        if len(valid_entries) == 1:
+            matched = valid_entries[0]
+        else:
+            matched = next(
+                (
+                    entry
+                    for entry in valid_entries
+                    if isinstance(entry.get("id"), str)
+                    and (model in entry["id"] or entry["id"] in model)
+                ),
+                None,
+            )
+    return _extract_context_length(matched) if matched else None
+
+
 def _get_context_cache_path() -> Path:
     """Path to the persistent context length cache file."""
     from hermes_constants import get_hermes_home
@@ -1847,7 +1941,7 @@ def get_model_context_length(
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
     model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
-    Studio, Codex OAuth bypass it) and Bedrock; 2-3 custom endpoints (/models, local
+    Studio, Codex OAuth, live-metadata profiles bypass it) and Bedrock; 2-3 custom endpoints (/models, local
     probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot,
     Nous, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
     unknown providers; 7 local server; 8 hardcoded defaults; 9 256K fallback."""
@@ -1882,8 +1976,36 @@ def get_model_context_length(
     is_bedrock_context = provider == "bedrock" or (
         base_url and base_url_hostname(base_url).startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com")
     )
+    # Resolve the effective provider before cache lookup so out-of-tree profiles
+    # can opt into authoritative live metadata by provider name or endpoint URL.
+    effective_provider = provider
+    if not effective_provider or effective_provider in {"openrouter", "custom"}:
+        if base_url:
+            inferred = _infer_provider_from_url(base_url)
+            if inferred:
+                effective_provider = inferred
+
+    provider_profile = None
+    use_live_model_metadata = False
+    if effective_provider:
+        try:
+            from providers import get_provider_profile
+
+            provider_profile = get_provider_profile(effective_provider)
+            use_live_model_metadata = (
+                getattr(provider_profile, "use_live_model_metadata", False) is True
+            )
+        except Exception:
+            pass
+
     # 1. Persistent cache (LM Studio / Codex OAuth excluded — see _skip_persistent_context_cache).
-    cached = get_cached_context_length(model, base_url) if base_url and not _skip_persistent_context_cache(base_url, provider) else None
+    cached = (
+        get_cached_context_length(model, base_url)
+        if base_url
+        and not use_live_model_metadata
+        and not _skip_persistent_context_cache(base_url, provider)
+        else None
+    )
     validated = _validate_cached_context_length(model, base_url, cached, is_bedrock_context, api_key=api_key) if cached is not None else None
     if validated is not None:
         return validated
@@ -1898,8 +2020,19 @@ def get_model_context_length(
             if base_url:
                 save_context_length(model, base_url, ctx)
             return ctx
-    # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
-    # report a provider-imposed limit (Copilot: 128k) rather than the window.
+    # 2. Authoritative live /models catalog for provider profiles that opt in,
+    # then the generic custom-endpoint probe for the rest. Known providers skip
+    # both: their /models may report a provider-imposed limit (Copilot: 128k).
+    if use_live_model_metadata and provider_profile is not None:
+        context_length = _resolve_profile_context_length(
+            provider_profile,
+            model,
+            base_url,
+            api_key=api_key,
+        )
+        if context_length is not None:
+            return context_length
+
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
         return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
@@ -1909,9 +2042,8 @@ def get_model_context_length(
             return ctx
     # 5. Provider-aware lookups — before the generic OR cache, since the same model has
     # different limits per provider. Generic providers are inferred from the URL.
-    effective_provider = provider
-    if base_url and (not effective_provider or effective_provider in {"openrouter", "custom"}):
-        effective_provider = _infer_provider_from_url(base_url) or effective_provider
+    # If provider was generic (openrouter/custom/empty), it was inferred from
+    # the URL before cache resolution above.
     ctx = _resolve_provider_aware_context_length(model, base_url, api_key, provider, effective_provider)
     if ctx is not None:
         return ctx

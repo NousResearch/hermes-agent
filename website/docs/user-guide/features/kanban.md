@@ -268,12 +268,19 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
 | `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
-| `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
+| `kanban_block` | Stop work and route by why: `kind=dependency` waits in `todo` and auto-resumes only when the task has a persisted parent edge; a zero-parent dependency wait fails closed for operator repair. `needs_input`/`capability`/`transient` surface to a human. Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
 | `kanban_unblock` | (Orchestrators) move a blocked task back to `ready`. | `task_id` |
+
+A dependency edge is directional: `parent_id → child_id` means the **child
+waits for the parent** and becomes eligible only after that parent is done or
+archived. Logical ownership is separate from execution order; making an
+orchestration card the conceptual owner of another card does not mean the
+owned card should wait for the orchestrator. Encode the prerequisite as the
+parent and the waiting work as the child.
 
 A typical worker turn looks like:
 

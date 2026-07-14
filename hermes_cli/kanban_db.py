@@ -108,10 +108,9 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # unblocks → worker re-blocks → cron unblocks … forever.
 #
 #   * ``dependency``   — can't proceed until another task finishes. Routed to
-#                        ``todo`` (NOT ``blocked``) so the existing
-#                        parent-gating / ``recompute_ready`` machinery promotes
-#                        it automatically once parents are done. No human, no
-#                        cron, no retry storm.
+#                        ``todo`` only when a persisted parent edge exists, so
+#                        parent-gating / ``recompute_ready`` can promote it.
+#                        Zero-parent waits fail closed in ``blocked``.
 #   * ``needs_input``  — needs a human decision/answer it cannot derive.
 #   * ``capability``   — hit a hard wall (no access, missing creds, an action no
 #                        AI agent can perform). Genuinely human-only.
@@ -3260,10 +3259,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       finish, transient infra error clears).
 
     The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    explicit-block / ``"unblocked"`` event for the task. Explicit blocks are
+    either the generic ``"blocked"`` event or ``"dependency_wait_invalid"``
+    for a dependency wait with no persisted parent edge. If one of those is
+    most recent, ``recompute_ready`` must *not* auto-promote the task.
 
     Returns ``False`` when there is no such event at all (e.g. the task
     was set to ``status='blocked'`` by the circuit breaker or by direct
@@ -3272,11 +3271,12 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? "
+        "AND kind IN ('blocked', 'dependency_wait_invalid', 'unblocked') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] != "unblocked"
 
 
 def recompute_ready(
@@ -4776,11 +4776,11 @@ def block_task(
     un-typed block) drives routing instead of every block landing in one
     undifferentiated ``blocked`` bucket:
 
-    * ``dependency`` — the task is only waiting on another task. It does NOT
-      sit in ``blocked`` (where a cron would keep "unblocking" it); it goes to
-      ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
-      promotes it automatically once its parents finish. No human, no cron, no
-      retry storm. This is Dale's "Type 2 — dependency blocked".
+    * ``dependency`` — the task is only waiting on another task. With at least
+      one persisted parent edge it goes to ``todo`` so parent-gating /
+      ``recompute_ready`` promotes it automatically once all parents finish.
+      Without a parent edge it fails closed in ``blocked`` and emits a typed
+      diagnostic instead of entering an immediate redispatch loop.
 
     * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
@@ -4818,11 +4818,62 @@ def block_task(
             else 0
         )
 
-        # Dependency blocks never enter the human ``blocked`` bucket — they
-        # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
-        # here (rather than ``blocked``) is what keeps a cron from ever seeing
-        # a dependency-wait as something to "unblock".
+        # A dependency wait is auto-resumable only when a persisted parent edge
+        # exists. Without one, ``all(parents)`` in ``recompute_ready`` would be
+        # vacuously true and redispatch the task on every dispatcher pass.
         if kind == "dependency":
+            has_parent = conn.execute(
+                "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if not has_parent:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'blocked',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = ?
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                    (kind, task_id) if expected_run_id is None
+                    else (kind, task_id, int(expected_run_id)),
+                )
+                if cur.rowcount != 1:
+                    return False
+                run_id = _end_run(
+                    conn, task_id,
+                    outcome="blocked", status="blocked",
+                    summary=reason,
+                )
+                if run_id is None and reason:
+                    run_id = _synthesize_ended_run(
+                        conn, task_id, outcome="blocked", summary=reason,
+                    )
+                _append_event(
+                    conn, task_id, "dependency_wait_invalid",
+                    {
+                        "reason": reason,
+                        "kind": kind,
+                        "diagnostic": (
+                            "dependency wait requires at least one persisted parent edge"
+                        ),
+                    },
+                    run_id=run_id,
+                )
+                _blocked_task = get_task(conn, task_id)
+                _fire_kanban_lifecycle_hook(
+                    "kanban_task_blocked",
+                    task_id,
+                    board=get_current_board(),
+                    assignee=_blocked_task.assignee if _blocked_task else None,
+                    run_id=run_id,
+                    reason=reason,
+                )
+                return True
+
             cur = conn.execute(
                 """
                 UPDATE tasks

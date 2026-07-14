@@ -5,8 +5,8 @@ task, a cron unblocks it, the worker re-blocks for the same reason, repeat
 forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 ``block_recurrences`` counter:
 
-* ``dependency`` blocks route to ``todo`` (parent-gated, auto-resumed) and
-  never enter the human ``blocked`` bucket a cron would keep unblocking.
+* ``dependency`` blocks route to ``todo`` only when a persisted parent edge
+  exists. A zero-parent dependency wait fails closed in ``blocked``.
 * ``needs_input`` / ``capability`` / un-typed blocks land in ``blocked``;
   each same-cause re-block after an unblock increments ``block_recurrences``,
   and at ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
@@ -135,31 +135,60 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_dependency_block_routes_to_todo(kanban_home: Path) -> None:
-    """Dependency waits never enter the human 'blocked' bucket."""
+def test_zero_parent_dependency_wait_fails_closed_across_recompute(kanban_home: Path) -> None:
+    """A dependency wait without a parent edge must never redispatch."""
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
         assert kb.block_task(conn, tid, reason="need X first", kind="dependency")
         t = kb.get_task(conn, tid)
-        assert t.status == "todo"
+        assert t.status == "blocked"
         assert t.block_kind == "dependency"
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        assert run.summary == "need X first"
+
+        events = [
+            event for event in kb.list_events(conn, tid)
+            if event.kind == "dependency_wait_invalid"
+        ]
+        assert len(events) == 1
+        assert events[0].payload == {
+            "reason": "need X first",
+            "kind": "dependency",
+            "diagnostic": "dependency wait requires at least one persisted parent edge",
+        }
+
+        for _ in range(5):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, tid).status == "blocked"
 
 
 def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
-    """A dependency-parked child becomes ready once its parent completes."""
+    """Parent → child means the child waits for that parent, then promotes once."""
     with kb.connect_closing() as conn:
         parent = kb.create_task(conn, title="parent", assignee="worker")
         child = _running_task(conn, title="child")
         kb.link_tasks(conn, parent_id=parent, child_id=child)
         kb.block_task(conn, child, reason="wait", kind="dependency")
         assert kb.get_task(conn, child).status == "todo"
+
+        for _ in range(3):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, child).status == "todo"
+
         # Finish the parent, then let recompute_ready run.
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
         kb.claim_task(conn, parent, claimer="worker")
         kb.complete_task(conn, parent, result="done")
-        kb.recompute_ready(conn)
+        # Parent completion promotes dependants in the same event-driven path.
         assert kb.get_task(conn, child).status == "ready"
+        assert kb.recompute_ready(conn) == 0
+        promoted = [
+            event for event in kb.list_events(conn, child)
+            if event.kind == "promoted"
+        ]
+        assert len(promoted) == 1
 
 
 # ---------------------------------------------------------------------------

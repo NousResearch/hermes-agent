@@ -72,6 +72,9 @@ def test_fixture_validator_generates_deterministic_sample_artifacts(tmp_path):
     ]
     assert (out_dir / "setup.sh").stat().st_mode & 0o777 == 0o755
     assert "workspace_kind=\"dir\"" in (out_dir / "TEAM.md").read_text()
+    validation_log = (out_dir / "validation.log").read_text()
+    assert f"plan=fixtures/{FIXTURE_PLAN.name}" in validation_log
+    assert str(Path.home()) not in validation_log
 
 
 def test_fixture_validator_refuses_populated_unowned_out_dir(tmp_path):

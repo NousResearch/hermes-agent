@@ -23,8 +23,9 @@ check_key() {
     local var="$1"
     local kc_account="${2:-hermes}"
     local kc_service="${3:-$1}"
-    if grep -q "^${var}=" "$HOME/.hermes/.env" 2>/dev/null && \
-       [ -n "$(grep "^${var}=" "$HOME/.hermes/.env" | cut -d= -f2-)" ]; then
+    local _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"
+    if grep -q "^${var}=" "$_hermes_env" 2>/dev/null && \
+       [ -n "$(grep "^${var}=" "$_hermes_env" | cut -d= -f2-)" ]; then
         echo "  ✓ ${var} (env)"
         return 0
     fi
@@ -33,7 +34,7 @@ check_key() {
         echo "  ✓ ${var} (Keychain ${kc_account}/${kc_service})"
         return 0
     fi
-    echo "  ✗ ${var} not set in ~/.hermes/.env or Keychain (${kc_account}/${kc_service})"
+    echo "  ✗ ${var} not set in ${_hermes_env} or Keychain (${kc_account}/${kc_service})"
     return 1
 }
 
@@ -67,7 +68,7 @@ echo "═══ Configuring profiles ═══"
 configure_profile() {
     local profile="$1"
     local toolsets_json="$2"     # JSON array string, e.g. '["kanban","terminal","file"]'
-    local skills_json="$3"       # JSON array string, e.g. '["kanban-worker","ascii-video"]'
+    local skills_json="$3"       # JSON array string, e.g. '["ascii-video"]'
     python3 - "$profile" "$toolsets_json" "$skills_json" "$WORKSPACE" <<'PY'
 """Patch a Hermes profile config.yaml using PyYAML so we don't depend on the
 exact default-config string format. Validates the patch took effect and exits
@@ -178,7 +179,6 @@ _(see TEAM.md and brief.md)_
 - **Do not execute the work yourself.** For every concrete task, create a kanban task and assign it to the appropriate profile.
 - **Decompose, route, comment, approve — that's the whole job.**
 - **Read TEAM.md** for the canonical task graph. Do not invent new roles unless the brief truly demands it.
-- **Load the `kanban-orchestrator` skill** for the deeper decomposition playbook beyond the auto-injected baseline.
 
 
 ## Common reference commands

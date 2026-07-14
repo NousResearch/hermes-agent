@@ -11,14 +11,14 @@
       "sha256": "f31cb736b139220e5dd350431728d973c5a5721a1c2b767141603904d464a40b"
     },
     "setup.sh": {
-      "bytes": 18910,
+      "bytes": 18825,
       "path": "setup.sh",
-      "sha256": "1be7ba3a7d18ba3040035ec4ef67c5633b89aedf914c598f711505091894cef9"
+      "sha256": "ab1c193c51f8d45e8f21c1494b231fb22c6f9a3bc5d1fcb5044c092a943bc227"
     },
     "validation.log": {
-      "bytes": 428,
+      "bytes": 314,
       "path": "validation.log",
-      "sha256": "b450bb1ac49d4d2ee567cc85ecc47d9592cb5b8441be68b96cf67359b368af41"
+      "sha256": "748e1e9b614b1fa7d99d82a0f4f82942097f615a9f799c9890d8ff2b321c0bdc"
     }
   },
   "plan": "fixtures/sample-plan.json",

@@ -106,6 +106,14 @@ def validate_outputs(outputs: dict[str, Path]) -> list[str]:
     return failures
 
 
+def stable_plan_ref(plan: Path) -> str:
+    """Return a checkout-independent reference suitable for generated artifacts."""
+    try:
+        return str(plan.relative_to(SKILL_DIR))
+    except ValueError:
+        return plan.name
+
+
 def build_manifest(plan: Path, outputs: dict[str, Path], validation_log: Path) -> dict:
     artifacts = {
         name: {
@@ -120,13 +128,9 @@ def build_manifest(plan: Path, outputs: dict[str, Path], validation_log: Path) -
         "bytes": validation_log.stat().st_size,
         "sha256": sha256(validation_log),
     }
-    try:
-        plan_ref = str(plan.relative_to(SKILL_DIR))
-    except ValueError:
-        plan_ref = str(plan)
     return {
         "validator": "kanban-video-orchestrator fixture validator",
-        "plan": plan_ref,
+        "plan": stable_plan_ref(plan),
         "plan_sha256": sha256(plan),
         "artifacts": artifacts,
     }
@@ -192,7 +196,7 @@ def main() -> int:
 
     log_path.write_text(
         "PASS kanban-video-orchestrator fixture validation\n"
-        f"plan={plan}\n"
+        f"plan={stable_plan_ref(plan)}\n"
         f"setup_sha256={sha256(outputs['setup.sh'])}\n"
         f"brief_sha256={sha256(outputs['brief.md'])}\n"
         f"team_sha256={sha256(outputs['TEAM.md'])}\n"

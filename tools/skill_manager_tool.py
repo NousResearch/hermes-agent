@@ -575,6 +575,125 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
+# Changelog-style markers injected by autonomous reviews. Bare dates remain
+# valid because skills can legitimately document ISO payloads, version pins,
+# and date-formatted examples.
+_DATE_STAMP_RE = re.compile(
+    r"(?im)^[ \t>*#-]*(?:updated|added|new(?:[^\w\n]+session)?)\s*:?\s*"
+    r"\d{4}-\d{2}(?:-\d{2})?\s*$"
+    r"|<!--[^>]*(?:updated|added|session)[^>]*"
+    r"\d{4}-\d{2}(?:-\d{2})?[^>]*-->",
+)
+
+
+def _check_date_stamps(content: str) -> Optional[str]:
+    """Reject autonomous-review changelog markers, but not arbitrary dates."""
+    matches = [match.group(0).strip() for match in _DATE_STAMP_RE.finditer(content)]
+    if not matches:
+        return None
+    examples = ", ".join(repr(match) for match in matches[:3])
+    return (
+        "SKILL.md must not contain changelog-style date stamps. Remove temporal "
+        f"markers such as: {examples}. Skills are timeless guidelines."
+    )
+
+
+def _extract_headings(content: str) -> List[str]:
+    """Return normalized level-two-or-deeper Markdown headings."""
+    headings: List[str] = []
+    for line in content.splitlines():
+        match = re.match(r"^#{2,}\s+(.+?)\s*$", line)
+        if match:
+            headings.append(re.sub(r"\s+#+\s*$", "", match.group(1)).casefold())
+    return headings
+
+
+def _check_duplicate_headings(
+    new_content: str,
+    existing_content: Optional[str] = None,
+    *,
+    introduced_only: bool = False,
+) -> Optional[str]:
+    """Reject exact duplicate headings, optionally only newly added ones."""
+    new_counts: Dict[str, int] = {}
+    for heading in _extract_headings(new_content):
+        new_counts[heading] = new_counts.get(heading, 0) + 1
+
+    old_counts: Dict[str, int] = {}
+    if introduced_only and existing_content is not None:
+        for heading in _extract_headings(existing_content):
+            old_counts[heading] = old_counts.get(heading, 0) + 1
+
+    for heading, new_count in new_counts.items():
+        if new_count <= 1:
+            continue
+        old_count = old_counts.get(heading, 0)
+        if introduced_only and new_count <= old_count:
+            continue
+        return (
+            f"Duplicate heading '{heading}' appears more than once in the "
+            "resulting SKILL.md. Update or merge the existing section instead "
+            "of adding another copy."
+        )
+    return None
+
+
+def _check_content_growth(
+    new_content: str,
+    existing_content: Optional[str],
+) -> Optional[str]:
+    """Reject suspicious full rewrites that more than double SKILL.md."""
+    if not existing_content:
+        return None
+    old_len = len(existing_content)
+    new_len = len(new_content)
+    if new_len > old_len * 2 and new_len - old_len > 500:
+        return (
+            f"This background-review edit would grow SKILL.md from {old_len:,} "
+            f"to {new_len:,} characters (+{new_len - old_len:,}). Such large "
+            "single-pass growth usually indicates duplication; use a targeted "
+            "patch or verify that existing sections are being replaced."
+        )
+    return None
+
+
+def _background_review_write_hygiene_guard(
+    new_content: str,
+    existing_content: Optional[str] = None,
+    *,
+    inserted_content: Optional[str] = None,
+    introduced_duplicates_only: bool = False,
+    check_growth: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Apply heuristic SKILL.md checks only to autonomous review writes.
+
+    Foreground writes are user-directed and must not be rejected by these
+    heuristics. The background fork has no user in the loop, so it receives a
+    stricter policy in addition to the exact-file read-before-write guard.
+    """
+    try:
+        from tools.skill_provenance import is_background_review
+        if not is_background_review():
+            return None
+    except Exception:
+        return None
+
+    err = _check_date_stamps(
+        inserted_content if inserted_content is not None else new_content
+    )
+    if not err:
+        err = _check_duplicate_headings(
+            new_content,
+            existing_content,
+            introduced_only=introduced_duplicates_only,
+        )
+    if not err and check_growth:
+        err = _check_content_growth(new_content, existing_content)
+    if err:
+        return {"success": False, "error": err, "_write_hygiene_blocked": True}
+    return None
+
+
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
     if category:
@@ -810,6 +929,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
+    hygiene_guard = _background_review_write_hygiene_guard(content)
+    if hygiene_guard:
+        return hygiene_guard
+
     # Check for name collisions across all directories
     existing = _find_skill(name)
     if existing:
@@ -884,6 +1007,12 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+    hygiene_guard = _background_review_write_hygiene_guard(
+        content,
+        existing_content=original_content,
+    )
+    if hygiene_guard:
+        return hygiene_guard
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
@@ -1002,6 +1131,15 @@ def _patch_skill(
                 "success": False,
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
+        hygiene_guard = _background_review_write_hygiene_guard(
+            new_content,
+            existing_content=content,
+            inserted_content=new_string,
+            introduced_duplicates_only=True,
+            check_growth=False,
+        )
+        if hygiene_guard:
+            return hygiene_guard
 
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)

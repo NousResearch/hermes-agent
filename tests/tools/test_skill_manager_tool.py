@@ -1348,3 +1348,119 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# Background-review write hygiene (#23288)
+# ---------------------------------------------------------------------------
+
+
+def _hygiene_skill_content(name: str, body: str) -> str:
+    return (
+        "---\n"
+        f"name: {name}\n"
+        "description: A focused hygiene test skill.\n"
+        "---\n\n"
+        f"# {name}\n\n"
+        f"{body}\n"
+    )
+
+
+class TestBackgroundReviewWriteHygiene:
+    def test_background_create_blocks_changelog_date_stamp(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            result = _create_skill(
+                "dated",
+                _hygiene_skill_content(
+                    "dated",
+                    "Updated 2026-05-10\n\n## Rules\nKeep it concise.",
+                ),
+            )
+
+        assert result["success"] is False
+        assert result.get("_write_hygiene_blocked") is True
+        assert "date stamps" in result["error"]
+
+    def test_background_create_allows_dates_used_as_examples(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            result = _create_skill(
+                "date-example",
+                _hygiene_skill_content(
+                    "date-example",
+                    "## Example\nUse ISO format such as 2026-05-10T12:00:00Z.",
+                ),
+            )
+
+        assert result["success"] is True, result
+
+    def test_background_patch_blocks_new_duplicate_heading(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            assert _create_skill(
+                "duplicate",
+                _hygiene_skill_content(
+                    "duplicate",
+                    "## Rules\nKeep it concise.",
+                ),
+            )["success"] is True
+            assert json.loads(skill_view("duplicate"))["success"] is True
+
+            result = _patch_skill(
+                "duplicate",
+                "Keep it concise.",
+                "Keep it concise.\n\n## Rules\nSecond copy.",
+            )
+
+        _reset_background_review_read_marks()
+        assert result["success"] is False
+        assert result.get("_write_hygiene_blocked") is True
+        assert "Duplicate heading 'rules'" in result["error"]
+
+    def test_background_edit_blocks_suspicious_growth(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            assert _create_skill(
+                "growing",
+                _hygiene_skill_content("growing", "## Rules\nKeep it concise."),
+            )["success"] is True
+            assert json.loads(skill_view("growing"))["success"] is True
+
+            result = _edit_skill(
+                "growing",
+                _hygiene_skill_content("growing", "## Details\n" + "A" * 1200),
+            )
+
+        _reset_background_review_read_marks()
+        assert result["success"] is False
+        assert result.get("_write_hygiene_blocked") is True
+        assert "grow SKILL.md" in result["error"]
+
+    def test_foreground_writes_are_not_subject_to_hygiene_heuristics(self, tmp_path):
+        create_content = _hygiene_skill_content(
+            "foreground",
+            "Updated 2026-05-10\n\n## Rules\nA\n\n## Rules\nB",
+        )
+        edit_content = _hygiene_skill_content(
+            "foreground",
+            "Updated 2026-05-10\n\n## Rules\n"
+            + "A" * 1200
+            + "\n\n## Rules\nSecond section.",
+        )
+        with _skill_dir(tmp_path):
+            created = _create_skill("foreground", create_content)
+            edited = _edit_skill("foreground", edit_content)
+            patched = _patch_skill(
+                "foreground",
+                "Second section.",
+                "Second section.\n\nAdded 2026-05-11",
+            )
+
+        assert created["success"] is True, created
+        assert edited["success"] is True, edited
+        assert patched["success"] is True, patched

@@ -574,6 +574,62 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
+def _build_feishu_card_action_button(
+    label: str,
+    *,
+    command: str,
+    button_type: str = "default",
+) -> Dict[str, Any]:
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": label},
+        "type": button_type,
+        "value": {"hermes_command": command},
+    }
+
+
+def _build_markdown_card_payload(
+    content: str,
+    *,
+    header_title: str = "",
+    header_template: str = "indigo",
+    actions: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Build a Feishu Card JSON 2.0 payload with a markdown body."""
+    template = header_template if header_template in {"indigo", "orange"} else "indigo"
+    card: Dict[str, Any] = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": content or "",
+                }
+            ]
+        },
+    }
+    if header_title:
+        card["header"] = {
+            "title": {"tag": "plain_text", "content": header_title},
+            "template": template,
+        }
+    if actions:
+        _attach_feishu_card_inline_actions(card, actions)
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _attach_feishu_card_inline_actions(
+    card: Dict[str, Any],
+    actions: List[Dict[str, Any]],
+) -> None:
+    """Attach Card 2.0 buttons directly to body.elements."""
+    if actions:
+        elements = card.setdefault("body", {}).setdefault("elements", [])
+        elements.append({"tag": "hr"})
+        elements.extend(actions)
+
+
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
@@ -1911,9 +1967,9 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type not in {"post", "interactive"} or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    logger.warning("[Feishu] Invalid rich payload rejected by API; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1922,11 +1978,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
+                    msg_type in {"post", "interactive"}
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] Rich payload rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1960,8 +2016,12 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if (
+                not result.success
+                and msg_type in {"post", "interactive"}
+                and _POST_CONTENT_INVALID_RE.search(result.error or "")
+            ):
+                logger.warning("[Feishu] Invalid rich update rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -2012,22 +2072,22 @@ class FeishuAdapter(BasePlatformAdapter):
             actions.append(_btn("❌ Deny", "deny", "danger"))
             scope_note = "\n\n**Smart DENY:** owner override applies to this one operation only." if smart_denied else ""
             card = {
+                "schema": "2.0",
                 "config": {"wide_screen_mode": True},
-                "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
-                    "template": "orange",
+                "body": {
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": (
+                                "**⚠️ Command Approval Required**\n\n"
+                                f"```\n{cmd_preview}\n```\n"
+                                f"**Reason:** {description}{scope_note}"
+                            ),
+                        },
+                    ],
                 },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}{scope_note}",
-                    },
-                    {
-                        "tag": "action",
-                        "actions": actions,
-                    },
-                ],
             }
+            _attach_feishu_card_inline_actions(card, actions)
 
             payload = json.dumps(card, ensure_ascii=False)
             response = await self._feishu_send_with_retry(
@@ -2065,23 +2125,26 @@ class FeishuAdapter(BasePlatformAdapter):
                 },
             }
 
-        return {
+        card = {
+            "schema": "2.0",
             "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"content": "⚕ Update Needs Your Input", "tag": "plain_text"},
-                "template": "orange",
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"**⚕ Update Needs Your Input**\n\n{prompt}{default_hint}",
+                    },
+                ],
             },
-            "elements": [
-                {"tag": "markdown", "content": f"{prompt}{default_hint}"},
-                {
-                    "tag": "action",
-                    "actions": [
-                        _btn("✓ Yes", "y", "primary"),
-                        _btn("✗ No", "n", "danger"),
-                    ],
-                },
-            ],
         }
+        _attach_feishu_card_inline_actions(
+            card,
+            [
+                _btn("✓ Yes", "y", "primary"),
+                _btn("✗ No", "n", "danger"),
+            ],
+        )
+        return card
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
@@ -2124,17 +2187,20 @@ class FeishuAdapter(BasePlatformAdapter):
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
         return {
+            "schema": "2.0",
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
-                "template": "red" if choice == "deny" else "green",
+                "template": "orange" if choice == "deny" else "indigo",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"{icon} **{label}** by {user_name}",
+                    },
+                ],
+            },
         }
 
     @staticmethod
@@ -2142,14 +2208,17 @@ class FeishuAdapter(BasePlatformAdapter):
         yes = answer == "y"
         label = "Yes" if yes else "No"
         return {
+            "schema": "2.0",
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"content": f"{'✅' if yes else '❌'} Update prompt answered: {label}", "tag": "plain_text"},
-                "template": "green" if yes else "red",
+                "template": "indigo" if yes else "orange",
             },
-            "elements": [
-                {"tag": "markdown", "content": f"Answered by **{user_name}**"},
-            ],
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": f"Answered by **{user_name}**"},
+                ],
+            },
         }
 
     @staticmethod
@@ -4526,16 +4595,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        return "interactive", _build_markdown_card_payload(content)
 
     async def _send_uploaded_file_message(
         self,
@@ -4829,7 +4889,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return response
             except Exception as exc:
                 last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                if msg_type in {"post", "interactive"} and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise

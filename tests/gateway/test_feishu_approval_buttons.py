@@ -116,17 +116,22 @@ class TestFeishuExecApproval:
 
         # Verify card payload contains the command and buttons
         card = json.loads(kwargs["payload"])
-        assert card["header"]["template"] == "orange"
-        assert "rm -rf /important" in card["elements"][0]["content"]
-        assert "dangerous deletion" in card["elements"][0]["content"]
+        assert card["schema"] == "2.0"
+        elements = card["body"]["elements"]
+        assert "header" not in card
+        assert "rm -rf /important" in elements[0]["content"]
+        assert "dangerous deletion" in elements[0]["content"]
 
         # Check buttons
-        actions = card["elements"][1]["actions"]
+        assert elements[1] == {"tag": "hr"}
+        actions = elements[2:]
         assert len(actions) == 4
         action_names = [a["value"]["hermes_action"] for a in actions]
         assert action_names == [
             "approve_once", "approve_session", "approve_always", "deny"
         ]
+        assert "footer" not in card
+        assert "action" not in {element.get("tag") for element in elements}
 
     @pytest.mark.asyncio
     async def test_stores_approval_state(self):
@@ -180,7 +185,7 @@ class TestFeishuExecApproval:
             )
 
         card = json.loads(mock_send.call_args[1]["payload"])
-        content = card["elements"][0]["content"]
+        content = card["body"]["elements"][0]["content"]
         assert "..." in content
         assert len(content) < 5000
 
@@ -244,11 +249,16 @@ class TestFeishuUpdatePrompt:
         assert kwargs["metadata"] == {"thread_id": "th_1"}
 
         card = json.loads(kwargs["payload"])
-        assert card["header"]["template"] == "orange"
-        assert "Restore stashed changes after update?" in card["elements"][0]["content"]
-        assert "Default: `y`" in card["elements"][0]["content"]
-        actions = card["elements"][1]["actions"]
+        assert card["schema"] == "2.0"
+        elements = card["body"]["elements"]
+        assert "header" not in card
+        assert "Restore stashed changes after update?" in elements[0]["content"]
+        assert "Default: `y`" in elements[0]["content"]
+        assert elements[1] == {"tag": "hr"}
+        actions = elements[2:]
         assert [a["value"]["hermes_update_prompt_action"] for a in actions] == ["y", "n"]
+        assert "footer" not in card
+        assert "action" not in {element.get("tag") for element in elements}
 
     @pytest.mark.asyncio
     async def test_stores_prompt_state(self):
@@ -498,9 +508,10 @@ class TestCardActionCallbackResponse:
         assert response.card is not None
         assert response.card.type == "raw"
         card = response.card.data
-        assert card["header"]["template"] == "green"
+        assert card["schema"] == "2.0"
+        assert card["header"]["template"] == "indigo"
         assert "Approved once" in card["header"]["title"]["content"]
-        assert "Bob" in card["elements"][0]["content"]
+        assert "Bob" in card["body"]["elements"][0]["content"]
 
     def test_returns_card_for_deny_action(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -521,7 +532,8 @@ class TestCardActionCallbackResponse:
 
         assert response.card is not None
         card = response.card.data
-        assert card["header"]["template"] == "red"
+        assert card["schema"] == "2.0"
+        assert card["header"]["template"] == "orange"
         assert "Denied" in card["header"]["title"]["content"]
 
     def test_ignores_missing_approval_id(self, _patch_callback_card_types):
@@ -568,7 +580,7 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         card = response.card.data
-        assert "ou_unknown" in card["elements"][0]["content"]
+        assert "ou_unknown" in card["body"]["elements"][0]["content"]
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -590,8 +602,8 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         card = response.card.data
-        assert "Old Name" not in card["elements"][0]["content"]
-        assert "ou_expired" in card["elements"][0]["content"]
+        assert "Old Name" not in card["body"]["elements"][0]["content"]
+        assert "ou_expired" in card["body"]["elements"][0]["content"]
 
     def test_rejects_approval_click_from_unauthorized_user(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -660,9 +672,10 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is not None
         card = response.card.data
-        assert card["header"]["template"] == "green"
+        assert card["schema"] == "2.0"
+        assert card["header"]["template"] == "indigo"
         assert "answered: Yes" in card["header"]["title"]["content"]
-        assert "Bob" in card["elements"][0]["content"]
+        assert "Bob" in card["body"]["elements"][0]["content"]
 
     def test_returns_card_for_update_prompt_no(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -684,7 +697,8 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is not None
         card = response.card.data
-        assert card["header"]["template"] == "red"
+        assert card["schema"] == "2.0"
+        assert card["header"]["template"] == "orange"
         assert "answered: No" in card["header"]["title"]["content"]
 
     def test_ignores_missing_update_prompt_id(self, _patch_callback_card_types):

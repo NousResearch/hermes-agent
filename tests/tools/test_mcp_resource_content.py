@@ -70,7 +70,9 @@ class TestRenderResourceBlock:
         )
         out = _render_mcp_resource_block(link, "slack")
         assert "slack://files/F123" in out
-        assert "slack_read_resource" in out
+        # Must be the real wire name (mcp__<server>__read_resource), not a
+        # made-up "<server>_read_resource" the agent can't actually call.
+        assert "mcp__slack__read_resource" in out
         assert "report.pdf" in out
 
     def test_oversized_blob_fails_explicitly_without_writing(self, doc_cache, monkeypatch):
@@ -208,3 +210,72 @@ class TestToolResultLoopOrdering:
             mimeType="application/pdf",
         )
         assert _cache_mcp_image_block(block) == ""
+
+
+class TestErrorPathResourceText:
+    """isError payloads must surface EmbeddedResource text, not drop it."""
+
+    @pytest.fixture()
+    def _handler(self, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
+
+        from tools import mcp_tool
+
+        fake_session = MagicMock()
+        fake_server = SimpleNamespace(session=fake_session, _rpc_lock=None)
+
+        def _fake_run_on_mcp_loop(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            loop = asyncio.new_event_loop()
+            try:
+                async def _install_lock_and_run():
+                    for srv in list(mcp_tool._servers.values()):
+                        if getattr(srv, "_rpc_lock", None) is None:
+                            srv._rpc_lock = asyncio.Lock()
+                    return await coro
+
+                return loop.run_until_complete(_install_lock_and_run())
+            finally:
+                loop.close()
+
+        with mock_patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
+             mock_patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
+            fake_session.call_tool = AsyncMock()
+            yield fake_session, mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+
+    def test_error_embedded_resource_text_surfaced(self, _handler):
+        from unittest.mock import AsyncMock
+
+        session, handler = _handler
+        res = SimpleNamespace(uri="mem://err", mimeType="text/plain",
+                              text="quota exceeded for workspace W1", blob=None)
+        session.call_tool = AsyncMock(return_value=SimpleNamespace(
+            content=[_embedded(res)], isError=True, structuredContent=None,
+        ))
+        data = json.loads(handler({}))
+        assert "quota exceeded for workspace W1" in data["error"]
+
+    def test_error_mixed_text_and_resource(self, _handler):
+        from unittest.mock import AsyncMock
+
+        session, handler = _handler
+        res = SimpleNamespace(uri="mem://err", mimeType="text/plain",
+                              text=" — details in resource", blob=None)
+        session.call_tool = AsyncMock(return_value=SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="tool failed"), _embedded(res)],
+            isError=True, structuredContent=None,
+        ))
+        data = json.loads(handler({}))
+        assert "tool failed" in data["error"]
+        assert "details in resource" in data["error"]
+
+    def test_error_with_no_text_blocks_falls_back(self, _handler):
+        from unittest.mock import AsyncMock
+
+        session, handler = _handler
+        session.call_tool = AsyncMock(return_value=SimpleNamespace(
+            content=[], isError=True, structuredContent=None,
+        ))
+        data = json.loads(handler({}))
+        assert data["error"] == "MCP tool returned an error"

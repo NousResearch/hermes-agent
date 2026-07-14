@@ -70,7 +70,7 @@ def _write_manifest(catalog_dir: Path, name: str, body: dict) -> Path:
     entry_dir = catalog_dir / name
     entry_dir.mkdir(exist_ok=True)
     path = entry_dir / "manifest.yaml"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(body, f)
     return path
 
@@ -165,6 +165,36 @@ class TestManifestParsing:
         assert e.install.url == "https://example.com/demo.git"
         assert e.install.ref == "v1.0.0"
         assert e.install.bootstrap == ["pip install -r requirements.txt"]
+
+    def test_auth_env_file_var_parsed(self, catalog_dir):
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env_file_var": "N8N_MCP_ENV",
+                "env": [{"name": "N8N_API_KEY", "prompt": "key", "secret": True}],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.auth.env_file_var == "N8N_MCP_ENV"
+
+    def test_auth_env_file_var_defaults_none(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog()[0].auth.env_file_var is None
+
+    def test_auth_env_file_var_invalid_name_rejected(self, catalog_dir):
+        body = _basic_manifest(
+            auth={"type": "api_key", "env_file_var": "not a valid name"}
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        # Malformed env_file_var => manifest silently skipped (CI contract).
+        assert list_catalog() == []
 
     def test_invalid_manifest_skipped(self, catalog_dir):
         # Broken: wrong manifest_version
@@ -290,6 +320,100 @@ class TestInstall:
 
         assert get_env_value("DEMO_KEY") == "secret-val"
         assert "demo" in load_config()["mcp_servers"]
+
+    def test_install_writes_env_file_pointer(
+        self, catalog_dir, monkeypatch, _isolate_hermes_home
+    ):
+        """A manifest naming auth.env_file_var makes the installer write an
+        `env` block pointing that var at HERMES_HOME/.env, so a bridge that
+        reads its credentials from a file (e.g. n8n) can see them."""
+        hh = _isolate_hermes_home
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env_file_var": "N8N_MCP_ENV",
+                "env": [
+                    {"name": "N8N_BASE_URL", "prompt": "url", "secret": False},
+                    {"name": "N8N_API_KEY", "prompt": "key", "secret": True},
+                ],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "x")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        # The pointer is resolved to the absolute, profile-aware .env path —
+        # not a literal placeholder or a hardcoded ~/.hermes path.
+        assert server["env"] == {"N8N_MCP_ENV": str(hh / ".env")}
+
+    def test_install_with_env_file_var_persists_process_env_values(
+        self, catalog_dir, monkeypatch, _isolate_hermes_home
+    ):
+        """If credentials already exist only in os.environ, persist them to
+        HERMES_HOME/.env before pointing the bridge at that file."""
+        hh = _isolate_hermes_home
+        monkeypatch.setenv("DEMO_ENV_ONLY_URL", "http://env-only.example")
+        monkeypatch.setenv("DEMO_ENV_ONLY_KEY", "env-only-secret")
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env_file_var": "DEMO_MCP_ENV",
+                "env": [
+                    {"name": "DEMO_ENV_ONLY_URL", "prompt": "url", "secret": False},
+                    {"name": "DEMO_ENV_ONLY_KEY", "prompt": "key", "secret": True},
+                ],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        def _unexpected_prompt(*args, **kwargs):
+            raise AssertionError("existing process env values should not prompt")
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", _unexpected_prompt)
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["env"] == {"DEMO_MCP_ENV": str(hh / ".env")}
+        env_text = (hh / ".env").read_text()
+        assert "DEMO_ENV_ONLY_URL=http://env-only.example\n" in env_text
+        assert "DEMO_ENV_ONLY_KEY=env-only-secret\n" in env_text
+
+    def test_install_without_env_file_var_writes_no_env_block(self, catalog_dir):
+        """Servers that don't declare auth.env_file_var keep the previous
+        behavior: no `env` block is written (regression guard)."""
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "secret": True}],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        # _prompt_input is patched so the required api_key prompt resolves.
+        import unittest.mock as _mock
+        with _mock.patch.object(mcp_catalog, "_prompt_input", lambda *a, **kw: "x"):
+            from hermes_cli.mcp_catalog import install_entry
+            from hermes_cli.config import load_config
+
+            install_entry(_entry("demo"), enable=True)
+            server = load_config()["mcp_servers"]["demo"]
+            assert "env" not in server
 
     def test_install_http_oauth_writes_auth_marker(self, catalog_dir):
         body = _basic_manifest(

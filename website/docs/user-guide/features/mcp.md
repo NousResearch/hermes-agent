@@ -77,6 +77,11 @@ Catalog entries can require:
 
 - **API key** — Hermes prompts at install time and writes the value to
   `~/.hermes/.env`. Non-secret values (base URLs) go to the same file.
+- **API key with an env-file pointer** — stdio bridges that read credentials
+  from a file can declare `auth.env_file_var`; Hermes writes that env var into
+  the generated server config and points it at the active profile's `.env`
+  file. This keeps subprocess environments allowlisted while still letting the
+  bridge load the credentials Hermes collected.
 - **OAuth** (remote MCP) — written as `auth: oauth` in your config; the MCP
   client opens a browser on first connection.
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at

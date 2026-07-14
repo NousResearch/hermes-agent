@@ -7380,6 +7380,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
+        # Plugin hook: on_session_pre_switch — fires before session rotation.
+        try:
+            from hermes_cli.plugins import invoke_hook as _pre_switch
+            _pre_switch(
+                "on_session_pre_switch",
+                old_session_id=old_session_id,
+                cli=self,
+            )
+        except Exception:
+            pass
         _boundary_snapshot = None
         if self.agent and self.conversation_history:
             # Deliver the context-engine boundary synchronously and get back
@@ -7506,6 +7516,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
+
+            # Plugin hook: on_session_post_switch — fires after session rotation completes.
+            try:
+                from hermes_cli.plugins import invoke_hook as _post_switch
+                _post_switch(
+                    "on_session_post_switch",
+                    old_session_id=old_session_id,
+                    new_session_id=self.session_id,
+                    cli=self,
+                )
+            except Exception:
+                pass
 
             if self._session_db:
                 try:

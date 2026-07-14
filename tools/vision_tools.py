@@ -1227,6 +1227,7 @@ async def vision_analyze_tool(
         # Local vision models (llama.cpp, ollama) can take well over 30s.
         vision_timeout = 120.0
         vision_temperature = 0.1
+        vision_hard_timeout = None
         try:
             from hermes_cli.config import cfg_get, load_config
             _cfg = load_config()
@@ -1237,8 +1238,13 @@ async def vision_analyze_tool(
             _vtemp = _vision_cfg.get("temperature")
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
+            _vht = _vision_cfg.get("hard_timeout")
+            if _vht is not None:
+                vision_hard_timeout = float(_vht)
         except Exception:
             pass
+        if vision_hard_timeout is None or vision_hard_timeout <= 0:
+            vision_hard_timeout = vision_timeout + 60.0
         call_kwargs = {
             "task": "vision",
             "messages": messages,
@@ -1248,9 +1254,16 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
+
+        import asyncio
+
+        async def _bounded_vision_call():
+            return await asyncio.wait_for(
+                async_call_llm(**call_kwargs), timeout=vision_hard_timeout)
+
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
-            response = await async_call_llm(**call_kwargs)
+            response = await _bounded_vision_call()
         except Exception as _api_err:
             if (_is_image_size_error(_api_err)
                     and len(image_data_url) > _RESIZE_TARGET_BYTES):
@@ -1264,17 +1277,17 @@ async def vision_analyze_tool(
                     _resize_image_for_vision,
                     temp_image_path, mime_type=detected_mime_type)
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
-                response = await async_call_llm(**call_kwargs)
+                response = await _bounded_vision_call()
             else:
                 raise
-        
+
         # Extract the analysis — fall back to reasoning if content is empty
         analysis = extract_content_or_reasoning(response)
 
         # Retry once on empty content (reasoning-only response)
         if not analysis:
             logger.warning("Vision LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            response = await _bounded_vision_call()
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)
@@ -1299,11 +1312,17 @@ async def vision_analyze_tool(
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
-        
+
         # Detect vision capability errors — give the model a clear message
         # so it can inform the user instead of a cryptic API error.
         err_str = str(e).lower()
-        if any(hint in err_str for hint in (
+        if isinstance(e, TimeoutError):
+            analysis = (
+                "I couldn't analyze the image in time — the vision provider is "
+                "taking too long, which usually means it's temporarily "
+                "overloaded. Please try again in a moment."
+            )
+        elif any(hint in err_str for hint in (
             "402", "insufficient", "payment required", "credits", "billing",
         )):
             analysis = (

@@ -39,7 +39,8 @@ def test_required_sections_are_present_in_order():
 
 
 def test_docs_use_profile_safe_state_paths():
-    combined = _text(SKILL) + _text(GUIDE)
+    skill_docs = SKILL.parent.rglob("*.md")
+    combined = "\n".join(_text(path) for path in skill_docs) + _text(GUIDE)
     assert "$HERMES_HOME" in combined
     assert "`~/.hermes" not in combined
 

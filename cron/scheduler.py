@@ -2011,7 +2011,7 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, base_dir: Optional[str] = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2035,8 +2035,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Args:
         script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+            against *base_dir* (when provided) or HERMES_HOME/scripts/
+            as a fallback.  Absolute and ~-prefixed paths are validated
+            to ensure they stay within the scripts dir.
+        base_dir: Optional base directory for resolving relative script
+            paths.  When set and *script_path* is relative, the path is
+            resolved relative to *base_dir* rather than HERMES_HOME/scripts/,
+            so job workdir-relative paths (e.g. ``./scripts/foo.sh``) work
+            as expected (#59599).
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2049,6 +2055,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     raw = Path(script_path).expanduser()
     if raw.is_absolute():
         path = raw.resolve()
+    elif base_dir:
+        path = (Path(base_dir).expanduser().resolve() / raw).resolve()
     else:
         path = (scripts_dir / raw).resolve()
 
@@ -2188,7 +2196,10 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            # Resolve relative script paths against the job's workdir so
+            # workdir-relative paths work (#59599).
+            _job_wd = (job.get("workdir") or "").strip() or None
+            success, script_output = _run_job_script(script_path, base_dir=_job_wd)
         if success:
             if script_output:
                 prompt = (
@@ -2542,7 +2553,7 @@ def run_job(
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, base_dir=_job_workdir)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2689,7 +2700,10 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        # Resolve relative script paths against the job's workdir so
+        # workdir-relative paths (e.g. ./scripts/foo.sh) work (#59599).
+        _prerun_workdir = (job.get("workdir") or "").strip() or None
+        prerun_script = _run_job_script(script_path, base_dir=_prerun_workdir)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

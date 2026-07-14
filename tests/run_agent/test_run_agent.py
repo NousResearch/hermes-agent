@@ -1367,6 +1367,31 @@ class TestOutputVerbosityConfig:
 
         assert kwargs["text"] == {"verbosity": expected}
 
+    def test_direct_openai_gpt5_reaches_responses_request(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"output_verbosity": "low"}},
+            ),
+        ):
+            agent = AIAgent(
+                model="gpt-5.5",
+                provider="openai-api",
+                api_key="test-key-1234567890",
+                base_url="https://api.openai.com/v1",
+                api_mode="codex_responses",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert kwargs["text"] == {"verbosity": "low"}
+
     @pytest.mark.parametrize("configured", ["", None, "extra-short", 42])
     def test_unset_or_invalid_config_preserves_provider_default(self, configured):
         agent = self._make_agent(configured)

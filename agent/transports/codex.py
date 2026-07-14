@@ -121,8 +121,9 @@ class ResponsesApiTransport(ProviderTransport):
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
             github_reasoning_extra: dict | None — Copilot reasoning params
-            output_verbosity: str | None — OpenAI Codex output detail
+            output_verbosity: str | None — OpenAI Responses output detail
                 (low, medium, or high)
+            supports_output_verbosity: bool — resolved GPT-5 OpenAI capability
         """
         from agent.codex_responses_adapter import (
             _chat_messages_to_responses_input,
@@ -302,14 +303,23 @@ class ResponsesApiTransport(ProviderTransport):
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 
-        if is_codex_backend:
-            output_verbosity = str(params.get("output_verbosity") or "").strip().lower()
-            if output_verbosity in {"low", "medium", "high"}:
-                kwargs["text"] = {"verbosity": output_verbosity}
-
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)
+
+        output_verbosity = params.get("output_verbosity")
+        if output_verbosity and params.get("supports_output_verbosity") is True:
+            from agent.output_verbosity import parse_output_verbosity
+
+            verbosity = parse_output_verbosity(output_verbosity)
+            if verbosity:
+                override_text = kwargs.get("text")
+                if override_text is None:
+                    kwargs["text"] = {"verbosity": verbosity}
+                elif isinstance(override_text, dict):
+                    merged_text = dict(override_text)
+                    merged_text.setdefault("verbosity", verbosity)
+                    kwargs["text"] = merged_text
 
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing

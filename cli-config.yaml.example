@@ -741,8 +741,9 @@ agent:
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
 
-  # OpenAI Codex Responses API output detail. Options: "low", "medium", "high".
-  # Empty preserves the provider default. Ignored by non-Codex backends.
+  # OpenAI Responses API output detail for GPT-5 models. Options: "low", "medium", "high".
+  # Empty preserves the provider default. Applied only to Codex OAuth or the exact
+  # api.openai.com host; ignored by xAI, GitHub Models, and custom endpoints.
   output_verbosity: ""
   
   # Predefined personalities (use with /personality command)

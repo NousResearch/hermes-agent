@@ -829,6 +829,13 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             )
         )
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
+        from agent.output_verbosity import supports_openai_output_verbosity
+
+        supports_output_verbosity = supports_openai_output_verbosity(
+            agent.model,
+            base_url_hostname=agent._base_url_hostname,
+            is_codex_backend=is_codex_backend,
+        )
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
         # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
@@ -869,6 +876,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
             output_verbosity=getattr(agent, "output_verbosity", None),
+            supports_output_verbosity=supports_output_verbosity,
             session_id=getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),

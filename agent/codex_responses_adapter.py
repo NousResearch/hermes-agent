@@ -937,16 +937,28 @@ def _preflight_codex_api_kwargs(
 
     text = api_kwargs.get("text")
     if text is not None:
-        if not isinstance(text, dict) or set(text) != {"verbosity"}:
-            raise ValueError(
-                "Codex Responses request 'text' must be an object containing only 'verbosity'."
-            )
-        verbosity = text.get("verbosity")
-        if verbosity not in {"low", "medium", "high"}:
-            raise ValueError(
-                "Codex Responses request 'text.verbosity' must be low, medium, or high."
-            )
-        normalized["text"] = {"verbosity": verbosity}
+        if not isinstance(text, dict):
+            raise ValueError("Codex Responses request 'text' must be an object.")
+        normalized_text: Dict[str, Any] = {}
+        for key, value in text.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("Codex Responses request 'text' keys must be non-empty strings.")
+            normalized_key = key.strip()
+            if normalized_key == "verbosity":
+                if value is None:
+                    continue
+                from agent.output_verbosity import parse_output_verbosity
+
+                verbosity = parse_output_verbosity(value)
+                if verbosity is None:
+                    raise ValueError(
+                        "Codex Responses request 'text.verbosity' must be low, medium, or high."
+                    )
+                normalized_text["verbosity"] = verbosity
+            else:
+                normalized_text[normalized_key] = value
+        if normalized_text:
+            normalized["text"] = normalized_text
 
     # Pass through max_output_tokens and temperature
     max_output_tokens = api_kwargs.get("max_output_tokens")

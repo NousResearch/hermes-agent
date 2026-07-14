@@ -276,9 +276,18 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
+Unconsumed event buffers expire after five minutes so a detached client cannot
+grow memory indefinitely. This expires transport state only: a run that is
+still executing remains visible to status polling, approval, stop control, and
+concurrency accounting until its executor work actually exits. A connected SSE
+subscriber continues draining normally.
+
 ### POST /v1/runs/\{run_id\}/stop
 
 Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.
+The run stays tracked as `stopping` until the executor-backed work exits, then
+settles as `cancelled`; requesting stop never hides a worker that is still
+running.
 
 ### POST /v1/runs/\{run_id\}/approval
 

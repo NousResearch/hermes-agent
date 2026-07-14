@@ -5014,6 +5014,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raw,
                     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
                 )
+
+        # If the service manager passed its own TimeoutStopSec (e.g. systemd),
+        # keep the drain budget well inside it so systemd never SIGKILLs the
+        # cgroup mid-cleanup.  This closes the stale-unit mismatch where a
+        # config change raised drain_timeout above the installed TimeoutStopSec
+        # (#8202).
+        timeout_stop_raw = os.getenv("HERMES_TIMEOUT_STOP_SEC", "").strip()
+        if timeout_stop_raw:
+            try:
+                timeout_stop = float(timeout_stop_raw)
+            except (TypeError, ValueError):
+                timeout_stop = 0.0
+            if timeout_stop > 0:
+                # Reserve the same 30s headroom used when generating the unit.
+                max_drain = max(0.0, timeout_stop - 30.0)
+                if value > max_drain:
+                    logger.warning(
+                        "Configured restart_drain_timeout %.0fs exceeds the "
+                        "service manager's TimeoutStopSec budget (%.0fs); "
+                        "capping drain at %.0fs. Regenerate the service unit "
+                        "('hermes gateway install --force') to raise the limit.",
+                        value,
+                        timeout_stop,
+                        max_drain,
+                    )
+                    value = max_drain
         return value
 
     @staticmethod

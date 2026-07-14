@@ -1982,13 +1982,27 @@ def build_context_files_prompt(
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path, context_length)
-        or _load_agents_md(cwd_path, context_length)
-        or _load_claude_md(cwd_path, context_length)
-        or _load_cursorrules(cwd_path, context_length)
-    )
+    # Never discover project context inside the Hermes install/source tree. A
+    # backend launched from, or self-spawning into, that tree (the desktop app
+    # default) would otherwise load this repo's contributor AGENTS.md as
+    # authoritative project context. resolve_context_cwd() already guards the
+    # configured-path cases; this covers the cwd=None -> os.getcwd() fallback.
+    from agent.runtime_cwd import _is_install_tree
+
+    if _is_install_tree(cwd_path):
+        logger.info(
+            "skipping project-context discovery in the Hermes install tree: %s",
+            cwd_path,
+        )
+        project_context = ""
+    else:
+        # Priority-based project context: first match wins
+        project_context = (
+            _load_hermes_md(cwd_path, context_length)
+            or _load_agents_md(cwd_path, context_length)
+            or _load_claude_md(cwd_path, context_length)
+            or _load_cursorrules(cwd_path, context_length)
+        )
     if project_context:
         sections.append(project_context)
 

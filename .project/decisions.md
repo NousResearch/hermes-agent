@@ -193,3 +193,13 @@ Reason:
 ## DEC-MW-002 · ผู้ตรวจ AI ครบ 2 รอบไม่ผ่าน → เปลี่ยนเป็นเครื่องตรวจ (2026-07-14)
 Decision: ทำ `scripts/mw-spec-check.py` เป็นเครื่องตรวจโครงสร้าง spec แทนผู้ตรวจ AI รอบที่ 3
 Reason: ตรงกติกา relay v2.16 (ผู้ตรวจเดิม+วิธีเดิมได้สูงสุด 2 รอบ) · เครื่องตรวจจับได้ 21 จุดหลวมก่อนผ่าน = พิสูจน์ว่าไม่ใช่พิธีกรรม · ใช้ซ้ำได้ยาวถึง P3-P5
+
+## DEC-MW-003 · grok subscription ใช้ได้จริง — โน้ต "ต้องมี API key" ผิด (2026-07-14)
+- **ปฐมเหตุ:** ในเครื่องมี `grok` 2 ตัว · PATH หยิบ `/opt/homebrew/bin/grok` (v1.0.1 เจ้าอื่น ต้องใช้ API key) มาก่อน ตัวทางการ xAI (0.2.99 · subscription บัญชี synerry tier 5) ที่ `~/.local/bin/grok` → AI สรุปผิดว่า "grok ต้องมี API key = งานคนค้าง"
+- **ของจริง:** ตัว subscription ใช้ headless ได้เลย (`grok -p`) · แค่ export PATH ให้ `~/.local/bin` มาก่อน homebrew · relay coder = grok ใช้ได้ (`AI_RELAY_ALLOW_LOCAL_CLI=1`)
+- **บทเรียน:** ก่อนสรุป "เครื่องมือใช้ไม่ได้/ต้องมี key" ให้ `which -a <tool>` ดูว่ามีหลายตัวไหม + ทดสอบตัวที่ login จริง
+
+## DEC-MW-004 · Use Migrate Web เครื่องมือ 7/7 + §13 ครบ (2026-07-14)
+- เครื่องมือ §10 ครบ 7 ตัว merged main (PR #35 6/7 + PR #36 ตัวที่ 7) · mw suite 252 · §13.1 COMPLETE 32/32 (mw-spec-check ด่าน 6)
+- แนวทางที่ได้ผล: Grok เขียน · GPT-5 (cross-check MCP) ตรวจข้ามค่าย 2 รอบ/ตัว จับ false-positive รวม ~44 จุด · แก้ fail-closed ทุกจุด · เกิน 2 รอบผู้ตรวจ/Grok cap → Opus แก้เอง + เทสต์ตัดสิน
+- P4 install: mw-setup.sh symlink 8 เครื่องมือ + ยิง --help จริง · ค้าง = รัน backend-check กับ RoadSafeFund จริง (ต้องมี backend เจ้าของ)

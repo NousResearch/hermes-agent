@@ -115,7 +115,7 @@
 - โครง 2 ชั้น (แกน Flow กลาง ↔ Project Profile ต่อเว็บ) · ด่านกันข้าม/กันโกหก (ยก G5+menu-gate) · Write Permit ต่อเมนูกันทีมชนกัน · บทบาท AI capability-based · ตาราง compile+ว้าวต่อเฟส · การเรียกใช้ VPS+notebook
 - verify: Codex ตรวจ spec + เจ้าของอนุมัติก่อนเขียนไฟล์จริง
 
-## MW-P3 — เขียนไฟล์จริง · สถานะ: กำลังทำ (เริ่ม 2026-07-14)
+## MW-P3 — เขียนไฟล์จริง · สถานะ: **เสร็จ 2026-07-14 · merged main (PR #35+#36)** — I1 prompt ✅ · I2 เครื่องมือ **7/7** ✅ (Grok เขียน · GPT-5 ตรวจ · mw suite 252) · I3 test-id map + §13.1 COMPLETE 32/32 ✅ · I4 สัญญา §13 ครบ 3/3 ✅
 
 - **MW-P3-I1 เสร็จ 2026-07-14**: prompt `use-migrate-web.md` v1.0 + `use-migrate-web-flow13.md` (เนื้อต้นฉบับ 439 บรรทัดตรง 100% · embedded_sha256 คุมช่วง 31-469 verify ตรง · ตาราง delta 25 + กฎลำดับความสำคัญ + ตารางจับคู่พาธเก่า→ใหม่) + แถวทะเบียน payload registry · **Codex ตรวจ 2 รอบ**: รอบ 1 FIX 6 กลุ่ม→แก้ครบ · รอบ 2 ผ่าน 4/6 เหลือ 2 บรรทัด (รอยจาก shell กลืน backtick)→แก้+verify ด้วย grep/shasum เขียวครบ · บทเรียนจดแล้ว: heredoc ต้อง quote + replace ต้องมี assert
 - **MW-P3-I2 — แผนส่งมอบ (Fable เขียน 2026-07-14 · เจ้าของสลับกลับ Opus ทำต่อตามกติกา relay v2.16)**
@@ -135,11 +135,11 @@
 - **MW-P3-I4** รันสัญญา §13 ครบ 3 ข้อ → ส่งเจ้าของ
 - verify: mw-spec-check PASS + Codex ตรวจ + ด่าน git + สัญญา §13
 
-## MW-P4 — ทดสอบจริงบน RoadSafeFund + ติดตั้ง 2 ทาง (VPS/notebook) · สถานะ: รอ P3
+## MW-P4 — ทดสอบจริงบน RoadSafeFund + ติดตั้ง 2 ทาง (VPS/notebook) · สถานะ: **install เสร็จ (mw-setup.sh + install-shortcuts wiring · 2 เทสต์ · branch feature/mw-p4-install)** · **ค้าง: รันจริงกับ RoadSafeFund backend (ต้องมี API+DB+token เจ้าของ) + ยืนยันติดตั้งบน VPS**
 
 - verify: เดิน flow จริงอย่างน้อย 1 เมนู หลักฐาน tier 3+ + เจ้าของเห็นของจริง
 
-## MW-P5 — ปิดงาน: 1 PR + อัปความจำ · สถานะ: รอ P4
+## MW-P5 — ปิดงาน: 1 PR + อัปความจำ · สถานะ: **PR merged แล้ว (2 PR) · อัป OverviewProgress+plan รอบนี้ · เหลือ Use Close Chat formalize + decisions**
 
 ## งานคน (เจ้าของ)
 

@@ -364,6 +364,14 @@ def build_turn_context(
             f"{'...' if len(_print_preview) > 60 else ''}'"
         )
 
+    pre_model_route = getattr(agent, "_apply_pre_model_route_hook", None)
+    if callable(pre_model_route):
+        pre_model_route(
+            original_user_message,
+            messages,
+            is_first_turn=(not bool(conversation_history)),
+        )
+
     # ── System prompt (cached per session for prefix caching) ──
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)

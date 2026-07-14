@@ -361,6 +361,7 @@ the [Plugins guide](/docs/user-guide/features/plugins).
 def register(ctx):
     ctx.register_hook("pre_tool_call", my_tool_observer)
     ctx.register_hook("post_tool_call", my_tool_logger)
+    ctx.register_hook("pre_model_route", my_model_router)
     ctx.register_hook("pre_llm_call", my_memory_callback)
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
@@ -371,7 +372,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** a tool, [`pre_model_route`](#pre_model_route) can **select the model for the current turn**, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -380,6 +381,7 @@ def register(ctx):
 |------|-----------|---------|
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
+| [`pre_model_route`](#pre_model_route) | Once per turn, before prompt and API assembly | `{"model": str, "provider": str?, "reason": str?}` to route this turn |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
@@ -508,9 +510,74 @@ def register(ctx):
 
 ---
 
+### `pre_model_route`
+
+Fires **once per user turn**, after the previous turn's fallback or routed runtime has been restored and before Hermes assembles the prompt and first inference request. Use it to select a different configured model for the current turn without changing the session's durable primary model.
+
+**Callback signature:**
+
+```python
+def my_router(session_id: str, user_message: str, conversation_history: list,
+              is_first_turn: bool, model: str, provider: str, platform: str,
+              **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str \| None` | Current session identifier |
+| `user_message` | `str` | Original user message for this turn |
+| `conversation_history` | `list` | Copy of the assembled message list, including the current user turn |
+| `is_first_turn` | `bool` | Whether this is the first turn of the session |
+| `model` | `str` | Durable model active before routing |
+| `provider` | `str` | Durable provider active before routing |
+| `platform` | `str` | `cli`, `telegram`, `discord`, `slack`, and so on |
+| `sender_id` | `str` | Gateway sender/user ID, or an empty string |
+| `chat_id` | `str` | Gateway chat/channel ID, or an empty string |
+| `chat_name` | `str` | Gateway chat name, or an empty string |
+| `chat_type` | `str` | Gateway chat type, or an empty string |
+| `thread_id` | `str` | Gateway thread/topic ID, or an empty string |
+| `gateway_session_key` | `str` | Gateway cache/session key, or an empty string |
+| `has_images` | `bool` | Whether the assembled messages contain image parts |
+
+**Return value:** Return a route proposal with a non-empty `model`. `provider` and `reason` are optional:
+
+```python
+return {
+    "model": "anthropic/claude-sonnet-4.6",
+    "provider": "openrouter",
+    "reason": "large code-review turn",
+}
+```
+
+Hermes takes the first valid proposal in plugin discovery order. The proposal contains identifiers only, never credentials. Hermes resolves aliases, credentials, base URL, API mode, and provider-specific normalization through the normal model-switch pipeline.
+
+The route is **turn-scoped**. It applies to every inference request and tool-loop iteration in that user turn. Before the next turn, Hermes restores the original provider/model, credential pool, fallback bookkeeping, auxiliary runtime identity, and byte-identical primary system-prompt cache. The route does not rewrite the configured fallback chain or the session's durable billing route.
+
+Invalid return values, an unavailable model/provider, missing credentials, or a callback exception are logged and ignored; the turn continues on the current runtime. Return `None` when no route is needed. All callbacks should accept `**kwargs` for forward compatibility.
+
+**Example — route code reviews only:**
+
+```python
+def route_code_reviews(user_message, has_images=False, **kwargs):
+    text = user_message.lower()
+    if "review" not in text and "pull request" not in text:
+        return None
+    return {
+        "model": "anthropic/claude-sonnet-4.6",
+        "provider": "openrouter",
+        "reason": "code review",
+    }
+
+
+def register(ctx):
+    ctx.register_hook("pre_model_route", route_code_reviews)
+```
+
+---
+
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. Its return value can inject context into the current turn's user message.
 
 **Callback signature:**
 

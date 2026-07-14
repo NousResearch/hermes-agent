@@ -599,12 +599,27 @@ class AIAgent:
             return
         source = _session_source_for_agent(self.platform)
         try:
+            route_state = getattr(self, "_pre_model_route_restore_state", None)
+            route_primary = (
+                route_state.get("primary_runtime", {})
+                if isinstance(route_state, dict)
+                else {}
+            )
+            session_model = route_primary.get("model") or self.model
+            session_system_prompt = (
+                route_state.get("cached_system_prompt")
+                if isinstance(route_state, dict)
+                and route_state.get("cached_system_prompt") is not None
+                else self._cached_system_prompt
+            )
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
-                model=self.model,
+                # A first-turn pre_model_route is ephemeral; the durable
+                # session row still belongs to the configured primary model.
+                model=session_model,
                 model_config=self._session_init_model_config,
-                system_prompt=self._cached_system_prompt,
+                system_prompt=session_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
@@ -793,10 +808,224 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(
+        self,
+        new_model,
+        new_provider,
+        api_key='',
+        base_url='',
+        api_mode='',
+        *,
+        prune_fallback_chain=True,
+    ):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(
+            self,
+            new_model,
+            new_provider,
+            api_key,
+            base_url,
+            api_mode,
+            prune_fallback_chain=prune_fallback_chain,
+        )
+
+    def _activate_pre_model_route(
+        self,
+        *,
+        new_model: str,
+        new_provider: str,
+        api_key: str,
+        base_url: str,
+        api_mode: str,
+    ) -> None:
+        """Activate a model route for one turn without replacing the primary.
+
+        ``switch_model()`` is intentionally persistent for explicit ``/model``
+        commands. A route hook needs the opposite contract: use the resolved
+        runtime now, but keep the primary runtime, prompt cache, credential
+        pool, and fallback bookkeeping ready for the next turn.
+        """
+        if getattr(self, "_pre_model_route_restore_state", None):
+            raise RuntimeError("previous pre_model_route runtime was not restored")
+
+        restore_state = {
+            "primary_runtime": dict(getattr(self, "_primary_runtime", {}) or {}),
+            "cached_system_prompt": getattr(self, "_cached_system_prompt", None),
+            "credential_pool": getattr(self, "_credential_pool", None),
+            "config_context_length": getattr(self, "_config_context_length", None),
+            "fallback_chain": list(getattr(self, "_fallback_chain", []) or []),
+            "fallback_model": getattr(self, "_fallback_model", None),
+            "fallback_activated": getattr(self, "_fallback_activated", False),
+            "fallback_index": getattr(self, "_fallback_index", 0),
+            "rate_limited_until": getattr(self, "_rate_limited_until", 0),
+        }
+
+        self._pre_model_route_restore_state = restore_state
+        try:
+            from agent.agent_runtime_helpers import activate_model_runtime
+
+            activate_model_runtime(
+                self,
+                new_model=new_model,
+                new_provider=new_provider,
+                api_key=api_key,
+                base_url=base_url,
+                api_mode=api_mode,
+                update_primary_runtime=False,
+                prune_fallback_chain=False,
+                persist_billing_route=False,
+            )
+        except Exception:
+            # switch_model rolls back client-build failures itself. For a later
+            # failure (for example context metadata refresh), reuse the same
+            # turn-boundary restore path so the agent cannot remain half-routed.
+            self._primary_runtime = restore_state["primary_runtime"]
+            self._restore_primary_runtime()
+            raise
+
+        # The route-specific activation leaves the durable primary snapshot
+        # untouched while the resolved runtime remains live for this turn.
+
+    def _apply_pre_model_route_hook(
+        self,
+        user_message: str,
+        conversation_history: list,
+        is_first_turn: bool,
+    ) -> None:
+        """Allow plugins to route the current turn before prompt/API assembly.
+
+        The hook returns a route proposal, not credentials. Credentials,
+        base_url, api_mode, aliases, and provider-specific normalization stay
+        inside Hermes's existing model-switch pipeline.
+        """
+        self._pre_model_route_switched_this_turn = False
+        try:
+            from hermes_cli.plugins import (
+                discover_plugins as _discover_plugins,
+                invoke_hook as _invoke_hook,
+            )
+            _discover_plugins()
+            content_has_image_parts = getattr(self, "_content_has_image_parts", None)
+            has_images = False
+            if callable(content_has_image_parts):
+                has_images = any(
+                    isinstance(message, dict)
+                    and content_has_image_parts(message.get("content"))
+                    for message in (conversation_history or [])
+                )
+            route_results = _invoke_hook(
+                "pre_model_route",
+                session_id=getattr(self, "session_id", None),
+                user_message=user_message,
+                conversation_history=list(conversation_history or []),
+                is_first_turn=is_first_turn,
+                model=getattr(self, "model", "") or "",
+                provider=getattr(self, "provider", "") or "",
+                platform=getattr(self, "platform", None) or "",
+                sender_id=getattr(self, "_user_id", None) or "",
+                chat_id=getattr(self, "_chat_id", None) or "",
+                chat_name=getattr(self, "_chat_name", None) or "",
+                chat_type=getattr(self, "_chat_type", None) or "",
+                thread_id=getattr(self, "_thread_id", None) or "",
+                gateway_session_key=getattr(self, "_gateway_session_key", None) or "",
+                has_images=has_images,
+            )
+        except Exception as exc:
+            logger.warning("pre_model_route hook failed: %s", exc)
+            return
+
+        route = None
+        requested_model = ""
+        requested_provider = ""
+        route_reason = ""
+        for candidate in route_results or []:
+            if not isinstance(candidate, dict):
+                continue
+            requested_model = str(
+                candidate.get("model") or candidate.get("new_model") or ""
+            ).strip()
+            if not requested_model:
+                logger.warning("pre_model_route result ignored: missing model")
+                continue
+            route = candidate
+            requested_provider = str(
+                route.get("provider") or route.get("target_provider") or ""
+            ).strip()
+            route_reason = str(route.get("reason") or "").strip()
+            break
+        if not route:
+            return
+
+        current_provider = (getattr(self, "provider", "") or "").strip()
+        effective_provider = requested_provider or current_provider
+        if (
+            requested_model == (getattr(self, "model", "") or "")
+            and effective_provider == current_provider
+        ):
+            return
+
+        try:
+            from hermes_cli.config import (
+                get_compatible_custom_providers,
+                load_config,
+            )
+            from hermes_cli.model_switch import switch_model as _switch_model
+
+            config = load_config()
+            if not isinstance(config, dict):
+                config = {}
+            user_providers = config.get("providers", {})
+            custom_providers = get_compatible_custom_providers(config)
+            result = _switch_model(
+                raw_input=requested_model,
+                current_provider=getattr(self, "provider", "") or "",
+                current_model=getattr(self, "model", "") or "",
+                current_base_url=getattr(self, "base_url", "") or "",
+                current_api_key=getattr(self, "api_key", "") or "",
+                is_global=False,
+                explicit_provider=requested_provider,
+                user_providers=user_providers,
+                custom_providers=custom_providers,
+            )
+            if not result.success:
+                logger.warning(
+                    "pre_model_route result ignored: %s",
+                    result.error_message or "model switch failed",
+                )
+                return
+
+            old_model = getattr(self, "model", "") or ""
+            old_provider = getattr(self, "provider", "") or ""
+            self._activate_pre_model_route(
+                new_model=result.new_model,
+                new_provider=result.target_provider,
+                api_key=result.api_key,
+                base_url=result.base_url,
+                api_mode=result.api_mode,
+            )
+            self._pre_model_route_switched_this_turn = True
+            try:
+                from agent.auxiliary_client import set_runtime_main
+                set_runtime_main(
+                    getattr(self, "provider", "") or "",
+                    getattr(self, "model", "") or "",
+                    base_url=getattr(self, "base_url", "") or "",
+                    api_key=getattr(self, "api_key", "") or "",
+                    api_mode=getattr(self, "api_mode", "") or "",
+                )
+            except Exception:
+                logger.debug("pre_model_route runtime-main refresh skipped", exc_info=True)
+            logger.info(
+                "pre_model_route switched model for this turn: %s (%s) -> %s (%s)%s",
+                old_model,
+                old_provider,
+                self.model,
+                self.provider,
+                f" reason={route_reason!r}" if route_reason else "",
+            )
+        except Exception as exc:
+            logger.warning("pre_model_route switch failed: %s", exc)
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.

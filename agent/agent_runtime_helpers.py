@@ -1145,8 +1145,17 @@ def restore_primary_runtime(agent) -> bool:
 
     The gateway caches agents across messages (``_agent_cache`` in
     ``gateway/run.py``), so this restoration IS needed there too.
+
+    A ``pre_model_route`` activation uses the same turn boundary but stores
+    extra state in ``_pre_model_route_restore_state``. That path restores even
+    when the routed provider entered a cooldown, because the cooldown belongs
+    to the ephemeral route rather than the durable primary.
     """
-    if not agent._fallback_activated:
+    _route_state = getattr(agent, "_pre_model_route_restore_state", None)
+    route_state = _route_state if isinstance(_route_state, dict) else {}
+    restoring_route = bool(route_state)
+
+    if not restoring_route and not agent._fallback_activated:
         # Reset the chain index even when no fallback was activated this
         # turn.  Without this, a turn where _try_activate_fallback() was
         # called but returned False (chain exhausted or provider not
@@ -1157,8 +1166,18 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_index = 0
         return False
 
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+    if (
+        not restoring_route
+        and getattr(agent, "_rate_limited_until", 0) > time.monotonic()
+    ):
         return False  # primary still in rate-limit cooldown, stay on fallback
+
+    if restoring_route:
+        # switch_model() rebinds the pool to the routed provider. Put the
+        # primary pool back before the standard restore path re-selects an
+        # entry, otherwise the provider-mismatch guard correctly refuses it.
+        agent._credential_pool = route_state.get("credential_pool")
+        agent._primary_runtime = dict(route_state["primary_runtime"])
 
     rt = agent._primary_runtime
     try:
@@ -1319,6 +1338,37 @@ def restore_primary_runtime(agent) -> bool:
         # byte-identical to the stored copy again (prefix cache match).
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+
+        if restoring_route:
+            # Preserve the byte-identical primary prompt cache rather than
+            # rewriting the routed prompt and accepting a cache miss. On a
+            # first-turn route this value is None, so build_turn_context()
+            # creates the primary prompt normally on the next turn.
+            agent._cached_system_prompt = route_state.get("cached_system_prompt")
+            agent._config_context_length = route_state.get("config_context_length")
+            agent._fallback_chain = list(route_state.get("fallback_chain") or [])
+            agent._fallback_model = route_state.get("fallback_model")
+            agent._fallback_activated = bool(
+                route_state.get("fallback_activated", False)
+            )
+            agent._fallback_index = int(route_state.get("fallback_index", 0) or 0)
+            agent._rate_limited_until = route_state.get("rate_limited_until", 0)
+            agent._pre_model_route_restore_state = None
+            try:
+                from agent.auxiliary_client import set_runtime_main
+
+                set_runtime_main(
+                    agent.provider,
+                    agent.model,
+                    base_url=agent.base_url,
+                    api_key=getattr(agent, "api_key", ""),
+                    api_mode=getattr(agent, "api_mode", ""),
+                )
+            except Exception:
+                logger.debug(
+                    "pre_model_route runtime-main restore skipped",
+                    exc_info=True,
+                )
 
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",
@@ -1769,19 +1819,36 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
-    """Switch the model/provider in-place for a live agent.
+def activate_model_runtime(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    *,
+    update_primary_runtime,
+    prune_fallback_chain=True,
+    persist_billing_route=True,
+):
+    """Activate a resolved model/provider runtime in-place.
 
-    Called by the /model command handlers (CLI and gateway) after
-    ``model_switch.switch_model()`` has resolved credentials and
-    validated the model.  This method performs the actual runtime
-    swap: rebuilding clients, updating caching flags, and refreshing
-    the context compressor.
+    This is the shared runtime-swap primitive used by both persistent
+    ``/model`` changes and turn-scoped plugin routes after credentials and
+    provider details have been resolved. Callers must choose explicitly
+    whether the live route replaces ``_primary_runtime``.
 
     The implementation mirrors ``_try_activate_fallback()`` for the
-    client-swap logic but also updates ``_primary_runtime`` so the
-    change persists across turns (unlike fallback which is
-    turn-scoped).
+    client-swap logic. Persistent callers may also replace
+    ``_primary_runtime``; turn-scoped callers leave that snapshot untouched.
+
+    ``update_primary_runtime`` and ``prune_fallback_chain`` stay enabled for
+    explicit user switches. Plugin route hooks disable both so per-turn
+    routing cannot replace the primary or rewrite configured fallbacks.
+
+    ``persist_billing_route`` is disabled by turn-scoped routing. The routed
+    provider is used for one turn only and must not replace the session's
+    durable primary billing route.
     """
     from hermes_cli.providers import determine_api_mode
 
@@ -2076,31 +2143,32 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
 
-    # ── Update _primary_runtime so the change persists across turns ──
-    _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
-    agent._primary_runtime = {
-        "model": agent.model,
-        "provider": agent.provider,
-        "base_url": agent.base_url,
-        "api_mode": agent.api_mode,
-        "api_key": getattr(agent, "api_key", ""),
-        "client_kwargs": dict(agent._client_kwargs),
-        "use_prompt_caching": agent._use_prompt_caching,
-        "use_native_cache_layout": agent._use_native_cache_layout,
-        "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
-        "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
-        "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
-        "compressor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
-        "compressor_context_length": _cc.context_length if _cc else 0,
-        "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
-        "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
-    }
-    if api_mode == "anthropic_messages":
-        agent._primary_runtime.update({
-            "anthropic_api_key": agent._anthropic_api_key,
-            "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
-        })
+    # ── Update _primary_runtime only for persistent user switches ──
+    if update_primary_runtime:
+        _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
+        agent._primary_runtime = {
+            "model": agent.model,
+            "provider": agent.provider,
+            "base_url": agent.base_url,
+            "api_mode": agent.api_mode,
+            "api_key": getattr(agent, "api_key", ""),
+            "client_kwargs": dict(agent._client_kwargs),
+            "use_prompt_caching": agent._use_prompt_caching,
+            "use_native_cache_layout": agent._use_native_cache_layout,
+            "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
+            "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
+            "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
+            "compressor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
+            "compressor_context_length": _cc.context_length if _cc else 0,
+            "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
+            "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+        }
+        if api_mode == "anthropic_messages":
+            agent._primary_runtime.update({
+                "anthropic_api_key": agent._anthropic_api_key,
+                "anthropic_base_url": agent._anthropic_base_url,
+                "is_anthropic_oauth": agent._is_anthropic_oauth,
+            })
 
     # ── Reset fallback state ──
     agent._fallback_activated = False
@@ -2116,7 +2184,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
+    if prune_fallback_chain and old_norm and new_norm and old_norm != new_norm:
         fallback_chain = [
             entry for entry in fallback_chain
             if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
@@ -2137,7 +2205,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # See #48248 for the full bug description.
     _session_db = getattr(agent, "_session_db", None)
     _session_id = getattr(agent, "session_id", None)
-    if _session_db is not None and _session_id:
+    if persist_billing_route and _session_db is not None and _session_id:
         try:
             _session_db.update_session_billing_route(
                 _session_id,
@@ -2150,6 +2218,35 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "Failed to persist billing route after model switch",
                 exc_info=True,
             )
+
+
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    *,
+    prune_fallback_chain=True,
+):
+    """Persistently switch the live agent's primary model/provider.
+
+    Called by explicit CLI and gateway ``/model`` commands. Turn-scoped plugin
+    routing must call ``activate_model_runtime`` directly with
+    ``update_primary_runtime=False`` instead.
+    """
+    return activate_model_runtime(
+        agent,
+        new_model,
+        new_provider,
+        api_key,
+        base_url,
+        api_mode,
+        update_primary_runtime=True,
+        prune_fallback_chain=prune_fallback_chain,
+        persist_billing_route=True,
+    )
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,

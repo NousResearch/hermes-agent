@@ -276,6 +276,69 @@ def test_pass_loop_state_helpers_persist_snapshot_and_event(kanban_home, tmp_pat
     assert any(e.kind == "pass_loop_state_updated" for e in events)
 
 
+def test_pass_loop_state_direct_db_path_uses_current_run_and_connection_board(
+    kanban_home,
+    tmp_path,
+    monkeypatch,
+):
+    board = "fleet-infra"
+    audit = tmp_path / "pass-loop-direct-board.jsonl"
+    audit.write_text('{"action":"halted_pass_loop"}\n', encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    kb.init_db(board=board)
+    db_path = kb.kanban_db_path(board)
+
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="direct db pass loop", assignee="alice")
+        claimed = kb.claim_task(conn, tid, claimer="worker")
+        assert claimed is not None
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        run_id = task.current_run_id
+        assert run_id is not None
+
+        kb.write_pass_loop_state(
+            conn,
+            tid,
+            {
+                "status": "halted",
+                "count": 2,
+                "threshold": 2,
+                "reason_code": kb.PASS_LOOP_REASON_CODE,
+                "evidence": {
+                    "signal_path": "review_approval_comment_then_completion_block_event",
+                    "evidence_refs": {
+                        "task_comment_ids": [11],
+                        "task_event_ids": [22],
+                    },
+                    "audit_refs": [{"kind": "file", "path": str(audit)}],
+                },
+            },
+        )
+        events = kb.list_events(conn, tid)
+
+    updated = [e for e in events if e.kind == "pass_loop_state_updated"][-1]
+    threshold = [e for e in events if e.kind == "pass_loop_threshold_crossed"][-1]
+    signal = [e for e in events if e.kind == "pass_loop_signal_selected"][-1]
+
+    updated_payload = updated.payload or {}
+    threshold_payload = threshold.payload or {}
+    signal_payload = signal.payload or {}
+
+    for event, payload in ((updated, updated_payload), (threshold, threshold_payload), (signal, signal_payload)):
+        assert event.run_id == run_id
+        assert payload["correlation"]["board"] == board
+        assert payload["correlation"]["task_id"] == tid
+        assert payload["correlation"]["run_id"] == run_id
+        assert payload["persistence_ref"]["board"] == board
+        assert payload["persistence_ref"]["task_id"] == tid
+
+    assert updated_payload["evidence_capture_refs"]["audit_ref"]["path"] == str(audit)
+    assert threshold_payload["reason_code"] == kb.PASS_LOOP_REASON_CODE
+    assert signal_payload["signal_path"] == "review_approval_comment_then_completion_block_event"
+
+
+
 def test_pass_loop_state_refreshes_after_block_and_unblock(kanban_home, tmp_path):
     audit = tmp_path / "pass-loop-refresh.jsonl"
     audit.write_text('{"action":"would_halt_pass_loop"}\n', encoding="utf-8")

@@ -187,6 +187,16 @@ def test_review_required_pass_loop_second_identical_cycle_halts_without_triage(
         assert loop_events
         payload = loop_events[-1].payload or {}
         assert payload.get("pass_loop", {}).get("status") == "halted"
+        threshold_events = [e for e in kb.list_events(conn, tid) if e.kind == "pass_loop_threshold_crossed"]
+        signal_events = [e for e in kb.list_events(conn, tid) if e.kind == "pass_loop_signal_selected"]
+        assert threshold_events
+        assert signal_events
+        threshold_payload = threshold_events[-1].payload or {}
+        signal_payload = signal_events[-1].payload or {}
+        assert threshold_payload["persistence_ref"]["task_id"] == tid
+        assert threshold_payload["correlation"]["task_id"] == tid
+        assert threshold_payload["correlation"]["run_id"] == threshold_events[-1].run_id
+        assert signal_payload["correlation"]["task_id"] == tid
 
 
 def test_review_required_pass_loop_resets_only_after_meaningful_progress(
@@ -235,6 +245,11 @@ def test_review_required_pass_loop_resets_only_after_meaningful_progress(
         assert task.pass_loop_state["fingerprint"]["branch_name"] == "wt/v2"
         assert task.pass_loop_state["resets"]
         assert task.pass_loop_state["resets"][-1]["reason"] == "meaningful_progress_fingerprint_changed"
+        reset_events = [e for e in kb.list_events(conn, tid) if e.kind == "pass_loop_reset"]
+        assert reset_events
+        reset_payload = reset_events[-1].payload or {}
+        assert reset_payload["reset"]["reason"] == "meaningful_progress_fingerprint_changed"
+        assert reset_payload["correlation"]["task_id"] == tid
 
 
 def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:

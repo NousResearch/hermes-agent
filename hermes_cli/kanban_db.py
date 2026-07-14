@@ -868,8 +868,11 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    brand: Optional[str] = None
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
+    workspace_base_ref: Optional[str] = None
+    workspace_base_commit: Optional[str] = None
     result: Optional[str] = None
     delivery_state: Optional[dict[str, Any]] = None
     pass_loop_state: Optional[dict[str, Any]] = None
@@ -977,9 +980,16 @@ class Task:
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
             project_id=row["project_id"] if "project_id" in keys else None,
+            workspace_base_ref=(
+                row["workspace_base_ref"] if "workspace_base_ref" in keys else None
+            ),
+            workspace_base_commit=(
+                row["workspace_base_commit"] if "workspace_base_commit" in keys else None
+            ),
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            brand=row["brand"] if "brand" in keys else None,
             result=row["result"] if "result" in keys else None,
             delivery_state=delivery_state_value,
             pass_loop_state=pass_loop_state_value,
@@ -3511,11 +3521,79 @@ def write_delivery_state(
     return normalized
 
 
+def _connection_board_slug(conn: sqlite3.Connection) -> str:
+    """Infer the authoritative board slug from the live SQLite connection."""
+
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row is None or len(row) < 3 or not row[2]:
+            return get_current_board()
+        db_path = Path(str(row[2])).expanduser().resolve()
+    except Exception:
+        return get_current_board()
+
+    if db_path.name != "kanban.db":
+        return get_current_board()
+    if db_path.parent.parent.name == "boards":
+        return db_path.parent.name
+    return DEFAULT_BOARD
+
+
+def _pass_loop_evidence_capture_refs(evidence: dict[str, Any]) -> dict[str, Any]:
+    capture_refs = evidence.get("evidence_capture_refs")
+    if isinstance(capture_refs, dict) and capture_refs:
+        return dict(capture_refs)
+
+    out: dict[str, Any] = {}
+    audit_ref = evidence.get("audit_ref")
+    if audit_ref is None:
+        audit_refs = evidence.get("audit_refs")
+        if isinstance(audit_refs, list) and audit_refs:
+            audit_ref = audit_refs[0]
+    if audit_ref is not None:
+        out["audit_ref"] = audit_ref
+
+    capture_ref = evidence.get("capture_ref")
+    if capture_ref is not None:
+        out["capture_ref"] = capture_ref
+    return out
+
+
+def _pass_loop_persistence_ref(task_id: str, *, board: str) -> dict[str, Any]:
+    return {
+        "board": board,
+        "table": "tasks",
+        "task_id": task_id,
+        "fields": [
+            "pass_loop_state",
+            "pass_loop_status",
+            "pass_loop_count",
+            "pass_loop_reason_code",
+        ],
+    }
+
+
+def _pass_loop_correlation(
+    task: Task,
+    *,
+    board: str,
+    run_id: Optional[int],
+) -> dict[str, Any]:
+    return {
+        "board": board,
+        "task_id": task.id,
+        "run_id": run_id,
+        "task_status": task.status,
+        "assignee_profile": task.assignee,
+    }
+
+
 def write_pass_loop_state(
     conn: sqlite3.Connection,
     task_id: str,
     state: dict[str, Any],
     *,
+    board: Optional[str] = None,
     run_id: Optional[int] = None,
     emit_event: bool = True,
 ) -> dict[str, Any]:
@@ -3524,7 +3602,35 @@ def write_pass_loop_state(
     task = get_task(conn, task_id)
     if task is None:
         raise ValueError(f"unknown task {task_id}")
+    effective_board = _normalize_board_slug(board) or _connection_board_slug(conn)
+    effective_run_id = run_id if run_id is not None else task.current_run_id
+    previous_state = task.pass_loop_state if isinstance(task.pass_loop_state, dict) else {}
     normalized = _normalize_pass_loop_state(task, state)
+    evidence = normalized.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    evidence_refs = (
+        evidence.get("evidence_refs") if isinstance(evidence.get("evidence_refs"), dict) else {}
+    )
+    evidence_capture_refs = _pass_loop_evidence_capture_refs(evidence)
+    persistence_ref = _pass_loop_persistence_ref(task_id, board=effective_board)
+    correlation = _pass_loop_correlation(
+        task,
+        board=effective_board,
+        run_id=effective_run_id,
+    )
+    threshold = int(normalized.get("threshold") or PASS_LOOP_DEFAULT_THRESHOLD)
+    state_updated_payload = {
+        "status": normalized.get("status"),
+        "count": normalized.get("count"),
+        "threshold": threshold,
+        "reason_code": normalized.get("reason_code"),
+        "block_kind": normalized.get("block_kind"),
+        "evidence_refs": evidence_refs,
+        "evidence_capture_refs": evidence_capture_refs,
+        "persistence_ref": persistence_ref,
+        "correlation": correlation,
+    }
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET pass_loop_state = ?, pass_loop_status = ?, pass_loop_count = ?, pass_loop_reason_code = ? WHERE id = ?",
@@ -3541,15 +3647,64 @@ def write_pass_loop_state(
                 conn,
                 task_id,
                 "pass_loop_state_updated",
-                {
-                    "status": normalized.get("status"),
-                    "count": normalized.get("count"),
-                    "threshold": normalized.get("threshold"),
-                    "reason_code": normalized.get("reason_code"),
-                    "block_kind": normalized.get("block_kind"),
-                },
-                run_id=run_id,
+                state_updated_payload,
+                run_id=effective_run_id,
             )
+            signal_path = evidence.get("signal_path")
+            if signal_path:
+                _append_event(
+                    conn,
+                    task_id,
+                    "pass_loop_signal_selected",
+                    {
+                        "signal_path": signal_path,
+                        "evidence_refs": evidence_refs,
+                        "evidence_capture_refs": evidence_capture_refs,
+                        "persistence_ref": persistence_ref,
+                        "correlation": correlation,
+                    },
+                    run_id=effective_run_id,
+                )
+            previous_count = int(previous_state.get("count") or 0)
+            if int(normalized.get("count") or 0) >= threshold and previous_count < threshold:
+                _append_event(
+                    conn,
+                    task_id,
+                    "pass_loop_threshold_crossed",
+                    {
+                        "status": normalized.get("status"),
+                        "count": normalized.get("count"),
+                        "threshold": threshold,
+                        "reason_code": normalized.get("reason_code"),
+                        "evidence_refs": evidence_refs,
+                        "evidence_capture_refs": evidence_capture_refs,
+                        "persistence_ref": persistence_ref,
+                        "correlation": correlation,
+                    },
+                    run_id=effective_run_id,
+                )
+            previous_resets = previous_state.get("resets")
+            current_resets = normalized.get("resets")
+            if (
+                isinstance(previous_resets, list)
+                and isinstance(current_resets, list)
+                and len(current_resets) > len(previous_resets)
+            ):
+                _append_event(
+                    conn,
+                    task_id,
+                    "pass_loop_reset",
+                    {
+                        "reset": current_resets[-1],
+                        "status": normalized.get("status"),
+                        "count": normalized.get("count"),
+                        "threshold": threshold,
+                        "evidence_refs": evidence_refs,
+                        "persistence_ref": persistence_ref,
+                        "correlation": correlation,
+                    },
+                    run_id=effective_run_id,
+                )
     return normalized
 
 
@@ -3558,6 +3713,7 @@ def patch_task_pass_loop_state(
     task_id: str,
     patch: dict[str, Any],
     *,
+    board: Optional[str] = None,
     run_id: Optional[int] = None,
     emit_event: bool = True,
 ) -> dict[str, Any]:
@@ -3566,7 +3722,14 @@ def patch_task_pass_loop_state(
         raise ValueError(f"unknown task {task_id}")
     base = task.pass_loop_state or {}
     merged = _deep_merge_dicts(base, patch)
-    return write_pass_loop_state(conn, task_id, merged, run_id=run_id, emit_event=emit_event)
+    return write_pass_loop_state(
+        conn,
+        task_id,
+        merged,
+        board=board,
+        run_id=run_id,
+        emit_event=emit_event,
+    )
 
 
 def init_task_delivery_state(

@@ -131,7 +131,11 @@ VALID_HOOKS: Set[str] = {
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
-    "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    "on_skill_lifecycle",
+    # CLI session-switch observers. ``on_session_pre_switch`` fires before any
+    # rotation work; ``on_session_post_switch`` receives both IDs after a successful switch.
+    "on_session_pre_switch", "on_session_post_switch",
+    "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.

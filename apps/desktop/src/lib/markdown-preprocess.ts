@@ -1,4 +1,5 @@
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
+import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
@@ -20,6 +21,9 @@ const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+
+const LOCAL_IMAGE_MARKDOWN_RE =
+  /!\[([^\]\n]*(?:\\.[^\]\n]*)*)\]\(\s*(<file:[^>\n]+>|file:[^\s)\n]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/gi
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
@@ -145,10 +149,22 @@ function normalizeVisibleProse(text: string): string {
       part.startsWith('`')
         ? part
         : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            rewriteLocalImageMarkdown(part)
+              .replace(/`{3,}/g, '')
+              .replace(LOCAL_PREVIEW_URL_RE, '$1')
+              .replace(CITATION_MARKER_RE, '')
           )
     )
     .join('')
+}
+
+function rewriteLocalImageMarkdown(text: string): string {
+  return text.replace(LOCAL_IMAGE_MARKDOWN_RE, (_, alt: string, destination: string) => {
+    const path = destination.startsWith('<') && destination.endsWith('>') ? destination.slice(1, -1) : destination
+    const label = alt || mediaDisplayLabel(path)
+
+    return `[${label}](${mediaMarkdownHref(path)})`
+  })
 }
 
 function extend(out: string[], lines: string[]) {

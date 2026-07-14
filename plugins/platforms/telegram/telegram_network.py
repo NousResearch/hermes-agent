@@ -36,11 +36,27 @@ _DOH_PROVIDERS: list[dict] = [
         "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
         "headers": {"Accept": "application/dns-json"},
     },
+    {
+        "url": "https://dns.quad9.net/dns-query",
+        "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
+        "headers": {"Accept": "application/dns-json"},
+    },
 ]
 
 # Last-resort IPs when DoH is also blocked.  These are stable Telegram Bot API
-# endpoints in the 149.154.160.0/20 block (same seed used by OpenClaw).
-_SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
+# endpoints in the 149.154.160.0/20 block, sampled across multiple subnets to
+# maximise the chance of finding a reachable endpoint when a network-level block
+# affects a subset of the range.
+_SEED_FALLBACK_IPS: list[str] = [
+    "149.154.166.110",   # api.telegram.org canonical
+    "149.154.167.220",   # api.telegram.org alternate
+    "149.154.160.17",    # 149.154.160.0/24
+    "149.154.161.120",   # 149.154.161.0/24
+    "149.154.162.8",     # 149.154.162.0/24
+    "149.154.164.21",    # 149.154.164.0/24
+    "149.154.165.100",   # 149.154.165.0/24
+    "149.154.172.40",    # 149.154.172.0/24
+]
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
@@ -195,13 +211,13 @@ async def _query_doh_provider(
 async def discover_fallback_ips() -> list[str]:
     """Auto-discover Telegram API IPs via DNS-over-HTTPS.
 
-    Resolves api.telegram.org through Google and Cloudflare DoH and returns all
-    unique A records.  IPs that match the local system resolver are kept rather
-    than excluded: in many networks the system-DNS IP is the most reliable path
-    to api.telegram.org and a transient primary-path failure should be retried
-    against the same address via the IP-rewrite path before the seed list is
-    consulted (#14520).  Falls back to a hardcoded seed list only when DoH
-    yields no usable answers.
+    Resolves api.telegram.org through Google, Cloudflare, and Quad9 DoH and
+    returns all unique A records.  IPs that match the local system resolver are
+    kept rather than excluded: in many networks the system-DNS IP is the most
+    reliable path to api.telegram.org and a transient primary-path failure
+    should be retried against the same address via the IP-rewrite path before
+    the seed list is consulted (#14520).  Falls back to a hardcoded seed list
+    spanning multiple /24 subnets only when DoH yields no usable answers.
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
         doh_tasks = [_query_doh_provider(client, p) for p in _DOH_PROVIDERS]

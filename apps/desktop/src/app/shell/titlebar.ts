@@ -27,6 +27,23 @@ export const titlebarHeaderTitleClass = 'min-w-0 flex-1 overflow-hidden'
 export const titlebarHeaderShadowClass =
   "after:pointer-events-none after:absolute after:left-0 after:right-0 after:top-full after:h-4 after:bg-linear-to-b after:from-(--ui-chat-surface-background) after:to-transparent after:content-['']"
 
+export function resolveTitlebarFullscreen(
+  backendFullscreen: boolean | undefined,
+  viewportFullscreen: boolean,
+  windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined
+) {
+  if (backendFullscreen) {
+    return true
+  }
+
+  // The viewport-size fallback is useful before the main-process fullscreen
+  // event reaches the renderer, but macOS maximize/zoom can also make the
+  // viewport fill the screen while the traffic lights remain visible. When
+  // Electron reports a left-side window button position, trust that signal and
+  // keep titlebar tools clear of the traffic lights.
+  return viewportFullscreen && windowButtonPosition === null
+}
+
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
   isFullscreen = false

@@ -1926,8 +1926,14 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
         print(f"✓ Honcho host updated: {source_host} → {new_host}")
 
 
-def rename_profile(old_name: str, new_name: str) -> Path:
+def rename_profile(old_name: str, new_name: str, no_alias: bool = False) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile.
+
+    no_alias:
+        If True, skip all wrapper-script work (removing the old alias,
+        checking for alias collisions, and creating the new alias). Used by
+        remote/API callers for whom a local shell wrapper under
+        ``~/.local/bin`` is irrelevant (and unwanted).
 
     Returns the new profile directory.
     """
@@ -1962,13 +1968,14 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     _migrate_honcho_profile_host(old_canon, new_canon, new_dir)
 
     # 4. Update wrapper script
-    remove_wrapper_script(old_canon)
-    collision = check_alias_collision(new_canon)
-    if not collision:
-        create_wrapper_script(new_canon)
-        print(f"✓ Alias updated: {new_canon}")
-    else:
-        print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
+    if not no_alias:
+        remove_wrapper_script(old_canon)
+        collision = check_alias_collision(new_canon)
+        if not collision:
+            create_wrapper_script(new_canon)
+            print(f"✓ Alias updated: {new_canon}")
+        else:
+            print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
 
     # 5. Update active_profile if it pointed to old name
     try:

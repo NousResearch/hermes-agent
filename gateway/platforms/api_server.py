@@ -2332,10 +2332,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     no_alias=True,
                     description=description,
                 )
-            except FileExistsError as exc:
-                return web.json_response(_openai_error(str(exc), code="profile_exists"), status=409)
-            except FileNotFoundError as exc:
-                return web.json_response(_openai_error(str(exc), code="clone_source_not_found"), status=404)
+            except FileExistsError:
+                return web.json_response(
+                    _openai_error(f"Profile '{name}' already exists", code="profile_exists"), status=409
+                )
+            except FileNotFoundError:
+                return web.json_response(
+                    _openai_error(f"Clone source '{clone_from}' does not exist", code="clone_source_not_found"),
+                    status=404,
+                )
             except ValueError as exc:
                 return web.json_response(_openai_error(str(exc), code="invalid_profile_create"), status=400)
             except Exception:
@@ -2367,7 +2372,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Requires ``If-Match`` against the profile's current opaque revision;
         validated and applied inside one locked read-modify-write so a stale
-        caller cannot silently clobber a concurrent rename.
+        caller cannot silently clobber a concurrent rename. Never creates a
+        CLI wrapper alias — that's a local-shell artifact irrelevant (and
+        unwanted) for a remote scoped client.
         """
         _principal, auth_err = self._authorize(request, "profiles:write")
         if auth_err:
@@ -2396,7 +2403,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=412,
                 )
             try:
-                new_dir = profiles_mod.rename_profile(old_name, new_name)
+                new_dir = profiles_mod.rename_profile(old_name, new_name, no_alias=True)
             except FileNotFoundError as exc:
                 return web.json_response(_openai_error(str(exc), code="profile_not_found"), status=404)
             except FileExistsError as exc:

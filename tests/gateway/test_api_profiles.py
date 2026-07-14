@@ -130,6 +130,21 @@ class TestProfileCreate:
         assert second.status == 409
 
     @pytest.mark.asyncio
+    async def test_create_duplicate_name_body_has_no_filesystem_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter, headers = _make_adapter(tmp_path)
+
+        async with TestClient(TestServer(_profile_test_app(adapter))) as client:
+            await client.post("/api/profiles", headers=headers, json={"name": "dup"})
+            second = await client.post("/api/profiles", headers=headers, json={"name": "dup"})
+            body = await second.json()
+
+        assert second.status == 409
+        message = body["error"]["message"]
+        assert str(tmp_path) not in message
+        assert "Profile 'dup' already exists" == message
+
+    @pytest.mark.asyncio
     async def test_create_clone_source_missing_is_not_found(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
         adapter, headers = _make_adapter(tmp_path)
@@ -142,6 +157,24 @@ class TestProfileCreate:
             )
 
         assert response.status == 404
+
+    @pytest.mark.asyncio
+    async def test_create_clone_source_missing_body_has_no_filesystem_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter, headers = _make_adapter(tmp_path)
+
+        async with TestClient(TestServer(_profile_test_app(adapter))) as client:
+            response = await client.post(
+                "/api/profiles",
+                headers=headers,
+                json={"name": "coder", "clone_from": "does-not-exist"},
+            )
+            body = await response.json()
+
+        assert response.status == 404
+        message = body["error"]["message"]
+        assert str(tmp_path) not in message
+        assert "Clone source 'does-not-exist' does not exist" == message
 
     @pytest.mark.asyncio
     async def test_create_does_not_create_wrapper_alias(self, tmp_path, monkeypatch):
@@ -204,6 +237,7 @@ class TestProfileScopeEnforcement:
     @pytest.mark.asyncio
     async def test_read_only_scope_cannot_rename(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "local_bin")
         write_adapter, write_headers = _make_adapter(tmp_path, scopes=("profiles:read", "profiles:write"))
 
         async with TestClient(TestServer(_profile_test_app(write_adapter))) as client:
@@ -223,6 +257,7 @@ class TestProfileScopeEnforcement:
     @pytest.mark.asyncio
     async def test_read_only_scope_cannot_delete(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "local_bin")
         adapter, headers = _make_adapter(tmp_path, scopes=("profiles:read", "profiles:write"))
 
         async with TestClient(TestServer(_profile_test_app(adapter))) as client:
@@ -267,6 +302,7 @@ class TestProfileConcurrency:
     @pytest.mark.asyncio
     async def test_default_profile_delete_is_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "local_bin")
         adapter, headers = _make_adapter(tmp_path)
 
         async with TestClient(TestServer(_profile_test_app(adapter))) as client:
@@ -285,6 +321,7 @@ class TestProfileConcurrency:
     @pytest.mark.asyncio
     async def test_missing_if_match_returns_428_for_rename(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "local_bin")
         adapter, headers = _make_adapter(tmp_path)
 
         async with TestClient(TestServer(_profile_test_app(adapter))) as client:
@@ -300,6 +337,7 @@ class TestProfileConcurrency:
     @pytest.mark.asyncio
     async def test_missing_if_match_returns_428_for_delete(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "local_bin")
         adapter, headers = _make_adapter(tmp_path)
 
         async with TestClient(TestServer(_profile_test_app(adapter))) as client:
@@ -324,6 +362,7 @@ class TestProfileConcurrency:
     @pytest.mark.asyncio
     async def test_stale_revision_returns_412_and_performs_no_write(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "local_bin")
         adapter, headers = _make_adapter(tmp_path)
 
         async with TestClient(TestServer(_profile_test_app(adapter))) as client:
@@ -346,6 +385,7 @@ class TestProfileConcurrency:
     @pytest.mark.asyncio
     async def test_successful_rename_returns_new_revision(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "local_bin")
         adapter, headers = _make_adapter(tmp_path)
 
         async with TestClient(TestServer(_profile_test_app(adapter))) as client:
@@ -363,8 +403,30 @@ class TestProfileConcurrency:
         assert renamed_body["revision"] != created_body["revision"]
 
     @pytest.mark.asyncio
+    async def test_rename_does_not_create_wrapper_alias(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        wrapper_dir = tmp_path / "local_bin"
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: wrapper_dir)
+        adapter, headers = _make_adapter(tmp_path)
+
+        async with TestClient(TestServer(_profile_test_app(adapter))) as client:
+            created = await client.post("/api/profiles", headers=headers, json={"name": "coder"})
+            created_body = await created.json()
+            renamed = await client.patch(
+                "/api/profiles/coder",
+                headers=dict(headers, **{"If-Match": created_body["revision"]}),
+                json={"new_name": "coder2"},
+            )
+
+        assert renamed.status == 200
+        assert not (wrapper_dir / "coder").exists()
+        assert not (wrapper_dir / "coder2").exists()
+        assert not wrapper_dir.exists()
+
+    @pytest.mark.asyncio
     async def test_successful_delete_returns_new_revision(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "local_bin")
         adapter, headers = _make_adapter(tmp_path)
         monkeypatch.setattr("hermes_cli.profiles._cleanup_gateway_service", lambda *a, **kw: None)
 

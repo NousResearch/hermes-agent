@@ -3365,6 +3365,69 @@ def _estimate_tui_input_height(
     return min(max(visual_lines, 1), max(1, int(max_height or 1)))
 
 
+def _refresh_cli_input_completions_after_deletion(buffer, chars_added: int) -> None:
+    """Re-run prompt completions and suggestions after text is deleted.
+
+    prompt_toolkit's deletion methods clear both pipelines without scheduling
+    replacements. A previous threaded completion may still be winding down, so
+    wait for it before starting completion for the current document.
+    """
+    document = buffer.document
+    if (
+        chars_added >= 0
+        or buffer.completer is None
+        or not document.text_before_cursor.startswith("/")
+    ):
+        return
+
+    import asyncio
+    from prompt_toolkit.application import get_app
+
+    async def _restart_for_current_document() -> None:
+        while buffer.document == document:
+            state = buffer.complete_state
+            if state is not None and state.original_document == document:
+                return
+
+            completions_changed = asyncio.Event()
+            started_for_document = [False]
+
+            def _on_completions_changed(_buffer) -> None:
+                current_state = buffer.complete_state
+                if (
+                    current_state is not None
+                    and current_state.original_document == document
+                ):
+                    started_for_document[0] = True
+                completions_changed.set()
+
+            buffer.on_completions_changed += _on_completions_changed
+            try:
+                # A no-op insert is prompt_toolkit's public autosuggest trigger.
+                buffer.insert_text("")
+                # Explicitly request the completion menu as well. If the prior
+                # threaded completion is still active this request is dropped;
+                # its final change event wakes the loop for one safe retry.
+                buffer.start_completion(select_first=False)
+                await asyncio.sleep(0)
+                current_state = buffer.complete_state
+                if (
+                    started_for_document[0]
+                    or (
+                        current_state is not None
+                        and current_state.original_document == document
+                    )
+                ):
+                    return
+                await completions_changed.wait()
+                if started_for_document[0]:
+                    return
+            finally:
+                buffer.on_completions_changed -= _on_completions_changed
+
+    get_app().create_background_task(_restart_for_current_document())
+
+
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -14330,6 +14393,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._skip_paste_collapse = False
                 _prev_newline_count[0] = text.count('\n')
                 return
+            _refresh_cli_input_completions_after_deletion(buf, chars_added)
             line_count = text.count('\n')
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count

@@ -711,15 +711,17 @@ class TestResolveSessionNameGatewayKey:
         )
         assert result == "agent-main-telegram-dm-8439114563"
 
-    def test_session_title_still_wins_over_gateway_key(self):
-        """Explicit /title remap takes priority over gateway_session_key."""
+    def test_gateway_key_not_remapped_by_title(self):
+        """A title never remaps a stable identifier — the gateway per-chat key
+        wins over the title so a generated title can't split a live conversation
+        onto a new Honcho session."""
         config = HonchoClientConfig(session_strategy="per-session")
         result = config.resolve_session_name(
             session_title="my-custom-title",
             session_id="20260412_171002_69bb38",
             gateway_session_key="agent:main:telegram:dm:8439114563",
         )
-        assert result == "my-custom-title"
+        assert result == "agent-main-telegram-dm-8439114563"
 
     def test_per_session_fallback_without_gateway_key(self):
         """Without gateway_session_key, per-session returns session_id (CLI path)."""
@@ -819,10 +821,15 @@ class TestResolveSessionNameLengthLimit:
 class TestResetHonchoClient:
     def test_reset_clears_singleton(self):
         import plugins.memory.honcho.client as mod
-        mod._honcho_client = MagicMock()
-        assert mod._honcho_client is not None
+
+        # Seed the cached client through the slot's public surface, then
+        # verify reset_honcho_client() clears it. (The client is cached in
+        # mod._honcho_client_slot, a thread-safe SingletonSlot, not a bare
+        # module global anymore — see #24759.)
+        mod._honcho_client_slot.get(lambda: MagicMock())
+        assert mod._honcho_client_slot.peek() is not None
         reset_honcho_client()
-        assert mod._honcho_client is None
+        assert mod._honcho_client_slot.peek() is None
 
 
 class TestDialecticDepthParsing:

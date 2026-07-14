@@ -1491,6 +1491,7 @@ def build_skills_system_prompt(
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = platform or _current_session_platform_hint()
+    _platform_hint = _platform_hint.strip().lower() if _platform_hint else ""
     disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir),

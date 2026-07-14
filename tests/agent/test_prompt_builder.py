@@ -551,6 +551,33 @@ class TestBuildSkillsSystemPrompt:
         assert "web-search" in result
         assert "old-tool" not in result
 
+    def test_platform_disabled_skills_are_case_insensitive(self, monkeypatch, tmp_path):
+        """Explicit platform names should match lowercase config keys."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+
+        for name in ("shared", "telegram-hidden"):
+            skill_dir = skills_dir / name
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name}\n---\n",
+                encoding="utf-8",
+            )
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  platform_disabled:\n"
+            "    telegram:\n"
+            "      - telegram-hidden\n",
+            encoding="utf-8",
+        )
+
+        result = build_skills_system_prompt(platform="Telegram")
+
+        assert "shared" in result
+        assert "telegram-hidden" not in result
+
     def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "tools" / "cached-skill"

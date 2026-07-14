@@ -155,7 +155,7 @@ def test_requested_platform_filters_disabled_skills(isolated_home, monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
 
     cli = compute_prompt_breakdown("cli")
-    telegram = compute_prompt_breakdown("telegram")
+    telegram = compute_prompt_breakdown("Telegram")
 
     assert telegram["skills_index"]["bytes"] < cli["skills_index"]["bytes"]
 

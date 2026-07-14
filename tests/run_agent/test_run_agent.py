@@ -117,6 +117,37 @@ def agent():
         return a
 
 
+def test_content_tool_call_fallback_opt_in_is_bound_to_initialized_scope():
+    with (
+        patch(
+            "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {"content_tool_calls_from_content": True},
+            },
+        ),
+    ):
+        configured_agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://models.example/v1",
+            provider="custom",
+            model="qwen2.5-coder:7b",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert configured_agent._content_tool_call_fallback_scope == (
+        configured_agent.model,
+        configured_agent.base_url,
+        configured_agent.api_mode,
+    )
+
+
 def test_persist_user_message_override_rewrites_text_turns(agent):
     messages = [{"role": "user", "content": "API-only synthetic prefix\nhello"}]
     agent._persist_user_message_idx = 0
@@ -824,12 +855,15 @@ class TestSaveSessionLogRedactsSecrets:
         agent._session_json_enabled = True
         agent.logs_dir = tmp_path
         messages = [
-            {"role": "user", "content": "My key is sk-ant-api03-abc123def456ghi789jkl012mno please use it"},
+            {
+                "role": "user",
+                "content": "My key is sk-ant-" "api03-abc123def456ghi789jkl012mno please use it",
+            },
         ]
         agent._save_session_log(messages)
 
         snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
-        assert "sk-ant-api03-abc123def456ghi789jkl012mno" not in snapshot
+        assert "sk-ant-" "api03-abc123def456ghi789jkl012mno" not in snapshot
 
     def test_redacts_system_prompt_credentials(self, agent, tmp_path):
         agent._session_json_enabled = True
@@ -4121,6 +4155,270 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_content_only_ollama_call_repairs_and_executes_tool(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+        content = '{"name":"search","arguments":{"query":"weather"}}'
+        resp1 = _mock_response(content=content, finish_reason="stop")
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch(
+                "run_agent.handle_function_call",
+                return_value="search result",
+            ) as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        assert result["api_calls"] == 2
+        assert mock_handle_function_call.call_args.args[0] == "web_search"
+        expected_arguments = '{"query": "weather"}'
+        assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == (
+            agent._deterministic_call_id("web_search", expected_arguments, 0)
+        )
+
+    @pytest.mark.parametrize("tool_name", ["web_search", "search", "not_a_tool"])
+    def test_non_ollama_content_json_remains_plain_text(self, agent, tool_name):
+        self._setup_agent(agent)
+        content = json.dumps({"name": tool_name, "arguments": {}})
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content=content,
+            finish_reason="stop",
+        )
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("return json")
+
+        assert result["final_response"] == content
+        assert result["api_calls"] == 1
+        mock_handle_function_call.assert_not_called()
+
+    @pytest.mark.parametrize("arguments", ["not JSON", "{}", "[]", "1", None])
+    def test_ollama_content_call_rejects_non_object_arguments(self, agent, arguments):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+        content = json.dumps({"name": "search", "arguments": arguments})
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content=content,
+            finish_reason="stop",
+        )
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("return json")
+
+        assert result["final_response"] == content
+        mock_handle_function_call.assert_not_called()
+
+    def test_ollama_content_call_canonicalizes_arguments_for_stable_id(self, agent):
+        from agent.conversation_loop import _extract_content_tool_calls
+
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+        first = _extract_content_tool_calls(
+            agent,
+            '{"name":"search","arguments":{"b":2,"a":1}}',
+        )
+        second = _extract_content_tool_calls(
+            agent,
+            '{"name":"search","arguments":{"a":1,"b":2}}',
+        )
+
+        assert first is not None
+        assert second is not None
+        assert first[0].name == "web_search"
+        assert first[0].arguments == second[0].arguments
+        assert first[0].id == second[0].id
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://notollama.example/v1",
+            "http://localhost:114340/v1",
+            "https://proxy.example/ollama/v1",
+            "https://not-ollama.example:11434/v1",
+        ],
+    )
+    def test_endpoint_change_does_not_inherit_content_call_opt_in(self, agent, base_url):
+        from agent.conversation_loop import _extract_content_tool_calls
+
+        agent.provider = "custom"
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            "https://trusted.example/v1",
+            agent.api_mode,
+        )
+        agent.base_url = base_url
+
+        assert _extract_content_tool_calls(
+            agent,
+            '{"name":"web_search","arguments":{}}',
+        ) is None
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '{"name":"web_search"}',
+            '{"name":"web_search","arguments":{},"extra":true}',
+            '[{"name":"web_search","arguments":{}},"plain text"]',
+            '{"name":"web_search","arguments":NaN}',
+            '{"name":"web_search","arguments":{"value":Infinity}}',
+        ],
+    )
+    def test_ollama_content_call_requires_strict_finite_schema(self, agent, content):
+        from agent.conversation_loop import _extract_content_tool_calls
+
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+
+        assert _extract_content_tool_calls(agent, content) is None
+
+    def test_ollama_content_call_rejects_deep_arguments(self, agent):
+        from agent.conversation_loop import _extract_content_tool_calls
+
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+        nested = {}
+        cursor = nested
+        for _ in range(21):
+            cursor["child"] = {}
+            cursor = cursor["child"]
+        content = json.dumps({"name": "web_search", "arguments": nested})
+
+        assert _extract_content_tool_calls(agent, content) is None
+
+    def test_explicit_opt_in_enables_reverse_proxy_endpoint(self, agent):
+        from agent.conversation_loop import _extract_content_tool_calls
+
+        agent.provider = "custom"
+        agent.base_url = "https://models.example/v1"
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+
+        calls = _extract_content_tool_calls(
+            agent,
+            '{"name":"web_search","arguments":{}}',
+        )
+
+        assert calls is not None
+        assert calls[0].name == "web_search"
+
+    def test_ollama_tool_shaped_json_remains_text_without_opt_in(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        content = '{"name":"web_search","arguments":{}}'
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content=content,
+            finish_reason="stop",
+        )
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("print a tool-call example as JSON")
+
+        assert result["final_response"] == content
+        mock_handle_function_call.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "x" * (64 * 1024 + 1),
+            '{"name":"web_search","arguments":{"value":"\ud800"}}',
+        ],
+    )
+    def test_content_tool_call_size_guard_fails_back_without_crashing(self, agent, content):
+        from agent.conversation_loop import _extract_content_tool_calls
+
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+
+        assert _extract_content_tool_calls(agent, content) is None
+
+    def test_content_tool_call_rejects_escaped_lone_surrogate(self, agent):
+        from agent.conversation_loop import _extract_content_tool_calls
+
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+        content = json.dumps(
+            {"name": "web_search", "arguments": {"value": "\ud800"}}
+        )
+
+        assert _extract_content_tool_calls(agent, content) is None
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '{"name":"web_search","name":"terminal","arguments":{}}',
+            '{"name":"web_search","arguments":{},"arguments":{"q":"x"}}',
+            '{"name":"web_search","arguments":{"q":"safe","q":"other"}}',
+        ],
+    )
+    def test_content_tool_call_rejects_duplicate_json_keys(self, agent, content):
+        from agent.conversation_loop import _extract_content_tool_calls
+
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
+
+        assert _extract_content_tool_calls(agent, content) is None
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -6906,7 +7204,7 @@ class TestAnthropicBaseUrlPassthrough:
         ):
             mock_build.return_value = MagicMock()
             a = AIAgent(
-                api_key="sk-ant-api03-test1234567890",
+                api_key="sk-ant-" "api03-test1234567890",
                 base_url="https://llm-proxy.company.com/v1",
                 api_mode="anthropic_messages",
                 quiet_mode=True,

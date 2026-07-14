@@ -1646,6 +1646,21 @@ def init_agent(
     # Read explicit model output-token override from config when the
     # caller did not pass one directly.
     _model_cfg = _agent_cfg.get("model", {})
+    agent._content_tool_call_fallback_scope = None
+    if (
+        isinstance(_model_cfg, dict)
+        and _model_cfg.get("content_tool_calls_from_content") is True
+        and agent.base_url
+    ):
+        # Content-shaped tool calls are inherently ambiguous with JSON the
+        # user asked the model to print. Keep the compatibility fallback an
+        # explicit opt-in, bound to this model, endpoint, and API mode so a
+        # later failover or model switch cannot inherit it accidentally.
+        agent._content_tool_call_fallback_scope = (
+            agent.model,
+            agent.base_url,
+            agent.api_mode,
+        )
     if agent.max_tokens is None and isinstance(_model_cfg, dict):
         _config_max_tokens = _model_cfg.get("max_tokens")
         if _config_max_tokens is not None:

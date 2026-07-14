@@ -16578,7 +16578,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         ``_session_model_overrides`` is in-memory only, so before persistence
         a restart silently reverted every session to the global default model.
-        The non-secret parts (model/provider/base_url) are written through to
+        The non-secret parts (model/provider/base_url/responses_transport) are written through to
         the session store when /model runs (and cleared on /new); here we read
         them back on first use and re-resolve credentials via the normal
         runtime provider resolution — api_key is never persisted to disk.
@@ -16605,6 +16605,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "model": persisted.get("model"),
             "provider": persisted.get("provider"),
             "base_url": persisted.get("base_url"),
+            "responses_transport": persisted.get("responses_transport"),
         }
         provider = persisted.get("provider")
         if provider:
@@ -16617,6 +16618,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
+                if not override.get("responses_transport"):
+                    override["responses_transport"] = runtime.get(
+                        "responses_transport", "sse"
+                    )
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:
@@ -16646,7 +16651,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+        for key in (
+            "provider",
+            "api_key",
+            "base_url",
+            "api_mode",
+            "responses_transport",
+            "credential_pool",
+        ):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val

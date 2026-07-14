@@ -759,6 +759,27 @@ class TestCodexPreflightKwargs:
         with_previous["previous_response_id"] = "resp_123"
         assert _preflight_codex_api_kwargs(with_previous)["previous_response_id"] == "resp_123"
 
+    def test_current_sdk_and_future_response_fields_survive_preflight(self):
+        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+        request = {
+            "model": "codex",
+            "instructions": "You are helpful",
+            "input": [{"role": "user", "content": "hi"}],
+            "store": False,
+            "text": {"verbosity": "low"},
+            "prompt_cache_retention": "24h",
+            "extra_query": {"api-version": "future"},
+            "extra_body": {"future_response_field": {"enabled": True}},
+        }
+
+        normalized = _preflight_codex_api_kwargs(request)
+
+        assert normalized["text"] == {"verbosity": "low"}
+        assert normalized["prompt_cache_retention"] == "24h"
+        assert normalized["extra_query"] == {"api-version": "future"}
+        assert normalized["extra_body"]["future_response_field"] == {"enabled": True}
+
 
 class TestCodexValidateResponse:
 

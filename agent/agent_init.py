@@ -356,6 +356,8 @@ def init_agent(
         api_key (str): API key for authentication (optional, uses env var if not provided)
         provider (str): Provider identifier (optional; used for telemetry/routing hints)
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
+        responses_transport (str): Codex Responses transport: "sse", "websocket",
+            "websocket-cached", or "auto".
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
         max_iterations (int): Maximum number of tool calling iterations (default: 90)
         tool_delay (float): Delay between tool calls in seconds (default: 1.0)
@@ -432,6 +434,10 @@ def init_agent(
     from agent.codex_websocket_transport import normalize_codex_responses_transport
 
     agent.responses_transport = normalize_codex_responses_transport(responses_transport)
+    agent._active_codex_websocket_abort = None
+    agent._codex_websocket_auto_disabled_for = None
+    agent._codex_turn_state = None
+    agent._codex_turn_state_turn_id = None
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -2178,6 +2184,7 @@ def init_agent(
         "provider": agent.provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
+        "responses_transport": getattr(agent, "responses_transport", "sse"),
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,

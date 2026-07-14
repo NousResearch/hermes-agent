@@ -92,6 +92,7 @@ class TestApplySessionModelOverride:
             "api_key": "or-key-123",
             "base_url": "https://openrouter.ai/api/v1",
             "api_mode": "chat_completions",
+            "responses_transport": "websocket-cached",
         }
 
         model, rt = runner._apply_session_model_override(
@@ -105,6 +106,7 @@ class TestApplySessionModelOverride:
         assert rt["api_key"] == "or-key-123"
         assert rt["base_url"] == "https://openrouter.ai/api/v1"
         assert rt["api_mode"] == "chat_completions"
+        assert rt["responses_transport"] == "websocket-cached"
 
     def test_no_override_returns_originals(self):
         runner = _make_runner()

@@ -913,7 +913,13 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers", "extra_body", "timeout", "previous_response_id",
+        "extra_headers", "extra_query", "extra_body", "timeout", "previous_response_id",
+        # Keep this aligned with the Hermes-pinned OpenAI Responses SDK. These
+        # can arrive through request_overrides and must retain identical SSE and
+        # WebSocket semantics.
+        "background", "context_management", "conversation", "max_tool_calls",
+        "metadata", "prompt", "prompt_cache_retention", "safety_identifier",
+        "stream_options", "text", "top_logprobs", "top_p", "truncation", "user",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -977,6 +983,12 @@ def _preflight_codex_api_kwargs(
         if normalized_headers:
             normalized["extra_headers"] = normalized_headers
 
+    extra_query = api_kwargs.get("extra_query")
+    if extra_query is not None:
+        if not isinstance(extra_query, dict):
+            raise ValueError("Codex Responses request 'extra_query' must be an object.")
+        normalized["extra_query"] = dict(extra_query)
+
     extra_body = api_kwargs.get("extra_body")
     if extra_body is not None:
         if not isinstance(extra_body, dict):
@@ -989,6 +1001,15 @@ def _preflight_codex_api_kwargs(
         # changes that would otherwise raise TypeError before the wire.
         if extra_body:
             normalized["extra_body"] = dict(extra_body)
+
+    sdk_passthrough_keys = {
+        "background", "context_management", "conversation", "max_tool_calls",
+        "metadata", "prompt", "prompt_cache_retention", "safety_identifier",
+        "stream_options", "text", "top_logprobs", "top_p", "truncation", "user",
+    }
+    for key in sdk_passthrough_keys:
+        if key in api_kwargs:
+            normalized[key] = api_kwargs[key]
 
     if allow_stream:
         stream = api_kwargs.get("stream")
@@ -1023,7 +1044,8 @@ def _preflight_codex_api_kwargs(
     unexpected = sorted(key for key in api_kwargs if key not in allowed_keys)
     if unexpected:
         raise ValueError(
-            f"Codex Responses request has unsupported field(s): {', '.join(unexpected)}."
+            f"Codex Responses request has unsupported field(s): {', '.join(unexpected)}. "
+            "Use extra_body for provider or future Responses body fields."
         )
 
     return normalized

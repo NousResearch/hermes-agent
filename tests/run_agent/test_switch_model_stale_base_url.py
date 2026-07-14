@@ -85,3 +85,42 @@ def test_switch_model_applies_new_base_url_on_provider_change(mock_ctx_len):
     # subsequent restore_primary_runtime() call across turns.
     assert agent._primary_runtime["provider"] == "custom:minimax"
     assert agent._primary_runtime["base_url"] == "https://api.minimax.io/v1"
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+def test_switch_model_updates_and_snapshots_responses_transport(mock_ctx_len):
+    agent = _make_agent_with_compressor(
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    agent.switch_model(
+        "gpt-5.5",
+        "openai-codex",
+        api_key="codex-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_mode="codex_responses",
+        responses_transport="websocket-cached",
+    )
+
+    assert agent.responses_transport == "websocket-cached"
+    assert agent._primary_runtime["responses_transport"] == "websocket-cached"
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+def test_same_codex_provider_switch_preserves_unspecified_responses_transport(mock_ctx_len):
+    agent = _make_agent_with_compressor(
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    agent.responses_transport = "websocket-cached"
+
+    agent.switch_model(
+        "gpt-5.5",
+        "openai-codex",
+        api_key="codex-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_mode="codex_responses",
+    )
+
+    assert agent.responses_transport == "websocket-cached"

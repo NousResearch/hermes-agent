@@ -324,6 +324,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,              # "chat_completions" | "codex_responses" | ...
+        responses_transport: str = "sse", # Codex: "sse" | "websocket" | "websocket-cached" | "auto"
         model: str = "",                   # empty → resolved from config/provider later
         max_iterations: int = 90,          # tool-calling iterations (shared with subagents)
         enabled_toolsets: list = None,

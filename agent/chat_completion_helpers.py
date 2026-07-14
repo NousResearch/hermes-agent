@@ -499,6 +499,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
         finally:
             _close_request_client_once("request_complete")
 
+    def _watchdog_timeout_error(message: str, *, websocket_active: bool):
+        if websocket_active:
+            from agent.codex_websocket_transport import WebSocketStartedError
+
+            return WebSocketStartedError(message, retryable=True)
+        return TimeoutError(message)
+
     # ── Stale-call timeout (mirrors streaming stale detector) ────────
     # Non-streaming calls return nothing until the full response is
     # ready.  Without this, a hung provider can block for the full
@@ -671,6 +678,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
             and _elapsed > _ttfb_timeout
             and getattr(agent, "_codex_stream_last_event_ts", None) is None
         ):
+            _websocket_active = callable(
+                getattr(agent, "_active_codex_websocket_abort", None)
+            )
             _silent_hint: Optional[str] = None
             _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
             if callable(_hint_fn):
@@ -685,18 +695,18 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 "loop can reconnect.",
                 _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
             )
+            _watchdog_action = (
+                "Stopping the stalled WebSocket."
+                if _websocket_active
+                else "Reconnecting."
+            )
             if _silent_hint:
-                agent._buffer_status(
-                    f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Reconnecting. {_silent_hint}"
-                )
-            else:
-                agent._buffer_status(
-                    f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Reconnecting."
-                )
+                _watchdog_action += f" {_silent_hint}"
+            agent._buffer_status(
+                f"⚠️ No first byte from provider in {int(_elapsed)}s "
+                f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                f"{_watchdog_action}"
+            )
             try:
                 _close_request_client_once("codex_ttfb_kill")
             except Exception:
@@ -712,14 +722,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
                 if _silent_hint:
-                    result["error"] = TimeoutError(
+                    result["error"] = _watchdog_timeout_error(
                         f"Codex stream produced no bytes within {int(_elapsed)}s "
-                        f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}"
+                        f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}",
+                        websocket_active=_websocket_active,
                     )
                 else:
-                    result["error"] = TimeoutError(
+                    result["error"] = _watchdog_timeout_error(
                         f"Codex stream produced no bytes within {int(_elapsed)}s "
-                        f"(TTFB threshold: {int(_ttfb_timeout)}s)"
+                        f"(TTFB threshold: {int(_ttfb_timeout)}s)",
+                        websocket_active=_websocket_active,
                     )
             break
 
@@ -732,6 +744,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
             and _last_codex_event_ts is not None
             and (time.time() - _last_codex_event_ts) > _codex_idle_timeout
         ):
+            _websocket_active = callable(
+                getattr(agent, "_active_codex_websocket_abort", None)
+            )
             _event_stale_elapsed = time.time() - _last_codex_event_ts
             logger.warning(
                 "Codex stream produced no SSE events for %.0fs after first byte "
@@ -745,7 +760,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
             agent._buffer_status(
                 f"⚠️ Codex stream sent no events for {int(_event_stale_elapsed)}s "
                 f"after first byte (model: {api_kwargs.get('model', 'unknown')}). "
-                f"Reconnecting."
+                + (
+                    "Stopping the stalled WebSocket."
+                    if _websocket_active
+                    else "Reconnecting."
+                )
             )
             try:
                 _close_request_client_once("codex_stream_idle_kill")
@@ -756,15 +775,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
-                result["error"] = TimeoutError(
+                result["error"] = _watchdog_timeout_error(
                     f"Codex stream produced no SSE events for {int(_event_stale_elapsed)}s "
-                    f"after first byte (threshold: {int(_codex_idle_timeout)}s)"
+                    f"after first byte (threshold: {int(_codex_idle_timeout)}s)",
+                    websocket_active=_websocket_active,
                 )
             break
 
         # Stale-call detector: kill the connection if no response
         # arrives within the configured timeout.
         if _elapsed > _stale_timeout:
+            _websocket_active = callable(
+                getattr(agent, "_active_codex_websocket_abort", None)
+            )
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             _silent_hint: Optional[str] = None
             _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
@@ -809,15 +832,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
                 if _silent_hint:
-                    result["error"] = TimeoutError(
+                    result["error"] = _watchdog_timeout_error(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
                         f"with no response (threshold: {int(_stale_timeout)}s). "
-                        f"{_silent_hint}"
+                        f"{_silent_hint}",
+                        websocket_active=_websocket_active,
                     )
                 else:
-                    result["error"] = TimeoutError(
+                    result["error"] = _watchdog_timeout_error(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s)"
+                        f"with no response (threshold: {int(_stale_timeout)}s)",
+                        websocket_active=_websocket_active,
                     )
             break
 
@@ -1458,6 +1483,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback(reason)  # skip invalid, try next
 
+    fb_responses_transport = fb.get("responses_transport", "sse")
+    if fb_provider == "openai-codex" and "responses_transport" not in fb:
+        try:
+            from hermes_cli.config import load_config
+
+            model_cfg = load_config().get("model") or {}
+            if isinstance(model_cfg, dict):
+                fb_responses_transport = model_cfg.get("responses_transport", "sse")
+        except Exception:
+            fb_responses_transport = "sse"
+
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
         unavailable.add(fb_key)
@@ -1585,6 +1621,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        from agent.codex_websocket_transport import set_agent_codex_responses_transport
+
+        set_agent_codex_responses_transport(agent, fb_responses_transport)
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True

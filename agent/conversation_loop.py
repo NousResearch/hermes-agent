@@ -639,6 +639,10 @@ def run_conversation(
     active_system_prompt = _ctx.active_system_prompt
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
+    # Codex sticky routing is scoped to one user turn. The cached WebSocket and
+    # previous_response_id chain may span turns; x-codex-turn-state may not.
+    agent._codex_turn_state = None
+    agent._codex_turn_state_turn_id = turn_id
     current_turn_user_idx = _ctx.current_turn_user_idx
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
@@ -2717,6 +2721,29 @@ def run_conversation(
                     retryable=classified.retryable,
                     reason=classified.reason.value,
                 )
+
+                if getattr(api_error, "request_replay_safe", True) is False:
+                    _ambiguous_summary = agent._summarize_api_error(api_error)
+                    agent._buffer_vprint(
+                        "⚠️  Codex WebSocket disconnected after response.create; "
+                        "automatic replay was suppressed because the request may still be running."
+                    )
+                    agent._flush_status_buffer()
+                    logger.error(
+                        "%sCodex WebSocket request entered ambiguous execution state: %s",
+                        agent.log_prefix,
+                        _ambiguous_summary,
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": _ambiguous_summary,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": _ambiguous_summary,
+                        "request_replay_suppressed": True,
+                    }
 
                 if (
                     classified.reason == FailoverReason.billing

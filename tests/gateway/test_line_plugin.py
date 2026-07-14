@@ -378,6 +378,31 @@ class TestSendRouting:
         # And the cache entry is unchanged (still PENDING for the eventual answer)
         assert adapter._cache.get(rid).state is State.PENDING
 
+    def test_ready_postback_does_not_swallow_next_answer(self, adapter):
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._cache.set_ready(rid, "previous answer")
+        adapter._pending_buttons["Uchat"] = rid
+
+        result = asyncio.run(adapter.send("Uchat", "new answer"))
+
+        assert result.success
+        adapter._client.push.assert_called_once()
+        assert adapter._cache.get(rid).payload == "previous answer"
+        assert "Uchat" not in adapter._pending_buttons
+
+    def test_working_heartbeat_does_not_replace_pending_final_answer(self, adapter):
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+
+        result = asyncio.run(
+            adapter.send("Uchat", "⏳ Working — 3 min — iteration 1/60, terminal")
+        )
+
+        assert result.success
+        adapter._client.push.assert_called_once()
+        assert adapter._cache.get(rid).state is State.PENDING
+        assert adapter._cache.get(rid).payload is None
+
     def test_send_caps_messages_per_call_at_five(self, adapter):
         # Build a payload that would naturally split into more than 5 LINE
         # bubbles; the chunker should cap at 5 + truncate.

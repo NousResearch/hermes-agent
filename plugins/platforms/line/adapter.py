@@ -604,6 +604,7 @@ _SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = (
     "⚡ Interrupting",
     "⏳ Queued",
     "⏩ Steered",
+    "⏳ Working",
     "💾",  # background-review summary
 )
 
@@ -1092,12 +1093,17 @@ class LineAdapter(BasePlatformAdapter):
         if _is_system_bypass(content):
             return await self._send_text_chunks(chat_id, content, force_push=False)
 
-        # If the chat has a PENDING postback button outstanding, route the
-        # response into the cache for the user to fetch via tap.
+        # If the chat has a genuinely PENDING postback button outstanding,
+        # route this response into the cache for the user to fetch via tap.
+        # A READY/DELIVERED/expired entry is stale and must not swallow the
+        # answer to a later inbound message.
         pending_rid = self._pending_buttons.get(chat_id)
         if pending_rid:
-            self._cache.set_ready(pending_rid, content)
-            return SendResult(success=True, message_id=pending_rid)
+            entry = self._cache.get(pending_rid)
+            if entry and entry.state is State.PENDING:
+                self._cache.set_ready(pending_rid, content)
+                return SendResult(success=True, message_id=pending_rid)
+            self._pending_buttons.pop(chat_id, None)
 
         return await self._send_text_chunks(chat_id, content, force_push=False)
 

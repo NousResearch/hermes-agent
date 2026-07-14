@@ -23,6 +23,7 @@ paths with a mocked LLM client and assert the timeout that actually reaches
 
 from unittest.mock import patch, MagicMock, AsyncMock
 
+import httpx
 import pytest
 
 from agent.auxiliary_client import call_llm, async_call_llm
@@ -36,6 +37,21 @@ COMPRESSION_TIMEOUT_FLOOR = 300.0
 # The default ``auxiliary.compression.timeout`` shipped in the config schema
 # (hermes_cli/config.py).  Simulated here as the config-derived value.
 COMPRESSION_CONFIG_TIMEOUT = 120.0
+
+
+def _total_budget(timeout):
+    """The read/write/pool budget a timeout value carries.
+
+    ``_build_call_kwargs`` wraps a bare numeric timeout in an
+    ``httpx.Timeout`` with a capped connect phase (see
+    ``_connect_bounded_timeout``); the overall call budget these tests care
+    about lives on ``.read``. A plain number (already-explicit
+    ``httpx.Timeout`` passed by a caller, or an environment without httpx)
+    passes through unchanged.
+    """
+    if isinstance(timeout, httpx.Timeout):
+        return timeout.read
+    return timeout
 
 
 def _ok_response():
@@ -84,7 +100,7 @@ class TestCompressionTimeoutFloorSync:
                 task="compression",
                 messages=[{"role": "user", "content": "summarise this"}],
             )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        timeout = _total_budget(client.chat.completions.create.call_args.kwargs["timeout"])
         assert timeout >= COMPRESSION_TIMEOUT_FLOOR, (
             f"compression timeout {timeout} should be >= floor "
             f"{COMPRESSION_TIMEOUT_FLOOR}"
@@ -105,7 +121,7 @@ class TestCompressionTimeoutFloorSync:
                 messages=[{"role": "user", "content": "x"}],
                 timeout=explicit,
             )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        timeout = _total_budget(client.chat.completions.create.call_args.kwargs["timeout"])
         assert timeout == explicit, (
             f"explicit per-call timeout {explicit} must not be floored, got {timeout}"
         )
@@ -121,7 +137,7 @@ class TestCompressionTimeoutFloorSync:
                 task="title_generation",
                 messages=[{"role": "user", "content": "x"}],
             )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        timeout = _total_budget(client.chat.completions.create.call_args.kwargs["timeout"])
         assert timeout == low, (
             f"non-compression task timeout must stay {low}, got {timeout}"
         )
@@ -137,7 +153,7 @@ class TestCompressionTimeoutFloorSync:
                 task="compression",
                 messages=[{"role": "user", "content": "x"}],
             )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        timeout = _total_budget(client.chat.completions.create.call_args.kwargs["timeout"])
         assert timeout == high, (
             f"config timeout {high} above the floor must be unchanged, got {timeout}"
         )
@@ -155,7 +171,7 @@ class TestCompressionTimeoutFloorAsync:
                 task="compression",
                 messages=[{"role": "user", "content": "summarise this"}],
             )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        timeout = _total_budget(client.chat.completions.create.call_args.kwargs["timeout"])
         assert timeout >= COMPRESSION_TIMEOUT_FLOOR, (
             f"async compression timeout {timeout} should be >= floor "
             f"{COMPRESSION_TIMEOUT_FLOOR}"
@@ -172,7 +188,7 @@ class TestCompressionTimeoutFloorAsync:
                 messages=[{"role": "user", "content": "x"}],
                 timeout=explicit,
             )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        timeout = _total_budget(client.chat.completions.create.call_args.kwargs["timeout"])
         assert timeout == explicit
 
     @pytest.mark.asyncio
@@ -185,5 +201,5 @@ class TestCompressionTimeoutFloorAsync:
                 task="session_search",
                 messages=[{"role": "user", "content": "x"}],
             )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        timeout = _total_budget(client.chat.completions.create.call_args.kwargs["timeout"])
         assert timeout == low

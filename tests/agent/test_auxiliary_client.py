@@ -343,6 +343,81 @@ class TestBuildCallKwargsMaxTokens:
         assert kwargs["max_tokens"] == 4096
 
 
+class TestConnectBoundedTimeout:
+    """A bare numeric ``timeout`` becomes ``httpx.Timeout(timeout)`` on the
+    wire, giving every phase (connect/read/write/pool) the full value. When
+    an endpoint is unreachable but silently drops SYNs, each connection
+    attempt then blocks until the OS gives up (tens of seconds), turning one
+    dead-endpoint call into minutes once SDK retries are layered on top.
+    ``_build_call_kwargs`` bounds only the connect phase so a dead endpoint
+    fails fast while read/write keep the full configured budget."""
+
+    def test_build_call_kwargs_bounds_connect_phase(self):
+        import httpx
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="local-model",
+            messages=[{"role": "user", "content": "hi"}],
+            timeout=120.0,
+            base_url="http://localhost:8080/v1",
+        )
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read == 120.0
+        assert timeout.connect == 10.0
+
+    def test_connect_cap_never_exceeds_total_timeout(self):
+        """A total timeout shorter than the default connect cap must not
+        make the connect phase longer than the whole call budget."""
+        import httpx
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="local-model",
+            messages=[{"role": "user", "content": "hi"}],
+            timeout=5.0,
+            base_url="http://localhost:8080/v1",
+        )
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read == 5.0
+        assert timeout.connect == 5.0
+
+    def test_connect_cap_overridable_via_env(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setenv("HERMES_AUX_CONNECT_TIMEOUT", "2.5")
+        # The module-level constant is read at import time; patch it directly
+        # rather than reimporting the module.
+        with patch("agent.auxiliary_client._AUX_CONNECT_TIMEOUT", 2.5):
+            kwargs = _build_call_kwargs(
+                provider="custom",
+                model="local-model",
+                messages=[{"role": "user", "content": "hi"}],
+                timeout=120.0,
+                base_url="http://localhost:8080/v1",
+            )
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == 2.5
+
+    def test_non_numeric_timeout_passes_through_unchanged(self):
+        """An already-built httpx.Timeout (or any non-numeric value) must
+        not be re-wrapped."""
+        import httpx
+
+        explicit = httpx.Timeout(60.0, connect=3.0)
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="local-model",
+            messages=[{"role": "user", "content": "hi"}],
+            timeout=explicit,
+            base_url="http://localhost:8080/v1",
+        )
+        assert kwargs["timeout"] is explicit
+
+
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):
         import agent.auxiliary_client as aux

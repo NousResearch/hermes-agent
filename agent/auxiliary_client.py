@@ -1049,7 +1049,14 @@ class _CodexCompletionsAdapter:
         text_parts: List[str] = []
         tool_calls_raw: List[Any] = []
         usage = None
-        total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
+        # ``timeout`` may be a connect-bounded ``httpx.Timeout`` built by
+        # ``_build_call_kwargs`` — its ``read`` phase carries the configured
+        # total budget. Plain numeric timeouts pass through unchanged.
+        _timeout_secs = (
+            timeout if isinstance(timeout, (int, float))
+            else getattr(timeout, "read", None)
+        )
+        total_timeout = _timeout_secs if isinstance(_timeout_secs, (int, float)) and _timeout_secs > 0 else None
         deadline = time.monotonic() + float(total_timeout) if total_timeout else None
         timed_out = threading.Event()
         timeout_timer: Optional[threading.Timer] = None
@@ -6064,6 +6071,37 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 # is kept unchanged.
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
+# Cap for the TCP-connect phase of auxiliary HTTP calls. A bare float passed
+# as a per-request ``timeout`` becomes ``httpx.Timeout(float)`` on the wire,
+# giving every phase (connect/read/write/pool) the full value. When an
+# endpoint is unreachable but silently drops SYNs (e.g. a sleeping LAN
+# server), each connection attempt then blocks until the OS gives up
+# (~75 s on macOS, ``net.inet.tcp.keepinit``; the configured httpx connect
+# timeout of e.g. 120 s never fires), and the OpenAI SDK's default
+# ``max_retries=2`` turns one call into three attempts — ~226 s wall clock
+# for a configured timeout of 120. Bounding only the connect phase keeps the
+# configured value as the read/write budget (local models legitimately take
+# long to generate) while a dead endpoint fails within seconds.
+_AUX_CONNECT_TIMEOUT = env_float("HERMES_AUX_CONNECT_TIMEOUT", 10.0)
+
+
+def _connect_bounded_timeout(timeout: Any) -> Any:
+    """Convert a numeric timeout into an ``httpx.Timeout`` with capped connect.
+
+    Non-numeric or non-positive values (and environments without httpx) are
+    returned unchanged, so callers can pass the result anywhere a plain
+    ``timeout`` value was accepted before.
+    """
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+        return timeout
+    try:
+        import httpx
+    except ImportError:
+        return timeout
+    return httpx.Timeout(
+        float(timeout), connect=min(float(timeout), _AUX_CONNECT_TIMEOUT)
+    )
+
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     """Return the config dict for auxiliary.<task>, or {} when unavailable.
@@ -6270,7 +6308,9 @@ def _build_call_kwargs(
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "timeout": timeout,
+        # Bound the connect phase so a dead endpoint fails fast instead of
+        # holding each SDK connection attempt for the OS SYN timeout (F055).
+        "timeout": _connect_bounded_timeout(timeout),
     }
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)

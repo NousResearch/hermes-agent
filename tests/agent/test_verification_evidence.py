@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agent.verification_evidence import (
+    _effective_cwd,
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
@@ -391,3 +392,69 @@ def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):
     status = verification_status(session_id="old-session", cwd=tmp_path)
     assert status["status"] == "unverified"
     assert status["changed_paths"] == []
+
+
+# --- cd-prefix root resolution (verification-ledger false-positive fix) --------
+
+def test_effective_cwd_honors_leading_cd(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # `cd <repo> && pytest` from an unrelated tool cwd resolves to <repo>.
+    assert _effective_cwd(f"cd {repo} && pytest -q", "/") == repo.resolve()
+
+
+def test_effective_cwd_falls_back_when_no_cd(tmp_path):
+    assert _effective_cwd("pytest -q", tmp_path) == tmp_path
+    # relative cd resolves against the tool cwd
+    (tmp_path / "sub").mkdir()
+    assert _effective_cwd("cd sub && pytest", tmp_path) == (tmp_path / "sub").resolve()
+
+
+def test_effective_cwd_ignores_cd_dash_flags_and_missing_dir(tmp_path):
+    # `cd -`, flagged cd, and non-directories all fall back unchanged.
+    assert _effective_cwd("cd - && pytest", tmp_path) == tmp_path
+    assert _effective_cwd("cd -P /x && pytest", tmp_path) == tmp_path
+    assert _effective_cwd(f"cd {tmp_path / 'nope'} && pytest", tmp_path) == tmp_path
+
+
+def test_effective_cwd_relative_cd_with_no_base_falls_back(monkeypatch, tmp_path):
+    # cwd=None + relative target must NOT resolve against the process CWD
+    # (would otherwise credit an unrelated `tests/` dir that happens to exist).
+    # Chdir into a dir that HAS a `tests/` subdir to make the bug observable.
+    (tmp_path / "tests").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert _effective_cwd("cd tests && pytest", None) is None
+
+
+def test_cd_prefixed_pytest_credits_the_repo_root_and_clears_stale(tmp_path, monkeypatch):
+    """The false-positive fix, end to end.
+
+    An edit marks the repo root stale; a `cd <repo> && pytest` run whose tool
+    cwd is unrelated (here the HERMES_HOME dir) must still record a passing
+    event against the repo root and flip status to passed — not drop it.
+    """
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _python_project(repo)
+
+    mark_workspace_edited(
+        session_id="s1",
+        cwd=repo,
+        paths=[str(repo / "mod.py")],
+    )
+    assert verification_status(session_id="s1", cwd=repo)["status"] == "unverified"
+
+    # Tool cwd is HOME (unrelated), command cd's into the repo — the pre-fix bug.
+    event = record_terminal_result(
+        command=f"cd {repo} && python -m pytest tests/test_mod.py -q",
+        cwd=home,
+        session_id="s1",
+        exit_code=0,
+        output="1 passed",
+    )
+    assert event is not None
+    assert Path(event["root"]) == repo.resolve()
+    assert verification_status(session_id="s1", cwd=repo)["status"] == "passed"
+

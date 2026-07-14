@@ -8,12 +8,70 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
   - reasoning_config enabled + effort → top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
     so the endpoint's server default applies)
+  - Ollama backends are additionally gated on the model's declared
+    /api/show capabilities: non-thinking models (e.g. llama3.3:70b)
+    400 with "does not support thinking" if think/reasoning_effort is
+    sent at all, so we probe and skip both fields when unsupported.
 """
 
+import json
+import time as _time
+import urllib.request
 from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+# Cache of (model, base_url) -> (capabilities list, timestamp). Non-empty
+# results are cached indefinitely (a model's declared capabilities don't
+# change at runtime); empty/failed probes get a short TTL so a transient
+# network hiccup doesn't wedge the model into "no thinking support" forever.
+_OLLAMA_CAPS_CACHE: dict[tuple[str, str], tuple[list[str], float]] = {}
+_OLLAMA_CAPS_TTL = 300  # seconds
+
+
+def _is_ollama_base_url(base_url: str | None) -> bool:
+    b = (base_url or "").lower()
+    return "ollama" in b or ":11434" in b
+
+
+def _ollama_model_capabilities(model: str | None, base_url: str | None, timeout: float = 3.0) -> list[str]:
+    """Fetch Ollama's declared capabilities for `model` via /api/show.
+
+    Ollama publishes per-model capabilities (e.g. ["completion","tools"] or
+    ["completion","tools","thinking"]) at POST {root}/api/show. Only models
+    that list "thinking" accept the think / reasoning_effort request fields —
+    sending them to a non-thinking model 400s with
+    '"<model>" does not support thinking'. Cached per (model, base_url).
+    """
+    if not base_url or not model:
+        return []
+    key = (model, base_url)
+    cached = _OLLAMA_CAPS_CACHE.get(key)
+    if cached is not None:
+        caps, ts = cached
+        if caps or (_time.monotonic() - ts) < _OLLAMA_CAPS_TTL:
+            return caps
+
+    caps: list[str] = []
+    try:
+        root = base_url.rstrip("/")
+        if root.endswith("/v1"):
+            root = root[: -len("/v1")]
+        req = urllib.request.Request(
+            root + "/api/show",
+            data=json.dumps({"model": model}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+        caps = list(data.get("capabilities") or [])
+    except Exception:
+        caps = []
+
+    _OLLAMA_CAPS_CACHE[key] = (caps, _time.monotonic())
+    return caps
 
 
 class CustomProfile(ProviderProfile):
@@ -45,17 +103,30 @@ class CustomProfile(ProviderProfile):
         #   - enabled + no effort  → omit both, so the endpoint applies its own
         #     server-side default (do NOT force a level the user didn't pick).
         #
-        # We deliberately do NOT emit ``think=True`` on enable: it is an
+        # We deliberately do NOT emit think=True on enable: it is an
         # Ollama-only flag and thinking is already server-default-on for these
         # backends, so forcing it risks a 400 on GLM/vLLM endpoints that don't
         # recognize it. Mirrors the DeepSeek/Zai profile precedent.
+        #
+        # For Ollama specifically, gate on the model's declared capabilities:
+        # non-thinking models (e.g. llama3.3:70b — ["completion","tools"])
+        # 400 with "does not support thinking" if think/reasoning_effort is
+        # sent at all, so probe /api/show and skip emitting either field when
+        # the model doesn't advertise "thinking". Non-Ollama custom backends
+        # (vLLM/GLM/llama.cpp) keep the unconditional behavior since they
+        # don't expose an equivalent capability probe.
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
-            if _effort == "none" or _enabled is False:
-                extra_body["think"] = False
-            elif _effort:
-                top_level["reasoning_effort"] = _effort
+            _base_url = ctx.get("base_url")
+            _emit = True
+            if _is_ollama_base_url(_base_url):
+                _emit = "thinking" in _ollama_model_capabilities(ctx.get("model"), _base_url)
+            if _emit:
+                if _effort == "none" or _enabled is False:
+                    extra_body["think"] = False
+                elif _effort:
+                    top_level["reasoning_effort"] = _effort
 
         return extra_body, top_level
 

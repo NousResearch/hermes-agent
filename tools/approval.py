@@ -262,11 +262,11 @@ _HERMES_ENV_PATH = (
 # ~/.hermes/config.yaml IS the security policy: approvals.mode, yolo, and the
 # permanent-approval allowlist live here, and the config cache is mtime-keyed
 # so a write takes effect mid-session (the agent could flip approvals.mode=off
-# and immediately bypass the gate). Pair the write_file/patch deny (file_tools
-# _check_sensitive_path) with terminal-side coverage so `sed -i`, `tee`, `>`,
-# `cp`, etc. targeting it are gated too — otherwise the deny is unpaired
-# theater. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override form as
-# well as ~/.hermes/.
+# and immediately bypass the gate). Pair the write_file/patch approval gate
+# (file_tools) with terminal-side coverage so `sed -i`, `tee`, `>`, `cp`,
+# etc. targeting it are gated too -- otherwise one tool surface becomes an
+# unpaired bypass. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override
+# form as well as ~/.hermes/.
 _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
@@ -3072,6 +3072,212 @@ def check_all_command_guards(command: str, env_type: str,
 
     return {"approved": True, "message": None,
             "user_approved": True, "description": combined_desc}
+
+
+def check_sensitive_file_write_guard(tool_name: str, filepath: str,
+                                     approval_callback=None) -> dict:
+    """Approve a file-tool write to a security-sensitive Hermes file.
+
+    The terminal guard has command-pattern detection for shell edits of
+    ``~/.hermes/config.yaml``. File tools bypass shell strings, so they need an
+    explicit approval request for the same security boundary instead of a hard
+    refusal. Unlike generic terminal commands, a local non-interactive context
+    fails closed: this file is the approval policy itself, so "no approval
+    surface" is not consent.
+    """
+    pattern_key = "modify Hermes config file"
+    description = (
+        f"{tool_name} modifying Hermes config file (~/.hermes/config.yaml). "
+        "This file controls approvals.mode, yolo settings, and persistent "
+        "approval allowlists."
+    )
+    command = f"{tool_name} {filepath}"
+
+    approval_mode = _get_approval_mode()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+        return {"approved": True, "message": None}
+
+    session_key = get_current_session_key()
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
+    if env_var_enabled("HERMES_CRON_SESSION"):
+        if _get_cron_approval_mode() == "approve":
+            return {"approved": True, "message": None}
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: Hermes config file edit requires approval, but cron "
+                "jobs run without a user present to approve it. Use a normal "
+                "interactive session, or set approvals.cron_mode: approve only "
+                "for intentionally trusted cron profiles."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "blocked",
+            "user_consent": False,
+        }
+
+    is_gateway = _is_gateway_approval_context()
+    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_cli = env_var_enabled("HERMES_INTERACTIVE") or approval_callback is not None
+
+    if not is_cli and not is_gateway and not is_ask:
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: Hermes config file edit requires explicit approval, "
+                "but this file tool call has no interactive, gateway, or ask-mode "
+                "approval surface. Do not retry through another tool; ask the "
+                "user to approve the config edit or use 'hermes config'."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "no_approval_surface",
+            "user_consent": False,
+        }
+
+    if approval_mode == "smart":
+        verdict = _smart_approve(command, description)
+        if verdict == "approve":
+            approve_session(session_key, pattern_key)
+            logger.debug("Smart approval: auto-approved Hermes config edit for session %s",
+                         session_key)
+            return {"approved": True, "message": None,
+                    "smart_approved": True, "description": description}
+        if verdict == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED by smart approval: Hermes config file edit was "
+                    "assessed as genuinely dangerous. Do NOT retry."
+                ),
+                "smart_denied": True,
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+
+    if is_gateway or is_ask:
+        notify_cb = None
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+
+        approval_data = {
+            "command": command,
+            "pattern_key": pattern_key,
+            "pattern_keys": [pattern_key],
+            "description": description,
+            "allow_permanent": True,
+        }
+        if notify_cb is None:
+            submit_pending(session_key, approval_data)
+            return {
+                "approved": False,
+                "pattern_key": pattern_key,
+                "status": "pending_approval",
+                "approval_pending": True,
+                "command": command,
+                "description": description,
+                "message": (
+                    f"⚠️ {description}. Asking the user for approval.\n\n"
+                    f"**File tool action:**\n```\n{command}\n```"
+                ),
+            }
+
+        decision = _await_gateway_decision(
+            session_key, notify_cb, approval_data, surface="gateway"
+        )
+        if decision.get("notify_failed"):
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: Failed to send Hermes config edit approval "
+                    "request to user. Do NOT retry."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "notify_failed",
+                "user_consent": False,
+            }
+
+        resolved = decision["resolved"]
+        choice = decision["choice"]
+        if not resolved or choice is None or choice == "deny":
+            reason = "timed out without user response" if not resolved else "denied by user"
+            addendum = " Silence is not consent." if not resolved else ""
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: Hermes config file edit {reason}. The user has "
+                    f"NOT consented to this action. Do NOT retry, do NOT "
+                    f"rephrase it, and do NOT attempt the same outcome via a "
+                    f"different tool.{addendum}"
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "timeout" if not resolved else "denied",
+                "user_consent": False,
+            }
+
+        if choice == "session":
+            approve_session(session_key, pattern_key)
+        elif choice == "always":
+            approve_session(session_key, pattern_key)
+            approve_permanent(pattern_key)
+            save_permanent_allowlist(_permanent_approved)
+
+        return {"approved": True, "message": None,
+                "user_approved": True, "description": description}
+
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="cli",
+    )
+    choice = prompt_dangerous_approval(command, description,
+                                       allow_permanent=True,
+                                       approval_callback=approval_callback)
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="cli",
+        choice=choice,
+    )
+
+    if choice == "deny":
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: User denied this Hermes config file edit. The user "
+                "has NOT consented to this action. Do NOT retry, do NOT "
+                "rephrase it, and do NOT attempt the same outcome via a "
+                "different tool."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "denied",
+            "user_consent": False,
+        }
+
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
+
+    return {"approved": True, "message": None,
+            "user_approved": True, "description": description}
 
 
 def check_execute_code_guard(code: str, env_type: str,

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import time
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -27,9 +28,108 @@ MAX_REGISTRY_RECORDS = 256
 TERMINAL_RETENTION_SECONDS = 7 * 24 * 60 * 60
 ABSOLUTE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 ACTIVE_STALE_SECONDS = 30 * 24 * 60 * 60
+# Lifecycle breadcrumb trail cap per record (oldest entries dropped first).
+MAX_LIFECYCLE_EVENTS = 50
+# Caller-stack frames captured for cancel attribution (innermost frames).
+MAX_ATTRIBUTION_FRAMES = 12
 
 class RegistryError(RuntimeError):
     """Registry cannot be safely read or mutated."""
+
+
+def _capture_caller_stack(*, skip_frames: int = 3) -> list[str]:
+    """Innermost caller frames as compact ``file:line:func`` strings.
+
+    ``skip_frames`` drops this helper, ``_stamp_cancel_attribution``, and
+    the store-internal cancel writer (``cancel_matching`` /
+    ``transition_owned``) so the trail starts at the runtime code that
+    requested the cancellation — the WHO for Phase-0 cancel forensics.
+    """
+    try:
+        frames = traceback.extract_stack()
+        if skip_frames:
+            frames = frames[:-skip_frames]
+        return [
+            f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+            for frame in frames[-MAX_ATTRIBUTION_FRAMES:]
+        ]
+    except Exception:  # pragma: no cover - forensics must never break a cancel
+        return []
+
+
+def append_lifecycle_event(
+    record: dict[str, Any],
+    event: str,
+    detail: str = "",
+    *,
+    now: float | None = None,
+) -> None:
+    """Append a breadcrumb to the record's additive ``lifecycle`` trail.
+
+    Purely observational (Phase-0 cancel forensics): older readers ignore the
+    key, and records written before the upgrade simply have no trail.
+    """
+    try:
+        trail = record.setdefault("lifecycle", [])
+        if not isinstance(trail, list):  # defensive against hand-edited state
+            return
+        entry: dict[str, Any] = {"event": str(event), "ts": now if now is not None else time.time()}
+        if detail:
+            entry["detail"] = str(detail)[:240]
+        trail.append(entry)
+        if len(trail) > MAX_LIFECYCLE_EVENTS:
+            del trail[: len(trail) - MAX_LIFECYCLE_EVENTS]
+    except Exception:  # pragma: no cover - forensics must never break a write
+        pass
+
+
+def _stamp_cancel_attribution(
+    record: dict[str, Any],
+    *,
+    now: float,
+    reason: str,
+    caller: str,
+    via: str,
+    selector: dict[str, Any] | None = None,
+) -> None:
+    """Stamp WHO/WHY/WHEN onto a record entering ``state=cancelled``.
+
+    Additive schema (Phase-0 of the parent-interrupt spec): every writer of
+    ``state=cancelled`` records which terminal path asked for the cancel, the
+    caller stack that reached it, and the wall-clock time — so the next
+    "silent death" in ``async-delegations.json`` is attributable instead of
+    mysterious. Never overwrites an earlier stamp (first cancel wins).
+    """
+    try:
+        if isinstance(record.get("cancel_attribution"), dict):
+            return
+        attribution: dict[str, Any] = {
+            "reason": str(reason or "unspecified"),
+            "caller": str(caller or "unknown"),
+            "via": str(via),
+            "cancelled_at": now,
+            "stack": _capture_caller_stack(skip_frames=3),
+        }
+        if selector:
+            attribution["selector"] = {
+                k: v for k, v in selector.items() if v not in ("", None, False)
+            }
+        record["cancel_attribution"] = attribution
+        append_lifecycle_event(
+            record,
+            "cancelled",
+            f"by={attribution['caller']} reason={attribution['reason']} via={via}",
+            now=now,
+        )
+        logger.info(
+            "async_delegation_cancelled delegation_id=%s reason=%s caller=%s via=%s",
+            record.get("delegation_id"),
+            attribution["reason"],
+            attribution["caller"],
+            via,
+        )
+    except Exception:  # pragma: no cover - forensics must never break a cancel
+        pass
 
 
 def registry_path(profile_home: Path | None = None) -> Path:
@@ -346,6 +446,12 @@ def persist_dispatch(
                 "terminal": None,
                 "outbox": [],
             }
+            append_lifecycle_event(
+                record,
+                "spawned",
+                f"boot={boot_id} profile={record['profile']}",
+                now=dispatched_at,
+            )
             registry["records"][delegation_id] = record
         logger.info(
             "async_delegation_persisted delegation_id=%s attempt_id=%s owner_boot_id=%s profile=%s",
@@ -379,8 +485,10 @@ def mark_submitted(
             return False
         if record.get("attempt", {}).get("attempt_id") != attempt_id:
             return False
-        record["attempt"]["submitted_at"] = time.time()
-        record["updated_at"] = time.time()
+        now = time.time()
+        record["attempt"]["submitted_at"] = now
+        record["updated_at"] = now
+        append_lifecycle_event(record, "running", f"attempt={attempt_id}", now=now)
         return True
 
 
@@ -466,6 +574,12 @@ def append_terminal(
             "error": result.get("error"),
         }
         record["updated_at"] = payload["completed_at"]
+        append_lifecycle_event(
+            record,
+            terminal_state,
+            f"status={status} attempt={attempt_id}",
+            now=payload["completed_at"],
+        )
         if not any(event.get("event_id") == event_id for event in record.get("outbox", [])):
             record.setdefault("outbox", []).append({
                 "event_id": event_id,
@@ -502,6 +616,8 @@ def transition_owned(
     *,
     profile_home: Path | None = None,
     timeout: float = 5.0,
+    reason: str = "unspecified",
+    caller: str = "",
 ) -> bool:
     try:
         with locked_registry(profile_home, timeout=timeout) as registry:
@@ -515,6 +631,19 @@ def transition_owned(
                     record["state"] = state
                     record["updated_at"] = now
                     record["attempt"]["last_interrupted_at"] = now
+                    if state == "cancelled":
+                        _stamp_cancel_attribution(
+                            record,
+                            now=now,
+                            reason=reason,
+                            caller=caller,
+                            via="transition_owned",
+                            selector={"delegation_ids": list(delegation_ids)},
+                        )
+                    else:
+                        append_lifecycle_event(
+                            record, state, f"by={caller or 'unknown'} reason={reason}", now=now
+                        )
                     if state == "cancelled":
                         for event in record.get("outbox", []):
                             if (
@@ -544,8 +673,15 @@ def cancel_matching(
     origin_ui_session_id: str = "",
     all_active: bool = False,
     profile_home: Path | None = None,
+    reason: str = "unspecified",
+    caller: str = "",
 ) -> int:
-    """Durably cancel active records, including resume-disabled records."""
+    """Durably cancel active records, including resume-disabled records.
+
+    ``reason``/``caller`` are Phase-0 cancel forensics: they are stamped into
+    each cancelled record's additive ``cancel_attribution`` block (WHO/WHY/
+    WHEN) and change no cancellation behavior.
+    """
     if not registry_path(profile_home).exists():
         return 0
     count = 0
@@ -585,6 +721,19 @@ def cancel_matching(
                 continue
             record["state"] = "cancelled"
             record["updated_at"] = now
+            _stamp_cancel_attribution(
+                record,
+                now=now,
+                reason=reason,
+                caller=caller,
+                via="cancel_matching",
+                selector={
+                    "session_key": session_key,
+                    "parent_session_id": parent_session_id,
+                    "origin_ui_session_id": origin_ui_session_id,
+                    "all_active": all_active,
+                },
+            )
             attempt = record.get("attempt")
             if isinstance(attempt, dict):
                 attempt["last_interrupted_at"] = now

@@ -905,7 +905,19 @@ def list_async_delegations() -> List[Dict[str, Any]]:
     except _store.RegistryError:
         durable_records = {}
     for delegation_id, record in durable_records.items():
-        if delegation_id in live or not isinstance(record, dict):
+        if not isinstance(record, dict):
+            continue
+        if delegation_id in live:
+            # The runner thread can outlive a durable cancel by many seconds;
+            # surface the durable attribution even while the in-memory handle
+            # still reports the delegation as running (Phase-0 forensics).
+            cancel_attribution = record.get("cancel_attribution")
+            if isinstance(cancel_attribution, dict) and "cancel_attribution" not in live[delegation_id]:
+                live[delegation_id]["cancel_attribution"] = {
+                    "reason": cancel_attribution.get("reason"),
+                    "caller": cancel_attribution.get("caller"),
+                    "cancelled_at": cancel_attribution.get("cancelled_at"),
+                }
             continue
         source = record.get("source") or {}
         execution = record.get("execution") or {}
@@ -923,17 +935,44 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             "model": execution.get("model"),
             "goal": str(goal or "")[:160],
         }
+        cancel_attribution = record.get("cancel_attribution")
+        if isinstance(cancel_attribution, dict):
+            live[delegation_id]["cancel_attribution"] = {
+                "reason": cancel_attribution.get("reason"),
+                "caller": cancel_attribution.get("caller"),
+                "cancelled_at": cancel_attribution.get("cancelled_at"),
+            }
     return list(live.values())
 
 
 def _mark_recoverable(
-    delegation_ids: List[str], *, lock_timeout: float = 0.1
+    delegation_ids: List[str], *, lock_timeout: float = 0.1,
+    reason: str = "unspecified", caller: str = "",
 ) -> bool:
     return _store.transition_owned(
         delegation_ids,
         "recoverable",
         timeout=lock_timeout,
+        reason=reason,
+        caller=caller,
     )
+
+
+def _immediate_caller(depth: int = 2) -> str:
+    """``file:line:func`` of the runtime frame that asked for a cancel.
+
+    Phase-0 cancel forensics: cheap single-frame lookup (no full traceback)
+    naming WHO invoked ``interrupt_all``/``interrupt_for_session`` so the
+    durable record's ``cancel_attribution.caller`` is meaningful even without
+    reading the captured stack.
+    """
+    try:
+        import sys
+
+        frame = sys._getframe(depth)
+        return f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}:{frame.f_code.co_name}"
+    except Exception:  # pragma: no cover - forensics must never break a cancel
+        return "unknown"
 
 
 def interrupt_all(
@@ -949,6 +988,7 @@ def interrupt_all(
     completion event (status='interrupted') via the normal finalize path.
     """
     count = 0
+    caller = _immediate_caller()
     with _records_lock:
         targets = [
             r for r in _records.values() if r.get("status") == "running"
@@ -960,11 +1000,13 @@ def interrupt_all(
     if recoverable and durable_ids:
         # Best-effort optimization only. Lock acquisition is bounded so shutdown
         # never stalls; running+dead-boot recovery is the guaranteed equivalent.
-        _mark_recoverable(durable_ids, lock_timeout=lock_timeout)
+        _mark_recoverable(
+            durable_ids, lock_timeout=lock_timeout, reason=reason, caller=caller
+        )
     elif not recoverable:
         # /stop and other explicit parent/user cancellation are terminal,
         # including resume-disabled records without a live handle.
-        _store.cancel_matching(all_active=True)
+        _store.cancel_matching(all_active=True, reason=reason, caller=caller)
     for r in targets:
         fn = r.get("interrupt_fn")
         if callable(fn):
@@ -1044,6 +1086,8 @@ def interrupt_for_session(
         session_key=session_key,
         parent_session_id=parent_session_id,
         origin_ui_session_id=origin_ui_session_id,
+        reason=reason,
+        caller=_immediate_caller(),
     )
     for r in targets:
         fn = r.get("interrupt_fn")

@@ -9,9 +9,9 @@
 
 | row | tool §10 | test_id / tag | status |
 |---|---|---|---|
-| I1-01 | §10-8 | mw-backend-check | pending-i2e |
-| I1-03 | §10-8 | mw-backend-check | pending-i2e |
-| I1-04 | §10-8 | mw-backend-check | pending-i2e |
+| I1-01 | §10-8 | test_site_exists_pass | mapped |
+| I1-03 | §10-8 | test_broken_file_report_pass | mapped |
+| I1-04 | §10-8 | test_es_search_pass | mapped |
 | I1-05 | §10-2 | test_pagination_many_items_no_control_fail | mapped |
 | I1-07 | §10-7 | ds-check | external |
 | I1-10 | §10-2 | test_pagination_many_items_with_control_pass | mapped |
@@ -27,16 +27,16 @@
 | I2-03 | §10-2 | test_pagination_stale_item_selector_fail | mapped |
 | I2-04 | §10-1 | test_fix_b_structural_zero_items_never_closeable | mapped |
 | I3-02 | §10-3 | test_reg_mixed_pass_fail_conflict_not_verified | mapped |
-| I3-03 | §10-8 | mw-backend-check | pending-i2e |
+| I3-03 | §10-8 | test_siteid_isolation_leak_fail | mapped |
 | I3-04 | §10-2 | test_language_bilingual_missing_en_fail | mapped |
-| I3-05 | §10-8 | mw-backend-check | pending-i2e |
-| I3-06 | §10-8 | mw-backend-check | pending-i2e |
-| I3-07 | §10-8 | mw-backend-check | pending-i2e |
+| I3-05 | §10-8 | test_data_parity_sampled_label_and_full_field_check | mapped |
+| I3-06 | §10-8 | test_form_cycle_pass | mapped |
+| I3-07 | §10-8 | test_dashboard_parity_pass | mapped |
 | I3-08 | §10-2 | test_good_page_all_pass_deliverable | mapped |
 | I3-09 | §10-4 | test_status_lists_active_only | mapped |
 | I3-10 | §10-2 | test_language_bilingual_pass | mapped |
 | I3-R2 | §10-2 | test_soft_404_phrase_fail | mapped |
-| I3-R6 | §10-8 | mw-backend-check | pending-i2e |
+| I3-R6 | §10-8 | test_form_cycle_pass | mapped |
 | I3-R7 | §10-4 | test_t2_two_clones_one_wins | mapped |
 | I4-02 | §10-9 | gitleaks | external |
 | I4-03 | §10-Q | Use QA QC | external |
@@ -44,8 +44,8 @@
 
 ## สรุป
 - แถว [G] ทั้งหมด: **32**
-- `mapped` (มี pytest test จริงในชุด mw): **20**
+- `mapped` (มี pytest test จริงในชุด mw): **28**
 - `external` (เครื่องมือมีอยู่แล้ว: ds-check / hermes-write-permit / gitleaks / Use QA QC): **4**
-- `pending-i2e` (รอ `mw-backend-check` §10-8 เฟส P4): **8**
+- `pending-i2e` (รอ `mw-backend-check` §10-8 เฟส P4): **0** — I2e เสร็จแล้ว (2026-07-14) ผูก test จริงครบ
 
-**สัญญา §13 ข้อ 1:** ครบ 24/32 แถวผูก test ID/เครื่องมือจริง (75%) · 8 แถวที่เหลือเป็น §10-8 ที่แผนกำหนดให้ทำใน P4 (mw-backend-check ต้องมี DB จริง) — ไม่ใช่ค้างเพราะพลาด แต่เลื่อนตามแผน · จะครบ 100% เมื่อ I2e เสร็จ
+**สัญญา §13 ข้อ 1:** ครบ **32/32** แถวผูก test ID/เครื่องมือจริง (100%) · I2e (mw-backend-check) เสร็จ 2026-07-14 ผูก 8 แถว §10-8 กับ test จริง · เครื่อง `mw-spec-check` = COMPLETE

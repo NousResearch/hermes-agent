@@ -1818,6 +1818,40 @@ class SessionStore:
             with inflight_lock:
                 self._inflight_sessions.pop(session_key, None)
 
+    def _refresh_origin_message_id_locked(
+        self,
+        entry: SessionEntry,
+        source: SessionSource,
+    ) -> bool:
+        """Keep ``entry.origin.message_id`` current on session reuse.
+
+        ``entry.origin`` is captured once at session creation and otherwise
+        never updated, so its ``message_id`` goes stale after the first turn.
+        Background deliveries (cron results, delegate_task completions) read
+        ``origin.message_id`` as their reply anchor. On platforms that route
+        replies by message_id — notably Feishu topic groups, where thread_id
+        alone does not pin the reply to the right topic — a stale/missing
+        anchor makes the delivery spawn a new top-level thread instead of
+        replying in the ongoing conversation.
+
+        Copy the freshest inbound ``source.message_id`` onto the persisted
+        origin whenever one is present. Returns True when a change was made so
+        callers can decide whether a save is warranted; callers that already
+        mark ``_needs_save`` for other reasons may ignore the return value.
+
+        Must be called while holding ``self._lock``.
+        """
+        new_message_id = source.message_id
+        if not new_message_id:
+            return False
+        origin = entry.origin
+        if origin is None:
+            return False
+        if origin.message_id == new_message_id:
+            return False
+        origin.message_id = new_message_id
+        return True
+
     def _get_or_create_session_impl(
         self,
         source: SessionSource,
@@ -1921,6 +1955,7 @@ class SessionStore:
                     # Another thread handled this entry during our lock-free
                     # window.  Treat as healthy -- bump updated_at and save.
                     entry.updated_at = now
+                    self._refresh_origin_message_id_locked(entry, source)
                     _needs_save = True
                 else:
                     # Stale check clean.  Apply reset decision.
@@ -1934,6 +1969,7 @@ class SessionStore:
                         _needs_recover = True
                     else:
                         entry.updated_at = now
+                        self._refresh_origin_message_id_locked(entry, source)
                         _needs_save = True
             else:
                 if not force_new:

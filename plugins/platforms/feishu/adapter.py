@@ -3292,6 +3292,12 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            # Carry the inbound message id on the source too, not just the
+            # MessageEvent. Session routing refreshes origin.message_id from
+            # source on reuse so background deliveries (cron results,
+            # delegate_task completions) reply into the correct Feishu topic
+            # thread instead of spawning an orphan thread.
+            message_id=message_id,
         )
         normalized = MessageEvent(
             text=text,

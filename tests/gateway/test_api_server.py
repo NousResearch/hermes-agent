@@ -14,6 +14,7 @@ Tests cover:
 
 import asyncio
 import json
+import logging
 import os
 import stat
 import time
@@ -25,6 +26,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.api_operator_auth import OperatorCredentialStore
+from gateway.api_operator_enrollment import OperatorEnrollmentStore
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -613,6 +615,11 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
+    app.router.add_post("/v1/operator/enrollments", adapter._handle_create_enrollment)
+    app.router.add_post("/v1/operator/enrollments/inspect", adapter._handle_inspect_enrollment)
+    app.router.add_post("/v1/operator/enrollments/exchange", adapter._handle_exchange_enrollment)
+    app.router.add_get("/v1/operator/credentials", adapter._handle_list_operator_credentials)
+    app.router.add_delete("/v1/operator/credentials/{credential_id}", adapter._handle_revoke_operator_credential)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -3940,3 +3947,215 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
+
+
+# ---------------------------------------------------------------------------
+# Operator enrollment (one-time pairing codes) and credential lifecycle HTTP
+# handlers.
+# ---------------------------------------------------------------------------
+
+
+def _enrollment_adapter(tmp_path, *, api_key: str = "sk-test"):
+    """Adapter wired with both operator stores, sharing one credential store."""
+    credentials = OperatorCredentialStore(tmp_path / "credentials.json")
+    enrollments = OperatorEnrollmentStore(tmp_path / "enrollments.json", credentials)
+    adapter = _make_adapter(api_key=api_key)
+    adapter._operator_credentials = credentials
+    adapter._operator_enrollments = enrollments
+    return adapter, credentials, enrollments
+
+
+class TestOperatorEnrollmentEndpoints:
+    @pytest.mark.asyncio
+    async def test_create_enrollment_requires_settings_write_scope(self, tmp_path):
+        adapter, credentials, _enrollments = _enrollment_adapter(tmp_path)
+        # A token scoped only to profiles:read must not be able to mint
+        # pairing codes.
+        under_scoped = credentials.issue("phone", ["profiles:read"]).token
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            unauthenticated = await cli.post(
+                "/v1/operator/enrollments",
+                json={"label": "Pixel", "origin": "https://hermes.example", "scopes": ["chat:read"]},
+            )
+            assert unauthenticated.status == 401
+
+            forbidden = await cli.post(
+                "/v1/operator/enrollments",
+                headers={"Authorization": f"Bearer {under_scoped}"},
+                json={"label": "Pixel", "origin": "https://hermes.example", "scopes": ["chat:read"]},
+            )
+            assert forbidden.status == 403
+            assert (await forbidden.json())["error"]["code"] == "insufficient_scope"
+
+    @pytest.mark.asyncio
+    async def test_create_enrollment_returns_pairing_uri_expiry_and_scopes(self, tmp_path):
+        adapter, _credentials, _enrollments = _enrollment_adapter(tmp_path)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/operator/enrollments",
+                headers={"Authorization": "Bearer sk-test"},
+                json={
+                    "label": "Galaxy S24",
+                    "origin": "https://hermes.example",
+                    "scopes": ["chat:write", "profiles:read"],
+                },
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["scopes"] == ["chat:write", "profiles:read"]
+            assert isinstance(data["expires_at"], (int, float))
+            assert data["pairing_uri"].startswith("navivox://connect?")
+            assert "origin=https%3A%2F%2Fhermes.example" in data["pairing_uri"]
+            assert "code=" in data["pairing_uri"]
+
+    @pytest.mark.asyncio
+    async def test_create_enrollment_rejects_unknown_scope(self, tmp_path):
+        adapter, _credentials, _enrollments = _enrollment_adapter(tmp_path)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/operator/enrollments",
+                headers={"Authorization": "Bearer sk-test"},
+                json={"label": "Pixel", "origin": "https://hermes.example", "scopes": ["filesystem:write"]},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"]["code"] == "invalid_scopes"
+
+    @pytest.mark.asyncio
+    async def test_inspect_and_exchange_do_not_require_auth(self, tmp_path):
+        adapter, _credentials, enrollments = _enrollment_adapter(tmp_path)
+        grant = enrollments.create(label="Pixel", origin="https://hermes.example", scopes=["chat:read"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            inspect_resp = await cli.post(
+                "/v1/operator/enrollments/inspect",
+                json={"code": grant.code, "origin": "https://hermes.example"},
+            )
+            assert inspect_resp.status == 200
+            preview = await inspect_resp.json()
+            assert preview == {
+                "label": "Pixel",
+                "origin": "https://hermes.example",
+                "scopes": ["chat:read"],
+                "expires_at": grant.expires_at,
+            }
+
+            exchange_resp = await cli.post(
+                "/v1/operator/enrollments/exchange",
+                json={"code": grant.code, "origin": "https://hermes.example"},
+            )
+            assert exchange_resp.status == 200
+            issued = await exchange_resp.json()
+            assert issued["token"].startswith("hop_")
+            assert issued["credential"]["scopes"] == ["chat:read"]
+            assert "token" not in issued["credential"]
+
+            # The code is now consumed: a second exchange must fail.
+            replay = await cli.post(
+                "/v1/operator/enrollments/exchange",
+                json={"code": grant.code, "origin": "https://hermes.example"},
+            )
+            assert replay.status == 404
+            assert (await replay.json())["error"]["code"] == "enrollment_not_found"
+
+    @pytest.mark.asyncio
+    async def test_exchange_rejects_origin_mismatch_without_leaking(self, tmp_path):
+        adapter, _credentials, enrollments = _enrollment_adapter(tmp_path)
+        grant = enrollments.create(label="Pixel", origin="https://hermes.example", scopes=["chat:read"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            mismatched = await cli.post(
+                "/v1/operator/enrollments/exchange",
+                json={"code": grant.code, "origin": "https://attacker.example"},
+            )
+            assert mismatched.status == 404
+            body = await mismatched.json()
+            assert body["error"]["code"] == "enrollment_not_found"
+            serialized = json.dumps(body)
+            assert grant.code not in serialized
+
+            # The code must still be usable from the correct origin.
+            ok = await cli.post(
+                "/v1/operator/enrollments/exchange",
+                json={"code": grant.code, "origin": "https://hermes.example"},
+            )
+            assert ok.status == 200
+
+    @pytest.mark.asyncio
+    async def test_inspect_and_exchange_do_not_log_code_or_token(self, tmp_path, caplog):
+        adapter, _credentials, enrollments = _enrollment_adapter(tmp_path)
+        grant = enrollments.create(label="Pixel", origin="https://hermes.example", scopes=["chat:read"])
+        app = _create_app(adapter)
+
+        with caplog.at_level(logging.DEBUG):
+            async with TestClient(TestServer(app)) as cli:
+                # A wrong-code guess must not log the guessed value either.
+                await cli.post(
+                    "/v1/operator/enrollments/inspect",
+                    json={"code": "guessed-wrong-code", "origin": "https://hermes.example"},
+                )
+                inspect_resp = await cli.post(
+                    "/v1/operator/enrollments/inspect",
+                    json={"code": grant.code, "origin": "https://hermes.example"},
+                )
+                assert inspect_resp.status == 200
+
+                exchange_resp = await cli.post(
+                    "/v1/operator/enrollments/exchange",
+                    json={"code": grant.code, "origin": "https://hermes.example"},
+                )
+                assert exchange_resp.status == 200
+                token = (await exchange_resp.json())["token"]
+
+        log_text = caplog.text
+        assert grant.code not in log_text
+        assert "guessed-wrong-code" not in log_text
+        assert token not in log_text
+
+    @pytest.mark.asyncio
+    async def test_list_operator_credentials_requires_settings_read(self, tmp_path):
+        adapter, credentials, _enrollments = _enrollment_adapter(tmp_path)
+        issued = credentials.issue("Pixel", ["chat:read"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            unauthenticated = await cli.get("/v1/operator/credentials")
+            assert unauthenticated.status == 401
+
+            authed = await cli.get(
+                "/v1/operator/credentials", headers={"Authorization": "Bearer sk-test"},
+            )
+            assert authed.status == 200
+            data = await authed.json()
+            assert data["data"][0]["credential_id"] == issued.credential_id
+            assert data["data"][0]["label"] == "Pixel"
+            serialized = json.dumps(data)
+            assert issued.token not in serialized
+
+    @pytest.mark.asyncio
+    async def test_revoke_operator_credential_requires_settings_write(self, tmp_path):
+        adapter, credentials, _enrollments = _enrollment_adapter(tmp_path)
+        issued = credentials.issue("Pixel", ["chat:read"])
+        under_scoped = credentials.issue("phone", ["profiles:read"]).token
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            forbidden = await cli.delete(
+                f"/v1/operator/credentials/{issued.credential_id}",
+                headers={"Authorization": f"Bearer {under_scoped}"},
+            )
+            assert forbidden.status == 403
+
+            revoked = await cli.delete(
+                f"/v1/operator/credentials/{issued.credential_id}",
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert revoked.status == 200
+            assert (await revoked.json())["deleted"] is True
+            assert credentials.authenticate(issued.token) is None
+
+            missing = await cli.delete(
+                "/v1/operator/credentials/hoc_does-not-exist",
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert missing.status == 404

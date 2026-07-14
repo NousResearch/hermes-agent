@@ -8,6 +8,11 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- POST /v1/operator/enrollments            — mint a one-time pairing code (settings:write)
+- POST /v1/operator/enrollments/inspect    — preview a pending grant by code + origin
+- POST /v1/operator/enrollments/exchange   — consume a code, mint a scoped operator token
+- GET  /v1/operator/credentials            — list issued operator credentials (settings:read)
+- DELETE /v1/operator/credentials/{credential_id} — revoke an operator credential (settings:write)
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
@@ -44,6 +49,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 try:
     from aiohttp import web
@@ -60,6 +66,7 @@ from gateway.platforms.base import (
 )
 from agent.redact import redact_sensitive_text
 from gateway.api_operator_auth import AuthPrincipal, OperatorCredentialStore
+from gateway.api_operator_enrollment import OperatorEnrollmentStore
 
 logger = logging.getLogger(__name__)
 
@@ -783,6 +790,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # When None *and* no API_SERVER_KEY is configured, the server is open
         # (dev/test wiring), matching the historical _check_auth behavior.
         self._operator_credentials: Optional[OperatorCredentialStore] = None
+        # One-time pairing-code enrollment store, wired alongside
+        # _operator_credentials in connect() (shares that credential store
+        # so a successful exchange can mint a token directly).
+        self._operator_enrollments: Optional[OperatorEnrollmentStore] = None
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -1538,6 +1549,180 @@ class APIServerAdapter(BasePlatformAdapter):
         if not isinstance(body, dict):
             return {}, web.json_response(_openai_error("Request body must be a JSON object"), status=400)
         return body, None
+
+    # ------------------------------------------------------------------
+    # Operator enrollment (one-time pairing codes) and credential lifecycle
+    # ------------------------------------------------------------------
+
+    async def _handle_create_enrollment(self, request: "web.Request") -> "web.Response":
+        """POST /v1/operator/enrollments — mint a one-time pairing code.
+
+        Requires ``settings:write`` (or superuser). The response carries a
+        ``pairing_uri`` embedding the raw code for the caller to relay
+        out-of-band (QR code, deep link) to the enrolling device — the code
+        itself is never written to disk in plaintext.
+        """
+        _principal, auth_err = self._authorize(request, "settings:write")
+        if auth_err:
+            return auth_err
+        if self._operator_enrollments is None:
+            return web.json_response(
+                _openai_error("Operator enrollment store unavailable", code="operator_enrollment_unavailable"),
+                status=503,
+            )
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        label = body.get("label")
+        if not isinstance(label, str) or not label.strip():
+            return web.json_response(_openai_error("label is required", code="invalid_label"), status=400)
+        origin = body.get("origin")
+        if not isinstance(origin, str) or not origin.strip():
+            return web.json_response(_openai_error("origin is required", code="invalid_origin"), status=400)
+        raw_scopes = body.get("scopes")
+        if not isinstance(raw_scopes, list) or not raw_scopes or not all(isinstance(s, str) for s in raw_scopes):
+            return web.json_response(
+                _openai_error("scopes must be a non-empty array of strings", code="invalid_scopes"), status=400,
+            )
+
+        try:
+            grant = self._operator_enrollments.create(label=label, origin=origin, scopes=raw_scopes)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_scopes"), status=400)
+
+        pairing_uri = "navivox://connect?" + urlencode({"origin": grant.origin, "code": grant.code})
+        return web.json_response(
+            {
+                "pairing_uri": pairing_uri,
+                "expires_at": grant.expires_at,
+                "scopes": list(grant.scopes),
+            },
+            status=201,
+        )
+
+    async def _handle_inspect_enrollment(self, request: "web.Request") -> "web.Response":
+        """POST /v1/operator/enrollments/inspect — preview a pending grant.
+
+        No bearer auth: the caller authenticates by presenting the one-time
+        code and matching origin, before it has any credential. The request
+        body (which carries the raw code) is never logged — only the
+        sanitized, code-free audit context helpers are used elsewhere.
+        """
+        if self._operator_enrollments is None:
+            return web.json_response(
+                _openai_error("Operator enrollment store unavailable", code="operator_enrollment_unavailable"),
+                status=503,
+            )
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        code = body.get("code")
+        origin = body.get("origin")
+        if not isinstance(code, str) or not code or not isinstance(origin, str) or not origin:
+            return web.json_response(
+                _openai_error("code and origin are required", code="invalid_enrollment_request"), status=400,
+            )
+
+        preview = self._operator_enrollments.inspect(code, origin)
+        if preview is None:
+            return web.json_response(
+                _openai_error("Invalid or expired pairing code", code="enrollment_not_found"), status=404,
+            )
+        return web.json_response({
+            "label": preview.label,
+            "origin": preview.origin,
+            "scopes": list(preview.scopes),
+            "expires_at": preview.expires_at,
+        })
+
+    async def _handle_exchange_enrollment(self, request: "web.Request") -> "web.Response":
+        """POST /v1/operator/enrollments/exchange — consume the code, mint a token.
+
+        No bearer auth (same rationale as inspect). Returns the raw operator
+        token exactly once; it is never persisted in plaintext nor logged.
+        """
+        if self._operator_enrollments is None:
+            return web.json_response(
+                _openai_error("Operator enrollment store unavailable", code="operator_enrollment_unavailable"),
+                status=503,
+            )
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        code = body.get("code")
+        origin = body.get("origin")
+        if not isinstance(code, str) or not code or not isinstance(origin, str) or not origin:
+            return web.json_response(
+                _openai_error("code and origin are required", code="invalid_enrollment_request"), status=400,
+            )
+
+        issued = self._operator_enrollments.exchange(code, origin)
+        if issued is None:
+            return web.json_response(
+                _openai_error("Invalid or expired pairing code", code="enrollment_not_found"), status=404,
+            )
+        return web.json_response({
+            "token": issued.token,
+            "credential": {
+                "credential_id": issued.credential_id,
+                "label": issued.label,
+                "scopes": list(issued.scopes),
+                "created_at": issued.created_at,
+            },
+        })
+
+    async def _handle_list_operator_credentials(self, request: "web.Request") -> "web.Response":
+        """GET /v1/operator/credentials — list issued credential summaries.
+
+        Requires ``settings:read``. Summaries never carry the token itself
+        (only :class:`~gateway.api_operator_auth.CredentialSummary` fields).
+        """
+        _principal, auth_err = self._authorize(request, "settings:read")
+        if auth_err:
+            return auth_err
+        if self._operator_credentials is None:
+            return web.json_response(
+                _openai_error("Operator credential store unavailable", code="operator_credentials_unavailable"),
+                status=503,
+            )
+        summaries = self._operator_credentials.list_credentials()
+        return web.json_response({
+            "object": "list",
+            "data": [
+                {
+                    "credential_id": summary.credential_id,
+                    "label": summary.label,
+                    "scopes": list(summary.scopes),
+                    "created_at": summary.created_at,
+                    "revoked_at": summary.revoked_at,
+                }
+                for summary in summaries
+            ],
+        })
+
+    async def _handle_revoke_operator_credential(self, request: "web.Request") -> "web.Response":
+        """DELETE /v1/operator/credentials/{credential_id} — revoke a token.
+
+        Requires ``settings:write``.
+        """
+        _principal, auth_err = self._authorize(request, "settings:write")
+        if auth_err:
+            return auth_err
+        if self._operator_credentials is None:
+            return web.json_response(
+                _openai_error("Operator credential store unavailable", code="operator_credentials_unavailable"),
+                status=503,
+            )
+        credential_id = request.match_info["credential_id"]
+        revoked = self._operator_credentials.revoke(credential_id)
+        if not revoked:
+            return web.json_response(
+                _openai_error(f"Credential not found: {credential_id}", code="credential_not_found"), status=404,
+            )
+        return web.json_response(
+            {"object": "hermes.operator_credential.deleted", "id": credential_id, "deleted": True}
+        )
 
     def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
         db = self._ensure_session_db()
@@ -4626,6 +4811,25 @@ class APIServerAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
+        # Wire the one-time enrollment store on top of whichever credential
+        # store just got set up (directly-constructed test adapters keep it
+        # unset unless a test injects one explicitly, same pattern as above).
+        if self._operator_enrollments is None and self._operator_credentials is not None:
+            try:
+                from hermes_cli.config import get_hermes_home
+
+                self._operator_enrollments = OperatorEnrollmentStore(
+                    get_hermes_home() / "operator_enrollments.json",
+                    self._operator_credentials,
+                )
+            except Exception:
+                logger.warning(
+                    "[%s] Could not initialize operator enrollment store; "
+                    "one-time pairing-code enrollment will be unavailable.",
+                    self.name,
+                    exc_info=True,
+                )
+
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
@@ -4637,6 +4841,15 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            # One-time operator enrollment (pairing codes) and scoped
+            # operator-token lifecycle. Creation requires settings:write;
+            # inspect/exchange authenticate via the code + origin itself
+            # (no bearer token exists yet at that point in the flow).
+            self._app.router.add_post("/v1/operator/enrollments", self._handle_create_enrollment)
+            self._app.router.add_post("/v1/operator/enrollments/inspect", self._handle_inspect_enrollment)
+            self._app.router.add_post("/v1/operator/enrollments/exchange", self._handle_exchange_enrollment)
+            self._app.router.add_get("/v1/operator/credentials", self._handle_list_operator_credentials)
+            self._app.router.add_delete("/v1/operator/credentials/{credential_id}", self._handle_revoke_operator_credential)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)

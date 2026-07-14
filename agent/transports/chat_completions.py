@@ -18,6 +18,17 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _merge_extra_body(base: dict, override: dict) -> dict:
+    """Recursively merge request overrides without mutating either input."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = _merge_extra_body(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Return the model's wire-compatible reasoning config."""
     if not isinstance(reasoning_config, dict):
@@ -506,7 +517,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             for key, value in overrides.items():
                 if key == "extra_body" and isinstance(value, dict):
-                    api_kwargs[key] = {**api_kwargs.get(key, {}), **value}
+                    api_kwargs[key] = _merge_extra_body(api_kwargs.get(key, {}), value)
                 else:
                     api_kwargs[key] = value
 
@@ -624,7 +635,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             for k, v in overrides.items():
                 if k == "extra_body" and isinstance(v, dict):
-                    extra_body.update(v)
+                    extra_body = _merge_extra_body(extra_body, v)
                 else:
                     api_kwargs[k] = v
 

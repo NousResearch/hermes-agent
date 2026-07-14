@@ -110,7 +110,10 @@ def test_legacy_transport_merges_extra_body_request_override():
     kwargs = ChatCompletionsTransport().build_kwargs(
         "model",
         [{"role": "user", "content": "hello"}],
-        extra_body_additions={"reasoning": {"effort": "medium"}},
+        extra_body_additions={
+            "provider": {"data_collection": "deny", "require_parameters": True},
+            "reasoning": {"enabled": True, "effort": "medium"},
+        },
         request_overrides={
             "extra_body": {
                 "provider": {"only": ["anthropic"]},
@@ -120,6 +123,32 @@ def test_legacy_transport_merges_extra_body_request_override():
     )
 
     assert kwargs["extra_body"] == {
-        "provider": {"only": ["anthropic"]},
-        "reasoning": {"effort": "high"},
+        "provider": {
+            "data_collection": "deny",
+            "require_parameters": True,
+            "only": ["anthropic"],
+        },
+        "reasoning": {"enabled": True, "effort": "high"},
+    }
+
+
+def test_profile_transport_merges_extra_body_request_override():
+    from providers import get_provider_profile
+
+    kwargs = ChatCompletionsTransport().build_kwargs(
+        "model",
+        [{"role": "user", "content": "hello"}],
+        provider_profile=get_provider_profile("openrouter"),
+        provider_preferences={
+            "data_collection": "deny",
+            "only": ["configured-provider"],
+        },
+        request_overrides={
+            "extra_body": {"provider": {"only": ["cli-provider"]}}
+        },
+    )
+
+    assert kwargs["extra_body"]["provider"] == {
+        "data_collection": "deny",
+        "only": ["cli-provider"],
     }

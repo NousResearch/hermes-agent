@@ -15,21 +15,35 @@ def build_client_from_env(log: logging.Logger | None = None):
     In that case, fall back to the app credentials already configured for the
     gateway instead of reporting that the client is unavailable.
     """
-    app_id = os.getenv("FEISHU_APP_ID") or os.getenv("LARK_APP_ID")
-    app_secret = os.getenv("FEISHU_APP_SECRET") or os.getenv("LARK_APP_SECRET")
+    credential_pairs = (
+        (os.getenv("FEISHU_APP_ID"), os.getenv("FEISHU_APP_SECRET")),
+        (os.getenv("LARK_APP_ID"), os.getenv("LARK_APP_SECRET")),
+    )
+    app_id, app_secret = next(
+        (
+            (app_id, app_secret)
+            for app_id, app_secret in credential_pairs
+            if app_id and app_secret
+        ),
+        (None, None),
+    )
     if not app_id or not app_secret:
         return None
 
     try:
         import lark_oapi as lark
+        from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
     except ImportError:
         return None
 
     try:
+        domain_name = os.getenv("FEISHU_DOMAIN", "").strip().lower()
+        domain = LARK_DOMAIN if domain_name == "lark" else FEISHU_DOMAIN
         return (
             lark.Client.builder()
             .app_id(app_id)
             .app_secret(app_secret)
+            .domain(domain)
             .log_level(lark.LogLevel.ERROR)
             .build()
         )

@@ -3093,6 +3093,17 @@ class TestSendMediaViaAdapter:
         adapter.send_image_file.assert_called_once()
 
 
+class TestMediaExtensionsSharedWithBaseAdapter:
+    """Cron must route media with the same extension sets as the base adapter."""
+
+    def test_extension_sets_are_the_base_adapter_objects(self):
+        import cron.scheduler as scheduler
+        import gateway.platforms.base as base
+
+        assert scheduler._VIDEO_EXTS is base._VIDEO_EXTS
+        assert scheduler._IMAGE_EXTS is base._IMAGE_EXTS
+
+
 class TestParallelTick:
     """Verify that tick() runs due jobs concurrently and isolates ContextVars."""
 

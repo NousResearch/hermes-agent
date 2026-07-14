@@ -20,6 +20,7 @@ creation time and before each command (for resync on Modal).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import posixpath
@@ -104,6 +105,36 @@ def register_credential_file(
     return True
 
 
+def _json_path_has_truthy_value(path: Path, expression: str) -> bool:
+    """Return whether a dotted JSON path resolves to any truthy value.
+
+    ``*`` expands mapping values or list items, allowing declarations such as
+    ``contexts.*.token`` without embedding service-specific readiness logic.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+
+    candidates = [payload]
+    for segment in expression.split("."):
+        if not segment:
+            return False
+        next_candidates = []
+        for candidate in candidates:
+            if segment == "*":
+                if isinstance(candidate, dict):
+                    next_candidates.extend(candidate.values())
+                elif isinstance(candidate, list):
+                    next_candidates.extend(candidate)
+            elif isinstance(candidate, dict) and segment in candidate:
+                next_candidates.append(candidate[segment])
+        candidates = next_candidates
+        if not candidates:
+            return False
+    return any(bool(candidate) for candidate in candidates)
+
+
 def register_credential_files(
     entries: list,
     container_base: str = "/root/.hermes",
@@ -111,7 +142,9 @@ def register_credential_files(
     """Register credential files and return unsatisfied requirements.
 
     Existing files are always registered. Missing entries with ``optional:
-    true`` do not affect readiness. Entries sharing an ``alternative_group``
+    true`` do not affect readiness. ``readiness_json_path`` can require a
+    truthy value at a dotted JSON path (with ``*`` wildcards) while still
+    mounting an incomplete file. Entries sharing an ``alternative_group``
     form an AND-layout, while the named groups are alternatives: satisfying
     every non-optional file in any one group satisfies all grouped entries.
     Ungrouped non-optional entries remain independently required.
@@ -121,12 +154,14 @@ def register_credential_files(
     for entry in entries:
         optional = False
         alternative_group = ""
+        readiness_json_path = ""
         if isinstance(entry, str):
             rel_path = entry.strip()
         elif isinstance(entry, dict):
             rel_path = (entry.get("path") or entry.get("name") or "").strip()
             optional = entry.get("optional") is True
             alternative_group = str(entry.get("alternative_group") or "").strip()
+            readiness_json_path = str(entry.get("readiness_json_path") or "").strip()
         else:
             continue
         if not rel_path:
@@ -134,7 +169,13 @@ def register_credential_files(
         if alternative_group:
             group_missing.setdefault(alternative_group, [])
         registered = register_credential_file(rel_path, container_base)
-        if registered or optional:
+        ready = registered
+        if registered and readiness_json_path:
+            ready = _json_path_has_truthy_value(
+                (_resolve_hermes_home() / rel_path).resolve(),
+                readiness_json_path,
+            )
+        if ready or optional:
             continue
         if alternative_group:
             group_missing[alternative_group].append(rel_path)

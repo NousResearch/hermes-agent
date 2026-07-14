@@ -119,14 +119,22 @@ def legacy_pending_path() -> Path:
     return hermes_home() / LEGACY_PENDING_NAME
 
 
-def _read_json_file(path: Path) -> dict[str, Any]:
+def _read_json_file(path: Path) -> tuple[bool, dict[str, Any] | None]:
+    """Return ``(readable, payload)`` for an optional legacy JSON source.
+
+    Missing files are readable with no payload. Existing malformed, empty, or
+    non-object files are incomplete and must delay the one-time migration so a
+    concurrent credential rewrite cannot be skipped permanently.
+    """
     if not path.exists():
-        return {}
+        return True, None
     try:
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        return False, None
+    if not isinstance(payload, dict) or not payload:
+        return False, None
+    return True, payload
 
 
 def _merge_legacy_default(data: dict[str, Any]) -> None:
@@ -138,19 +146,26 @@ def _merge_legacy_default(data: dict[str, Any]) -> None:
     """
     if data.get(_LEGACY_MIGRATION_KEY) is True:
         return
-    legacy_payloads = {
-        "token": _read_json_file(legacy_token_path()),
-        "client_secret": _read_json_file(legacy_client_secret_path()),
-        "pending_auth": _read_json_file(legacy_pending_path()),
-    }
-    if any(legacy_payloads.values()):
+    legacy_payloads: dict[str, dict[str, Any] | None] = {}
+    all_readable = True
+    for key, path in (
+        ("token", legacy_token_path()),
+        ("client_secret", legacy_client_secret_path()),
+        ("pending_auth", legacy_pending_path()),
+    ):
+        readable, payload = _read_json_file(path)
+        if not readable:
+            all_readable = False
+        legacy_payloads[key] = payload
+    if any(payload is not None for payload in legacy_payloads.values()):
         contexts = data.setdefault("contexts", {})
         default = contexts.setdefault("default", {"name": "default"})
         default.setdefault("name", "default")
         for key, payload in legacy_payloads.items():
-            if payload and key not in default:
+            if payload is not None and key not in default:
                 default[key] = payload
-    data[_LEGACY_MIGRATION_KEY] = True
+    if all_readable:
+        data[_LEGACY_MIGRATION_KEY] = True
 
 
 def validate_context_name(name: str | None) -> str:
@@ -348,27 +363,41 @@ def set_pending_auth(context: str, payload: dict[str, Any]) -> None:
 
 def clear_pending_auth(context: str = "default") -> None:
     context = validate_context_name(context)
+    store_existed = store_path().exists()
     if context == "default":
         # Remove the legacy source before loading/saving the store so a
         # pre-marker store cannot migrate the pending state back in.
         legacy_pending_path().unlink(missing_ok=True)
     store = load_store()
+    changed = False
     if context in store.get("contexts", {}):
         store["contexts"][context].pop("pending_auth", None)
+        changed = True
+    if context == "default" and store_existed:
+        store[_LEGACY_MIGRATION_KEY] = True
+        changed = True
+    if changed:
         save_store(store)
 
 
 def delete_token(context: str = "default") -> None:
     context = validate_context_name(context)
+    store_existed = store_path().exists()
     if context == "default":
         # Destructive intent wins over legacy migration. Unlink sources first
         # so old stores without the one-time marker cannot resurrect them.
         legacy_token_path().unlink(missing_ok=True)
         legacy_pending_path().unlink(missing_ok=True)
     store = load_store()
+    changed = False
     if context in store.get("contexts", {}):
         store["contexts"][context].pop("token", None)
         store["contexts"][context].pop("pending_auth", None)
+        changed = True
+    if context == "default" and store_existed:
+        store[_LEGACY_MIGRATION_KEY] = True
+        changed = True
+    if changed:
         save_store(store)
     _materialized_token_path(context).unlink(missing_ok=True)
 

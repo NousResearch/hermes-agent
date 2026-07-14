@@ -218,6 +218,73 @@ class TestCommandScopeGate:
         assert not auth_contexts.legacy_pending_path().exists()
         assert "pending_auth" not in auth_contexts.load_store()["contexts"]["default"]
 
+    def test_migration_waits_for_existing_malformed_legacy_source(self, auth_contexts):
+        auth_contexts.legacy_token_path().write_text("{")
+        auth_contexts.legacy_client_secret_path().write_text(
+            '{"installed": {"client_id": "legacy"}}'
+        )
+
+        auth_contexts.set_client_secret(
+            "named",
+            {"installed": {"client_id": "named"}},
+        )
+        stored = json.loads(auth_contexts.store_path().read_text())
+        assert "legacy_default_migrated" not in stored
+        assert "token" not in stored["contexts"]["default"]
+        assert (
+            stored["contexts"]["default"]["client_secret"]["installed"]["client_id"]
+            == "legacy"
+        )
+
+        auth_contexts.legacy_token_path().write_text('{"token": "repaired"}')
+        auth_contexts.set_default_for_services("named", "gmail")
+
+        stored = json.loads(auth_contexts.store_path().read_text())
+        assert stored["legacy_default_migrated"] is True
+        assert stored["contexts"]["default"]["token"]["token"] == "repaired"
+
+    def test_delete_default_persists_marker_without_default_context(self, auth_contexts):
+        auth_contexts.store_path().write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "default_contexts": {},
+                    "contexts": {"named": {"name": "named", "token": {"token": "n"}}},
+                }
+            )
+        )
+        auth_contexts.legacy_token_path().write_text('{"token": "stale"}')
+
+        auth_contexts.delete_token("default")
+
+        stored = json.loads(auth_contexts.store_path().read_text())
+        assert stored["legacy_default_migrated"] is True
+        auth_contexts.legacy_token_path().write_text(
+            '{"token": "stale-writer-returned"}'
+        )
+        assert auth_contexts.get_token_payload("default") == {}
+
+    def test_clear_pending_persists_marker_without_default_context(self, auth_contexts):
+        auth_contexts.store_path().write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "default_contexts": {},
+                    "contexts": {"named": {"name": "named", "token": {"token": "n"}}},
+                }
+            )
+        )
+        auth_contexts.legacy_pending_path().write_text('{"state": "stale"}')
+
+        auth_contexts.clear_pending_auth("default")
+
+        stored = json.loads(auth_contexts.store_path().read_text())
+        assert stored["legacy_default_migrated"] is True
+        auth_contexts.legacy_pending_path().write_text(
+            '{"state": "stale-writer-returned"}'
+        )
+        assert auth_contexts.get_pending_auth("default") == {}
+
     def test_full_drive_implies_read(self, auth_contexts):
         auth_contexts.set_token_payload("drive", {"token": "tok", "scopes": [auth_contexts.DRIVE]})
         auth_contexts.assert_command_allowed("drive", "drive", "search")

@@ -253,8 +253,9 @@ Each entry supports:
 - `description` (optional) — explains what the file is and how it's created
 - `optional` (optional, default `false`) — mount the file when present without marking the skill `setup_needed` when it is absent
 - `alternative_group` (optional) — entries in the same named group are required together, but satisfying any one alternative group satisfies all grouped credential requirements; use this for layouts such as one named-context store **or** a legacy token/client-secret pair
+- `readiness_json_path` (optional) — require any truthy value at a dotted JSON path before the file satisfies readiness; `*` expands object values or list items (for example, `contexts.*.token.refresh_token`); the file is still mounted when incomplete
 
-When loaded, Hermes checks if these files exist. Missing ungrouped non-optional files trigger `setup_needed`; grouped files trigger it only when no alternative group is complete. Existing files, including optional and incomplete-group files, are automatically:
+When loaded, Hermes checks whether these files exist and satisfy any declared JSON readiness path. Missing or semantically incomplete ungrouped non-optional files trigger `setup_needed`; grouped files trigger it only when no alternative group is complete. Existing files, including optional and incomplete-group files, are automatically:
 - **Mounted into Docker** containers as read-only bind mounts
 - **Synced into Modal** sandboxes (at creation + before each command, so mid-session OAuth works)
 - Available on **local** backend without any special handling

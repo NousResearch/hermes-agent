@@ -9,9 +9,11 @@ required_credential_files:
   - path: google_workspace_auth_contexts.json
     description: Named Google Workspace OAuth auth contexts (created by setup script)
     alternative_group: named-context
+    readiness_json_path: contexts.*.token.refresh_token
   - path: google_token.json
     description: Legacy Google OAuth2 token (created by setup script)
     alternative_group: legacy
+    readiness_json_path: refresh_token
   - path: google_client_secret.json
     description: Legacy Google OAuth2 client credentials (downloaded from Google Cloud Console)
     alternative_group: legacy

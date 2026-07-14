@@ -52,11 +52,26 @@ class TestGoogleWorkspaceCredentialFiles:
             "google_token.json": "legacy",
             "google_client_secret.json": "legacy",
         }
+        entries_by_path = {
+            entry["path"]: entry for entry in entries if isinstance(entry, dict)
+        }
+        assert (
+            entries_by_path["google_workspace_auth_contexts.json"][
+                "readiness_json_path"
+            ]
+            == "contexts.*.token.refresh_token"
+        )
+        assert (
+            entries_by_path["google_token.json"]["readiness_json_path"]
+            == "refresh_token"
+        )
 
     def test_entries_are_registered_when_files_exist(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        (hermes_home / "google_token.json").write_text("{}")
+        (hermes_home / "google_token.json").write_text(
+            json.dumps({"refresh_token": "refresh"})
+        )
         (hermes_home / "google_client_secret.json").write_text("{}")
         (hermes_home / "google_workspace_auth_contexts.json").write_text("{}")
 
@@ -86,7 +101,15 @@ class TestGoogleWorkspaceCredentialFiles:
     def test_named_context_only_is_available_and_mounted(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        (hermes_home / "google_workspace_auth_contexts.json").write_text("{}")
+        (hermes_home / "google_workspace_auth_contexts.json").write_text(
+            json.dumps(
+                {
+                    "contexts": {
+                        "named": {"token": {"refresh_token": "refresh"}}
+                    }
+                }
+            )
+        )
 
         from tools.credential_files import (
             clear_credential_files,
@@ -116,7 +139,9 @@ class TestGoogleWorkspaceCredentialFiles:
     def test_legacy_only_is_available_and_mounted(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        (hermes_home / "google_token.json").write_text("{}")
+        (hermes_home / "google_token.json").write_text(
+            json.dumps({"refresh_token": "refresh"})
+        )
         (hermes_home / "google_client_secret.json").write_text("{}")
 
         from tools.credential_files import (
@@ -148,6 +173,38 @@ class TestGoogleWorkspaceCredentialFiles:
     def test_no_credentials_requires_setup(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
+
+        from tools.credential_files import clear_credential_files
+        from tools.skills_tool import skill_view
+
+        clear_credential_files()
+        try:
+            with (
+                patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+                patch("tools.skills_tool.SKILLS_DIR", SKILL_MD.parents[2]),
+            ):
+                result = json.loads(skill_view("google-workspace"))
+
+            assert result["setup_needed"] is True
+            assert result["readiness_status"] == "setup_needed"
+            assert result["missing_credential_files"]
+        finally:
+            clear_credential_files()
+
+    def test_named_context_without_token_requires_setup(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "google_workspace_auth_contexts.json").write_text(
+            json.dumps(
+                {
+                    "contexts": {
+                        "named": {
+                            "client_secret": {"installed": {"client_id": "client"}}
+                        }
+                    }
+                }
+            )
+        )
 
         from tools.credential_files import clear_credential_files
         from tools.skills_tool import skill_view

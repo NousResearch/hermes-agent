@@ -1,5 +1,6 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -144,6 +145,47 @@ class TestRegisterCredentialFiles:
 
         assert missing
         assert get_credential_file_mounts()[0]["container_path"] == "/root/.hermes/legacy-secret.json"
+
+    def test_readiness_json_path_requires_truthy_nested_value(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        store = hermes_home / "contexts.json"
+        store.write_text(json.dumps({"contexts": {"named": {"client_secret": {}}}}))
+        entry = {
+            "path": "contexts.json",
+            "readiness_json_path": "contexts.*.token",
+        }
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([entry])
+
+        assert missing == ["contexts.json"]
+        assert len(get_credential_file_mounts()) == 1
+
+        store.write_text(
+            json.dumps({"contexts": {"named": {"token": {"refresh_token": "r"}}}})
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([entry])
+        assert missing == []
+
+    def test_readiness_json_path_rejects_malformed_json(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "contexts.json").write_text("{")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(
+                [
+                    {
+                        "path": "contexts.json",
+                        "readiness_json_path": "contexts.*.token",
+                    }
+                ]
+            )
+
+        assert missing == ["contexts.json"]
+        assert len(get_credential_file_mounts()) == 1
 
     def test_path_takes_precedence_over_name(self, tmp_path):
         """When both path and name are present, path wins."""

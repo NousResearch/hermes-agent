@@ -152,6 +152,25 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     )
 
 
+_BEDROCK_TRANSIENT_EXCEPTIONS = frozenset({
+    "internalserverexception",
+    "modelstreamerrorexception",
+    "throttlingexception",
+    "serviceunavailableexception",
+    "modeltimeoutexception",
+})
+
+
+def _is_bedrock_transient_fault(exc: Exception) -> bool:
+    if not isinstance(exc, ValueError):
+        return False
+    msg = str(exc)
+    if "Bad response code, expected 200" not in msg:
+        return False
+    msg_lower = msg.lower()
+    return any(tag in msg_lower for tag in _BEDROCK_TRANSIENT_EXCEPTIONS)
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -3744,6 +3763,7 @@ def run_conversation(
                         and "nonetype" in str(api_error).lower()
                         and "not iterable" in str(api_error).lower()
                     )
+                    and not _is_bedrock_transient_fault(api_error)
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:

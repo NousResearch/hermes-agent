@@ -77,6 +77,50 @@ class TestCreateSession:
     def test_get_nonexistent_session_returns_none(self, manager):
         assert manager.get_session("does-not-exist") is None
 
+    def test_make_agent_stamps_session_cwd_for_codex_runtime(self, monkeypatch):
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "acp_adapter.session.load_config",
+            lambda: {
+                "model": {
+                    "default": "fake-model",
+                    "provider": "fake-provider",
+                },
+                "mcp_servers": {},
+            },
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "default": "fake-model",
+                    "provider": "fake-provider",
+                },
+                "mcp_servers": {},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "codex_app_server",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert state.agent.session_cwd == "/tmp/project"
+
 
 
 
@@ -211,7 +255,128 @@ class TestListAndCleanup:
 
         db = manager._get_db()
         messages = db.get_messages_as_conversation(state.session_id)
-        assert messages == [{"role": "user", "content": "original"}]
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "original"
+        assert isinstance(messages[0].get("timestamp"), (int, float))
+
+    def test_save_session_preserves_agent_archived_history(self, tmp_path):
+        """Regression: ACP _persist must not destroy compression-archived rows.
+
+        When the agent owns persistence to the same SessionDB, it has already
+        flushed the transcript itself and used archive_and_compact() to keep
+        pre-compaction turns as searchable active=0/compacted=1 rows. A blind
+        replace_messages() here used to DELETE those archived rows (and the FTS
+        index entries with them) on every save — silent data loss for any ACP
+        conversation long enough to compress.
+        """
+        db = SessionDB(tmp_path / "state.db")
+
+        def factory():
+            # Mimic a live ACP agent: it persists to *this* db and has already
+            # created its session row / flushed at least one turn.
+            return SimpleNamespace(
+                model="test-model",
+                _session_db=db,
+                _session_db_created=True,
+            )
+
+        manager = SessionManager(agent_factory=factory, db=db)
+        state = manager.create_session(cwd="/work")
+
+        # Simulate the agent's own persistence: it flushed the live transcript,
+        # then compression archived the pre-compaction turns and inserted a
+        # compacted summary as the new active set.
+        db.append_message(
+            session_id=state.session_id, role="user", content="archived needle"
+        )
+        db.archive_and_compact(
+            state.session_id, [{"role": "user", "content": "compacted summary"}]
+        )
+
+        # ACP's in-memory history only tracks the post-compaction (active) set.
+        state.history = [{"role": "user", "content": "compacted summary"}]
+        manager.save_session(state.session_id)
+
+        # The archived pre-compaction turn must survive and stay discoverable.
+        contents = [
+            m["content"]
+            for m in db.get_messages(state.session_id, include_inactive=True)
+        ]
+        assert "archived needle" in contents
+        assert "compacted summary" in contents
+        hits = {r["session_id"] for r in db.search_messages("needle")}
+        assert state.session_id in hits
+
+    def test_save_session_still_replaces_when_agent_not_self_persisting(self, manager):
+        """Agents that don't own DB persistence keep ACP as the source of truth.
+
+        The default fixture's MagicMock agent has a ``_session_db`` that is *not*
+        the manager's db, so the destructive replace path stays active and ACP
+        history overwrites cleanly (no orphaned rows from a prior save).
+        """
+        state = manager.create_session()
+        db = manager._get_db()
+
+        state.history = [{"role": "user", "content": "v1"}]
+        manager.save_session(state.session_id)
+        assert [
+            m["content"] for m in db.get_messages_as_conversation(state.session_id)
+        ] == ["v1"]
+
+        state.history = [{"role": "user", "content": "v2 replaced"}]
+        manager.save_session(state.session_id)
+        assert [
+            m["content"] for m in db.get_messages_as_conversation(state.session_id)
+        ] == ["v2 replaced"]
+
+    def test_save_session_preserves_archived_rows_on_model_switch(self, tmp_path):
+        """Regression (#50405 W1/W2): a save by a fresh, non-self-persisting
+        agent must not destroy compaction-archived rows.
+
+        Model switches and /restore mint a brand-new agent with
+        ``_session_db_created=False`` (so it does NOT "own" persistence) and
+        then immediately call save_session. If the session had already
+        compacted, a blind full-history replace would DELETE the archived
+        active=0/compacted=1 rows — the same data loss the owned-agent guard
+        prevents. When archived rows exist, _persist must replace only the live
+        set (active_only) and leave the archived transcript intact.
+        """
+        from types import SimpleNamespace
+
+        db = SessionDB(tmp_path / "state.db")
+        # Use a mock agent factory so create_session doesn't spin up a real
+        # AIAgent (which needs credentials and leaks provider-probe state across
+        # xdist workers). The factory's agent does NOT own persistence to db.
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(model="m"), db=db
+        )
+        state = manager.create_session(cwd="/work")
+
+        # Session flushed a live turn, then compaction archived it.
+        db.append_message(
+            session_id=state.session_id, role="user", content="archived needle"
+        )
+        db.archive_and_compact(
+            state.session_id, [{"role": "user", "content": "compacted summary"}]
+        )
+
+        # Model switch: a fresh agent bound to THIS db but not yet self-created.
+        state.agent = SimpleNamespace(
+            model="new-model", _session_db=db, _session_db_created=False
+        )
+        state.history = [{"role": "user", "content": "compacted summary"}]
+        manager.save_session(state.session_id)
+
+        # Archived pre-compaction turn survives and stays discoverable.
+        contents = [
+            m["content"]
+            for m in db.get_messages(state.session_id, include_inactive=True)
+        ]
+        assert "archived needle" in contents
+        assert "compacted summary" in contents
+        hits = {r["session_id"] for r in db.search_messages("needle")}
+        assert state.session_id in hits
 
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
@@ -501,6 +666,8 @@ class TestPersistence:
 
         restored = manager.get_session(state.session_id)
         assert restored is not None
+        msg = restored.history[0]
+        assert isinstance(msg.pop("timestamp", None), (int, float))
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",
@@ -701,8 +868,67 @@ class TestPersistence:
         assert restored.agent.api_mode == "codex_responses"
         assert restored.agent.api_key == "team-secret"
 
-    def test_restore_legacy_bare_custom_uses_persisted_endpoint(self, tmp_path, monkeypatch):
-        """Older ACP rows with provider=custom should restore via their saved base_url."""
+    def test_restore_legacy_bare_custom_recovers_configured_identity(self, tmp_path, monkeypatch):
+        """Older bare-custom rows should recover the named config entry and its secret."""
+        monkeypatch.setenv("TEAM_GATEWAY_KEY", "team-secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._try_resolve_from_custom_pool",
+            lambda *a, **k: None,
+        )
+        config = {
+            "model": {"provider": "openrouter", "default": "fallback-model"},
+            "custom_providers": [
+                {
+                    "name": "team-gateway",
+                    "base_url": "https://custom.example/v1",
+                    "key_env": "TEAM_GATEWAY_KEY",
+                    "api_mode": "codex_responses",
+                    "model": "test-model",
+                }
+            ],
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                api_key=kwargs.get("api_key"),
+            )
+
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(
+            session_id="legacy-acp-custom",
+            source="acp",
+            model="test-model",
+            model_config={
+                "cwd": "/work",
+                "provider": "custom",
+                "base_url": "HTTPS://CUSTOM.EXAMPLE/V1/",
+                "api_mode": "codex_responses",
+            },
+        )
+        db.replace_messages("legacy-acp-custom", [{"role": "user", "content": "hello"}])
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            restored = manager.get_session("legacy-acp-custom")
+
+        assert restored is not None
+        assert restored.agent.provider == "custom"
+        assert restored.agent.requested_provider == "custom:team-gateway"
+        assert restored.agent.base_url == "https://custom.example/v1"
+        assert restored.agent.api_mode == "codex_responses"
+        assert restored.agent.api_key == "team-secret"
+        meta = json.loads(db.get_session("legacy-acp-custom")["model_config"])
+        assert "api_key" not in meta
+        assert "key_env" not in meta
+
+    def test_restore_unconfigured_bare_custom_keeps_endpoint_fallback(self, tmp_path, monkeypatch):
+        """An ad-hoc legacy custom endpoint should still reach direct resolution."""
         runtime_calls = []
 
         def fake_resolve_runtime_provider(requested=None, **kwargs):
@@ -717,46 +943,36 @@ class TestPersistence:
                 "args": [],
             }
 
-        def fake_agent(**kwargs):
-            return SimpleNamespace(
-                model=kwargs.get("model"),
-                provider=kwargs.get("provider"),
-                base_url=kwargs.get("base_url"),
-                api_mode=kwargs.get("api_mode"),
-            )
-
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
-            "model": {"provider": "openrouter", "default": "fallback-model"}
-        })
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "fallback-model"}},
+        )
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: {})
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
         db = SessionDB(tmp_path / "state.db")
         db.create_session(
-            session_id="legacy-acp-custom",
+            session_id="legacy-acp-adhoc-custom",
             source="acp",
             model="test-model",
             model_config={
                 "cwd": "/work",
                 "provider": "custom",
-                "base_url": "https://custom.example/v1",
-                "api_mode": "codex_responses",
+                "base_url": "https://adhoc.example/v1",
             },
         )
-        db.replace_messages("legacy-acp-custom", [{"role": "user", "content": "hello"}])
 
-        with patch("run_agent.AIAgent", side_effect=fake_agent):
-            manager = SessionManager(db=db)
-            restored = manager.get_session("legacy-acp-custom")
+        with patch("run_agent.AIAgent", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)):
+            restored = SessionManager(db=db).get_session("legacy-acp-adhoc-custom")
 
         assert restored is not None
-        assert restored.agent.provider == "custom"
-        assert restored.agent.base_url == "https://custom.example/v1"
-        assert restored.agent.api_mode == "codex_responses"
-        assert runtime_calls[-1]["requested"] == "custom"
-        assert runtime_calls[-1]["explicit_base_url"] == "https://custom.example/v1"
-        assert runtime_calls[-1]["target_model"] == "test-model"
+        assert runtime_calls[-1] == {
+            "requested": "custom",
+            "target_model": "test-model",
+            "explicit_base_url": "https://adhoc.example/v1",
+        }
 
     def test_acp_agents_route_human_output_to_stderr(self, tmp_path, monkeypatch):
         """ACP agents must keep stdout clean for JSON-RPC stdio transport."""

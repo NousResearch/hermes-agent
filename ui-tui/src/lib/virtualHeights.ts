@@ -1,3 +1,4 @@
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
@@ -71,11 +72,17 @@ export const estimatedMsgHeight = (
   {
     compact,
     details,
+    leadGap = false,
+    thinkingVisible = details,
+    toolsVisible = details,
     userPrompt = '',
     withSeparator = false
   }: {
     compact: boolean
     details: boolean
+    leadGap?: boolean
+    thinkingVisible?: boolean
+    toolsVisible?: boolean
     userPrompt?: string
     withSeparator?: boolean
   }
@@ -96,7 +103,7 @@ export const estimatedMsgHeight = (
     return Math.max(2, msg.todos.length + 2)
   }
 
-  const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt)
+  const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
   const text = msg.text
   let h = wrappedLines(text || ' ', bodyWidth)
 
@@ -110,12 +117,35 @@ export const estimatedMsgHeight = (
   }
 
   if (details) {
-    h += (msg.tools?.length ?? 0) + wrappedLines(msg.thinking ?? '', bodyWidth)
+    const hasVisibleTools = toolsVisible && Boolean(msg.tools?.length)
+    const hasVisibleThinking = thinkingVisible && /\S/.test(msg.thinking ?? '')
+    const hasVisibleDetails = hasVisibleTools || hasVisibleThinking
+
+    if (hasVisibleDetails) {
+      h +=
+        (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) +
+        (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
+
+      if (msg.role === 'assistant' && /\S/.test(msg.text)) {
+        h += 2
+      }
+    }
   }
 
   if (msg.role === 'user' || msg.kind === 'diff') {
+    // Top + bottom blank line.
     h += 2
   } else if (msg.kind === 'slash') {
+    h++
+  }
+
+  // Group-boundary blank line owned by BlockSlot: model prose, reasoning/tool
+  // trails, and notes/errors each start a new visual group when the block
+  // above them is a different kind. The caller resolves the boundary against
+  // the previous row (see domain/blockLayout.ts::hasLeadGap) and passes the
+  // result here so the estimate matches the rendered marginTop before Yoga
+  // remeasures. user / diff / slash never set this — they own their margins.
+  if (leadGap) {
     h++
   }
 

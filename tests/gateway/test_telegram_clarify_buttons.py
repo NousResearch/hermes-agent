@@ -4,11 +4,9 @@ Mirrors test_telegram_approval_buttons.py for the new ``send_clarify`` and
 ``cl:`` callback dispatch added in feat/clarify-gateway-buttons.
 """
 
-import asyncio
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -49,8 +47,8 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter
-from gateway.config import Platform, PlatformConfig
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.config import PlatformConfig
 
 
 def _make_adapter(extra=None):
@@ -354,6 +352,71 @@ class TestTelegramClarifyCallback:
         assert adapter._clarify_state["cidC"] == "sk-auth"
 
     @pytest.mark.asyncio
+    async def test_numeric_choice_expired_notifies_user(self):
+        """Late tap after the entry was evicted (timeout) or the gateway
+        restarted must surface an expiry notice, not a misleading ✓."""
+        adapter = _make_adapter()
+        # _clarify_state still maps the id (timeout eviction does not pop it),
+        # but the clarify primitive entry is gone → resolve returns False.
+        adapter._clarify_state["cidExpired"] = "sk-expired"
+
+        query = AsyncMock()
+        query.data = "cl:cidExpired:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "Pick"
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Tester"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, context)
+
+        # User is told the prompt expired — not a misleading checkmark.
+        answer_text = query.answer.call_args[1]["text"].lower()
+        assert "expired" in answer_text
+        edit_text = query.edit_message_text.call_args[1]["text"].lower()
+        assert "expired" in edit_text or "session reset" in edit_text
+        assert "/retry" in edit_text
+
+    @pytest.mark.asyncio
+    async def test_other_button_expired_notifies_user(self):
+        """Tapping 'Other' after the entry was evicted must tell the user the
+        prompt expired instead of silently entering text-capture mode."""
+        adapter = _make_adapter()
+        # No clarify primitive entry → mark_awaiting_text returns False.
+        adapter._clarify_state["cidOtherExpired"] = "sk-other-expired"
+
+        query = AsyncMock()
+        query.data = "cl:cidOtherExpired:other"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "Pick"
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Tester"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, context)
+
+        answer_text = query.answer.call_args[1]["text"].lower()
+        assert "expired" in answer_text
+        # State popped so a subsequent typed message is not mis-captured.
+        assert "cidOtherExpired" not in adapter._clarify_state
+
+    @pytest.mark.asyncio
     async def test_invalid_choice_token(self):
         from tools import clarify_gateway as cm
 
@@ -405,7 +468,7 @@ class TestBaseAdapterClarifyFallback:
                 # Skip base __init__ — we're not exercising it
                 self.sent: list = []
 
-            async def connect(self): pass
+            async def connect(self, *, is_reconnect: bool = False): pass
             async def disconnect(self): pass
             async def send(self, chat_id, content, **kw):
                 self.sent.append({"chat_id": chat_id, "content": content})
@@ -438,7 +501,7 @@ class TestBaseAdapterClarifyFallback:
             name = "stub"
             def __init__(self):
                 self.sent: list = []
-            async def connect(self): pass
+            async def connect(self, *, is_reconnect: bool = False): pass
             async def disconnect(self): pass
             async def send(self, chat_id, content, **kw):
                 self.sent.append(content)

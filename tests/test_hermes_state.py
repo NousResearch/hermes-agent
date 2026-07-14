@@ -2051,6 +2051,115 @@ class TestSearchSessions:
         assert page1[0]["id"] != page2[0]["id"]
 
 
+class TestSearchSessionsByTitle:
+    def test_substring_case_insensitive(self, db):
+        db.create_session(session_id="s1", source="discord")
+        db.set_session_title("s1", "DNS Blocking Portal Investigation")
+        db.create_session(session_id="s2", source="cli")
+        db.set_session_title("s2", "Unrelated work")
+
+        hits = db.search_sessions_by_title("blocking portal")
+        assert [h["id"] for h in hits] == ["s1"]
+        assert hits[0]["title"] == "DNS Blocking Portal Investigation"
+        assert hits[0]["source"] == "discord"
+
+    def test_ranking_exact_prefix_substring(self, db):
+        db.create_session(session_id="sub", source="cli")
+        db.set_session_title("sub", "About deploy stuff")
+        db.create_session(session_id="pre", source="cli")
+        db.set_session_title("pre", "Deploy pipeline")
+        db.create_session(session_id="exact", source="cli")
+        db.set_session_title("exact", "Deploy")
+
+        hits = db.search_sessions_by_title("deploy")
+        assert [h["id"] for h in hits] == ["exact", "pre", "sub"]
+
+    def test_untitled_and_nonmatching_excluded(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.set_session_title("s2", "Something else entirely")
+
+        assert db.search_sessions_by_title("needle") == []
+
+    def test_like_wildcards_escaped(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.set_session_title("s1", "100% coverage plan")
+        db.create_session(session_id="s2", source="cli")
+        db.set_session_title("s2", "1000 things")
+
+        hits = db.search_sessions_by_title("100%")
+        assert [h["id"] for h in hits] == ["s1"]
+
+    def test_subagent_children_hidden(self, db):
+        db.create_session(session_id="parent", source="cli")
+        db.set_session_title("parent", "Visible needle session")
+        db.create_session(
+            session_id="child", source="subagent", parent_session_id="parent"
+        )
+        db.set_session_title("child", "Hidden needle child")
+
+        hits = db.search_sessions_by_title("needle")
+        assert [h["id"] for h in hits] == ["parent"]
+
+    def _make_discord_thread(self, db, session_id, display_name):
+        db.create_session(session_id=session_id, source="discord")
+        db.record_gateway_session_peer(
+            session_id,
+            source="discord",
+            session_key=f"agent:main:discord:thread:{session_id}",
+            chat_id="123",
+            display_name=display_name,
+        )
+
+    def test_channel_and_thread_names_match(self, db):
+        self._make_discord_thread(
+            db, "s1", "Daemonarchy / #voice-assitant / Desktop App"
+        )
+        db.create_session(session_id="s2", source="cli")
+        db.set_session_title("s2", "Unrelated work")
+
+        # Channel name (with its typo) found per-token — no title needed.
+        hits = db.search_sessions_by_title("voice")
+        assert [h["id"] for h in hits] == ["s1"]
+        assert hits[0]["display_name"] == "Daemonarchy / #voice-assitant / Desktop App"
+
+        # Thread name findable the same way.
+        hits = db.search_sessions_by_title("desktop app")
+        assert "s1" in [h["id"] for h in hits]
+
+    def test_platform_token_boosts_platform_sessions(self, db):
+        self._make_discord_thread(db, "dc", "Daemonarchy / #general")
+        db.create_session(session_id="tg", source="telegram")
+        db.set_session_title("tg", "General chatter")
+
+        # "general discord": both match "general", but the discord session
+        # matches BOTH tokens (channel + platform) so it ranks first.
+        hits = db.search_sessions_by_title("general discord")
+        assert [h["id"] for h in hits][:2] == ["dc", "tg"]
+
+    def test_platform_only_query_matches_platform_sessions(self, db):
+        self._make_discord_thread(db, "dc", "Daemonarchy / #random")
+        db.create_session(session_id="cli1", source="cli")
+        db.set_session_title("cli1", "No platform words here")
+
+        hits = db.search_sessions_by_title("discord")
+        assert [h["id"] for h in hits] == ["dc"]
+
+    def test_title_hits_still_outrank_channel_hits(self, db):
+        self._make_discord_thread(db, "chan", "Daemonarchy / #deploy-notes")
+        db.create_session(session_id="titled", source="cli")
+        db.set_session_title("titled", "Deploy pipeline")
+
+        hits = db.search_sessions_by_title("deploy")
+        assert [h["id"] for h in hits] == ["titled", "chan"]
+
+    def test_empty_query_returns_nothing(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.set_session_title("s1", "Anything")
+        assert db.search_sessions_by_title("") == []
+        assert db.search_sessions_by_title("   ") == []
+
+
 # =========================================================================
 # Counts
 # =========================================================================

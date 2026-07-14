@@ -23,7 +23,7 @@ import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/he
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
-import { sessionMatchesSearch } from '@/lib/session-search'
+import { rankTitleMatchesFirst, sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
@@ -181,6 +181,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
   return {
     archived: false,
     cwd: null,
+    display_name: result.display_name?.trim() || null,
     ended_at: null,
     id: result.session_id,
     _lineage_root_id: result.lineage_root ?? null,
@@ -193,7 +194,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     preview: result.snippet?.trim() || null,
     source: result.source ?? null,
     started_at: ts,
-    title: null,
+    title: result.title?.trim() || null,
     tool_call_count: 0
   }
 }
@@ -436,7 +437,7 @@ export function ChatSidebar({
       out.set(match.session_id, loaded ?? searchResultToSession(match))
     }
 
-    return [...out.values()]
+    return rankTitleMatchesFirst([...out.values()], trimmedQuery)
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
   const unpinnedAgentSessions = useMemo(
@@ -1149,6 +1150,7 @@ export function ChatSidebar({
                 pinned={false}
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
+                showOriginContext
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}

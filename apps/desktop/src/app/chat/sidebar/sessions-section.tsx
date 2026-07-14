@@ -127,6 +127,9 @@ interface SidebarSessionsSectionProps {
   // When false the section header is static (no caret/toggle) and always open.
   collapsible?: boolean
   sortable?: boolean
+  // Search results: prefix each row with its origin context ("Discord:
+  // voice-assitant: Desktop App" / "TUI") so cross-surface hits read apart.
+  showOriginContext?: boolean
   // The flat session list is the only hand-reorderable surface (grouped/project
   // views sort deterministically), so it owns the one ReorderableList.
   onReorderSessions?: (ids: string[]) => void
@@ -171,6 +174,7 @@ export function SidebarSessionsSection({
   labelIcon,
   collapsible = true,
   sortable = false,
+  showOriginContext = false,
   onReorderSessions,
   onReorderProjects,
   projectBackRow,
@@ -203,7 +207,8 @@ export function SidebarSessionsSection({
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
       reorderable: draggable && !branchStem,
-      session
+      session,
+      showOriginContext
     }
 
     return draggable && !branchStem ? (

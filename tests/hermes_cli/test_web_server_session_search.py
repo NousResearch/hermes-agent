@@ -27,6 +27,11 @@ class _FakeSessionDB:
             }
         ]
 
+    def search_sessions_by_title(self, query, limit=20, include_archived=True):
+        assert query == "20260603"
+        assert include_archived is True
+        return []
+
     def search_messages(self, query, limit=20):
         assert query == "20260603*"
         return [
@@ -88,3 +93,66 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
             },
         ]
     }
+
+
+class _FakeTitleSessionDB:
+    """Fake proving title matches rank above content matches and dedupe."""
+
+    def search_sessions_by_id(self, query, limit=20, include_archived=True):
+        return []
+
+    def search_sessions_by_title(self, query, limit=20, include_archived=True):
+        assert query == "portal"
+        assert include_archived is True
+        return [
+            {
+                "id": "titled_session",
+                "title": "DNS Portal Investigation",
+                "preview": "first user message",
+                "source": "discord",
+                "model": "claude",
+                "started_at": 300,
+            }
+        ]
+
+    def search_messages(self, query, limit=20):
+        assert query == "portal*"
+        return [
+            {
+                "session_id": "titled_session",
+                "snippet": "portal mentioned in content",
+                "role": "user",
+                "source": "discord",
+                "model": "claude",
+                "session_started": 300,
+            },
+            {
+                "session_id": "content_only",
+                "snippet": "another portal content hit",
+                "role": "assistant",
+                "source": "cli",
+                "model": "gpt",
+                "session_started": 400,
+            },
+        ]
+
+    def get_session(self, session_id):
+        return {"id": session_id, "parent_session_id": None}
+
+    def get_compression_tip(self, session_id):
+        return session_id
+
+    def close(self):
+        pass
+
+
+def test_desktop_session_search_ranks_title_matches_before_content_matches(monkeypatch):
+    monkeypatch.setattr("hermes_state.SessionDB", _FakeTitleSessionDB)
+
+    response = asyncio.run(web_server.search_sessions(q="portal", limit=5))
+
+    results = response["results"]
+    assert [r["session_id"] for r in results] == ["titled_session", "content_only"]
+    assert results[0]["title"] == "DNS Portal Investigation"
+    assert results[0]["snippet"] == "first user message"
+    assert len(results) == 2

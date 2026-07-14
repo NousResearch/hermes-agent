@@ -228,6 +228,10 @@ class QQAdapter(BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
+        # Shared REST API client (lazily initialised in connect())
+        from .outbound import QQApiClient
+        self._api: Optional[QQApiClient] = None
+
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
@@ -311,6 +315,14 @@ class QQAdapter(BasePlatformAdapter):
                 limits=platform_httpx_limits(),
             )
 
+            # Wire up shared QQApiClient for token, REST requests, and uploads
+            self._api = QQApiClient(
+                self._app_id,
+                self._client_secret,
+                self._http_client,
+                log_tag=self._log_tag,
+            )
+
             # 1. Get access token
             await self._ensure_token()
 
@@ -385,37 +397,51 @@ class QQAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _ensure_token(self) -> str:
-        """Return a valid access token, refreshing if needed (with singleflight)."""
+        """Return a valid access token, refreshing if needed (with singleflight).
+
+        Delegates to the shared ``QQApiClient`` when available; falls back to
+        the adapter's own token logic during startup (before the QQApiClient
+        is wired up in ``connect()``).
+        """
+        # During startup (e.g. _send_identify before connect() finishes),
+        # the QQApiClient may not exist yet.  Fall back to the adapter's
+        # own token logic.
+        if self._api is not None:
+            token = await self._api.ensure_token()
+            self._access_token = token
+            self._token_expires_at = self._api._token_expires_at
+            return token
+
+        # Legacy path — used during connect() handshake when _api
+        # isn't fully initialised yet.
         if self._access_token and time.time() < self._token_expires_at - 60:
             return self._access_token
 
         async with self._token_lock:
-            # Double-check after acquiring lock
             if self._access_token and time.time() < self._token_expires_at - 60:
                 return self._access_token
 
-            try:
-                resp = await self._http_client.post(
-                    TOKEN_URL,
-                    json={"appId": self._app_id, "clientSecret": self._client_secret},
-                    timeout=DEFAULT_API_TIMEOUT,
+            resp = await self._http_client.post(
+                TOKEN_URL,
+                json={"appId": self._app_id, "clientSecret": self._client_secret},
+                timeout=DEFAULT_API_TIMEOUT,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"Failed to get QQ Bot access token: {resp.status_code}"
                 )
-                resp.raise_for_status()
-                data = resp.json()
-            except Exception as exc:
-                raise RuntimeError(f"Failed to get QQ Bot access token: {exc}") from exc
-
+            data = resp.json()
             token = data.get("access_token")
             if not token:
                 raise RuntimeError(
                     f"QQ Bot token response missing access_token: {data}"
                 )
-
             expires_in = int(data.get("expires_in", 7200))
             self._access_token = token
             self._token_expires_at = time.time() + expires_in
             logger.info(
-                "[%s] Access token refreshed, expires in %ds", self._log_tag, expires_in
+                "[%s] Access token refreshed, expires in %ds",
+                self._log_tag, expires_in,
             )
             return self._access_token
 
@@ -2325,17 +2351,22 @@ class QQAdapter(BasePlatformAdapter):
             body: Optional[Dict[str, Any]] = None,
             timeout: float = DEFAULT_API_TIMEOUT,
     ) -> Dict[str, Any]:
-        """Make an authenticated REST API request to QQ Bot API."""
+        """Make an authenticated REST API request to QQ Bot API.
+
+        Delegates to the shared ``QQApiClient`` when available.
+        """
+        if self._api is not None:
+            return await self._api.api_request(method, path, body, timeout)
+
+        # Legacy path — used during startup before QQApiClient is wired up
         if not self._http_client:
             raise RuntimeError("HTTP client not initialized — not connected?")
-
         token = await self._ensure_token()
         headers = {
             "Authorization": f"QQBot {token}",
             "Content-Type": "application/json",
             "User-Agent": build_user_agent(),
         }
-
         try:
             resp = await self._http_client.request(
                 method,
@@ -2468,16 +2499,16 @@ class QQAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a single chunk with retry + exponential backoff."""
         last_exc: Optional[Exception] = None
-        chat_type = self._guess_chat_type(chat_id)
+        chat_type, target_id = self.normalize_target(chat_id)
 
         for attempt in range(3):
             try:
                 if chat_type == "c2c":
-                    return await self._send_c2c_text(chat_id, content, reply_to)
+                    return await self._send_c2c_text(target_id, content, reply_to)
                 elif chat_type == "group":
-                    return await self._send_group_text(chat_id, content, reply_to)
+                    return await self._send_group_text(target_id, content, reply_to)
                 elif chat_type == "guild":
-                    return await self._send_guild_text(chat_id, content, reply_to)
+                    return await self._send_guild_text(target_id, content, reply_to)
                 else:
                     return SendResult(
                         success=False, error=f"Unknown chat type for {chat_id}"
@@ -2862,7 +2893,7 @@ class QQAdapter(BasePlatformAdapter):
             if not await self._wait_for_reconnection():
                 return SendResult(success=False, error="Not connected", retryable=True)
 
-        chat_type = self._guess_chat_type(chat_id)
+        chat_type, target_id = self.normalize_target(chat_id)
         if chat_type == "guild":
             # Guild channels don't support native media upload in the same way.
             return SendResult(
@@ -2880,7 +2911,7 @@ class QQAdapter(BasePlatformAdapter):
                 )
                 upload = await self._upload_media(
                     chat_type,
-                    chat_id,
+                    target_id,
                     file_type,
                     url=media_source,
                     srv_send_msg=False,
@@ -2890,7 +2921,7 @@ class QQAdapter(BasePlatformAdapter):
                 # Local file — chunked upload (prepare / PUT parts / complete).
                 resolved_name, upload = await self._upload_local_file(
                     chat_type,
-                    chat_id,
+                    target_id,
                     media_source,
                     file_type,
                     file_name,
@@ -2920,9 +2951,9 @@ class QQAdapter(BasePlatformAdapter):
             send_data = await self._api_request(
                 "POST",
                 (
-                    f"/v2/users/{chat_id}/messages"
+                    f"/v2/users/{target_id}/messages"
                     if chat_type == "c2c"
-                    else f"/v2/groups/{chat_id}/messages"
+                    else f"/v2/groups/{target_id}/messages"
                 ),
                 body,
             )
@@ -3132,6 +3163,25 @@ class QQAdapter(BasePlatformAdapter):
         if chat_id in self._chat_type_map:
             return self._chat_type_map[chat_id]
         return "c2c"
+
+    def normalize_target(self, chat_id: str) -> "Tuple[str, str]":
+        """Normalise a chat_id into ``(chat_type, target_id)``.
+
+        Handles explicit prefixes (``c2c:``, ``user:``, ``group:``, ``guild:``)
+        by stripping them.  For raw OpenIDs without a prefix, falls back to
+        ``_guess_chat_type()`` (the inbound ``_chat_type_map``).
+
+        Prefixes are for routing on the tool layer and must NOT appear in
+        REST API URLs.  This is the single source of truth for outbound
+        target resolution — used by ``send()`` and all media methods.
+        """
+        from .outbound import resolve_target as _resolve_target
+        chat_type, target_id = _resolve_target(chat_id)
+        if chat_type != "unknown" and target_id:
+            # Explicit prefix — honour it regardless of chat_type_map
+            return chat_type, target_id
+        # Raw OpenID — use inbound metadata as hint
+        return self._guess_chat_type(chat_id), chat_id
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:

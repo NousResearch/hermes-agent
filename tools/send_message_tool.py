@@ -510,6 +510,12 @@ async def _dispatch_live_media(adapter, chat_id, chunk, *, media_files, force_do
     ``{"error": "..."}``.
     """
     import os
+    from gateway.platforms.qqbot.outbound import classify_media_type
+    from gateway.platforms.qqbot.constants import (
+        MEDIA_TYPE_IMAGE,
+        MEDIA_TYPE_VIDEO,
+        MEDIA_TYPE_VOICE,
+    )
 
     # ── Text (once) ─────────────────────────────────────────────────
     last_msg_id = None
@@ -522,26 +528,19 @@ async def _dispatch_live_media(adapter, chat_id, chunk, *, media_files, force_do
     # ── Media ───────────────────────────────────────────────────────
     for media_path, _is_voice in (media_files or []):
         ext = os.path.splitext(media_path)[1].lower()
-        is_image = ext in _IMAGE_EXTS
-        is_voice = _is_voice or ext in _VOICE_EXTS
-        is_video = ext in _VIDEO_EXTS
+        media_type = classify_media_type(ext, force_document=force_document)
 
-        if force_document:
-            result = await adapter.send_document(
-                chat_id=chat_id,
-                file_path=media_path,
-            )
-        elif is_voice:
+        if media_type == MEDIA_TYPE_VOICE:
             result = await adapter.send_voice(
                 chat_id=chat_id,
                 audio_path=media_path,
             )
-        elif is_video:
+        elif media_type == MEDIA_TYPE_VIDEO:
             result = await adapter.send_video(
                 chat_id=chat_id,
                 video_path=media_path,
             )
-        elif is_image:
+        elif media_type == MEDIA_TYPE_IMAGE:
             result = await adapter.send_image_file(
                 chat_id=chat_id,
                 image_path=media_path,

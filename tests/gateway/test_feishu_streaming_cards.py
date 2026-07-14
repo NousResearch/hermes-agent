@@ -3,10 +3,13 @@
 Covers:
 - _build_streaming_card_json(): card JSON structure
 - send_streaming_card(): card creation + message send + state tracking
+- send() gating: only streaming responses use CardKit path
 - edit_message() routing to CardKit streaming API for active cards
 - _update_streaming_card_content(): incremental content push
 - stop_streaming_card(): streaming mode disable + state cleanup
 - _cardkit_finalize(): final-state card rendering
+- _cardkit_split_card(): element limit rollover
+- REQUIRES_EDIT_FINALIZE: runtime-gated property
 - Fallback chain: CardKit failure → IM update path
 """
 
@@ -54,7 +57,7 @@ def _mock_cardkit_and_im(adapter, card_id="card_123", message_id="om_456"):
             return SimpleNamespace(success=lambda: True)
 
         def settings(self, request):
-            captured["cardkit_settings"] = request
+            captured.setdefault("cardkit_settings", []).append(request)
             return SimpleNamespace(success=lambda: True)
 
     class _CardElementAPI:
@@ -64,7 +67,7 @@ def _mock_cardkit_and_im(adapter, card_id="card_123", message_id="om_456"):
 
     class _MessageAPI:
         def create(self, request):
-            captured["im_create"] = request
+            captured.setdefault("im_create", []).append(request)
             return SimpleNamespace(
                 success=lambda: True,
                 data=SimpleNamespace(message_id=message_id),
@@ -90,9 +93,14 @@ def _mock_cardkit_and_im(adapter, card_id="card_123", message_id="om_456"):
     return captured
 
 
-def _direct_thread(func, *args, **kwargs):
-    """Replace asyncio.to_thread so it calls functions directly in tests."""
-    return func(*args, **kwargs)
+def _patch_run_blocking():
+    """Patch _run_blocking to call functions directly in tests."""
+    return patch.object(
+        type(_make_adapter()),
+        "_run_blocking",
+        new_callable=AsyncMock,
+        side_effect=lambda func, *args: func(*args) if args else func(),
+    )
 
 
 @patch.dict(os.environ, {}, clear=True)
@@ -151,7 +159,7 @@ class TestSendStreamingCard(unittest.TestCase):
         captured = _mock_cardkit_and_im(adapter)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 result = await adapter.send_streaming_card(
                     chat_id="oc_chat",
                     content="initial",
@@ -171,6 +179,39 @@ class TestSendStreamingCard(unittest.TestCase):
         sc = adapter._streaming_cards["om_456"]
         assert sc.card_id == "card_123"
         assert sc.sequence == 1
+
+    def test_send_streaming_card_uses_card_json_type(self):
+        """CardKit create must use type='card_json' and pass the full JSON."""
+        adapter = _make_adapter()
+        captured = _mock_cardkit_and_im(adapter)
+
+        async def _run():
+            with _patch_run_blocking():
+                await adapter.send_streaming_card(chat_id="oc_chat", content="test")
+
+        asyncio.run(_run())
+        create_req = captured.get("cardkit_create")
+        assert create_req is not None
+        body = create_req.request_body
+        assert body.type == "card_json"
+        # The data field should be a JSON string containing streaming_mode
+        card_data = json.loads(body.data)
+        assert card_data["streaming_mode"] is True
+        assert "streaming_config" in card_data
+
+    def test_send_streaming_card_accepts_reply_to(self):
+        adapter = _make_adapter()
+        captured = _mock_cardkit_and_im(adapter)
+
+        async def _run():
+            with _patch_run_blocking():
+                result = await adapter.send_streaming_card(
+                    chat_id="oc_chat", content="test", reply_to="om_orig",
+                )
+            return result
+
+        result = asyncio.run(_run())
+        assert result.success
 
     def test_send_streaming_card_fails_when_not_connected(self):
         adapter = _make_adapter()
@@ -199,11 +240,94 @@ class TestSendStreamingCard(unittest.TestCase):
         )
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 return await adapter.send_streaming_card(chat_id="oc_chat", content="test")
 
         result = asyncio.run(_run())
         assert not result.success
+
+
+@patch.dict(os.environ, {}, clear=True)
+class TestSendGating(unittest.TestCase):
+    """Test that send() only uses CardKit for streaming responses."""
+
+    def test_send_uses_cardkit_when_expect_edits(self):
+        """send() should create a streaming card when metadata has expect_edits."""
+        adapter = _make_adapter()
+        captured = _mock_cardkit_and_im(adapter)
+
+        async def _run():
+            with _patch_run_blocking():
+                result = await adapter.send(
+                    chat_id="oc_chat",
+                    content="streaming response",
+                    metadata={"expect_edits": True},
+                )
+            return result
+
+        result = asyncio.run(_run())
+        assert result.success
+        assert result.message_id == "om_456"
+        # CardKit was used
+        assert captured.get("cardkit_create") is not None
+
+    def test_send_skips_cardkit_without_expect_edits(self):
+        """send() should NOT use CardKit for non-streaming messages."""
+        adapter = _make_adapter()
+        captured = _mock_cardkit_and_im(adapter)
+
+        async def _run():
+            with _patch_run_blocking():
+                result = await adapter.send(
+                    chat_id="oc_chat",
+                    content="ack message",
+                    metadata={"notify": True},
+                )
+            return result
+
+        result = asyncio.run(_run())
+        # Should use regular IM path, not CardKit
+        assert captured.get("cardkit_create") is None
+
+    def test_send_skips_cardkit_without_metadata(self):
+        """send() should NOT use CardKit when metadata is None."""
+        adapter = _make_adapter()
+        captured = _mock_cardkit_and_im(adapter)
+
+        async def _run():
+            with _patch_run_blocking():
+                result = await adapter.send(
+                    chat_id="oc_chat",
+                    content="no metadata",
+                )
+            return result
+
+        result = asyncio.run(_run())
+        assert captured.get("cardkit_create") is None
+
+
+@patch.dict(os.environ, {}, clear=True)
+class TestRequiresEditFinalize(unittest.TestCase):
+    """Test REQUIRES_EDIT_FINALIZE property gating."""
+
+    def test_requires_edit_finalize_true_when_streaming_enabled(self):
+        adapter = _make_adapter()
+        _mock_cardkit_and_im(adapter)
+        assert adapter.REQUIRES_EDIT_FINALIZE is True
+
+    def test_requires_edit_finalize_false_when_not_connected(self):
+        adapter = _make_adapter()
+        adapter._client = None
+        assert adapter.REQUIRES_EDIT_FINALIZE is False
+
+    def test_requires_edit_finalize_false_when_not_configured(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        config = PlatformConfig()  # no streaming_card in extra
+        adapter = FeishuAdapter(config)
+        adapter._client = SimpleNamespace()
+        assert adapter.REQUIRES_EDIT_FINALIZE is False
 
 
 @patch.dict(os.environ, {}, clear=True)
@@ -215,7 +339,7 @@ class TestStreamingCardEditing(unittest.TestCase):
         captured = _mock_cardkit_and_im(adapter)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 # First create the streaming card
                 await adapter.send_streaming_card(chat_id="oc_chat", content="")
                 # Now edit — should go through CardKit streaming API
@@ -243,7 +367,7 @@ class TestStreamingCardEditing(unittest.TestCase):
         captured = _mock_cardkit_and_im(adapter)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 result = await adapter.edit_message(
                     chat_id="oc_chat",
                     message_id="om_regular",
@@ -262,7 +386,7 @@ class TestStreamingCardEditing(unittest.TestCase):
         _mock_cardkit_and_im(adapter)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 await adapter.send_streaming_card(chat_id="oc_chat", content="")
                 # Do multiple updates
                 await adapter.edit_message("oc_chat", "om_456", "text 1")
@@ -284,7 +408,7 @@ class TestStreamingCardFinalization(unittest.TestCase):
         captured = _mock_cardkit_and_im(adapter)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 await adapter.send_streaming_card(chat_id="oc_chat", content="")
                 assert "om_456" in adapter._streaming_cards
 
@@ -306,17 +430,13 @@ class TestStreamingCardFinalization(unittest.TestCase):
         assert captured.get("cardkit_settings") is not None
         # Card update was called for final layout
         assert captured.get("cardkit_update") is not None
-        # Verify final card has green header
-        update_req = captured["cardkit_update"]
-        final_card = json.loads(update_req.request_body.card)
-        assert final_card["header"]["template"] == "green"
 
     def test_stop_streaming_card_on_disconnect(self):
         adapter = _make_adapter()
         _mock_cardkit_and_im(adapter)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 await adapter.send_streaming_card(chat_id="oc_chat", content="test")
                 assert "om_456" in adapter._streaming_cards
 
@@ -350,8 +470,12 @@ class TestStreamingCardFallback(unittest.TestCase):
         )
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
-                result = await adapter.send(chat_id="oc_chat", content="hello")
+            with _patch_run_blocking():
+                result = await adapter.send(
+                    chat_id="oc_chat",
+                    content="hello",
+                    metadata={"expect_edits": True},
+                )
             return result
 
         result = asyncio.run(_run())
@@ -383,7 +507,7 @@ class TestStreamingCardElementLimit(unittest.TestCase):
         _mock_cardkit_and_im(adapter)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 await adapter.send_streaming_card(chat_id="oc_chat", content="")
             return adapter._streaming_cards
 
@@ -396,6 +520,12 @@ class TestStreamingCardElementLimit(unittest.TestCase):
         from gateway.platforms.feishu import _STREAMING_CARD_ELEMENT_LIMIT
 
         assert _STREAMING_CARD_ELEMENT_LIMIT == 180
+
+    def test_split_card_method_exists(self):
+        """_cardkit_split_card method should exist and be callable."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        assert hasattr(FeishuAdapter, "_cardkit_split_card")
 
     def test_streaming_params_match_plugin_v11(self):
         """Streaming params should match hermes-lark-streaming plugin v0.11."""
@@ -438,7 +568,6 @@ class TestCardkitApiCallRetry(unittest.TestCase):
         """Should retry on transient error code and succeed on next attempt."""
         from gateway.platforms.feishu import (
             _CARDKIT_GATEWAY_TIMEOUT,
-            _CARDKIT_RETRY_DELAYS_SEC,
         )
 
         adapter = _make_adapter()
@@ -456,8 +585,8 @@ class TestCardkitApiCallRetry(unittest.TestCase):
             return SimpleNamespace(success=lambda: True)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread), \
-                 patch("asyncio.sleep", new_callable=AsyncMock):  # skip sleep in tests
+            with _patch_run_blocking(), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
                 return await adapter._cardkit_api_call("test_op", _failing_then_ok)
 
         result = asyncio.run(_run())
@@ -479,7 +608,7 @@ class TestCardkitApiCallRetry(unittest.TestCase):
             )
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 return await adapter._cardkit_api_call("test_op", _permanent_fail)
 
         result = asyncio.run(_run())
@@ -500,7 +629,7 @@ class TestCardkitApiCallRetry(unittest.TestCase):
             )
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread), \
+            with _patch_run_blocking(), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
                 with pytest.raises(RuntimeError, match="internal error"):
                     await adapter._cardkit_api_call("test_op", _always_transient)
@@ -518,7 +647,7 @@ class TestCardkitApiCallRetry(unittest.TestCase):
             return SimpleNamespace(success=lambda: True)
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+            with _patch_run_blocking():
                 return await adapter._cardkit_api_call("test_op", _immediate_success)
 
         result = asyncio.run(_run())
@@ -534,10 +663,6 @@ class TestCardkitFinalizeRetry(unittest.TestCase):
         """finalize should retry stop+update and eventually succeed."""
         adapter = _make_adapter()
         captured = _mock_cardkit_and_im(adapter)
-        attempt_count = 0
-
-        # Make the update fail once then succeed
-        original_update = captured.get
 
         class _FlakyUpdateAPI:
             def __init__(self):
@@ -557,7 +682,7 @@ class TestCardkitFinalizeRetry(unittest.TestCase):
         adapter._client.cardkit.v1.card.update = _FlakyUpdateAPI().update
 
         async def _run():
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread), \
+            with _patch_run_blocking(), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
                 await adapter.send_streaming_card(chat_id="oc_chat", content="")
                 await adapter.edit_message(

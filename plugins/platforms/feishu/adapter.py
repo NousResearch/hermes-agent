@@ -1471,7 +1471,6 @@ class FeishuAdapter(BasePlatformAdapter):
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     MAX_MESSAGE_LENGTH = 8000
-    REQUIRES_EDIT_FINALIZE: bool = True
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
     # Threshold for detecting Feishu client-side message splits.
@@ -1859,10 +1858,15 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        # CardKit streaming card path — opt-in via streaming_card setting.
-        if self.streaming_cards_enabled:
+        # CardKit streaming card path — only for streaming responses that
+        # will be followed by edit_message() calls.  StreamConsumer sets
+        # ``expect_edits=True`` in metadata for streaming previews; acks,
+        # commentary, and final sends go through the regular IM path.
+        if self.streaming_cards_enabled and metadata and metadata.get("expect_edits"):
             try:
-                result = await self.send_streaming_card(chat_id, content)
+                result = await self.send_streaming_card(
+                    chat_id, content, reply_to=reply_to,
+                )
                 if result.success:
                     return result
                 logger.warning("[Feishu] CardKit streaming send failed, falling back to IM")
@@ -1933,6 +1937,15 @@ class FeishuAdapter(BasePlatformAdapter):
         if message_id in self._streaming_cards:
             card_state = self._streaming_cards[message_id]
             try:
+                # Check element limit — split card if approaching the cap
+                if card_state.element_count >= _STREAMING_CARD_ELEMENT_LIMIT:
+                    new_state = await self._cardkit_split_card(
+                        card_state, chat_id, content,
+                    )
+                    # Update the message_id → state mapping for subsequent edits
+                    message_id = new_state.message_id
+                    card_state = new_state
+
                 if finalize:
                     await self._cardkit_finalize(card_state, content)
                     return SendResult(success=True, message_id=message_id)
@@ -1969,6 +1982,15 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
     # CardKit streaming card methods
     # =========================================================================
+
+    @property
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:  # noqa: N802
+        """CardKit streaming lifecycle requires an explicit ``finalize=True``
+        edit to close the streaming indicator and render the final card layout.
+        Runtime-gated: only True when CardKit streaming is configured and
+        available — mirrors DingTalk's ``REQUIRES_EDIT_FINALIZE`` property.
+        """
+        return self.streaming_cards_enabled
 
     @property
     def streaming_cards_enabled(self) -> bool:
@@ -2020,6 +2042,34 @@ class FeishuAdapter(BasePlatformAdapter):
         }
         return json.dumps(card, ensure_ascii=False)
 
+    def _get_sdk_executor(self):
+        """Return the adapter-owned thread pool for blocking SDK calls.
+
+        Using a dedicated executor avoids depending on the event loop's
+        default executor, which may have different sizing and back-pressure
+        characteristics.  Mirrors the pattern on Hermes main branch.
+        """
+        lock = getattr(self, "_sdk_executor_lock", None)
+        if lock is None:
+            self._sdk_executor_lock = threading.Lock()
+            lock = self._sdk_executor_lock
+        with lock:
+            if getattr(self, "_sdk_executor_closing", False):
+                raise RuntimeError("Feishu SDK executor is shutting down")
+            executor = getattr(self, "_sdk_executor", None)
+            if executor is None:
+                from concurrent.futures import ThreadPoolExecutor
+                executor = ThreadPoolExecutor(
+                    max_workers=4, thread_name_prefix="feishu-sdk",
+                )
+                self._sdk_executor = executor
+            return executor
+
+    async def _run_blocking(self, func, *args):
+        """Run a blocking Feishu SDK call on the adapter-owned thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._get_sdk_executor(), func, *args)
+
     async def _cardkit_api_call(
         self,
         operation: str,
@@ -2030,13 +2080,14 @@ class FeishuAdapter(BasePlatformAdapter):
         Retries on server-side hiccups (gateway timeout, internal errors)
         with progressive backoff.  Non-transient errors are raised immediately.
 
-        Pattern adapted from hermes-lark-streaming plugin v0.11
-        (Cheerwhy/hermes-lark-streaming ``FeishuClient._checked_call``).
+        Uses the adapter-owned ``_run_blocking()`` executor (not
+        ``asyncio.to_thread``) to avoid depending on the event loop's
+        default executor.
         """
         attempts = len(_CARDKIT_RETRY_DELAYS_SEC) + 1
         last_error: Optional[Exception] = None
         for attempt in range(attempts):
-            resp = await asyncio.to_thread(call)
+            resp = await self._run_blocking(call)
             if self._response_succeeded(resp):
                 return resp
             code = getattr(resp, "code", 0) or 0
@@ -2062,6 +2113,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         content: str,
+        *,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Create a CardKit streaming card and send it to the chat.
 
@@ -2073,32 +2126,18 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        element_id = f"{_STREAMING_CARD_ELEMENT_ID}"
+        element_id = _STREAMING_CARD_ELEMENT_ID
         card_json = self._build_streaming_card_json(content, element_id=element_id)
 
-        # Step 1: Create the card via CardKit
+        # Step 1: Create the card via CardKit using the complete card JSON
+        # (includes streaming_mode + streaming_config).  Pattern matches
+        # hermes-lark-streaming plugin v0.11 ``FeishuClient.cardkit_create``:
+        # ``type("card_json")`` + ``data(json_string)`` passes the full schema.
         def _create_card() -> Any:
-            card_data = _CardKitData.builder() \
-                .schema("2.0") \
-                .header(
-                    _CardKitHeader.builder()
-                        .title({"tag": "plain_text", "content": "Hermes"})
-                        .build()
-                ) \
-                .body({
-                    "elements": [
-                        {
-                            "element_id": element_id,
-                            "tag": "markdown",
-                            "content": content,
-                        }
-                    ],
-                }) \
-                .build()
             body = (
                 CreateCardRequestBody.builder()
-                .data(card_data)
-                .type("cardkit")
+                .type("card_json")
+                .data(card_json)
                 .build()
             )
             request = (
@@ -2149,38 +2188,10 @@ class FeishuAdapter(BasePlatformAdapter):
 
         message_id = self._extract_response_field(msg_response, "message_id") or ""
 
-        # Step 3: Enable streaming mode on the card
-        settings = (
-            _CardKitSettings.builder()
-            .config(
-                _CardKitConfig.builder()
-                .streaming_mode(True)
-                .build()
-            )
-            .build()
-        )
-
-        def _enable_streaming() -> Any:
-            body = (
-                SettingsCardRequestBody.builder()
-                .settings(settings)
-                .build()
-            )
-            request = (
-                SettingsCardRequest.builder()
-                .card_id(card_id)
-                .request_body(body)
-                .build()
-            )
-            return self._client.cardkit.v1.card.settings(request)
-
-        stream_response = await self._cardkit_api_call("cardkit_enable_streaming", _enable_streaming)
-        if not self._response_succeeded(stream_response):
-            logger.warning(
-                "[Feishu] CardKit enable streaming failed (card=%s): %s",
-                card_id,
-                getattr(stream_response, "msg", "unknown"),
-            )
+        # Step 3: Enable streaming mode — streaming_mode is already set to
+        # True in the card JSON from Step 1 (via _build_streaming_card_json),
+        # so the card enters streaming mode on creation.  No separate API
+        # call needed, matching the hermes-lark-streaming plugin pattern.
 
         # Step 4: Store state
         state = _FeishuStreamingCard(
@@ -2207,6 +2218,12 @@ class FeishuAdapter(BasePlatformAdapter):
         Retries on transient CardKit server errors.
         """
         card_state.sequence += 1
+
+        # Track element count — in the current design we use a single
+        # markdown element, so element_count stays at 1.  When tool-call
+        # elements are added in future, this counter will guard against
+        # the ~200 element card limit (error 11310).
+        card_state.element_count = max(card_state.element_count, 1)
 
         def _update_element() -> Any:
             body = (
@@ -2238,22 +2255,17 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> None:
         """Disable streaming mode on a card via ``cardkit.v1.card.settings``.
 
+        Uses the JSON-string ``settings`` pattern proven in
+        hermes-lark-streaming plugin v0.11.
+
         Retries on transient CardKit server errors.
         """
-        settings = (
-            _CardKitSettings.builder()
-            .config(
-                _CardKitConfig.builder()
-                .streaming_mode(False)
-                .build()
-            )
-            .build()
-        )
+        settings_json = json.dumps({"streaming_mode": False}, ensure_ascii=False)
 
         def _stop() -> Any:
             body = (
                 SettingsCardRequestBody.builder()
-                .settings(settings)
+                .settings(settings_json)
                 .build()
             )
             request = (
@@ -2271,6 +2283,32 @@ class FeishuAdapter(BasePlatformAdapter):
                 card_state.card_id,
                 getattr(response, "msg", "unknown"),
             )
+
+    async def _cardkit_split_card(
+        self,
+        card_state: _FeishuStreamingCard,
+        chat_id: str,
+        content: str,
+    ) -> _FeishuStreamingCard:
+        """Finalize the current streaming card and create a new one.
+
+        Called when the element count approaches ``_STREAMING_CARD_ELEMENT_LIMIT``
+        to prevent Feishu error 11310 (card element overflow).  The old card
+        is finalized with its current content, and a fresh streaming card is
+        created to continue the stream.
+        """
+        # Finalize the old card (stop streaming + render final state)
+        await self._cardkit_finalize(card_state, content)
+
+        # Create a new streaming card
+        result = await self.send_streaming_card(chat_id, content)
+        if not result.success:
+            raise RuntimeError(f"Card split failed: {result.error}")
+
+        new_state = self._streaming_cards.get(result.message_id or "")
+        if not new_state:
+            raise RuntimeError("Card split: new card state not found")
+        return new_state
 
     async def _cardkit_finalize(
         self,
@@ -2317,7 +2355,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 def _update_card() -> Any:
                     body = (
                         UpdateCardRequestBody.builder()
-                        .card(json.dumps(final_card, ensure_ascii=False))
+                        .card(
+                            _CardKitCard.builder()
+                            .type("card_json")
+                            .data(json.dumps(final_card, ensure_ascii=False))
+                            .build()
+                        )
                         .build()
                     )
                     request = (

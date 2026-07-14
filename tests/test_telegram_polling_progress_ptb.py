@@ -270,10 +270,14 @@ async def test_slotted_request_instrumented_without_read_only_error():
     adapter._polling_conflict_count = 3
 
     request = _SlottedEnvelopeRequest(b'{"ok":true,"result":[]}')
-    # Guard the premise: the slotted instance rejects the old monkey-patch,
-    # exactly as PTB's HTTPXRequest does on Python 3.13.
-    with pytest.raises(AttributeError, match="read-only"):
-        request.do_request = lambda *a, **k: None
+    # Guard the premise where the runtime actually enforces it: PTB's request
+    # MRO is only fully slotted on Python 3.13+ (contextlib's
+    # AbstractAsyncContextManager gained ``__slots__ = ()`` there). On older
+    # runtimes the instance still carries a ``__dict__`` and the legacy
+    # monkey-patch is accepted, so the read-only premise cannot be asserted.
+    if not hasattr(request, "__dict__"):
+        with pytest.raises(AttributeError, match="read-only"):
+            request.do_request = lambda *a, **k: None
 
     instrumented = adapter._instrument_polling_request(request)
     context_token = tg_adapter._POLLING_GENERATION_CONTEXT.set(generation)

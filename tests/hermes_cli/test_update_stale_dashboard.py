@@ -61,7 +61,8 @@ def _refresh_bindings_against_live_module():
 
 def _ps_line(pid: int, cmd: str, *, uid: int | None = None) -> str:
     """Format a line as it appears in ``ps -A -o uid=,pid=,command=`` output."""
-    return f"{os.getuid() if uid is None else uid:>7} {pid:>7} {cmd}"
+    default_uid = getattr(os, "getuid", lambda: 0)()
+    return f"{default_uid if uid is None else uid:>7} {pid:>7} {cmd}"
 
 
 def _ps_runner(stdout: str):
@@ -82,6 +83,11 @@ def _ps_runner(stdout: str):
 
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
+
+    def test_ps_fixture_does_not_require_posix_getuid(self, monkeypatch):
+        monkeypatch.delattr(os, "getuid", raising=False)
+
+        assert _ps_line(12345, "hermes dashboard").split()[:2] == ["0", "12345"]
 
     def test_no_matches_returns_empty(self):
         with patch("subprocess.run") as mock_run:

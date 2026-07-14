@@ -1965,13 +1965,13 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_import_cookies",
-        "description": "Import cookies from a Netscape-format cookies.txt file into the current browser session. Use to authenticate to sites (LinkedIn, Amazon, etc.) without interactive login. Only available with the Camofox backend (CAMOFOX_URL set). Files must live under CAMOFOX_COOKIES_DIR (default ~/.camofox/cookies/). Requires CAMOFOX_API_KEY for bearer-token authentication.",
+        "description": "Import cookies from a Netscape-format cookies.txt file into the current browser session. Use to authenticate to sites (LinkedIn, Amazon, etc.) without interactive login. Only available with the Camofox backend (CAMOFOX_URL set). Files must live under browser.camofox.cookies_dir (default ~/.camofox/cookies/). Requires CAMOFOX_API_KEY for bearer-token authentication.",
         "parameters": {
             "type": "object",
             "properties": {
                 "cookies_path": {
                     "type": "string",
-                    "description": "Path to the Netscape cookies.txt file, relative to CAMOFOX_COOKIES_DIR (e.g., 'linkedin.txt')"
+                    "description": "Path to the Netscape cookies.txt file, relative to browser.camofox.cookies_dir (e.g., 'linkedin.txt')"
                 },
                 "domain_suffix": {
                     "type": "string",
@@ -4843,8 +4843,8 @@ registry.register(
 
 
 def _check_import_cookies_requirements() -> bool:
-    """browser_import_cookies only works against the Camofox backend."""
-    return _is_camofox_mode()
+    """Cookie import requires Camofox and its bearer-token secret."""
+    return _is_camofox_mode() and bool(os.getenv("CAMOFOX_API_KEY", "").strip())
 
 
 registry.register(

@@ -1211,6 +1211,9 @@ DEFAULT_CONFIG = {
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
         "camofox": {
+            # Directory containing Netscape-format cookie files that may be
+            # imported into the active Camofox session.
+            "cookies_dir": "~/.camofox/cookies",
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
@@ -3680,13 +3683,6 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
         "advanced": True,
-    },
-    "CAMOFOX_COOKIES_DIR": {
-        "description": "Directory containing Netscape-format cookie files importable via browser_import_cookies (default: ~/.camofox/cookies)",
-        "prompt": "Cookies directory",
-        "tools": ["browser_import_cookies"],
-        "password": False,
-        "category": "tool",
     },
     "FAL_KEY": {
         "description": "FAL API key for image and video generation",

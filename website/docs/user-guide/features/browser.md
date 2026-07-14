@@ -249,17 +249,24 @@ openssl rand -hex 32
 ```bash
 # ~/.hermes/.env
 CAMOFOX_API_KEY=your-generated-key
-# optional — defaults to ~/.camofox/cookies
-CAMOFOX_COOKIES_DIR=~/.camofox/cookies
 ```
 
 The Camofox server needs the **same** `CAMOFOX_API_KEY` in its own
 environment (Docker `-e CAMOFOX_API_KEY=...`, Fly.io secret, or shell
 profile on the server host).
 
-**2. Export cookies** from your browser in Netscape format using an
-extension like "cookies.txt" for Chrome/Firefox, then drop the file under
-`CAMOFOX_COOKIES_DIR`:
+**2. Configure the cookie directory** in `~/.hermes/config.yaml` (the default
+is shown below), then export cookies from your browser in Netscape format
+using an extension like "cookies.txt" for Chrome/Firefox and drop the file
+in that directory:
+
+```yaml
+browser:
+  camofox:
+    cookies_dir: ~/.camofox/cookies
+    # Required if imported cookies must survive tab reaping or restarts.
+    managed_persistence: true
+```
 
 ```bash
 mkdir -p ~/.camofox/cookies
@@ -273,20 +280,24 @@ cp ~/Downloads/linkedin_cookies.txt ~/.camofox/cookies/linkedin.txt
 The agent calls `browser_import_cookies` with the relative path. Hermes
 parses the file, optionally filters by `domain_suffix` (e.g.
 `.linkedin.com`), sanitizes to Playwright cookie fields, and POSTs to
-`POST /sessions/{userId}/cookies` with a Bearer token. Subsequent
-`browser_navigate` calls against that domain arrive authenticated.
+`POST /sessions/{userId}/cookies` with a Bearer token. With
+`browser.camofox.managed_persistence: true`, subsequent
+`browser_navigate` calls keep using the stable identity that received the
+cookies. With the default ephemeral identity, this is only reliable while
+the same Camofox session remains alive; after the tab reaper runs, a later
+call may use a new user ID.
 
 **Safety rails:**
 
-- Paths are resolved strictly inside `CAMOFOX_COOKIES_DIR` — traversal
+- Paths are resolved strictly inside `browser.camofox.cookies_dir` — traversal
   (`../secret`) and absolute paths are rejected.
 - Max file size: 5 MB. Max cookies per import: 500. Both enforced
   client-side before hitting the server.
 - Cookie values are never logged; only counts and user IDs appear in
   `hermes.log`.
-- The tool is hidden from the agent unless `CAMOFOX_URL` is set — it
-  cannot be called against Browserbase, Firecrawl, or agent-browser
-  backends.
+- The tool is hidden from the agent unless Camofox mode is active and
+  `CAMOFOX_API_KEY` is non-empty — it cannot be called against Browserbase,
+  Firecrawl, or agent-browser backends.
 
 ##### What Hermes does
 - Sends a deterministic profile-scoped `userId` to Camofox so the server can reuse the same Firefox profile across sessions.

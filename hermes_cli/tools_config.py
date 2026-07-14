@@ -490,8 +490,6 @@ TOOL_CATEGORIES = {
                     {"key": "CAMOFOX_API_KEY", "prompt": "Camofox API key (optional, enables cookie import)",
                      "optional": True,
                      "url": "https://github.com/jo-inc/camofox-browser#cookie-import"},
-                    {"key": "CAMOFOX_COOKIES_DIR", "prompt": "Cookies directory (optional)",
-                     "optional": True, "default": "~/.camofox/cookies"},
                 ],
                 "browser_provider": "camofox",
                 "post_setup": "camofox",

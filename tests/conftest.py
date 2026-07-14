@@ -233,7 +233,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "BROWSER_CDP_URL",
     "CAMOFOX_URL",
-    "CAMOFOX_COOKIES_DIR",
     # Platform allowlists — not credentials, but if set from any source
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.

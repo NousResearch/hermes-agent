@@ -996,8 +996,8 @@ def _netscape_parse(text: str) -> list:
 
 
 def _resolve_cookies_dir() -> str:
-    """Return the configured cookies directory (expanded)."""
-    raw = os.getenv("CAMOFOX_COOKIES_DIR", "").strip()
+    """Return ``browser.camofox.cookies_dir`` with ``~`` expanded."""
+    raw = str(_get_camofox_config().get("cookies_dir") or "").strip()
     if not raw:
         raw = "~/.camofox/cookies"
     return os.path.expanduser(raw)
@@ -1053,10 +1053,11 @@ def camofox_import_cookies(
 ) -> str:
     """Import Netscape-format cookies into the Camofox user session.
 
-    Reads ``cookies_path`` relative to ``CAMOFOX_COOKIES_DIR`` (default
-    ``~/.camofox/cookies``), optionally filters by domain suffix, sanitizes
-    to Playwright cookie fields, then POSTs to ``/sessions/{userId}/cookies``
-    with a Bearer token from ``CAMOFOX_API_KEY``.
+    Reads ``cookies_path`` relative to ``browser.camofox.cookies_dir``
+    (default ``~/.camofox/cookies``), optionally filters by domain suffix,
+    sanitizes to Playwright cookie fields, then POSTs to
+    ``/sessions/{userId}/cookies`` with a Bearer token from
+    ``CAMOFOX_API_KEY``.
     """
     try:
         api_key = os.getenv("CAMOFOX_API_KEY", "").strip()
@@ -1095,7 +1096,7 @@ def camofox_import_cookies(
             url,
             headers={"Authorization": f"Bearer {api_key}"},
             json={"cookies": cookies},
-            timeout=_DEFAULT_TIMEOUT,
+            timeout=_get_command_timeout(),
         )
         try:
             resp.raise_for_status()
@@ -1135,6 +1136,3 @@ def camofox_import_cookies(
         )
     except Exception as e:
         return tool_error(str(e), success=False)
-
-
-

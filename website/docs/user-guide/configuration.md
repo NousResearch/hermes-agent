@@ -1781,6 +1781,7 @@ browser:
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
   camofox:
+    cookies_dir: ~/.camofox/cookies # Netscape cookie files available to browser_import_cookies
     managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
     user_id: ""                  # Optional externally managed Camofox userId
     session_key: ""              # Optional session key sent when Hermes creates a tab

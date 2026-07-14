@@ -1,7 +1,6 @@
 """Tests for the Camofox browser backend."""
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -550,9 +549,17 @@ class TestReadCookieFile:
         target.write_text(content, encoding="utf-8")
         return target
 
+    def _configure_dir(self, monkeypatch, path):
+        import tools.browser_camofox as camofox
+        monkeypatch.setattr(
+            camofox,
+            "_get_camofox_config",
+            lambda: {"cookies_dir": str(path)},
+        )
+
     def test_reads_file_within_cookies_dir(self, tmp_path, monkeypatch):
         from tools.browser_camofox import _read_cookie_file
-        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(tmp_path))
+        self._configure_dir(monkeypatch, tmp_path)
         self._write(tmp_path, "site.txt", ".example.com\tTRUE\t/\tFALSE\t0\tfoo\tbar\n")
 
         cookies = _read_cookie_file("site.txt")
@@ -564,20 +571,20 @@ class TestReadCookieFile:
         cookies_dir = tmp_path / "cookies"
         cookies_dir.mkdir()
         (tmp_path / "secret.txt").write_text(".evil\tTRUE\t/\tFALSE\t0\tleaked\tvalue\n")
-        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(cookies_dir))
+        self._configure_dir(monkeypatch, cookies_dir)
 
         with pytest.raises(ValueError, match="relative path"):
             _read_cookie_file("../secret.txt")
 
     def test_absolute_path_blocked(self, tmp_path, monkeypatch):
         from tools.browser_camofox import _read_cookie_file
-        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(tmp_path))
+        self._configure_dir(monkeypatch, tmp_path)
         with pytest.raises(ValueError, match="relative path"):
             _read_cookie_file("/etc/passwd")
 
     def test_file_too_large_rejected(self, tmp_path, monkeypatch):
         from tools.browser_camofox import _read_cookie_file
-        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(tmp_path))
+        self._configure_dir(monkeypatch, tmp_path)
         big = tmp_path / "big.txt"
         big.write_text("x" * (6 * 1024 * 1024), encoding="utf-8")
 
@@ -586,7 +593,7 @@ class TestReadCookieFile:
 
     def test_domain_suffix_filter(self, tmp_path, monkeypatch):
         from tools.browser_camofox import _read_cookie_file
-        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(tmp_path))
+        self._configure_dir(monkeypatch, tmp_path)
         self._write(
             tmp_path, "mixed.txt",
             ".linkedin.com\tTRUE\t/\tFALSE\t0\tli_at\ttokA\n"
@@ -598,15 +605,54 @@ class TestReadCookieFile:
 
     def test_missing_file_raises(self, tmp_path, monkeypatch):
         from tools.browser_camofox import _read_cookie_file
-        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(tmp_path))
+        self._configure_dir(monkeypatch, tmp_path)
         with pytest.raises(FileNotFoundError):
             _read_cookie_file("does_not_exist.txt")
 
     def test_default_cookies_dir_is_home(self, monkeypatch):
         from tools.browser_camofox import _resolve_cookies_dir
-        monkeypatch.delenv("CAMOFOX_COOKIES_DIR", raising=False)
+        import tools.browser_camofox as camofox
+        monkeypatch.setattr(camofox, "_get_camofox_config", lambda: {})
         resolved = _resolve_cookies_dir()
-        assert resolved == os.path.expanduser("~/.camofox/cookies")
+        assert resolved.endswith("/.camofox/cookies")
+
+    def test_cookies_dir_is_a_config_field_not_an_optional_env_var(self):
+        from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS
+
+        assert DEFAULT_CONFIG["browser"]["camofox"]["cookies_dir"] == "~/.camofox/cookies"
+        assert "CAMOFOX_COOKIES_DIR" not in OPTIONAL_ENV_VARS
+
+    def test_reads_cookies_dir_through_real_config_chain(self, tmp_path, monkeypatch):
+        from tools.browser_camofox import _read_cookie_file
+
+        hermes_home = tmp_path / "hermes-home"
+        configured_dir = tmp_path / "configured-cookies"
+        legacy_env_dir = tmp_path / "legacy-env-cookies"
+        hermes_home.mkdir()
+        configured_dir.mkdir()
+        legacy_env_dir.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "browser:\n"
+            "  camofox:\n"
+            f"    cookies_dir: {configured_dir}\n",
+            encoding="utf-8",
+        )
+        self._write(
+            configured_dir,
+            "site.txt",
+            ".example.com\tTRUE\t/\tFALSE\t0\tsource\tconfig\n",
+        )
+        self._write(
+            legacy_env_dir,
+            "site.txt",
+            ".example.com\tTRUE\t/\tFALSE\t0\tsource\tlegacy-env\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(legacy_env_dir))
+
+        cookies = _read_cookie_file("site.txt")
+
+        assert cookies[0]["value"] == "config"
 
 
 # ---------------------------------------------------------------------------
@@ -618,8 +664,13 @@ class TestCamofoxImportCookies:
     """Tests for the top-level tool entry point that reads the file and POSTs."""
 
     def _prep(self, tmp_path, monkeypatch, api_key="k-secret-123"):
+        import tools.browser_camofox as camofox
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            camofox,
+            "_get_camofox_config",
+            lambda: {"cookies_dir": str(tmp_path)},
+        )
         if api_key is not None:
             monkeypatch.setenv("CAMOFOX_API_KEY", api_key)
         else:
@@ -661,6 +712,19 @@ class TestCamofoxImportCookies:
         assert "cookies" in body
         assert isinstance(body["cookies"], list)
         assert body["cookies"][0]["name"] == "foo"
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_uses_configured_command_timeout(self, mock_post, tmp_path, monkeypatch):
+        from tools.browser_camofox import camofox_import_cookies
+        self._prep(tmp_path, monkeypatch)
+        (tmp_path / "x.txt").write_text(
+            ".example.com\tTRUE\t/\tFALSE\t0\tfoo\tbar\n", encoding="utf-8"
+        )
+        mock_post.return_value = _mock_response(json_data={"ok": True, "count": 1})
+
+        with patch("tools.browser_camofox._get_command_timeout", return_value=73):
+            camofox_import_cookies("x.txt", task_id="t1")
+        assert mock_post.call_args.kwargs["timeout"] == 73
 
     @patch("tools.browser_camofox.requests.post")
     def test_body_sanitized_to_allowlist(self, mock_post, tmp_path, monkeypatch):
@@ -762,8 +826,13 @@ class TestBrowserImportCookiesRouting:
 
     @patch("tools.browser_camofox.requests.post")
     def test_delegates_to_camofox_when_enabled(self, mock_post, tmp_path, monkeypatch):
+        import tools.browser_camofox as camofox
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        monkeypatch.setenv("CAMOFOX_COOKIES_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            camofox,
+            "_get_camofox_config",
+            lambda: {"cookies_dir": str(tmp_path)},
+        )
         monkeypatch.setenv("CAMOFOX_API_KEY", "k")
         (tmp_path / "c.txt").write_text(
             ".example.com\tTRUE\t/\tFALSE\t0\tfoo\tbar\n", encoding="utf-8"
@@ -788,9 +857,18 @@ class TestBrowserImportCookiesRouting:
         from tools.browser_tool import _check_import_cookies_requirements
         assert _check_import_cookies_requirements() is False
 
+    @pytest.mark.parametrize("api_key", [None, "", "   "])
+    def test_hidden_from_registry_without_api_key(self, monkeypatch, api_key):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        if api_key is None:
+            monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("CAMOFOX_API_KEY", api_key)
+        from tools.browser_tool import _check_import_cookies_requirements
+        assert _check_import_cookies_requirements() is False
+
     def test_visible_when_camofox_enabled(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "secret")
         from tools.browser_tool import _check_import_cookies_requirements
         assert _check_import_cookies_requirements() is True
-
-

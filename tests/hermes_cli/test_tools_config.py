@@ -43,6 +43,19 @@ def test_agent_disabled_toolsets_suppresses_across_platforms():
     assert "memory" not in discord_enabled
 
 
+def test_camofox_setup_only_prompts_for_environment_backed_values():
+    camofox = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider["name"] == "Camofox"
+    )
+
+    assert [item["key"] for item in camofox["env_vars"]] == [
+        "CAMOFOX_URL",
+        "CAMOFOX_API_KEY",
+    ]
+
+
 def test_agent_disabled_toolsets_with_explicit_platform_config():
     """agent.disabled_toolsets should still suppress even when the platform
     has an explicit toolset list that includes the disabled toolset.

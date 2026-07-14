@@ -1238,9 +1238,12 @@ def switch_model(
             # If resolution fell through to "custom" (e.g. named custom provider like
             # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
             # credentials. Otherwise use the resolved values (picks up credential rotation,
-            # base_url adjustments for OpenCode, etc.).
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
+            # base_url adjustments for OpenCode, etc.).  When the resolved key is empty
+            # (e.g. opencode-go same-provider switch where env-var resolution doesn't
+            # re-trigger), fall back to the current session key rather than overwriting
+            # it with empty credentials that cause a 401 on the next request.
+            api_key = runtime.get("api_key", "") or current_api_key
+            base_url = runtime.get("base_url", "") or current_base_url
             api_mode = runtime.get("api_mode", "")
         except Exception:
             pass

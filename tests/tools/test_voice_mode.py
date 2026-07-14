@@ -498,6 +498,56 @@ class TestCheckVoiceRequirements:
         assert result["stt_available"] is False
         assert "STT provider: MISSING" in result["details"]
 
+    def test_command_stt_provider_selected(self, monkeypatch):
+        """Catch-all branch fires for a selected command provider (not any provider)."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "my-custom-stt")
+        monkeypatch.setattr("tools.transcription_tools._resolve_command_stt_provider_config",
+                            lambda p, c: {"command": "whisper_cpp"} if p == "my-custom-stt" else None)
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert "STT provider: OK (command: my-custom-stt)" in result["details"]
+
+    def test_unrelated_command_provider_not_confused(self, monkeypatch):
+        """Unrelated command provider does NOT make a different selected provider appear OK."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "none")
+        monkeypatch.setattr("tools.transcription_tools._resolve_command_stt_provider_config",
+                            lambda p, c: {"command": "whisper_cpp"} if p == "my-custom-stt" else None)
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is False
+        assert result["stt_available"] is False
+        assert "STT provider: MISSING" in result["details"]
+
+    def test_plugin_stt_provider(self, monkeypatch):
+        """Plugin STT provider is recognized."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "my-plugin-stt")
+        monkeypatch.setattr("tools.transcription_tools._resolve_command_stt_provider_config",
+                            lambda p, c: None)
+        monkeypatch.setattr("tools.voice_mode._check_plugin_stt_provider",
+                            lambda p: p == "my-plugin-stt")
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert "STT provider: OK (plugin: my-plugin-stt)" in result["details"]
+
 
 # ============================================================================
 # AudioRecorder

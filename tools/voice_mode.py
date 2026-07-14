@@ -1120,6 +1120,17 @@ def play_audio_file(file_path: str) -> bool:
 # ============================================================================
 # Requirements check
 # ============================================================================
+def _check_plugin_stt_provider(provider: str) -> bool:
+    """Return True when *provider* is backed by a registered TranscriptionProvider plugin."""
+    if not provider:
+        return False
+    try:
+        from agent.transcription_registry import get_provider
+        return get_provider(provider.lower().strip()) is not None
+    except ImportError:
+        return False
+
+
 def check_voice_requirements() -> Dict[str, Any]:
     """Check if all voice mode requirements are met.
 
@@ -1128,7 +1139,7 @@ def check_voice_requirements() -> Dict[str, Any]:
         ``missing_packages``, and ``details``.
     """
     # Determine STT provider availability
-    from tools.transcription_tools import _get_provider, _has_any_command_stt_provider, _load_stt_config, is_stt_enabled
+    from tools.transcription_tools import _get_provider, _load_stt_config, _resolve_command_stt_provider_config, is_stt_enabled
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)
@@ -1170,8 +1181,10 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (xAI Grok STT)")
     elif stt_provider == "elevenlabs":
         details_parts.append("STT provider: OK (ElevenLabs Scribe)")
-    elif _has_any_command_stt_provider(stt_config):
-        details_parts.append(f"STT provider: OK ({stt_provider})")
+    elif _resolve_command_stt_provider_config(stt_provider, stt_config):
+        details_parts.append(f"STT provider: OK (command: {stt_provider})")
+    elif _check_plugin_stt_provider(stt_provider):
+        details_parts.append(f"STT provider: OK (plugin: {stt_provider})")
     else:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "

@@ -27,6 +27,54 @@ import subprocess
 from hermes_cli.config import clear_model_endpoint_credentials
 
 
+# AWS cross-region inference profile prefixes. Any geo-prefixed profile only
+# routes from endpoints in its own geography, so the Bedrock picker must not
+# offer (e.g.) us.* profiles to an eu-central-2 endpoint — selecting one
+# produces a config AWS rejects regardless of credentials (#28156).
+# global.* routes from everywhere. Full set per the AWS cross-region
+# inference docs.
+BEDROCK_GEO_PREFIXES = (
+    "us.", "eu.", "ap.", "apac.", "jp.", "ca.", "sa.", "me.", "af.",
+)
+
+
+def bedrock_region_geo_prefix(region_name: str) -> str:
+    """Map an AWS region name to its inference-profile geo prefix ('' = unknown)."""
+    r = (region_name or "").lower()
+    for geo, region_prefixes in (
+        ("us.", ("us-", "us_gov")),
+        ("eu.", ("eu-",)),
+        ("ap.", ("ap-",)),
+        ("ca.", ("ca-",)),
+        ("sa.", ("sa-",)),
+        ("me.", ("me-",)),
+        ("af.", ("af-",)),
+    ):
+        if r.startswith(region_prefixes):
+            return geo
+    return ""
+
+
+def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
+    """True when *model_id* can be invoked from *region_name*'s endpoint.
+
+    Bare foundation-model ids and ``global.*`` profiles route from anywhere.
+    Geo-prefixed inference profiles (``us.*``, ``eu.*``, ...) only route from
+    endpoints in their own geography. Unknown region shapes hide nothing.
+    """
+    mid = (model_id or "").lower()
+    matched_geo = next((p for p in BEDROCK_GEO_PREFIXES if mid.startswith(p)), None)
+    if matched_geo is None or mid.startswith("global."):
+        return True
+    geo = bedrock_region_geo_prefix(region_name)
+    if not geo:
+        return True
+    if geo == "ap.":
+        # Asia-Pacific regions can carry ap./apac./jp. profile spellings.
+        return matched_geo in ("ap.", "apac.", "jp.")
+    return matched_geo == geo
+
+
 def _prune_replaced_custom_model_config_credentials(
     base_url: str,
     *,
@@ -2265,6 +2313,8 @@ def _model_flow_bedrock(config, current_model=""):
             "global.twelvelabs.",
         )
         _EXCLUDE_SUBSTRINGS = ("safeguard", "voxtral", "palmyra-vision")
+
+
         filtered = []
         for m in live_models:
             mid = m["id"]
@@ -2272,44 +2322,59 @@ def _model_flow_bedrock(config, current_model=""):
                 continue
             if any(s in mid.lower() for s in _EXCLUDE_SUBSTRINGS):
                 continue
+            if not bedrock_model_routable_from_region(mid, region):
+                continue
             filtered.append(m)
 
-        # Deduplicate: prefer inference profiles (us.*, global.*) over bare
-        # foundation model IDs.
+        # Deduplicate: prefer inference profiles (geo-prefixed or global.*)
+        # over bare foundation model IDs.
+        _PROFILE_PREFIXES = BEDROCK_GEO_PREFIXES + ("global.",)
         profile_base_ids = set()
         for m in filtered:
             mid = m["id"]
-            if mid.startswith(("us.", "global.")):
-                base = mid.split(".", 1)[1] if "." in mid[3:] else mid
-                profile_base_ids.add(base)
+            _pp = next((p for p in _PROFILE_PREFIXES if mid.startswith(p)), None)
+            if _pp:
+                profile_base_ids.add(mid[len(_pp):])
 
         deduped = []
         for m in filtered:
             mid = m["id"]
-            if not mid.startswith(("us.", "global.")) and mid in profile_base_ids:
+            if (
+                not mid.startswith(_PROFILE_PREFIXES)
+                and mid in profile_base_ids
+            ):
                 continue
             deduped.append(m)
 
-        _RECOMMENDED = [
-            "us.anthropic.claude-sonnet-4-6",
-            "us.anthropic.claude-opus-4-6",
-            "us.anthropic.claude-haiku-4-5",
-            "us.amazon.nova-pro",
-            "us.amazon.nova-lite",
-            "us.amazon.nova-micro",
+        # Recommended models, matched geo-agnostically so an EU (eu.*) or
+        # APAC (apac.*) picker pins its own region's profile of the same
+        # model rather than a us.* one it can't route to (#28156).
+        _RECOMMENDED_BASES = [
+            "anthropic.claude-sonnet-4-6",
+            "anthropic.claude-opus-4-6",
+            "anthropic.claude-haiku-4-5",
+            "amazon.nova-pro",
+            "amazon.nova-lite",
+            "amazon.nova-micro",
             "deepseek.v3",
-            "us.meta.llama4-maverick",
-            "us.meta.llama4-scout",
+            "meta.llama4-maverick",
+            "meta.llama4-scout",
         ]
+
+        def _base_id(mid: str) -> str:
+            _pp = next((p for p in _PROFILE_PREFIXES if mid.startswith(p)), None)
+            return mid[len(_pp):] if _pp else mid
 
         def _sort_key(m):
             mid = m["id"]
-            for i, rec in enumerate(_RECOMMENDED):
-                if mid.startswith(rec):
-                    return (0, i, mid)
+            base = _base_id(mid)
+            for i, rec in enumerate(_RECOMMENDED_BASES):
+                if base.startswith(rec):
+                    # In-region geo profile beats global.* for the same model
+                    return (0, i, 0 if not mid.startswith("global.") else 1, mid)
             if mid.startswith("global."):
-                return (1, 0, mid)
-            return (2, 0, mid)
+                return (1, 0, 0, mid)
+            return (2, 0, 0, mid)
 
         deduped.sort(key=_sort_key)
         model_list = [m["id"] for m in deduped]

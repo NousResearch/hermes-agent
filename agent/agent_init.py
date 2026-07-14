@@ -516,7 +516,9 @@ def init_agent(
         api_mode is None
         and agent.api_mode == "chat_completions"
         and agent.provider != "copilot-acp"
+        and agent.provider != "claude-code-acp"
         and not str(agent.base_url or "").lower().startswith("acp://copilot")
+        and not str(agent.base_url or "").lower().startswith("acp://claude")
         and not str(agent.base_url or "").lower().startswith("acp+tcp://")
         and not agent._is_azure_openai_url()
         and (
@@ -764,7 +766,7 @@ def init_agent(
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
-    if agent.api_mode == "anthropic_messages":
+    if agent.api_mode == "anthropic_messages" and agent.provider != "claude-code-acp":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
@@ -940,7 +942,7 @@ def init_agent(
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
             if _provider_timeout is not None:
                 client_kwargs["timeout"] = _provider_timeout
-            if agent.provider == "copilot-acp":
+            if agent.provider in ("copilot-acp", "claude-code-acp"):
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
             effective_base = base_url

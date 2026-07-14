@@ -232,6 +232,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "claude-code-acp": ProviderConfig(
+        id="claude-code-acp",
+        name="Claude Code ACP",
+        auth_type="external_process",
+        inference_base_url="acp://claude",
+        base_url_env_var="CLAUDE_ACP_BASE_URL",
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -1681,7 +1688,7 @@ def resolve_provider(
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
         "alibaba_coding_plan": "alibaba-coding-plan",
-        "claude": "anthropic", "claude-code": "anthropic",
+        "claude": "anthropic", "claude-code": "claude-code-acp",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
@@ -6517,20 +6524,38 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    if provider_id == "claude-code-acp":
+        command = (
+            os.getenv("HERMES_CLAUDE_ACP_COMMAND", "").strip()
+            or os.getenv("CLAUDE_CODE_ACP_PATH", "").strip()
+            or "claude-code-acp"
+        )
+        raw_args = os.getenv("HERMES_CLAUDE_ACP_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else []
+        _cli_label = "Claude Code ACP bridge"
+        _install_hint = (
+            "Install it with `npm install -g @zed-industries/claude-code-acp` "
+            "(and log in with the Claude Code CLI), or set "
+            "HERMES_CLAUDE_ACP_COMMAND/CLAUDE_CODE_ACP_PATH."
+        )
+        _missing_code = "missing_claude_code_acp_cli"
+    else:
+        command = (
+            os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
+            or os.getenv("COPILOT_CLI_PATH", "").strip()
+            or "copilot"
+        )
+        raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+        _cli_label = "Copilot CLI command"
+        _install_hint = "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+        _missing_code = "missing_copilot_cli"
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the {_cli_label} '{command}'. " + _install_hint,
             provider=provider_id,
-            code="missing_copilot_cli",
+            code=_missing_code,
         )
 
     return {

@@ -273,6 +273,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "claude-code-acp": [
+        "claude-code-acp",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -557,6 +560,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3-235b-a22b-fp8",
     ],
 }
+
+# claude-code-acp drives the local Claude Code CLI, which serves the full
+# Anthropic model family on the user's plan. Mirror the anthropic catalog so
+# (provider=claude-code-acp, model=claude-*) resolves to this provider instead
+# of falling back to a generic aggregator.
+_PROVIDER_MODELS["claude-code-acp"] = list(_PROVIDER_MODELS["anthropic"])
 
 # ---------------------------------------------------------------------------
 # Nous Portal free-model helper
@@ -1066,6 +1075,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("claude-code-acp", "Claude Code ACP",         "Claude Code on your Claude plan (Pro/Max) via the ACP bridge — no metered API"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
@@ -1144,6 +1154,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
+    "anthropic": ("Anthropic Claude", "Direct API key, or Claude Code plan via ACP",   ["anthropic", "claude-code-acp"]),
 }
 
 # Reverse index: member slug -> group_id. Built once at import.
@@ -1228,6 +1239,8 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "claude-acp": "claude-code-acp",
+    "claude-code-acp-agent": "claude-code-acp",
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
@@ -1253,7 +1266,7 @@ _PROVIDER_ALIASES = {
     "minimax-global": "minimax-oauth",
     "minimax_oauth": "minimax-oauth",
     "claude": "anthropic",
-    "claude-code": "anthropic",
+    "claude-code": "claude-code-acp",
     "deep-seek": "deepseek",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
@@ -2328,6 +2341,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "claude-code-acp":
+        # The ACP bridge drives Claude Code, which exposes the Anthropic model
+        # family; reuse the anthropic catalog for the picker.
+        return list(_PROVIDER_MODELS.get("anthropic", []))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

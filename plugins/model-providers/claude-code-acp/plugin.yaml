@@ -1,0 +1,5 @@
+name: claude-code-acp-provider
+kind: model-provider
+version: 1.0.0
+description: Claude Code (Claude Max/Pro plan) via the ACP subprocess bridge
+author: samuelsoaress

@@ -5046,6 +5046,31 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
+        if provider == "claude-code-acp":
+            # Claude Code ACP authenticates through the local Claude Code login
+            # (keychain / ~/.claude), so no api_key is required — the bridge
+            # subprocess handles auth. Fall back to sane ACP defaults.
+            api_key = str(creds.get("api_key", "")).strip() or "claude-code-acp"
+            base_url = str(creds.get("base_url", "")).strip() or "acp://claude"
+            command = str(creds.get("command", "")).strip() or None
+            args = list(creds.get("args") or [])
+            if not final_model:
+                logger.warning(
+                    "resolve_provider_client: claude-code-acp requested but no "
+                    "model was provided or configured"
+                )
+                return None, None
+            from agent.claude_code_acp_client import ClaudeCodeACPClient
+
+            client = ClaudeCodeACPClient(
+                api_key=api_key,
+                base_url=base_url,
+                command=command,
+                args=args,
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
             _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
             logger.debug("resolve_provider_client: external-process provider %s not "

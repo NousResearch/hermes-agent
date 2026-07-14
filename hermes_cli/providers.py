@@ -94,6 +94,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="acp://copilot",
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "claude-code-acp": HermesOverlay(
+        transport="codex_responses",
+        auth_type="external_process",
+        base_url_override="acp://claude",
+        base_url_env_var="CLAUDE_ACP_BASE_URL",
+    ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
@@ -283,7 +289,11 @@ ALIASES: Dict[str, str] = {
 
     # anthropic
     "claude": "anthropic",
-    "claude-code": "anthropic",
+    # claude-code drives the local Claude Code CLI via the ACP bridge so
+    # inference stays on the user's Claude plan (Pro/Max) instead of failing as
+    # third-party API usage. Use "claude" for the direct HTTP/API-key path.
+    "claude-code": "claude-code-acp",
+    "claude-acp": "claude-code-acp",
 
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",
@@ -373,6 +383,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "claude-code-acp": "Claude Code ACP",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",

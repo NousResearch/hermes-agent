@@ -13,12 +13,17 @@ class TestGetDefaultModelForProvider:
         assert result
         assert isinstance(result, str)
 
-    def test_openrouter_returns_empty(self):
-        """OpenRouter uses dynamic model fetch, no static catalog entry."""
-        from hermes_cli.models import get_default_model_for_provider
-        # OpenRouter is not in _PROVIDER_MODELS — it uses live fetching
+    def test_openrouter_returns_preferred_silent_default(self):
+        """OpenRouter has no static catalog (live fetch), but the silent
+        default must still resolve — to the cost-safe preferred model, never
+        the curated list's Anthropic flagship (claude-fable-5)."""
+        from hermes_cli.models import (
+            PREFERRED_SILENT_DEFAULT_MODEL,
+            get_default_model_for_provider,
+        )
         result = get_default_model_for_provider("openrouter")
-        assert result == ""
+        assert result == PREFERRED_SILENT_DEFAULT_MODEL
+        assert "claude" not in result.lower()
 
     def test_unknown_provider_returns_empty(self):
         from hermes_cli.models import get_default_model_for_provider

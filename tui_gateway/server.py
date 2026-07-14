@@ -2117,7 +2117,14 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    return "anthropic/claude-sonnet-4"
+    # No env seed and no config preference: fall back to the cost-safe silent
+    # default, never an expensive Anthropic flagship the user didn't pick.
+    try:
+        from hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
+
+        return PREFERRED_SILENT_DEFAULT_MODEL
+    except Exception:
+        return "z-ai/glm-5.2"
 
 
 def _resolve_session_platform() -> str:

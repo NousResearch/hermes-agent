@@ -2301,17 +2301,25 @@ class TelegramAdapter(BasePlatformAdapter):
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
-            # Start polling — retry initialize() for transient TLS resets
+            # Start polling — retry initialize() for transient TLS resets.
+            # Wrap each attempt in asyncio.wait_for() so a hung TCP socket
+            # (TUN-proxy / partial route / DNS resolver stall) doesn't
+            # deadlock the gateway. asyncio.TimeoutError is added to the
+            # catch tuple so wait_for-induced timeouts trigger the retry.
+            # See #63309.
             try:
                 from telegram.error import NetworkError, TimedOut
             except ImportError:
                 NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
             _max_connect = 8
+            _init_timeout_s = 30
             for _attempt in range(_max_connect):
                 try:
-                    await self._app.initialize()
+                    await asyncio.wait_for(
+                        self._app.initialize(), timeout=_init_timeout_s
+                    )
                     break
-                except (NetworkError, TimedOut, OSError) as init_err:
+                except (NetworkError, TimedOut, OSError, asyncio.TimeoutError) as init_err:
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(

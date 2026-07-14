@@ -2387,6 +2387,14 @@ DEFAULT_CONFIG = {
         # modal; HERMES_TUI_NO_CONFIRM=1 force-skips that modal regardless of
         # the configured value.
         "destructive_slash_confirm": True,
+        # Approval delegation — route dangerous-command approvals to
+        # designated admins when the user is not an admin.  Supports
+        # cross-platform delegation (e.g. user on WeChat, admin on Feishu).
+        # Disabled by default (personal users don't need it).
+        "delegation": {
+            "enabled": False,
+            "admins": [],
+        },
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

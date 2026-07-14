@@ -7454,6 +7454,7 @@ class DiscordAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+            **kwargs: Any,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.

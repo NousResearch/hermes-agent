@@ -1318,3 +1318,102 @@ class TestVisionCpuBurstCap:
             f"analyses were serialized to the cap (peak={calls_peak}); only the "
             "encode burst should be bounded, not the whole call"
         )
+
+
+# ---------------------------------------------------------------------------
+# _flatten_alpha_to_opaque — transparent PNGs decode as noise on llama.cpp
+# backends (stb_image drops alpha; garbage RGB under transparent pixels
+# reaches the vision encoder). Flatten onto white before embedding.
+# ---------------------------------------------------------------------------
+
+
+class TestFlattenAlphaToOpaque:
+    @staticmethod
+    def _write_rgba_with_garbage(path):
+        """Half-transparent PNG whose transparent pixels hide garbage RGB."""
+        from PIL import Image
+        img = Image.new("RGBA", (8, 8), (37, 201, 93, 0))  # transparent garbage
+        for x in range(4):
+            for y in range(8):
+                img.putpixel((x, y), (10, 20, 30, 255))  # opaque left half
+        img.save(path, format="PNG")
+
+    def test_transparent_png_flattened_to_white(self, tmp_path):
+        from PIL import Image
+        from tools.vision_tools import _flatten_alpha_to_opaque
+        src = tmp_path / "t.png"
+        self._write_rgba_with_garbage(src)
+        out, mime = _flatten_alpha_to_opaque(src, "image/png")
+        assert mime == "image/png"
+        assert out != src, "transparent PNG should produce a new flattened file"
+        try:
+            with Image.open(out) as flat:
+                assert flat.mode == "RGB"
+                assert flat.getpixel((7, 0)) == (255, 255, 255)  # was transparent
+                assert flat.getpixel((0, 0)) == (10, 20, 30)     # opaque preserved
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_opaque_png_untouched(self, tmp_path):
+        from PIL import Image
+        from tools.vision_tools import _flatten_alpha_to_opaque
+        src = tmp_path / "o.png"
+        Image.new("RGB", (4, 4), (1, 2, 3)).save(src, format="PNG")
+        out, mime = _flatten_alpha_to_opaque(src, "image/png")
+        assert out == src and mime == "image/png"
+
+    def test_jpeg_mime_untouched(self, tmp_path):
+        from tools.vision_tools import _flatten_alpha_to_opaque
+        src = tmp_path / "x.jpg"
+        src.write_bytes(b"\xff\xd8\xff\xe0 not really a jpeg")
+        out, mime = _flatten_alpha_to_opaque(src, "image/jpeg")
+        assert out == src and mime == "image/jpeg"
+
+    def test_palette_png_with_transparency_flattened(self, tmp_path):
+        from PIL import Image
+        from tools.vision_tools import _flatten_alpha_to_opaque
+        src = tmp_path / "p.png"
+        img = Image.new("RGBA", (4, 4), (0, 0, 0, 0)).convert(
+            "P", palette=Image.ADAPTIVE)
+        img.save(src, format="PNG", transparency=0)
+        out, mime = _flatten_alpha_to_opaque(src, "image/png")
+        try:
+            assert out != src and mime == "image/png"
+        finally:
+            if out != src:
+                out.unlink(missing_ok=True)
+
+    def test_in_place_flatten(self, tmp_path):
+        from PIL import Image
+        from tools.vision_tools import _flatten_alpha_to_opaque
+        src = tmp_path / "ip.png"
+        self._write_rgba_with_garbage(src)
+        out, mime = _flatten_alpha_to_opaque(src, "image/png", out_path=src)
+        assert out == src and mime == "image/png"
+        with Image.open(src) as flat:
+            assert flat.mode == "RGB"
+            assert flat.getpixel((7, 7)) == (255, 255, 255)
+
+    def test_corrupt_file_soft_fails_to_original(self, tmp_path):
+        from tools.vision_tools import _flatten_alpha_to_opaque
+        src = tmp_path / "bad.png"
+        src.write_bytes(b"\x89PNG\r\n\x1a\n truncated garbage")
+        out, mime = _flatten_alpha_to_opaque(src, "image/png")
+        assert out == src and mime == "image/png"
+
+    def test_normalize_flattens_supported_transparent_png(self, tmp_path):
+        """The passthrough branch of _normalize_to_supported_image must
+        flatten — this is the exact path a downloaded transparent PNG takes
+        into vision_analyze."""
+        from PIL import Image
+        from tools.vision_tools import _normalize_to_supported_image
+        src = tmp_path / "n.png"
+        self._write_rgba_with_garbage(src)
+        path, mime, err = _normalize_to_supported_image(src, "image/png")
+        assert err is None and mime == "image/png"
+        assert path != src, "normalize should hand back the flattened temp file"
+        try:
+            with Image.open(path) as flat:
+                assert flat.mode == "RGB"
+        finally:
+            path.unlink(missing_ok=True)

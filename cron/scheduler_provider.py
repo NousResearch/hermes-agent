@@ -152,14 +152,21 @@ def resolve_cron_scheduler() -> "CronScheduler":
 
 
 class InProcessCronScheduler(CronScheduler):
-    """Default provider: the historical in-process 60s ticker.
+    """Default provider: in-process ticker with adaptive wait.
 
-    ``start()`` blocks in the tick loop until ``stop_event`` is set, identical
-    to the pre-refactor ``_start_cron_ticker`` core loop. The caller runs it in
-    a daemon thread. ``can_dispatch`` is an optional synchronous gate supplied
-    by GatewayRunner during external drain; skipped ticks leave due jobs intact
-    for the next allowed tick.
+    Default cadence is 60s when nothing is due soon. When a job is scheduled
+    sooner (e.g. ``10s`` / ``30s`` relative durations), the wait shortens so
+    the promised resolution can be honored without permanently spinning at
+    sub-minute frequency. ``start()`` blocks until ``stop_event`` is set; the
+    caller runs it in a daemon thread. ``can_dispatch`` is an optional
+    synchronous gate supplied by GatewayRunner during external drain; skipped
+    ticks leave due jobs intact for the next allowed tick.
     """
+
+    # How often to re-evaluate wait while sleeping so a job created mid-cycle
+    # (e.g. "in 10 seconds") can pull the next tick earlier than the original
+    # 60s deadline. Cheap: one jobs.json read via compute_ticker_wait_seconds.
+    _WAIT_RECHECK_SECONDS = 1.0
 
     @property
     def name(self) -> str:
@@ -167,11 +174,13 @@ class InProcessCronScheduler(CronScheduler):
 
     def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None):
         import logging
+        import time
+
         from cron.scheduler import tick as cron_tick
-        from cron.jobs import record_ticker_heartbeat
+        from cron.jobs import compute_ticker_wait_seconds, record_ticker_heartbeat
 
         logger = logging.getLogger("cron.scheduler_provider")
-        logger.info("In-process cron scheduler started (interval=%ds)", interval)
+        logger.info("In-process cron scheduler started (interval=%ds, adaptive)", interval)
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
@@ -202,4 +211,20 @@ class InProcessCronScheduler(CronScheduler):
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
             record_ticker_heartbeat(success=ok)
-            stop_event.wait(interval)
+
+            # Adaptive wait: sleep until the next job is due (capped at
+            # ``interval``). Recheck every second so a newly-created sub-minute
+            # job shortens the remaining wait without busy-spinning.
+            wait = compute_ticker_wait_seconds(interval)
+            deadline = time.monotonic() + wait
+            while not stop_event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                # A job scheduled while we were sleeping can pull the wait down.
+                recomputed = compute_ticker_wait_seconds(interval)
+                if recomputed < remaining:
+                    remaining = recomputed
+                    deadline = time.monotonic() + remaining
+                if stop_event.wait(min(self._WAIT_RECHECK_SECONDS, remaining)):
+                    break

@@ -207,6 +207,58 @@ def test_inprocess_provider_stop_is_noop():
     assert InProcessCronScheduler().stop() is None
 
 
+def test_inprocess_provider_honors_subminute_schedule(tmp_path, monkeypatch):
+    """End-to-end: a 2s one-shot fires within a few seconds even with interval=60.
+
+    Review requirement for seconds support: the built-in trigger must be able
+    to honor sub-minute schedules, not only parse them. Adaptive wait shortens
+    the 60s default cadence when a near-term job exists.
+    """
+    from cron.jobs import create_job, get_due_jobs, mark_job_run
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    cron_dir = tmp_path / "cron"
+    monkeypatch.setattr("cron.jobs.CRON_DIR", cron_dir)
+    monkeypatch.setattr("cron.jobs.JOBS_FILE", cron_dir / "jobs.json")
+    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", cron_dir / "output")
+    monkeypatch.setattr("cron.jobs.TICKER_HEARTBEAT_FILE", cron_dir / "ticker_heartbeat")
+    monkeypatch.setattr("cron.jobs.TICKER_SUCCESS_FILE", cron_dir / "ticker_last_success")
+
+    job = create_job(prompt="drink water", schedule="2s", name="submin-e2e")
+    fired = []
+
+    def fake_tick(*args, **kwargs):
+        due = get_due_jobs()
+        for j in due:
+            fired.append(j["id"])
+            mark_job_run(j["id"], True)
+        return len(due)
+
+    stop = threading.Event()
+    provider = InProcessCronScheduler()
+    started = time.monotonic()
+    with patch("cron.scheduler.tick", side_effect=fake_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 60},
+            daemon=True,
+        )
+        thread.start()
+        assert _wait_until(lambda: job["id"] in fired, timeout=8.0), (
+            f"sub-minute job did not fire within 8s; fired={fired}"
+        )
+        elapsed = time.monotonic() - started
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive(), "provider did not exit after stop_event was set"
+    # Fixed 60s sleep would miss this window; adaptive wait must land well under it.
+    assert elapsed < 6.0, (
+        f"job took {elapsed:.1f}s; adaptive ticker should honor ~2s schedule"
+    )
+
+
 # ── Phase 2: config key, discovery, resolver ─────────────────────────────────
 
 

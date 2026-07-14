@@ -526,14 +526,21 @@ The agent's final response is automatically delivered to the job's `deliver:` ta
 ### Relative delays (one-shot)
 
 ```text
+10s     → Run once in 10 seconds
+30s     → Run once in 30 seconds
 30m     → Run once in 30 minutes
 2h      → Run once in 2 hours
 1d      → Run once in 1 day
 ```
 
+Sub-minute delays (`10s`, `30s`, …) are supported. The built-in in-process
+scheduler normally ticks about once per minute, but shortens its wait when a
+job is due sooner so these fire near the requested time.
+
 ### Intervals (recurring)
 
 ```text
+every 30s    → Every 30 seconds
 every 30m    → Every 30 minutes
 every 2h     → Every 2 hours
 every 1d     → Every day

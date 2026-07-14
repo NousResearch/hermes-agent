@@ -8,6 +8,7 @@ from cron.jobs import (
     parse_duration,
     parse_schedule,
     compute_next_run,
+    compute_ticker_wait_seconds,
     create_job,
     load_jobs,
     save_jobs,
@@ -23,6 +24,7 @@ from cron.jobs import (
     heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
+    seconds_until_next_job,
 )
 
 
@@ -277,6 +279,69 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
+
+
+# =========================================================================
+# Adaptive ticker wait (sub-minute schedules)
+# =========================================================================
+
+class TestTickerWait:
+    def test_no_jobs_uses_max_interval(self, tmp_cron_dir):
+        assert seconds_until_next_job() is None
+        assert compute_ticker_wait_seconds(60) == 60
+        assert compute_ticker_wait_seconds(0) == 0.0
+
+    def test_near_term_job_shortens_wait(self, tmp_cron_dir):
+        create_job(prompt="soon", schedule="10s", name="near-term")
+        until = seconds_until_next_job()
+        assert until is not None
+        assert 0 < until <= 10.5
+        wait = compute_ticker_wait_seconds(60)
+        assert 0 < wait <= 10.5
+
+    def test_overdue_job_returns_near_zero_wait(self, tmp_cron_dir):
+        past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        save_jobs([
+            {
+                "id": "overdue1",
+                "name": "overdue",
+                "prompt": "x",
+                "enabled": True,
+                "state": "scheduled",
+                "schedule": {"kind": "once", "run_at": past},
+                "next_run_at": past,
+            }
+        ])
+        until = seconds_until_next_job()
+        assert until is not None
+        assert until <= 0
+        wait = compute_ticker_wait_seconds(60)
+        assert wait == pytest.approx(0.05)
+
+    def test_paused_and_disabled_jobs_ignored(self, tmp_cron_dir):
+        future = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+        save_jobs([
+            {
+                "id": "paused1",
+                "name": "paused",
+                "prompt": "x",
+                "enabled": True,
+                "state": "paused",
+                "schedule": {"kind": "once", "run_at": future},
+                "next_run_at": future,
+            },
+            {
+                "id": "disabled1",
+                "name": "disabled",
+                "prompt": "x",
+                "enabled": False,
+                "state": "scheduled",
+                "schedule": {"kind": "once", "run_at": future},
+                "next_run_at": future,
+            },
+        ])
+        assert seconds_until_next_job() is None
+        assert compute_ticker_wait_seconds(60) == 60
 
 
 class TestJobCRUD:

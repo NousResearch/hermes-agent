@@ -831,6 +831,62 @@ def get_ticker_success_age() -> Optional[float]:
     return _epoch_file_age(TICKER_SUCCESS_FILE)
 
 
+def seconds_until_next_job() -> Optional[float]:
+    """Seconds until the soonest enabled, non-paused job is due.
+
+    Returns:
+        ``0.0`` if a job is already due/overdue, a positive float for a future
+        job, or ``None`` when no scheduled jobs are waiting.
+    """
+    now = _hermes_now()
+    soonest: Optional[float] = None
+    try:
+        jobs = load_jobs()
+    except Exception:
+        return None
+
+    for job in jobs:
+        if not job.get("enabled", True):
+            continue
+        if job.get("state") == "paused":
+            continue
+        next_run = job.get("next_run_at")
+        if not next_run or not isinstance(next_run, str):
+            continue
+        try:
+            next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+        except Exception:
+            continue
+        delta = (next_run_dt - now).total_seconds()
+        if soonest is None or delta < soonest:
+            soonest = delta
+    return soonest
+
+
+def compute_ticker_wait_seconds(max_interval: float = TICKER_INTERVAL_SECONDS) -> float:
+    """How long the built-in ticker should sleep before the next tick.
+
+    Aligns sleep with the next scheduled job so sub-minute durations
+    (``10s``, ``30s``) can fire without permanently lowering the default
+    60s cadence. When no near-term job exists, returns ``max_interval``.
+    """
+    try:
+        max_interval = float(max_interval)
+    except (TypeError, ValueError):
+        max_interval = float(TICKER_INTERVAL_SECONDS)
+    if max_interval <= 0:
+        return 0.0
+
+    until = seconds_until_next_job()
+    if until is None:
+        return max_interval
+    # Already due → tick ASAP. Tiny floor avoids a busy-spin if a job stays
+    # "due" across a failed tick (e.g. dispatch paused during drain).
+    if until <= 0:
+        return min(max_interval, 0.05)
+    return min(max_interval, until)
+
+
 # =============================================================================
 # Job CRUD Operations
 # =============================================================================

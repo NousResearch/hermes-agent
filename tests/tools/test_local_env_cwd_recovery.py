@@ -149,28 +149,23 @@ class TestRunBashCwdRecovery:
         assert env.cwd == str(tmp_path)
         assert not any("missing on disk" in rec.message for rec in caplog.records)
 
-
 class TestUpdateCwdRejectsMissingPaths:
-    """``_update_cwd`` must not propagate a deleted path back into ``self.cwd``."""
+    """_update_cwd now tracks cwd from the stdout marker, just like other
+    backends.  Tests verify the marker-parsing path in the local override."""
 
-    def test_skips_assignment_when_marker_path_missing(self, tmp_path):
+    def test_skips_assignment_when_marker_missing(self, tmp_path):
         original = tmp_path / "starting"
         original.mkdir()
 
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
             env = LocalEnvironment(cwd=str(original), timeout=10)
 
-        # Simulate the stale-marker case: the prior command's ``pwd -P`` left
-        # a path in the cwd file, but that path has since been deleted.
-        deleted = tmp_path / "wedge-repro"
-        with open(env._cwd_file, "w") as f:
-            f.write(str(deleted))
-
-        env._update_cwd({"output": "", "returncode": 0})
+        # No marker in output → cwd stays unchanged.
+        env._update_cwd({"output": "some command output", "returncode": 0})
 
         assert env.cwd == str(original)
 
-    def test_accepts_assignment_when_marker_path_exists(self, tmp_path):
+    def test_accepts_assignment_from_marker(self, tmp_path):
         original = tmp_path / "starting"
         original.mkdir()
         new_dir = tmp_path / "next"
@@ -179,9 +174,9 @@ class TestUpdateCwdRejectsMissingPaths:
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
             env = LocalEnvironment(cwd=str(original), timeout=10)
 
-        with open(env._cwd_file, "w") as f:
-            f.write(str(new_dir))
-
-        env._update_cwd({"output": "", "returncode": 0})
+        # The marker in stdout drives cwd tracking.
+        marker = env._cwd_marker
+        output = f"\n{marker}{new_dir}{marker}\n"
+        env._update_cwd({"output": output, "returncode": 0})
 
         assert env.cwd == str(new_dir)

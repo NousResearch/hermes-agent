@@ -184,10 +184,14 @@ class TestUpdateCwdWindowsMsys:
     def test_marker_file_msys_path_stored_in_native_form(
         self, monkeypatch, tmp_path,
     ):
-        """When Git Bash writes ``/c/Users/x`` to the cwd marker file on
-        Windows, ``_update_cwd`` must translate to native form before
-        validating and storing — otherwise ``os.path.isdir`` rejects a
-        perfectly real directory."""
+        """When Git Bash writes an MSYS path (``/c/Users/x``) to the cwd
+        marker on Windows, ``_update_cwd`` must translate it to native form
+        before storing — otherwise ``os.path.isdir`` rejects a perfectly
+        real directory.
+
+        The marker comes through the stdout marker (not a temp file), and
+        ``_extract_cwd_from_output`` handles the translation.
+        """
         original = tmp_path / "starting"
         original.mkdir()
 
@@ -199,12 +203,15 @@ class TestUpdateCwdWindowsMsys:
         ):
             env = LocalEnvironment(cwd=str(original), timeout=10)
 
-        # Pretend Git Bash wrote an MSYS path that maps to tmp_path/"next"
+        # Pretend the shell wrote an MSYS path in the stdout marker
         new_dir = tmp_path / "next"
         new_dir.mkdir()
 
-        with open(env._cwd_file, "w") as f:
-            f.write("/c/whatever/from/bash")
+        marker = env._cwd_marker
+        result = {
+            "output": f"\n{marker}/c/whatever/from/bash{marker}\n",
+            "returncode": 0,
+        }
 
         # Translate the synthetic MSYS string to the real native dir.
         def fake_translate(p):
@@ -213,7 +220,7 @@ class TestUpdateCwdWindowsMsys:
             return p
 
         with patch.object(local_mod, "_msys_to_windows_path", side_effect=fake_translate):
-            env._update_cwd({"output": "", "returncode": 0})
+            env._update_cwd(result)
 
         assert env.cwd == str(new_dir)
 

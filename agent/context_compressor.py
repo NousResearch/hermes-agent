@@ -39,6 +39,11 @@ HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
 HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
+_CONTINUITY_NOTE_HEADING = "## Continuity Note"
+_CONTINUITY_NOTE_RE = re.compile(
+    rf"(?ms)^{re.escape(_CONTINUITY_NOTE_HEADING)}[ \t]*(?:\r?\n|\Z)"
+    r"(?P<body>.*?)(?=^##[ \t]+\S|\Z)"
+)
 
 
 SUMMARY_PREFIX = (
@@ -220,6 +225,9 @@ _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 # become another unbounded transcript copy after the LLM summarizer failed.
 _FALLBACK_SUMMARY_MAX_CHARS = 8_000
 _FALLBACK_TURN_MAX_CHARS = 700
+_CONTINUITY_MAX_ANCHORS = 9
+_CONTINUITY_ANCHOR_MAX_CHARS = 280
+_CONTINUITY_PRIOR_SUMMARY_MAX_CHARS = 1_200
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
@@ -1620,7 +1628,9 @@ class ContextCompressor(ContextEngine):
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
+            content = redact_sensitive_text(
+                msg.get("content") or "", force=True
+            )
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
             # assistant content before it reaches the summarizer. Reasoning
@@ -1653,7 +1663,12 @@ class ContextCompressor(ContextEngine):
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
-                            args = redact_sensitive_text(fn.get("arguments", ""))
+                            args = redact_sensitive_text(
+                                fn.get("arguments", ""), force=True
+                            )
+                            args = _MEDIA_DIRECTIVE_RE.sub(
+                                "[media attachment]", args
+                            )
                             # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
                                 args = args[:self._TOOL_ARGS_HEAD] + "..."
@@ -1672,6 +1687,120 @@ class ContextCompressor(ContextEngine):
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)
+
+    def _build_deterministic_continuity_note_body(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+    ) -> str:
+        """Build bounded, redacted start-to-end anchors for a continuity note."""
+
+        def _compact(value: Any, *, max_chars: int) -> str:
+            text = redact_sensitive_text(
+                _content_text_for_contains(value), force=True
+            )
+            text = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", text)
+            text = re.sub(
+                r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text
+            )
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > max_chars:
+                marker = " ...[truncated]... "
+                available = max_chars - len(marker)
+                head_chars = max(1, (available * 2) // 3)
+                tail_chars = max(1, available - head_chars)
+                text = (
+                    text[:head_chars].rstrip()
+                    + marker
+                    + text[-tail_chars:].lstrip()
+                )
+            return text
+
+        total_turns = len(turns_to_summarize)
+        if total_turns <= _CONTINUITY_MAX_ANCHORS:
+            anchor_indexes = list(range(total_turns))
+        else:
+            anchor_indexes = sorted({
+                anchor_index * (total_turns - 1)
+                // (_CONTINUITY_MAX_ANCHORS - 1)
+                for anchor_index in range(_CONTINUITY_MAX_ANCHORS)
+            })
+
+        anchors: list[str] = []
+        for turn_index in anchor_indexes:
+            msg = turns_to_summarize[turn_index]
+            role = str(msg.get("role", "unknown")).upper()
+            turn_text = _compact(
+                msg.get("content"),
+                max_chars=_CONTINUITY_ANCHOR_MAX_CHARS,
+            )
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                tool_names = [
+                    _extract_tool_call_name_and_args(tool_call)[0]
+                    for tool_call in msg.get("tool_calls") or []
+                ]
+                tool_prefix = "tool calls: " + ", ".join(tool_names[:6])
+                turn_text = (
+                    f"{tool_prefix}; {turn_text}" if turn_text else tool_prefix
+                )
+                turn_text = _compact(
+                    turn_text,
+                    max_chars=_CONTINUITY_ANCHOR_MAX_CHARS,
+                )
+            if not turn_text:
+                turn_text = "Unknown (no recoverable text content)."
+            anchors.append(
+                f"  - Turn {turn_index + 1}/{total_turns} [{role}]: "
+                f"{turn_text}"
+            )
+
+        previous_summary_context = "None."
+        if self._previous_summary:
+            previous_summary_context = _compact(
+                self._strip_summary_prefix(self._previous_summary),
+                max_chars=_CONTINUITY_PRIOR_SUMMARY_MAX_CHARS,
+            ) or "None."
+
+        if not anchors:
+            anchors.append("  - None recoverable from the compacted window.")
+
+        return "\n".join([
+            f"- Prior compaction context: {previous_summary_context}",
+            "- Deterministic full-span anchors from the compacted window:",
+            *anchors,
+            "- Details not recoverable from these redacted anchors are "
+            "Unknown. Do not invent them.",
+        ])
+
+    def _ensure_continuity_note(
+        self,
+        summary: str,
+        turns_to_summarize: List[Dict[str, Any]],
+    ) -> str:
+        """Return *summary* with a populated exact Continuity Note section."""
+        match = _CONTINUITY_NOTE_RE.search(summary or "")
+        if match is not None and match.group("body").strip():
+            return summary
+
+        deterministic_body = self._build_deterministic_continuity_note_body(
+            turns_to_summarize
+        )
+        if match is not None:
+            body_prefix = summary[: match.start("body")]
+            body_separator = (
+                "" if body_prefix.endswith(("\n", "\r")) else "\n"
+            )
+            return (
+                body_prefix
+                + body_separator
+                + deterministic_body
+                + "\n\n"
+                + summary[match.end("body") :]
+            )
+        return (
+            summary.rstrip()
+            + f"\n\n{_CONTINUITY_NOTE_HEADING}\n"
+            + deterministic_body
+        )
 
     def _build_static_fallback_summary(
         self,
@@ -1696,7 +1825,10 @@ class ContextCompressor(ContextEngine):
         last_dropped_turns: list[str] = []
 
         def _compact_fallback_turn(value: Any) -> str:
-            text = redact_sensitive_text(_content_text_for_contains(value))
+            text = redact_sensitive_text(
+                _content_text_for_contains(value), force=True
+            )
+            text = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", text)
             text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
             text = re.sub(r"\s+", " ", text).strip()
             if len(text) > _FALLBACK_TURN_MAX_CHARS:
@@ -1728,7 +1860,10 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg.get("tool_calls") or []:
                     name, raw_args = _extract_tool_call_name_and_args(tc)
-                    args = redact_sensitive_text(raw_args)
+                    args = redact_sensitive_text(raw_args, force=True)
+                    args = _MEDIA_DIRECTIVE_RE.sub(
+                        "[media attachment]", args
+                    )
                     call_id = _extract_tool_call_id(tc)
                     if call_id:
                         call_id_to_tool[call_id] = (name, args)
@@ -1814,11 +1949,19 @@ class ContextCompressor(ContextEngine):
             )
 
         reason_text = f" Summary failure reason: {reason}." if reason else ""
+        continuity_note_body = (
+            self._build_deterministic_continuity_note_body(
+                turns_to_summarize
+            )
+        )
         body = f"""{HISTORICAL_TASK_HEADING}
 {active_task}
 
 ## Goal
 Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
+
+{_CONTINUITY_NOTE_HEADING}
+{continuity_note_body}
 
 ## Constraints & Preferences
 - This fallback was generated locally without an LLM summary call.
@@ -1862,7 +2005,11 @@ Continue from the most recent unfulfilled user ask and protected tail messages. 
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
-        summary = self._with_summary_prefix(redact_sensitive_text(body.strip()))
+        sanitized_body = redact_sensitive_text(body.strip(), force=True)
+        sanitized_body = _MEDIA_DIRECTIVE_RE.sub(
+            "[media attachment]", sanitized_body
+        )
+        summary = self._with_summary_prefix(sanitized_body)
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
         return summary
@@ -1947,6 +2094,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "You are a summarization agent creating a context checkpoint. "
             "Treat the conversation turns below as source material for a "
             "compact record of prior work. "
+            "Before writing the summary, mentally review the ENTIRE span from "
+            "the first turn to the last turn in the material — every topic "
+            "(coding, planning, creative/narrative, ops, chat, research). "
+            "The Continuity Note section is mandatory and must preserve "
+            "concrete facts from that full span so nothing important is "
+            "soft-lost after compaction. "
             "Produce only the structured summary; do not add a greeting, "
             "preamble, or prefix. "
             "Write the summary in the same language the user was using in the "
@@ -1954,7 +2107,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary — replace any that appear "
             "with [REDACTED]. Note that the user had credentials present, but "
-            "do not preserve their values."
+            "do not preserve their values. "
+            "Do not sanitize or omit explicit, crude, technical, or sensitive "
+            "non-credential content that is needed for continuity — preserve it "
+            "as factual checkpoint detail."
         )
 
         # Temporal anchoring directive. Rewrites relative / still-pending-sounding
@@ -2002,6 +2158,21 @@ If no outstanding task exists, write "None."]
 
 ## Goal
 [What the user is trying to accomplish overall]
+
+## Continuity Note
+[MANDATORY for every compaction, all topics. Full-span review of the material
+being compacted from first turn to last. Capture concrete continuity so the
+agent does not soft-lose detail after the raw turns are dropped:
+- Facts established (names, paths, ports, configs, numbers, IDs, versions)
+- Setting / environment / scene state if any (locations, times, physical state)
+- Decisions locked and why
+- Current state of work, systems, characters, or plans
+- Open threads and unresolved mid-actions
+- User constraints and preferences stated in-span
+- Errors and fixes that matter (exact messages when available)
+- Unknowns marked Unknown — NEVER invent missing details
+Be specific. Prefer "apartment on 4th, blue couch, she still wearing his shirt"
+or "server on :8000, tunnel URL X, PID 3996" over vague "continued discussion".]
 
 ## Constraints & Preferences
 [User preferences, coding style, constraints, important decisions]
@@ -2051,14 +2222,23 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
+        previous_summary_for_prompt = ""
         if self._previous_summary:
+            previous_summary_for_prompt = redact_sensitive_text(
+                self._previous_summary, force=True
+            )
+            previous_summary_for_prompt = _MEDIA_DIRECTIVE_RE.sub(
+                "[media attachment]", previous_summary_for_prompt
+            )
+
+        if previous_summary_for_prompt:
             # Iterative update: preserve existing info, add new progress
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
 PREVIOUS SUMMARY:
-{self._previous_summary}
+{previous_summary_for_prompt}
 
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
@@ -2082,6 +2262,12 @@ Use this exact structure:
         # Inject focus topic guidance when the user provides one via /compress <focus>.
         # This goes at the end of the prompt so it takes precedence.
         if focus_topic:
+            focus_topic = redact_sensitive_text(
+                str(focus_topic), force=True
+            )
+            focus_topic = _MEDIA_DIRECTIVE_RE.sub(
+                "[media attachment]", focus_topic
+            )
             prompt += f"""
 
 FOCUS TOPIC: "{focus_topic}"
@@ -2158,7 +2344,13 @@ This compaction should PRIORITISE preserving all information related to the focu
                 content = stripped
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
-            summary = redact_sensitive_text(content.strip())
+            summary = redact_sensitive_text(content.strip(), force=True)
+            summary = _MEDIA_DIRECTIVE_RE.sub(
+                "[media attachment]", summary
+            )
+            summary = self._ensure_continuity_note(
+                summary, turns_to_summarize
+            )
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
@@ -2394,7 +2586,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             content = msg.get("content")
             if cls._is_context_summary_content(content):
                 continue
-            text = redact_sensitive_text(_content_text_for_contains(content).strip())
+            text = redact_sensitive_text(
+                _content_text_for_contains(content).strip(), force=True
+            )
+            text = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", text)
             if not text:
                 continue
             text = " ".join(text.split())
@@ -3183,6 +3378,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                 turns_to_summarize,
                 reason=self._last_summary_error,
             )
+            # The emitted fallback is now the authoritative rolling handoff.
+            # Keeping the older value would omit these new full-span anchors
+            # from the next iterative summary update.
+            self._previous_summary = self._strip_summary_prefix(summary)
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

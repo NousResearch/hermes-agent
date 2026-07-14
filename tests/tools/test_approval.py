@@ -143,6 +143,53 @@ class TestDetectDangerousRm:
                 None,
             )
 
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path quoting regression")
+    def test_quoted_windows_temp_target_is_exempted(self, tmp_path):
+        target = tmp_path / "hermes-verify-example.py"
+
+        with mock_patch("tempfile.gettempdir", return_value=str(tmp_path)):
+            assert detect_dangerous_command(f'rm -f "{target}"') == (
+                False,
+                None,
+                None,
+            )
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
+    def test_mixed_case_windows_artifact_with_extra_operand_is_dangerous(
+        self, tmp_path
+    ):
+        target = tmp_path / "HERMES-VERIFY-example.py"
+        other = tmp_path / "other.py"
+
+        command = f'rm -f "{target}" "{other}"'
+        assert detect_dangerous_command(command)[0] is True
+
+    def test_posix_literal_backslash_is_not_a_path_separator(self):
+        left = r"\tmp\hermes-verify-example.py"
+        right = "/tmp/hermes-verify-example.py"
+        command = r"rm -f '\tmp\hermes-verify-example.py'"
+
+        with mock_patch.object(approval_module.os, "name", "posix"):
+            assert approval_module._parse_verification_artifact_cleanup(command) is None
+            assert approval_module._normalize_cleanup_path_text(
+                left,
+                windows=False,
+            ) != approval_module._normalize_cleanup_path_text(
+                right,
+                windows=False,
+            )
+
+    def test_target_symlink_escaping_temp_is_dangerous(self, tmp_path):
+        temp_dir = tmp_path / "temp"
+        temp_dir.mkdir()
+        outside = tmp_path / "outside.py"
+        outside.write_text("outside", encoding="utf-8")
+        target = temp_dir / "hermes-verify-escape.py"
+        target.symlink_to(outside)
+
+        with mock_patch("tempfile.gettempdir", return_value=str(temp_dir)):
+            assert detect_dangerous_command(f'rm -f "{target}"')[0] is True
+
     def test_verification_cleanup_exemption_rejects_broader_deletions(self):
         commands = (
             "rm -rf /tmp/hermes-verify-example.py",
@@ -158,6 +205,16 @@ class TestDetectDangerousRm:
             "rm -f /tmp/hermes-verify-$(touch>/tmp/pwned).py",
             "rm -f /tmp/hermes-ad-hoc-`touch>/tmp/pwned`.py",
             "rm -f /tmp/hermes-verify-example.py; touch /tmp/pwned",
+            'rm -f "/tmp/hermes-verify-*"',
+            'rm -f "/tmp/hermes-verify-example.py" "/tmp/other.py"',
+            'rm -f "/tmp/hermes-verify-example.py"; touch /tmp/pwned',
+            'rm -f "/tmp/hermes-verify-example.py" && touch /tmp/pwned',
+            'rm -f "/tmp/hermes-verify-$(touch>/tmp/pwned).py"',
+            'sudo rm -f "/tmp/hermes-verify-example.py"',
+            'env MODE=test rm -f "/tmp/hermes-verify-example.py"',
+            'echo ok; rm -f "/tmp/hermes-verify-example.py"',
+            'rm -f "/tmp/hermes-"verify-example.py "/tmp/other.py"',
+            'rm -f "/tmp/hermes-ad-"hoc-example.py && touch /tmp/pwned',
         )
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for command in commands:
@@ -165,6 +222,51 @@ class TestDetectDangerousRm:
                 assert is_dangerous is True, command
                 assert key is not None, command
                 assert "delete" in desc.lower(), command
+
+    def test_artifact_mention_outside_same_rm_command_avoids_shared_key(self):
+        description = "non-canonical verification artifact delete"
+        commands = (
+            "rm -f /tmp/unrelated.py; echo /tmp/hermes-verify-example.py",
+            "echo /tmp/hermes-verify-example.py; rm --version",
+            'echo "$(rm --version) /tmp/hermes-verify-example.py"',
+            'echo "`rm --version` /tmp/hermes-verify-example.py"',
+            "rm --version > /tmp/hermes-verify-example.py",
+            "rm -f /tmp/unrelated.py >/tmp/hermes-verify-example.py",
+            "rm -f /tmp/unrelated.py 2>/tmp/hermes-verify-example.py",
+            "rm -f /tmp/unrelated.py >>/tmp/hermes-verify-example.py",
+            (
+                "rm --preserve-root=/tmp/hermes-verify-example.py "
+                "/tmp/unrelated.py"
+            ),
+        )
+
+        for command in commands:
+            assert (
+                approval_module._is_verification_artifact_cleanup_candidate(
+                    command
+                )
+                is False
+            ), command
+            _, key, desc = detect_dangerous_command(command)
+            assert key != description, command
+            assert desc != description, command
+
+    def test_noncanonical_artifact_rm_uses_exact_shared_approval_key(self):
+        description = "non-canonical verification artifact delete"
+        commands = (
+            "echo ok; rm -f /var/tmp/hermes-verify-example.py",
+            'echo "$(rm -f /var/tmp/hermes-verify-example.py)"',
+            'echo "`rm -f /var/tmp/hermes-verify-example.py`"',
+            "sudo rm -f /var/tmp/hermes-verify-example.py",
+            "env MODE=test rm -f /var/tmp/hermes-verify-example.py",
+        )
+
+        for command in commands:
+            assert detect_dangerous_command(command) == (
+                True,
+                description,
+                description,
+            ), command
 
 
 class TestWindowsShellDestructiveCommands:

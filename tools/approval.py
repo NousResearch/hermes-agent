@@ -1431,25 +1431,360 @@ def _command_detection_variants(command: str):
         yield variant
 
 
-def _is_verification_artifact_cleanup(command: str) -> bool:
-    """Return whether *command* only removes one Hermes ad-hoc temp script."""
-    try:
-        argv = shlex.split(command, posix=True)
-    except ValueError:
-        return False
+_VERIFICATION_ARTIFACT_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
+_VERIFICATION_ARTIFACT_BASENAME_RE = re.compile(
+    r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+"
+)
+
+
+def _collapse_cleanup_shell_word(word: str) -> Optional[str]:
+    """Collapse shell quote fragments without corrupting Windows paths."""
+    chars: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(word):
+        ch = word[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            else:
+                chars.append(ch)
+            i += 1
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < len(word):
+                escaped = word[i + 1]
+                if escaped in {'$', '`', '"', "\\"}:
+                    chars.append(escaped)
+                    i += 2
+                    continue
+                if escaped == "\n":
+                    i += 2
+                    continue
+                chars.append("\\")
+                i += 1
+                continue
+            chars.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\":
+            if os.name == "nt":
+                chars.append("\\")
+                i += 1
+                continue
+            if i + 1 >= len(word):
+                return None
+            escaped = word[i + 1]
+            if escaped != "\n":
+                chars.append(escaped)
+            i += 2
+            continue
+        chars.append(ch)
+        i += 1
+    if quote is not None:
+        return None
+    return "".join(chars)
+
+
+def _split_cleanup_command(command: str) -> Optional[list[str]]:
+    """Split a cleanup command using shell word and separator semantics."""
+    argv: list[str] = []
+    pos = 0
+    while True:
+        pos = _skip_shell_whitespace(command, pos)
+        if pos >= len(command):
+            return argv
+        if command.startswith(("&&", "||"), pos):
+            argv.append(command[pos:pos + 2])
+            pos += 2
+            continue
+        if command[pos] in ";&|":
+            argv.append(command[pos])
+            pos += 1
+            continue
+        start, end, raw_word = _read_shell_word(command, pos)
+        if end <= start:
+            return None
+        logical_word = _collapse_cleanup_shell_word(raw_word)
+        if logical_word is None:
+            return None
+        argv.append(logical_word)
+        pos = end
+
+
+def _verification_artifact_basename(operand: str) -> str:
+    """Return an operand basename using only host-valid path separators."""
+    path_text = operand.replace("\\", "/") if os.name == "nt" else operand
+    return path_text.rsplit("/", 1)[-1]
+
+
+def _mentions_verification_artifact(operand: str) -> bool:
+    """Find an artifact prefix in any host-valid operand path segment."""
+    path_text = operand.replace("\\", "/") if os.name == "nt" else operand
+    prefixes = _VERIFICATION_ARTIFACT_PREFIXES
+    if os.name == "nt":
+        prefixes = tuple(prefix.casefold() for prefix in prefixes)
+    return any(
+        (segment.casefold() if os.name == "nt" else segment).startswith(prefixes)
+        for segment in path_text.split("/")
+    )
+
+
+_CLEANUP_REDIRECTION_RE = re.compile(
+    r"^(?:\d*(?:>>?|<<?|<<<|<>|>\|)|&>>?|&>)$"
+)
+
+
+def _split_cleanup_redirection_word(raw_word: str) -> tuple[str, bool, bool]:
+    """Split an unquoted shell redirection from a word without executing it."""
+    if _CLEANUP_REDIRECTION_RE.fullmatch(raw_word):
+        return "", True, False
+
+    quote: str | None = None
+    i = 0
+    while i < len(raw_word):
+        ch = raw_word[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(raw_word):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(raw_word):
+            i += 2
+            continue
+        if ch not in "<>":
+            i += 1
+            continue
+
+        operator_end = i + 1
+        if raw_word.startswith("<<<", i):
+            operator_end = i + 3
+        elif raw_word.startswith((">>", "<<", "<>", ">|"), i):
+            operator_end = i + 2
+        operand_prefix = raw_word[:i]
+        if operand_prefix.isdigit():
+            operand_prefix = ""
+        return (
+            operand_prefix,
+            True,
+            operator_end < len(raw_word),
+        )
+    return raw_word, False, False
+
+
+def _cleanup_command_segment_end(command: str, start: int) -> int:
+    """Return the exclusive end of the shell command containing ``start``."""
+    quote: str | None = None
+    i = start
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            end = _scan_dollar_paren_end(command, i)
+            if end is None:
+                i += 2
+            else:
+                i = end
+            continue
+        if ch in ";&|\n)}`":
+            return i
+        i += 1
+    return len(command)
+
+
+def _iter_cleanup_operands(command: str, start: int, end: int):
+    """Yield actual operands from one ``rm`` invocation."""
+    pos = start
+    options_active = True
+    skip_redirection_target = False
+    while pos < end:
+        pos = _skip_shell_whitespace(command, pos)
+        if pos >= end:
+            break
+        word_start, word_end, raw_word = _read_shell_word(command, pos)
+        if word_start >= end or word_end <= word_start:
+            break
+        if word_end > end:
+            raw_word = command[word_start:end]
+            word_end = end
+        pos = word_end
+
+        if skip_redirection_target:
+            skip_redirection_target = False
+            continue
+
+        operand_word, has_redirection, target_attached = (
+            _split_cleanup_redirection_word(raw_word)
+        )
+        logical_word = _collapse_cleanup_shell_word(operand_word)
+        if logical_word is None:
+            return
+        if has_redirection:
+            skip_redirection_target = not target_attached
+            if not logical_word:
+                continue
+        if logical_word == "--":
+            options_active = False
+            continue
+        if options_active and logical_word.startswith("-"):
+            continue
+        yield logical_word
+
+
+def _iter_cleanup_command_word_spans(command: str):
+    """Yield command words, including commands nested in backticks."""
+    yield from _iter_shell_command_word_spans(command)
+
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if ch == "'" and quote is None:
+            quote = ch
+            i += 1
+            continue
+        if ch == '"':
+            quote = None if quote == '"' else '"'
+            i += 1
+            continue
+        if ch != "`":
+            i += 1
+            continue
+
+        backtick_end = _scan_backtick_end(command, i)
+        if backtick_end is None:
+            return
+        inner_start = i + 1
+        inner_end = backtick_end - 1
+        inner_command = command[inner_start:inner_end]
+        for word_start, word_end, word in _iter_shell_command_word_spans(
+            inner_command
+        ):
+            yield (
+                inner_start + word_start,
+                inner_start + word_end,
+                word,
+            )
+        i = backtick_end
+
+
+def _is_verification_artifact_cleanup_candidate(command: str) -> bool:
+    """Return whether a real ``rm`` command mentions a Hermes artifact."""
+    for _, word_end, word in _iter_cleanup_command_word_spans(command):
+        executable = (
+            _deobfuscate_shell_word_for_detection(word)
+            .replace("\\", "/")
+            .rsplit("/", 1)[-1]
+            .lower()
+        )
+        if executable not in {"rm", "rm.exe"}:
+            continue
+        segment_end = _cleanup_command_segment_end(command, word_end)
+        if any(
+            _mentions_verification_artifact(operand)
+            for operand in _iter_cleanup_operands(
+                command,
+                word_end,
+                segment_end,
+            )
+        ):
+            return True
+    return False
+
+
+def _parse_verification_artifact_cleanup(command: str) -> Optional[tuple[str, str]]:
+    """Parse a single ``rm -f`` targeting a Hermes verification artifact."""
+    argv = _split_cleanup_command(command)
+    if argv is None:
+        return None
     if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
-        return False
+        return None
 
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
-    basename = os.path.basename(operand)
-    if operand != os.path.join(temp_dir, basename):
+    basename = _verification_artifact_basename(operand)
+    if not basename.startswith(_VERIFICATION_ARTIFACT_PREFIXES):
+        return None
+    return operand, basename
+
+
+def _normalize_cleanup_path_text(value: str, *, windows: bool) -> str:
+    """Normalize path text without inventing separators for the host OS."""
+    if windows:
+        return value.replace("\\", "/").rstrip("/").casefold()
+    return value.rstrip("/")
+
+
+def _path_text_equal(left: str, right: str) -> bool:
+    """Compare literal path spellings using host-appropriate separators."""
+    windows = os.name == "nt"
+    return _normalize_cleanup_path_text(
+        left,
+        windows=windows,
+    ) == _normalize_cleanup_path_text(
+        right,
+        windows=windows,
+    )
+
+
+def _is_verification_artifact_cleanup(command: str) -> bool:
+    """Return whether *command* removes one artifact from the canonical temp dir."""
+    parsed = _parse_verification_artifact_cleanup(command)
+    if parsed is None:
+        return False
+    operand, basename = parsed
+    if _VERIFICATION_ARTIFACT_BASENAME_RE.fullmatch(basename) is None:
         return False
 
-    target = os.path.realpath(operand)
-    if os.path.dirname(target) != temp_dir:
+    raw_temp_dir = tempfile.gettempdir()
+    canonical_temp_dir = os.path.realpath(raw_temp_dir)
+    canonical_target = os.path.join(canonical_temp_dir, basename)
+
+    literal_target_allowed = _path_text_equal(operand, canonical_target)
+    if not literal_target_allowed and not os.path.islink(raw_temp_dir):
+        raw_target = os.path.join(raw_temp_dir, basename)
+        literal_target_allowed = _path_text_equal(operand, raw_target)
+    if not literal_target_allowed:
         return False
-    return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
+
+    resolved_target = os.path.realpath(operand)
+    return _path_text_equal(os.path.dirname(resolved_target), canonical_temp_dir)
 
 
 def detect_dangerous_command(command: str) -> tuple:
@@ -1458,8 +1793,11 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    if _is_verification_artifact_cleanup(command):
-        return (False, None, None)
+    if _is_verification_artifact_cleanup_candidate(command):
+        if _is_verification_artifact_cleanup(command):
+            return (False, None, None)
+        description = "non-canonical verification artifact delete"
+        return (True, description, description)
 
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()

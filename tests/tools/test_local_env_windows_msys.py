@@ -345,7 +345,7 @@ class TestGitBashCoreutilsOnPath:
         existing = {"/pg/mingw64/bin", "/pg/usr/bin", "/pg/bin"}
         monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
 
-        dirs = _git_bash_bin_dirs()
+        dirs = [path.replace("\\", "/") for path in _git_bash_bin_dirs()]
 
         # usr/bin is the load-bearing coreutils dir; mingw64 precedes it.
         assert "/pg/usr/bin" in dirs
@@ -360,7 +360,7 @@ class TestGitBashCoreutilsOnPath:
         existing = {"/mg/usr/bin", "/mg/mingw64/bin"}
         monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
 
-        dirs = _git_bash_bin_dirs()
+        dirs = [path.replace("\\", "/") for path in _git_bash_bin_dirs()]
 
         # MinGit ships bash under usr\bin; root must still resolve to /mg.
         assert "/mg/usr/bin" in dirs

@@ -3,7 +3,52 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Any
+
+
+def _apply_time_decay(
+    results: list[dict],
+    *,
+    lam: float = 0.7,
+    half_life_days: int = 30,
+) -> None:
+    """Apply exponential time decay to search result scores.
+
+    Newer memories score higher; older memories decay via:
+        score' = score × λ + 2^(-Δt / half_life) × (1 - λ)
+
+    The half-life (default 30 days) controls how fast a memory cools.
+    The mixing ratio λ (default 0.7) balances semantic vs. temporal signals.
+
+    Memories without a created_at timestamp are treated as old (time_weight=-1)
+    so they sink below timed entries at the same semantic score.
+
+    Mutates results in place, then re-sorts.
+    """
+    half_life_s = half_life_days * 86400
+    now = datetime.now(timezone.utc)
+
+    for mem in results:
+        created_str = mem.get("created_at")
+        if not created_str:
+            mem["_time_weight"] = -1.0
+            continue
+        try:
+            created = datetime.fromisoformat(str(created_str).replace("Z", "+00:00"))
+            delta = max(0.0, (now - created).total_seconds())
+            time_weight = 2.0 ** (-delta / half_life_s)
+            mem["_time_weight"] = round(time_weight, 8)
+            mem["score"] = round(mem["score"] * lam + time_weight * (1.0 - lam), 8)
+        except (ValueError, TypeError):
+            mem["_time_weight"] = -1.0
+            continue
+
+    results.sort(key=lambda x: (x["score"], x.get("_time_weight", -1.0)), reverse=True)
+
+    # Clean up temp field
+    for mem in results:
+        mem.pop("_time_weight", None)
 
 
 class Mem0Backend(ABC):
@@ -254,7 +299,9 @@ class OSSBackend(Mem0Backend):
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         response = self._memory.search(query, filters=filters, top_k=top_k)
-        return _unwrap_results(response)
+        results = _unwrap_results(response)
+        _apply_time_decay(results, lam=0.7, half_life_days=30)
+        return results
 
     def add(
         self,

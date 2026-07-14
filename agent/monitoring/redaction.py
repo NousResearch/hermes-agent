@@ -1,77 +1,70 @@
 """Redaction applied to monitoring data before egress.
 
-Secrets are always redacted, on every export path; no setting disables this.
-Wraps ``agent/redact.py::redact_sensitive_text(force=True)`` and fails CLOSED:
-if the redactor cannot run, the raw string is never emitted.
+One unconditional scrub, no modes, no knobs. Every string that leaves the
+process passes through ``redact_for_export``:
 
-``redact_for_export(text, content_mode="pii")`` additionally scrubs e-mail
-addresses, phone numbers, and UUID-shaped identifiers — the gateway
-diagnostics path always uses this mode, so log-derived messages leave the
-process with secrets AND PII already removed.
+  * Secrets first — wraps ``agent/redact.py::redact_sensitive_text(force=True)``
+    plus bearer/token-shape patterns, and fails CLOSED: if the redactor cannot
+    run, the raw string is never emitted.
+  * PII second — e-mail addresses, phone numbers, and UUID-shaped identifiers
+    are rewritten to ``[email]`` / ``[phone]`` / ``[id]``.
+
+There is deliberately no setting to weaken this. The monitoring plane is
+content-free by design, so the only free text it carries (log-derived
+diagnostic messages) is always fully scrubbed.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
-# Content-redaction strengths for any content that IS exported.
-CONTENT_NONE = "none"   # drop content entirely (structural telemetry only)
-CONTENT_PII = "pii"     # codec-aware PII redaction on exported content
-CONTENT_MODES = {CONTENT_NONE, CONTENT_PII}
+# ── secret shapes (belt-and-suspenders on top of agent/redact.py) ───────────
+_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/]+=*", re.IGNORECASE)
+_TOKEN_RE = re.compile(
+    r"\b(xox[baprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,})\b"
+)
+_SECRET_LITERAL_RE = re.compile(r"\*{3,}")
+_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+\[[^\]]+\]", re.IGNORECASE)
 
-# ── PII patterns (applied only in CONTENT_PII mode, on content that is exported) ──
+# ── PII shapes ───────────────────────────────────────────────────────────────
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 # E.164-ish and common separators; conservative to avoid nuking code/IDs.
 _PHONE_RE = re.compile(
     r"(?<!\w)(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{2,4}\)[\s.\-]?)?\d{3}[\s.\-]?\d{3,4}(?:[\s.\-]?\d{2,4})?(?!\w)"
 )
 # Long opaque hex/uuid-ish user identifiers.
-_UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+_UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
 
 
-def _secret_redact(text: Optional[str]) -> Optional[str]:
+def _secret_redact(text: str) -> str:
     """Always-on secret redaction. force=True so user config can't disable it."""
-    if text is None:
-        return None
     try:
         from agent.redact import redact_sensitive_text
-        return redact_sensitive_text(str(text), force=True)
+        out = redact_sensitive_text(text, force=True)
     except Exception:
         # Fail CLOSED: if the redactor can't run, do not emit the raw string.
         return "[redaction-unavailable]"
+    out = _BEARER_RE.sub("[redacted]", out)
+    out = _TOKEN_RE.sub("[redacted]", out)
+    out = _SECRET_LITERAL_RE.sub("[redacted]", out)
+    out = _BEARER_RESIDUE_RE.sub("[redacted]", out)
+    return out
 
 
-def _pii_redact(text: str) -> str:
-    text = _EMAIL_RE.sub("[email]", text)
-    text = _UUID_RE.sub("[id]", text)
-    text = _PHONE_RE.sub("[phone]", text)
-    return text
-
-
-def redact_for_export(
-    text: Optional[str],
-    *,
-    content_mode: str = CONTENT_NONE,
-) -> Optional[str]:
-    """Redact a single content string for export.
-
-    Secrets are ALWAYS stripped. Then PII is stripped when content_mode is 'pii'.
-    Callers gate *whether content is exported at all* via telemetry.trajectories
-    (see ``content_export_enabled``); this function only scrubs content that the
-    caller has already decided to export.
-    """
-    redacted = _secret_redact(text)
-    if redacted is None:
+def redact_for_export(text: Optional[str]) -> Optional[str]:
+    """Scrub a string for egress: secrets, then PII. Unconditional."""
+    if text is None:
         return None
-    if content_mode == CONTENT_PII:
-        redacted = _pii_redact(redacted)
-    return redacted
+    out = _secret_redact(str(text))
+    out = _EMAIL_RE.sub("[email]", out)
+    out = _UUID_RE.sub("[id]", out)
+    out = _PHONE_RE.sub("[phone]", out)
+    return out
 
 
 __all__ = [
-    "CONTENT_NONE",
-    "CONTENT_PII",
-    "CONTENT_MODES",
     "redact_for_export",
 ]

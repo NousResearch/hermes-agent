@@ -14,8 +14,8 @@ def test_default_config_keeps_gateway_health_export_disabled():
     assert cfg["warning_error_events_enabled"] is True
     assert cfg["export_interval_seconds"] == 60
     assert cfg["logs_export_interval_seconds"] == 5
-    assert cfg["redaction"]["enabled"] is True
-    assert cfg["redaction"]["include_raw_stack"] is False
+    # Redaction is always-on and deliberately NOT configurable.
+    assert "redaction" not in cfg
 
 
 def test_gateway_health_snapshot_maps_runtime_status_to_low_cardinality_metrics():
@@ -340,3 +340,25 @@ def test_gateway_diagnostic_log_handler_never_raises_on_malformed_record():
     )
 
     handler.emit(record)
+
+
+def test_install_id_persists_across_calls(tmp_path, monkeypatch):
+    """A minted install id must survive restarts (service.instance.id continuity)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("{}\n")
+
+    import hermes_cli.config as cfg_mod
+    from agent.monitoring.policy import ensure_install_id
+
+    first = ensure_install_id(cfg_mod.load_config())
+    assert first and first != "unknown"
+    # Persisted: a fresh load (simulating a new gateway process) returns the same id.
+    second = ensure_install_id(cfg_mod.load_config())
+    assert second == first
+    assert first in (tmp_path / "config.yaml").read_text()
+
+
+def test_install_id_existing_value_wins(monkeypatch):
+    from agent.monitoring.policy import ensure_install_id
+
+    assert ensure_install_id({"monitoring": {"install_id": "keep-me"}}) == "keep-me"

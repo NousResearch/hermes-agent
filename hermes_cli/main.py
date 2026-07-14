@@ -14340,10 +14340,8 @@ def cmd_monitoring(args):
             print(f"    Diagnostic events:  {'on' if gh.get('diagnostic_events_enabled', True) else 'off'}")
             print(f"    Warning/error logs: {'on' if gh.get('warning_error_events_enabled', True) else 'off'} "
                   f"(interval {gh.get('logs_export_interval_seconds', 5)}s)")
-            red_raw = gh.get("redaction")
-            red: dict = red_raw if isinstance(red_raw, dict) else {}
-            print(f"    Redaction:          {'on' if red.get('enabled', True) else 'OFF'} "
-                  f"(secrets/PII scrubbed in-process before egress)")
+            print("    Redaction:          always on "
+                  "(secrets/PII scrubbed in-process before egress; not configurable)")
         endpoint = otlp.get("endpoint") or ""
         if otlp.get("enabled") and endpoint:
             print(f"  OTLP endpoint:  {endpoint}")

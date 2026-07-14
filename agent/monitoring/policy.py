@@ -8,31 +8,48 @@ collector. It carries no account identity and can be rotated by clearing
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Dict
 
-
-def _monitoring_cfg(config: Dict[str, Any]) -> Dict[str, Any]:
-    for key in ("monitoring", "telemetry"):  # accept legacy telemetry.* keys
-        cfg = config.get(key) if isinstance(config, dict) else None
-        if isinstance(cfg, dict) and cfg.get("install_id"):
-            return cfg
-    cfg = config.get("monitoring") if isinstance(config, dict) else None
-    return cfg if isinstance(cfg, dict) else {}
+logger = logging.getLogger(__name__)
 
 
 def ensure_install_id(config: Dict[str, Any]) -> str:
-    """Return a stable install id, minting one if the config slot is empty.
+    """Return a stable install id, minting and persisting one when empty.
 
-    Does not persist — the caller writes the returned value back to
-    config.yaml. Clearing ``monitoring.install_id`` (e.g. with
-    ``hermes config set monitoring.install_id ""``) mints anew on next call.
+    The id must survive gateway restarts (it becomes ``service.instance.id``
+    on exported signals), so a freshly minted UUID is written back to
+    config.yaml immediately. The write is fail-open: if persisting fails
+    (read-only home, managed scope), the ephemeral id is still returned and
+    a new one is minted next start.
+
+    Clearing ``monitoring.install_id`` (e.g. ``hermes config set
+    monitoring.install_id ""``) rotates the id on the next gateway start.
     """
-    cfg = _monitoring_cfg(config)
-    existing = cfg.get("install_id")
+    mon = config.get("monitoring") if isinstance(config, dict) else None
+    existing = (mon or {}).get("install_id") if isinstance(mon, dict) else None
     if isinstance(existing, str) and existing.strip():
         return existing
-    return str(uuid.uuid4())
+
+    minted = str(uuid.uuid4())
+    try:
+        from hermes_cli.config import load_config, save_config
+
+        fresh = load_config()
+        if isinstance(fresh, dict):
+            slot = fresh.setdefault("monitoring", {})
+            if isinstance(slot, dict) and not str(slot.get("install_id") or "").strip():
+                slot["install_id"] = minted
+                save_config(fresh)
+    except Exception:
+        logger.debug("install_id persist failed; using ephemeral id", exc_info=True)
+    # Keep the in-memory config consistent for this process either way.
+    if isinstance(config, dict):
+        config.setdefault("monitoring", {})
+        if isinstance(config["monitoring"], dict):
+            config["monitoring"]["install_id"] = minted
+    return minted
 
 
 __all__ = [

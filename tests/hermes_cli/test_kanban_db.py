@@ -2789,6 +2789,22 @@ def test_list_runs_filters_by_outcome_value(kanban_home):
     assert not empty
 
 
+def test_brand_column_tracks_board_and_filters_listings(kanban_home):
+    kb.create_board("brand-board")
+    with kb.scoped_current_board("brand-board"):
+        with kb.connect(board="brand-board") as conn:
+            tid = kb.create_task(conn, title="branded task")
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.brand == "brand-board"
+            events = kb.list_events(conn, tid)
+            created = [e for e in events if e.kind == "created"]
+            assert created and created[0].payload is not None
+            assert created[0].payload.get("brand") == "brand-board"
+            filtered = kb.list_tasks(conn, brand="brand-board")
+    assert [t.id for t in filtered] == [tid]
+
+
 def test_tenant_propagates_to_events(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="tenant-task", tenant="biz-a")

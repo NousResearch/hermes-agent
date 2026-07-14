@@ -2202,6 +2202,7 @@ def _model_flow_bedrock(config, current_model=""):
             resolve_aws_auth_env_var,
             resolve_bedrock_region,
             discover_bedrock_models,
+            configured_bedrock_provider_filter,
         )
     except ImportError:
         print("  ✗ boto3 is not installed. Install it with:")
@@ -2251,7 +2252,9 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 3. Model discovery — try live API first, fall back to static list
     print(f"  Discovering models in {region}...")
-    live_models = discover_bedrock_models(region)
+    live_models = discover_bedrock_models(
+        region, provider_filter=configured_bedrock_provider_filter()
+    )
 
     if live_models:
         _EXCLUDE_PREFIXES = (

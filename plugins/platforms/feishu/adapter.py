@@ -2742,6 +2742,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 choice=choice,
                 user_name=user_name,
                 open_id=open_id,
+                user_id=str(getattr(operator, "user_id", "") or ""),
                 chat_id=chat_id,
             ),
         ):
@@ -2821,6 +2822,7 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name: str,
         *,
         open_id: str = "",
+        user_id: str = "",
         chat_id: str = "",
     ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
@@ -2828,7 +2830,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return
-        sender_id = SimpleNamespace(open_id=open_id, user_id="")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
         expected_chat_id = str(state.get("chat_id", "") or "")
         if not self._allow_group_message(sender_id, expected_chat_id, is_bot=False):
             logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)

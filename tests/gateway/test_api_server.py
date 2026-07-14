@@ -3057,6 +3057,63 @@ class TestCORS:
 
 class TestConversationParameter:
     @pytest.mark.asyncio
+    async def test_session_db_id_resumes_without_duplicate_instructions(self, auth_adapter):
+        """An unknown conversation may resume a SessionDB session without replaying its prompt."""
+        db_history = [
+            {"role": "user", "content": "stored question"},
+            {"role": "assistant", "content": "stored answer"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {
+            "id": "persisted-session",
+            "system_prompt": "persisted assembled system prompt",
+        }
+        mock_db.get_messages_as_conversation.return_value = db_history
+        auth_adapter._session_db = mock_db
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "continued", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"input": "follow up", "conversation": "persisted-session"},
+                )
+
+        assert resp.status == 200
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["conversation_history"] == db_history
+        assert call_kwargs["session_id"] == "persisted-session"
+        assert call_kwargs["ephemeral_system_prompt"] is None
+        mock_db.get_session.assert_called_once_with("persisted-session")
+        mock_db.get_messages_as_conversation.assert_called_once_with("persisted-session")
+
+    @pytest.mark.asyncio
+    async def test_session_db_id_rejected_without_api_key(self, adapter):
+        """SessionDB continuation through conversation requires API-key authentication."""
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "persisted-session"}
+        adapter._session_db = mock_db
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "follow up", "conversation": "persisted-session"},
+                )
+                data = await resp.json()
+
+        assert resp.status == 403
+        assert "requires API key authentication" in data["error"]["message"]
+        mock_run.assert_not_awaited()
+        mock_db.get_messages_as_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_conversation_creates_new(self, adapter):
         """First request with a conversation name works (new conversation)."""
         app = _create_app(adapter)

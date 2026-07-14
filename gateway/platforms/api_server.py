@@ -879,6 +879,33 @@ class APIServerAdapter(BasePlatformAdapter):
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
 
+    def _validate_session_continuation(
+        self, session_id: str
+    ) -> Optional["web.Response"]:
+        """Enforce the authentication boundary for persisted-session access."""
+        if not self._api_key:
+            logger.warning(
+                "Session continuation rejected: no API key configured. "
+                "Set API_SERVER_KEY to enable session continuity."
+            )
+            return web.json_response(
+                _openai_error(
+                    "Session continuation requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable this feature."
+                ),
+                status=403,
+            )
+
+        # Session IDs are echoed in response headers, so reject control
+        # characters regardless of whether the ID came from a header or body.
+        if re.search(r'[\r\n\x00]', session_id):
+            return web.json_response(
+                {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        return None
+
     def _parse_session_key_header(
         self, request: "web.Request"
     ) -> tuple[Optional[str], Optional["web.Response"]]:
@@ -1742,25 +1769,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity."
-                )
-                return web.json_response(
-                    _openai_error(
-                        "Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature."
-                    ),
-                    status=403,
-                )
-            # Sanitize: reject control characters that could enable header injection.
-            if re.search(r'[\r\n\x00]', provided_session_id):
-                return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
-                    status=400,
-                )
+            continuation_err = self._validate_session_continuation(provided_session_id)
+            if continuation_err is not None:
+                return continuation_err
             session_id = provided_session_id
             try:
                 db = self._ensure_session_db()
@@ -2835,11 +2846,12 @@ class APIServerAdapter(BasePlatformAdapter):
             if db:
                 session = db.get_session(conversation)
                 if session:
+                    continuation_err = self._validate_session_continuation(conversation)
+                    if continuation_err is not None:
+                        return continuation_err
                     try:
                         conversation_history = db.get_messages_as_conversation(conversation)
                         stored_session_id = conversation
-                        if instructions is None:
-                            instructions = session.get("system_prompt")
                     except Exception as exc:
                         logger.warning("Failed to load session history for fallback %s: %s", conversation, exc)
 

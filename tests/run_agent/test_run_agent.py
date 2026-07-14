@@ -5820,6 +5820,92 @@ class TestRetryExhaustion:
         assert "UnboundLocalError" not in result.get("error", "")
         assert "bad messages" in result["error"]
 
+    def test_length_truncation_tracks_token_usage(self, agent):
+        """Token counters must accumulate across both halves of a length-continuation.
+
+        Regression for https://github.com/NousResearch/hermes-agent/issues/38458 —
+        when finish_reason='length' the early-exit path previously skipped token
+        accounting, leaving session_prompt_tokens/session_completion_tokens at zero
+        and breaking analytics and cost tracking.
+        """
+        self._setup_agent(agent)
+
+        # First call: truncated at 'length'
+        first = _mock_response(
+            content="Part 1 ",
+            finish_reason="length",
+            usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+        )
+        # Second call: normal completion
+        second = _mock_response(
+            content="Part 2",
+            finish_reason="stop",
+            usage={"prompt_tokens": 160, "completion_tokens": 30, "total_tokens": 190},
+        )
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Part 1 Part 2"
+
+        # Token accounting from the truncated leg must not be silently dropped.
+        # The first call's prompt_tokens (100) must appear in the session total.
+        assert agent.session_prompt_tokens >= 100, (
+            f"session_prompt_tokens={agent.session_prompt_tokens} — "
+            "truncated-leg tokens were not tracked"
+        )
+        assert agent.session_completion_tokens >= 50, (
+            f"session_completion_tokens={agent.session_completion_tokens} — "
+            "truncated-leg tokens were not tracked"
+        )
+
+    def test_retry_exhaustion_refunds_api_call_count(self, agent):
+        """api_call_count must be refunded when all API retries are exhausted.
+
+        Regression for https://github.com/NousResearch/hermes-agent/issues/38445 —
+        the optimistic api_call_count += 1 at the start of each turn was not
+        rolled back when every retry+fallback failed, inflating the reported
+        count and consuming iteration budget for a turn that never succeeded.
+        """
+        self._setup_agent(agent)
+        # Force every API call to fail with a generic error so max_retries
+        # are exhausted and the generic-exception terminal return is reached.
+        agent.client.chat.completions.create.side_effect = RuntimeError("network down")
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            initial_budget = agent.iteration_budget.remaining
+            result = agent.run_conversation("hello")
+
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+
+        # The api_call_count in the result must be 0 (refunded back from the
+        # optimistic +1) because no successful response was ever produced.
+        assert result.get("api_calls", -1) == 0, (
+            f"api_calls={result.get('api_calls')} — expected 0 after refund "
+            "(one turn attempted but never succeeded)"
+        )
+
+        # The iteration budget must also have been refunded — remaining should
+        # equal the initial value (or differ by at most 0 if refund was called).
+        assert agent.iteration_budget.remaining >= initial_budget - 0, (
+            f"iteration_budget.remaining={agent.iteration_budget.remaining} "
+            f"but started at {initial_budget} — budget was not refunded"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Conversation history mutation

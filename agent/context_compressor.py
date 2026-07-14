@@ -26,6 +26,11 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine
+from agent.codex_style_compaction import (
+    CODEX_SUMMARIZATION_PROMPT,
+    CODEX_SUMMARY_PREFIX,
+    build_compacted_history,
+)
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -721,7 +726,7 @@ class ContextCompressor(ContextEngine):
 
     @property
     def name(self) -> str:
-        return "compressor"
+        return getattr(self, "_engine_name", "compressor")
 
     def on_session_reset(self) -> None:
         """Reset all per-session state for /new or /reset."""
@@ -1126,6 +1131,8 @@ class ContextCompressor(ContextEngine):
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
         summary_model_override: str = None,
+        strategy: str = "hermes",
+        engine_name: str = "compressor",
         base_url: str = "",
         api_key: str = "",
         config_context_length: int | None = None,
@@ -1135,6 +1142,13 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
     ):
         self.model = model
+        self._engine_name = str(engine_name or "compressor").strip().lower()
+        if self._engine_name not in {"compressor", "codex"}:
+            self._engine_name = "compressor"
+        self.strategy = str(strategy or "hermes").strip().lower()
+        if self.strategy not in {"hermes", "codex"}:
+            logger.warning("Unknown compression strategy %r; using 'hermes'", strategy)
+            self.strategy = "hermes"
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
@@ -2363,7 +2377,11 @@ This compaction should PRIORITISE preserving all information related to the focu
         # mistake a merged summary message for a real user turn.
         if _MERGED_SUMMARY_DELIMITER in text:
             text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-        if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
+        if (
+            text.startswith(SUMMARY_PREFIX)
+            or text.startswith(CODEX_SUMMARY_PREFIX)
+            or text.startswith(LEGACY_SUMMARY_PREFIX)
+        ):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
 
@@ -2921,6 +2939,106 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         return max(cut_idx, head_end + 1)
 
+    def _generate_codex_summary(
+        self,
+        turns: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Generate a summary with Codex's native compact prompt."""
+        prompt = CODEX_SUMMARIZATION_PROMPT + "\n\nCONVERSATION:\n" + self._serialize_for_summary(turns)
+        try:
+            response = call_llm(
+                task="compression",
+                main_runtime={
+                    "model": self.model,
+                    "provider": self.provider,
+                    "base_url": self.base_url,
+                    "api_key": self.api_key,
+                    "api_mode": self.api_mode,
+                },
+                messages=[{"role": "user", "content": prompt}],
+                **({"model": self.summary_model} if self.summary_model else {}),
+            )
+            message = response.choices[0].message
+            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError("Codex-style compression returned empty content")
+            from agent.agent_runtime_helpers import strip_think_blocks
+            content = strip_think_blocks(None, content).strip()
+            content = redact_sensitive_text(content)
+            self._previous_summary = content
+            self._last_summary_error = None
+            self._clear_compression_failure_cooldown()
+            return CODEX_SUMMARY_PREFIX + "\n" + content
+        except Exception as exc:
+            self._last_summary_error = str(exc) or exc.__class__.__name__
+            logger.warning("Codex-style summary generation failed: %s", self._last_summary_error)
+            return None
+
+    def _compress_codex_style(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        current_tokens: int = None,
+        focus_topic: str = None,
+    ) -> List[Dict[str, Any]]:
+        """Apply Codex's replacement-history compaction algorithm.
+
+        Unlike Hermes' default head/middle/tail rewrite, Codex rebuilds the
+        active history from recent real user messages plus one final summary.
+        The original turns remain available to Hermes' session archive; this
+        method only changes the in-memory active message list.
+        """
+        summary_search_start = 1 if messages and messages[0].get("role") == "system" else 0
+        _summary_idx, summary_body = self._find_latest_context_summary(
+            messages, summary_search_start, len(messages)
+        )
+        if summary_body and not self._previous_summary:
+            self._previous_summary = summary_body
+
+        source_turns = [
+            message for message in messages
+            if not self._is_context_summary_content(
+                _content_text_for_contains(message.get("content"))
+            )
+        ]
+        # Codex's native compact prompt intentionally does not use Hermes'
+        # structured section template or focus-topic extension.
+        summary = self._generate_codex_summary(source_turns)
+
+        if not summary and (
+            self.abort_on_summary_failure
+            or self._last_summary_auth_failure
+            or self._last_summary_network_failure
+        ):
+            self._last_compress_aborted = True
+            return messages
+
+        if not summary:
+            self._last_summary_fallback_used = True
+            self._last_summary_dropped_count = len(source_turns)
+            summary = self._build_static_fallback_summary(
+                source_turns,
+                reason=self._last_summary_error,
+            )
+
+        compressed = build_compacted_history(
+            messages,
+            summary,
+            summary_prefix=CODEX_SUMMARY_PREFIX,
+        )
+        compressed = self._sanitize_tool_pairs(compressed)
+        compressed = _strip_historical_media(compressed)
+        _strip_persistence_markers(compressed)
+
+        self.compression_count += 1
+        self._last_compression_made_progress = len(compressed) < len(messages)
+        self._last_compression_savings_pct = (
+            max(0.0, (len(messages) - len(compressed)) / len(messages) * 100)
+            if messages else 0.0
+        )
+        self._verify_compaction_cleared_threshold = True
+        return compressed
+
     # ------------------------------------------------------------------
     # ContextEngine: manual /compress preflight
     # ------------------------------------------------------------------
@@ -2987,6 +3105,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         # this, /compress would silently no-op for 30-60s after a failure.
         if force:
             self._clear_compression_failure_cooldown()
+        if getattr(self, "strategy", "hermes") == "codex":
+            return self._compress_codex_style(
+                messages,
+                current_tokens=current_tokens,
+                focus_topic=focus_topic,
+            )
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1

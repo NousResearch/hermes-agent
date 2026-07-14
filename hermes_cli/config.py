@@ -1424,6 +1424,7 @@ DEFAULT_CONFIG = {
                                       # doesn't fire with half the window still free;
                                       # set this above 0.75 to override the floor.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "strategy": "hermes",        # "hermes" or Codex-style replacement history
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
@@ -2182,10 +2183,11 @@ DEFAULT_CONFIG = {
     
     # Context engine -- controls how the context window is managed when
     # approaching the model's token limit.
-    # "compressor" = built-in lossy summarization (default).
+    # "compressor" = built-in Hermes lossy summarization (default).
+    # "codex" = built-in Codex-style replacement-history compaction.
     # Set to a plugin name to activate an alternative engine (e.g. "lcm"
     # for Lossless Context Management).  The engine must be installed as
-    # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
+    # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins.
     "context": {
         "engine": "compressor",
     },

@@ -1593,6 +1593,13 @@ def init_agent(
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+    compression_strategy = str(_compression_cfg.get("strategy", "hermes") or "hermes").strip().lower()
+    if compression_strategy not in {"hermes", "codex"}:
+        _ra().logger.warning(
+            "Invalid compression.strategy=%r; using 'hermes'. Valid values: hermes, codex.",
+            compression_strategy,
+        )
+        compression_strategy = "hermes"
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
@@ -1780,7 +1787,7 @@ def init_agent(
     except Exception:
         pass
 
-    if _engine_name != "compressor":
+    if _engine_name not in {"compressor", "codex"}:
         # Try loading from plugins/context_engine/<name>/
         try:
             from plugins.context_engine import load_context_engine
@@ -1825,6 +1832,12 @@ def init_agent(
             )
     # else: config says "compressor" — use built-in, don't auto-activate plugins
 
+    # ``codex`` is a built-in engine alias, not a plugin. It shares the
+    # ContextCompressor implementation but owns an explicit first-class name
+    # and forces the Codex replacement-history strategy.
+    if _engine_name == "codex":
+        compression_strategy = "codex"
+
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
         # External engines own compaction policy: the host compression
@@ -1860,6 +1873,8 @@ def init_agent(
             protect_first_n=compression_protect_first,
             protect_last_n=compression_protect_last,
             summary_target_ratio=compression_target_ratio,
+            strategy=compression_strategy,
+            engine_name=_engine_name,
             summary_model_override=None,
             quiet_mode=agent.quiet_mode,
             base_url=agent.base_url,

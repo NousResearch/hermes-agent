@@ -1292,20 +1292,23 @@ def _configure_context_engine() -> bool:
     current = _get_current_context_engine()
     engines = _discover_context_engines()
 
-    # Build items: "compressor" first (built-in), then discovered engines
-    items = ["compressor (default)"]
-    names = ["compressor"]
-    selected = 0
+    # Build items: built-in engines first, then discovered plugin engines.
+    items = [
+        "compressor (default)",
+        "codex — Codex-style replacement-history compaction",
+    ]
+    names = ["compressor", "codex"]
+    selected = names.index(current) if current in names else 0
 
     for name, desc in engines:
+        if name in names:
+            continue
         names.append(name)
         label = f"{name} \u2014 {desc}" if desc else name
         items.append(label)
         if name == current:
             selected = len(items) - 1
-
-    # If current engine isn't in discovered list and isn't compressor, add it
-    if current != "compressor" and current not in names:
+    if current not in {"compressor", "codex"} and current not in names:
         names.append(current)
         items.append(f"{current} (not found)")
         selected = len(items) - 1

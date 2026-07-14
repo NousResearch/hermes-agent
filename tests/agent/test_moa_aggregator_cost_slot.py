@@ -137,5 +137,9 @@ def test_reference_pricing_calls_preserve_each_advisor_route(moa_config, monkeyp
 
     cached_messages = [{"role": "user", "content": "clean another db"}]
     client.chat.completions.create(model="closed", messages=cached_messages)
+    assert [
+        call["model"]
+        for call in client.chat.completions._pending_reference_pricing_calls
+    ] == ["anthropic/claude-opus-4.8", "openai/gpt-5.5"]
     client.chat.completions.create(model="closed", messages=cached_messages)
     assert client.consume_reference_pricing_calls() == []

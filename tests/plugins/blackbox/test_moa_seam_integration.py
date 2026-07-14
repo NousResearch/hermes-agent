@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +12,8 @@ import pytest
 
 from agent.conversation_loop import _build_moa_pricing_calls
 from agent.turn_finalizer import finalize_turn
-from agent.usage_pricing import CanonicalUsage
+from agent.usage_pricing import CanonicalUsage, CostResult
+import plugins.blackbox.cost as cost_mod
 from plugins.blackbox.cost import compute_turn_cost
 
 
@@ -183,10 +185,35 @@ moa:
         "composition": None,
         "pricing_calls": pricing_calls,
     }
+    rates = {
+        "anthropic/claude-opus-4.8": Decimal("0.01"),
+        "openai/gpt-5.5": Decimal("0.02"),
+    }
+    seen_routes = []
+
+    def fake_estimate(model, usage, *, provider=None, base_url=None):
+        seen_routes.append((model, provider, base_url))
+        amount = rates[model]
+        return CostResult(
+            amount_usd=amount,
+            status="estimated",
+            source="official_docs_snapshot",
+            label=f"~${amount}",
+            cost_input_usd=amount,
+            cost_output_usd=Decimal("0"),
+            cost_cache_read_usd=Decimal("0"),
+            cost_cache_write_usd=Decimal("0"),
+        )
+
+    monkeypatch.setattr(cost_mod, "estimate_usage_cost", fake_estimate)
+    expected_routes = [
+        (call["model"], call["provider"], call.get("base_url"))
+        for call in pricing_calls
+    ]
     expected_cost, expected_status, _ = compute_turn_cost(
         "moa/default", "moa", None, [turn_call]
     )
-    assert expected_cost is not None
+    assert expected_cost == pytest.approx(0.04)
 
     def invoke_hook(name, **kwargs):
         if name == "on_session_end":
@@ -221,3 +248,4 @@ moa:
     assert row["output_tokens"] == combined_usage.output_tokens
     assert row["cost_status"] == expected_status == "estimated"
     assert row["cost_usd"] == pytest.approx(expected_cost)
+    assert seen_routes == expected_routes * 2

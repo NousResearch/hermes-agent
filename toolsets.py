@@ -180,6 +180,12 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "browser_read": {
+        "description": "Read-only browser inspection tools",
+        "tools": ["browser_snapshot", "browser_get_images"],
+        "includes": [],
+    },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
@@ -192,6 +198,18 @@ TOOLSETS = {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
         "tools": ["read_file", "write_file", "patch", "search_files"],
         "includes": []
+    },
+
+    "file_read": {
+        "description": "Read-only file tools: read files and search paths/content",
+        "tools": ["read_file", "search_files"],
+        "includes": [],
+    },
+
+    "skills_read": {
+        "description": "Read-only skill inspection tools",
+        "tools": ["skills_list", "skill_view"],
+        "includes": [],
     },
     
     "tts": {

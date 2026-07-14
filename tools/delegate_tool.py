@@ -53,6 +53,20 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     ]
 )
 
+_READ_ONLY_TOOLSET_MAP = {
+    "file": "file_read",
+    "file_read": "file_read",
+    "web": "web",
+    "search": "search",
+    "x_search": "x_search",
+    "browser": "browser_read",
+    "browser_read": "browser_read",
+    "skills": "skills_read",
+    "skills_read": "skills_read",
+    "session_search": "session_search",
+    "vision": "vision",
+}
+
 
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
@@ -349,6 +363,16 @@ def _normalize_role(r: Optional[str]) -> str:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
+
+
+def _normalize_capability(value: Optional[str]) -> str:
+    if value is None or not str(value).strip():
+        return "standard"
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized in {"read_only", "standard"}:
+        return normalized
+    logger.warning("Unknown delegate_task capability=%r, coercing to 'standard'", value)
+    return "standard"
 
 
 def _get_max_concurrent_children() -> int:
@@ -783,6 +807,16 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _apply_read_only_toolset_policy(toolsets: List[str]) -> List[str]:
+    """Map inherited toolsets to the read/search-only subset for a child."""
+    scoped: List[str] = []
+    for toolset in toolsets:
+        read_only_toolset = _READ_ONLY_TOOLSET_MAP.get(toolset)
+        if read_only_toolset and read_only_toolset not in scoped:
+            scoped.append(read_only_toolset)
+    return scoped
+
+
 def _emit_parent_console(parent_agent, line: str) -> None:
     """Emit a human-readable progress line to the parent's console.
 
@@ -1064,6 +1098,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    capability: str = "standard",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1087,6 +1122,7 @@ def _build_child_agent(
     max_spawn = _get_max_spawn_depth()
     orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
     effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
+    effective_capability = _normalize_capability(capability)
 
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
@@ -1136,11 +1172,18 @@ def _build_child_agent(
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
+    if effective_capability == "read_only":
+        child_toolsets = _apply_read_only_toolset_policy(child_toolsets)
+
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because
     # orchestrator capability is granted by role, not inherited — see the
     # test_intersection_preserves_delegation_bound test for the design rationale.
-    if effective_role == "orchestrator" and "delegation" not in child_toolsets:
+    if (
+        effective_capability != "read_only"
+        and effective_role == "orchestrator"
+        and "delegation" not in child_toolsets
+    ):
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
@@ -1366,6 +1409,7 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    child._delegate_capability = effective_capability
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -2372,6 +2416,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    capability: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2403,6 +2448,7 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    top_capability = _normalize_capability(capability)
 
     # Background (async) delegation now applies to BOTH single tasks and
     # batches. A batch simply becomes N independent async dispatches: each
@@ -2473,7 +2519,14 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [
+            {
+                "goal": goal,
+                "context": context,
+                "role": top_role,
+                "capability": top_capability,
+            }
+        ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2512,6 +2565,9 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            effective_capability = _normalize_capability(
+                t.get("capability") or top_capability
+            )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2532,6 +2588,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                capability=effective_capability,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3422,6 +3479,11 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "capability": {
+                            "type": "string",
+                            "enum": ["read_only", "standard"],
+                            "description": "Per-task capability profile. read_only exposes only read/search tools.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3434,6 +3496,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "capability": {
+                "type": "string",
+                "enum": ["read_only", "standard"],
+                "description": (
+                    "Capability profile for child runtime tools. read_only "
+                    "exposes only read/search toolsets; standard preserves the "
+                    "normal delegated toolset scope."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3505,6 +3576,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        capability=args.get("capability"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

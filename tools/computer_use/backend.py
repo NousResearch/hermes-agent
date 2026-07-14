@@ -155,6 +155,27 @@ class ComputerUseBackend(ABC):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""
 
+    def launch_app(
+        self,
+        name: Optional[str] = None,
+        *,
+        bundle_id: Optional[str] = None,
+        start_minimized: bool = False,
+        **kwargs: Any,
+    ) -> ActionResult:
+        """Launch an app in the background.
+
+        Default implementation is a stub for backends that don't support
+        launching (e.g. noop). Concrete backends (cua-driver) override this
+        to drive the platform-specific launch path.
+
+        ``name`` and ``bundle_id`` mirror cua-driver's accepted shape; at
+        least one must be provided. ``start_minimized`` is Windows-only.
+        Extra ``kwargs`` are forwarded verbatim so cross-platform options
+        (e.g. ``urls``) reach cua-driver without a wrapper-side allowlist.
+        """
+        raise NotImplementedError("launch_app is not supported by this backend")
+
     # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:

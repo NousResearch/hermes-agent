@@ -665,6 +665,67 @@ def _session_waiting(session_id: str) -> bool:
 
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
+# A free-form judge can be overly credulous when the agent says it is stopping
+# early. Goal Mode must not turn a high-signal surrender statement into
+# completion merely because the judge echoed "done". Structured completion
+# contracts remain authoritative and bypass this fallback.
+_PREMATURE_STOP_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"\b(?:can't|cannot|unable\s+to)\s+(?:complete|finish)\b.{0,160}"
+        r"\b(?:whole|entire|full|all\s+of\s+the|all\s+of\s+it|whole\s+thing)\b",
+        r"\b(?:can't|cannot|unable\s+to)\s+(?:complete|finish)\b.{0,80}"
+        r"\b(?:this|it|task|goal|request)\b.{0,80}"
+        r"\b(?:here|in\s+this\s+response|in\s+one\s+response|continue\s+later|summary|partial)\b",
+        r"\b(?:can't|cannot|unable\s+to)\s+(?:complete|finish)\b.{0,80}"
+        r"\bbecause\b.{0,120}"
+        r"\b(?:need\s+more\s+time|no\s+access|need\s+access|lack\s+permission|lacks\s+permission|need\s+permission)\b",
+        r"\b(?:task|goal|request)\s+is\s+(?:too\s+)?"
+        r"(?:long|large|big|broad|complex)\b.{0,160}"
+        r"\b(?:can't|cannot|unable|only\s+(?:provide|give)|summary|summari[sz]e)\b",
+        r"\b(?:only|just)\s+(?:provide|give)\s+(?:a\s+)?summary\b.{0,160}"
+        r"\b(?:instead\s+of\s+complet|what\s+i\s+tried|partial)\b",
+        r"\bhere(?:'s|\s+is)\s+(?:a\s+)?summary\s+of\s+what\s+i\s+tried\b",
+    )
+]
+
+_ACTIONABLE_BLOCKER_RE = re.compile(
+    r"\b(?:because|due\s+to)\b.{0,120}"
+    r"\b(?:missing|unavailable|no|lacks?|requires?)\b.{0,120}"
+    r"\b(?:credential|api\s+key|token|private\s+api|secret|password|data|file|document|input|csv)\b"
+    r"|\b(?:please|need\s+you\s+to)\b.{0,120}"
+    r"\b(?:provide|approve|grant|upload)\b.{0,120}"
+    r"\b(?:credential|api\s+key|token|permission|approval|access|data|file|document|input|csv)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_STRONG_COMPLETION_EVIDENCE_RE = re.compile(
+    r"\bdone:\b|\b(?:test|tests|pytest)\b.{0,80}\bpassed\b|"
+    r"\bverified\b.{0,80}\bpassed\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_NEGATED_COMPLETION_EVIDENCE_RE = re.compile(
+    r"\b(?:no|zero|0)\s+(?:test|tests)?\s*passed\b|"
+    r"\b(?:failed|failing|failure|error)\b.{0,80}\bpassed\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _looks_like_premature_stop(last_response: str) -> bool:
+    """Return True for obvious surrender language without completion proof."""
+    text = (last_response or "").strip()
+    if not text:
+        return False
+    if (
+        _STRONG_COMPLETION_EVIDENCE_RE.search(text)
+        and not _NEGATED_COMPLETION_EVIDENCE_RE.search(text)
+    ):
+        return False
+    if _ACTIONABLE_BLOCKER_RE.search(text):
+        return False
+    return any(pattern.search(text) for pattern in _PREMATURE_STOP_PATTERNS)
+
 
 def _goal_judge_max_tokens() -> int:
     """Resolve auxiliary.goal_judge.max_tokens, falling back to the default.
@@ -1448,6 +1509,19 @@ class GoalManager:
             background_processes=background_processes,
             contract=state.contract if state.has_contract() else None,
         )
+
+        if (
+            verdict == "done"
+            and not state.has_contract()
+            and _looks_like_premature_stop(last_response)
+        ):
+            verdict = "continue"
+            parse_failed = False
+            reason = (
+                "assistant response looked like a premature stop/apology, "
+                "not concrete goal completion"
+            )
+
         state.last_verdict = verdict
         state.last_reason = reason
 

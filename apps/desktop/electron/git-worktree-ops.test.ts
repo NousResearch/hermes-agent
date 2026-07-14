@@ -262,3 +262,39 @@ test('addWorktree: base param branches off a specified local branch', async () =
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('addWorktree: base origin/main does not set up upstream tracking', async () => {
+  // Two repos: a bare "remote" and a clone, so origin/main resolves as a
+  // remote-tracking ref — the condition that triggers auto-tracking.
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-remote-'))
+  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-clone-'))
+  const git = (...args) => execFileSync('git', args, { cwd: cloneDir }).toString().trim()
+
+  try {
+    // Seed the remote with a commit on main.
+    execFileSync('git', ['init', '-b', 'main', remoteDir])
+    execFileSync('git', ['-C', remoteDir, 'commit', '--allow-empty', '-m', 'root'])
+
+    // Clone so origin/main exists as a remote-tracking ref.
+    execFileSync('git', ['clone', remoteDir, cloneDir])
+
+    const result = await addWorktree(cloneDir, { base: 'origin/main', branch: 'feature-branch', name: 'feature-branch' }, 'git')
+
+    assert.equal(result.branch, 'feature-branch')
+
+    // The new branch must NOT have an upstream — like `git checkout origin/main
+    // && git checkout -b feature-branch`, not `git worktree add -b … origin/main`.
+    let hasUpstream = true
+
+    try {
+      execFileSync('git', ['-C', result.path, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+    } catch {
+      hasUpstream = false
+    }
+
+    assert.equal(hasUpstream, false)
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})

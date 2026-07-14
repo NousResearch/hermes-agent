@@ -718,6 +718,11 @@ class SessionEntry:
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
 
+    # Gateway /workspace selection. The registry itself lives in config.yaml;
+    # only the selected name/path is session routing state.
+    workspace_name: Optional[str] = None
+    workspace_cwd: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -753,6 +758,9 @@ class SessionEntry:
             # Defence-in-depth: strip credentials even if a caller stored an
             # unsanitized dict directly on the entry.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.workspace_name and self.workspace_cwd:
+            result["workspace_name"] = self.workspace_name
+            result["workspace_cwd"] = self.workspace_cwd
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -824,6 +832,8 @@ class SessionEntry:
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
             model_override=sanitize_model_override(data.get("model_override")),
+            workspace_name=data.get("workspace_name"),
+            workspace_cwd=data.get("workspace_cwd"),
         )
 
 
@@ -2071,6 +2081,21 @@ class SessionStore:
                 return None
             return dict(entry.model_override) if entry.model_override else None
 
+    def set_workspace(
+        self, session_key: str, name: Optional[str], cwd: Optional[str]
+    ) -> Optional[SessionEntry]:
+        """Persist the active workspace on an existing gateway session."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            entry.workspace_name = name
+            entry.workspace_cwd = cwd
+            entry.updated_at = _now()
+            self._save()
+            return entry
+
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
 
@@ -2256,6 +2281,8 @@ class SessionStore:
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
+                workspace_name=old_entry.workspace_name,
+                workspace_cwd=old_entry.workspace_cwd,
             )
 
             self._entries[session_key] = new_entry

@@ -9825,6 +9825,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "status":
             return await self._handle_status_command(event)
 
+        if canonical == "workspace":
+            return await self._handle_workspace_command(event)
+
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
@@ -10883,6 +10886,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        if session_entry.workspace_cwd:
+            # Task overrides are read dynamically by terminal + file tools, so
+            # this is prompt-cache safe even when the agent is reused. env_type
+            # is also an existing isolation signal, preventing concurrent
+            # gateway sessions from sharing mutable terminal cwd state.
+            from tools.terminal_tool import register_task_env_overrides
+            register_task_env_overrides(
+                session_entry.session_id, {
+                    "cwd": session_entry.workspace_cwd,
+                    "env_type": os.environ.get("TERMINAL_ENV", "local"),
+                }
+            )
         pinned_session_id = str(
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
         ).strip()

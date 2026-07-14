@@ -5,12 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { group } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import {
-  $activeSessionId,
-  $selectedStoredSessionId,
-  $sessions,
-  $sessionStartedAt
-} from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $sessions, $sessionStartedAt } from '@/store/session'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 

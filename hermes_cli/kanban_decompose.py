@@ -45,8 +45,15 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import profiles as profiles_mod
+from utils import env_int
 
 logger = logging.getLogger(__name__)
+
+
+HERMES_KANBAN_DECOMPOSE_MAX_TOKENS = max(
+    1500,
+    env_int("HERMES_KANBAN_DECOMPOSE_MAX_TOKENS", 4000),
+)
 
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
@@ -299,6 +306,7 @@ def decompose_task(
 
     try:
         from agent.auxiliary_client import (  # type: ignore
+            auxiliary_max_tokens_param,
             get_auxiliary_extra_body,
             get_text_auxiliary_client,
         )
@@ -331,7 +339,9 @@ def decompose_task(
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
-            max_tokens=4000,
+            **auxiliary_max_tokens_param(
+                HERMES_KANBAN_DECOMPOSE_MAX_TOKENS, model=model
+            ),
             timeout=timeout or 180,
             extra_body=get_auxiliary_extra_body() or None,
         )

@@ -211,6 +211,7 @@ def describe_profile(
 
     try:
         from agent.auxiliary_client import (  # type: ignore
+            auxiliary_max_tokens_param,
             get_auxiliary_extra_body,
             get_text_auxiliary_client,
         )
@@ -244,7 +245,7 @@ def describe_profile(
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
-            max_tokens=400,
+            **auxiliary_max_tokens_param(400, model=aux_model),
             timeout=timeout or 60,
             extra_body=get_auxiliary_extra_body() or None,
         )

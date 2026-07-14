@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+from pathlib import Path
 import logging
 import os
 import random
@@ -1764,7 +1765,9 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     from types import SimpleNamespace
 
     if segments is None:
-        segments = _plan_tool_batch_segments(assistant_message.tool_calls)
+        _active_env = get_active_env(effective_task_id)
+        _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
+        segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
     for kind, calls in segments:
         segment_message = SimpleNamespace(tool_calls=list(calls))

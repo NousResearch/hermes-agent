@@ -1,14 +1,14 @@
 name: Auto Safe PR
 
+# Manual, gated generator of draft PRs for repository-owned generated paths only.
+# Human review required before merge. Does not auto-merge. Does not run on
+# protected branches. Does not use secrets beyond GITHUB_TOKEN for draft PR + scan.
+
 on:
   workflow_dispatch:
     inputs:
       generator_command:
-        description: "Command that generates low-risk files. Must not require secrets."
-        required: true
-        type: string
-      add_paths:
-        description: "Newline-separated safe paths/globs to include in PR. Never use '.'."
+        description: "Command that generates low-risk files under the fixed allowlist. Must not require secrets."
         required: true
         type: string
 
@@ -23,12 +23,18 @@ concurrency:
 jobs:
   auto-safe-pr:
     runs-on: ubuntu-latest
+    # Refuse protected / release branch execution
     if: github.ref_name != 'main' && github.ref_name != 'master' && github.ref_name != 'prod' && github.ref_name != 'production' && !startsWith(github.ref_name, 'release/')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.11"
 
       - name: Run generator
         shell: bash
@@ -36,47 +42,41 @@ jobs:
           set -euo pipefail
           ${{ inputs.generator_command }}
 
-      - name: Reject broad add paths
-        shell: bash
-        env:
-          ADD_PATHS: ${{ inputs.add_paths }}
-        run: |
-          set -euo pipefail
-          if printf '%s\n' "$ADD_PATHS" | grep -Exq '\s*\.?\s*'; then
-            echo "Refusing broad add-paths entry. Use explicit safe paths/globs."
-            exit 1
-          fi
-          if printf '%s\n' "$ADD_PATHS" | grep -E '(^|/)(\.env(\.|$)|secrets?/|credentials?/|id_rsa|id_ed25519|.*\.(pem|key|p12|pfx|keychain)$)'; then
-            echo "Risky add-path detected. Refusing PR."
-            exit 1
-          fi
-
-      - name: Reject risky changed paths
+      - name: Validate changed paths against repository allowlist
+        id: path_policy
         shell: bash
         run: |
           set -euo pipefail
-          git status --porcelain=v1 --untracked-files=all > /tmp/status.txt
-          if grep -E '(^|/)(\.env(\.|$)|secrets?/|credentials?/|id_rsa|id_ed25519|.*\.(pem|key|p12|pfx|keychain)$)' /tmp/status.txt; then
-            echo "Risky path detected. Refusing PR."
-            exit 1
-          fi
-          if grep -E '(^|/)(node_modules|dist|build|target|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)(/|$)|\.(log|sqlite|sqlite3|db|dump|bak)$' /tmp/status.txt; then
-            echo "Build/cache/log artifact detected. Refusing PR."
-            exit 1
+          # Fixed allowlist is owned by scripts/auto_safe_pr_path_policy.py
+          # (website/static/api/, website/docs/, docs/). User add_paths removed.
+          python scripts/auto_safe_pr_path_policy.py --print-allowlist
+          python scripts/auto_safe_pr_path_policy.py \
+            --from-git \
+            --write-allowed /tmp/auto-safe-pr-allowed-paths.txt
+          if [ ! -s /tmp/auto-safe-pr-allowed-paths.txt ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No allowlisted changes; skipping draft PR."
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Allowed paths to stage:"
+            cat /tmp/auto-safe-pr-allowed-paths.txt
           fi
 
       - name: Diff whitespace check
+        if: steps.path_policy.outputs.has_changes == 'true'
         shell: bash
         run: git diff --check
 
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+        if: steps.path_policy.outputs.has_changes == 'true'
+        uses: gitleaks/gitleaks-action@83373cf2f8c4db6e24b41c1a9b086bb9619e9cd3  # v2.3.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: false
 
       - name: Create draft pull request
-        uses: peter-evans/create-pull-request@v7
+        if: steps.path_policy.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@84ae59a2cdc2258d6fa0732dd66352dddae2a412  # v7.0.9
         with:
           branch: auto/safe-generated-${{ github.run_id }}
           delete-branch: true
@@ -86,14 +86,25 @@ jobs:
             Automated generated-file PR.
 
             Safety gates passed:
+            - workflow_dispatch only
             - protected branch guard
-            - broad add-path rejection
-            - risky-path denylist
+            - repository-owned path allowlist (no user add_paths)
+            - post-generator changed-path validation (fail closed)
+            - secret/key and cache/build/db denylist
             - git diff --check
             - gitleaks scan
-            - restricted add-paths only
+            - draft PR only (no auto-merge)
+
+            Allowlist prefixes (fixed in `scripts/auto_safe_pr_path_policy.py`):
+            - `website/static/api/`
+            - `website/docs/`
+            - `docs/`
 
             Human review required before merge.
-          add-paths: ${{ inputs.add_paths }}
+          # Only stage paths that passed the allowlist check (file list from policy script).
+          add-paths: |
+            website/static/api/
+            website/docs/
+            docs/
           labels: automated,safe-pr,needs-review
           draft: true

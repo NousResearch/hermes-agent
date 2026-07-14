@@ -3130,74 +3130,9 @@ async function ensureRuntime(backend) {
   return applyWindowsNoConsoleSpawnHints(backend)
 }
 
-function fetchJson(url, token, options = {}) {
-  return new Promise((resolve, reject) => {
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
-    const parsed = new URL(url)
-    const client = parsed.protocol === 'https:' ? https : http
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-      return
-    }
-
-    const req = client.request(
-      parsed,
-      {
-        method: options.method || 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Hermes-Session-Token': token,
-          ...(body ? { 'Content-Length': String(body.length) } : {})
-        }
-      },
-      res => {
-        const chunks = []
-        res.on('error', reject)
-        res.on('data', chunk => chunks.push(chunk))
-        res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8')
-          if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
-            return
-          }
-          if (!text) {
-            resolve(null)
-            return
-          }
-          // A 2xx response whose body is HTML means the request fell through
-          // to the SPA index.html (e.g. an unregistered /api path). JSON.parse
-          // would throw an opaque `Unexpected token '<'` here, so surface a
-          // clear diagnostic with the offending URL instead.
-          const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-          const contentType = String(res.headers['content-type'] || '')
-          if (looksHtml || contentType.includes('text/html')) {
-            reject(
-              new Error(
-                `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
-                  'The endpoint is likely missing on the Hermes backend.'
-              )
-            )
-            return
-          }
-          try {
-            resolve(JSON.parse(text))
-          } catch {
-            reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
-          }
-        })
-      }
-    )
-
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    })
-    if (body) req.write(body)
-    req.end()
-  })
-}
+// fetchJson lives in fetch-json.cjs — extracted so the password-auth header
+// contract (#63707) is unit-testable without spinning up an HTTP server.
+const { fetchJson } = require('./fetch-json.cjs')
 
 function fetchPublicJson(url, options = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints

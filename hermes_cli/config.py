@@ -38,6 +38,58 @@ logger = logging.getLogger(__name__)
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
 
+# Profile-local, machine-maintained recovery copy of the last config that both
+# parsed and passed structural validation.  It intentionally contains the same
+# YAML values as config.yaml (including ${VAR} templates), never expanded env
+# values, so maintaining it cannot persist secrets that config.yaml did not.
+_VALIDATED_CONFIG_SNAPSHOT = "config.validated.yaml"
+
+
+def _validated_snapshot_path(config_path: Path) -> Path:
+    return config_path.with_name(_VALIDATED_CONFIG_SNAPSHOT)
+
+
+def _config_has_validation_errors(config: Dict[str, Any]) -> bool:
+    return any(issue.severity == "error" for issue in validate_config_structure(config))
+
+
+def _write_validated_config_snapshot(config_path: Path, config: Dict[str, Any]) -> bool:
+    """Atomically refresh the profile-local LKG when *config* validates."""
+    if not isinstance(config, dict) or _config_has_validation_errors(config):
+        return False
+    try:
+        from utils import atomic_yaml_write
+
+        snapshot_path = _validated_snapshot_path(config_path)
+        atomic_yaml_write(snapshot_path, config)
+        _secure_file(snapshot_path)
+        return True
+    except Exception as exc:
+        logger.warning("Could not update validated config snapshot for %s: %s", config_path, exc)
+        return False
+
+
+def _read_validated_config_snapshot(config_path: Path) -> Optional[Dict[str, Any]]:
+    """Read a durable LKG, rejecting missing, corrupt, or invalid snapshots."""
+    snapshot_path = _validated_snapshot_path(config_path)
+    try:
+        with snapshot_path.open(encoding="utf-8") as f:
+            snapshot = fast_safe_load(f) or {}
+        if not isinstance(snapshot, dict) or _config_has_validation_errors(snapshot):
+            raise ValueError("snapshot failed config structure validation")
+        return snapshot
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        msg = f"last-known-good snapshot is unusable ({snapshot_path}: {exc})"
+        logger.warning(msg)
+        try:
+            sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        return None
+
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
@@ -135,12 +187,18 @@ def _warn_config_parse_failure(
             f"Keeping the previously loaded config for this process — "
             f"edits to config.yaml are being IGNORED until the YAML is fixed."
         )
+    elif fallback == "durable-last-known-good":
+        msg = (
+            f"Failed to parse {config_path}: {exc}. "
+            f"USING DURABLE LAST-KNOWN-GOOD CONFIG; the invalid config.yaml is untouched "
+            f"and ignored until fixed. Existing security policy remains enforced."
+        )
     else:
         msg = (
             f"Failed to parse {config_path}: {exc}. "
-            f"Falling back to default config — every user override "
-            f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
-            f"Fix the YAML and restart."
+            f"NO VALID LAST-KNOWN-GOOD CONFIG EXISTS. Falling back to defaults; "
+            f"user overrides and security policy may be unavailable. The invalid "
+            f"config.yaml is untouched. Fix the YAML immediately."
         )
     if backup_path is not None:
         msg += f" A copy of the corrupted file was saved to {backup_path}."
@@ -6779,6 +6837,8 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
 
     require_readable_config_before_write(config_path)
     atomic_yaml_write(config_path, data, **kwargs)
+    if isinstance(data, dict):
+        _write_validated_config_snapshot(config_path, copy.deepcopy(data))
 
 
 def load_config() -> Dict[str, Any]:
@@ -7003,6 +7063,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
+                validated_user_config = _normalize_root_model_keys(
+                    _normalize_max_turns_config(copy.deepcopy(user_config))
+                )
+                _write_validated_config_snapshot(config_path, validated_user_config)
             except Exception as e:
                 # Last-known-good fallback (port of openai/codex#31188's
                 # invariant: a parse failure in a policy/config file must not
@@ -7012,25 +7076,39 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 # rules, which are supposed to block commands even under yolo.
                 # A long-running gateway whose user mid-edits config.yaml into
                 # broken YAML would silently lose those rules on the next load.
-                # Within a running process we still have the last successfully
-                # loaded config — keep serving it until the file is fixed.
-                # Fresh processes with no last-known-good keep the existing
-                # DEFAULT_CONFIG fallback.
+                # Prefer the in-process copy, then the profile-local durable
+                # snapshot. Durable content is raw/normalized config (env-ref
+                # templates intact), so merge defaults before expansion.
                 lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
-                _warn_config_parse_failure(
-                    config_path,
-                    e,
-                    fallback="last-known-good" if lkg is not None else "defaults",
-                )
+                fallback_kind = "last-known-good"
+                if lkg is None:
+                    durable = _read_validated_config_snapshot(config_path)
+                    if durable is not None:
+                        durable_normalized = _normalize_root_model_keys(
+                            _normalize_max_turns_config(durable)
+                        )
+                        lkg = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), durable_normalized)
+                        fallback_kind = "durable-last-known-good"
+                    else:
+                        fallback_kind = "defaults"
+                _warn_config_parse_failure(config_path, e, fallback=fallback_kind)
                 if lkg is not None:
-                    # save_config() stores the pre-expansion normalized dict
-                    # (env-ref templates preserved); the load path stores the
-                    # expanded one. Expand defensively — idempotent when the
-                    # stored value is already expanded.
+                    # Env refs remain templates on disk and are expanded only
+                    # for the returned runtime config.
                     from typing import cast as _cast
                     lkg_copy: Dict[str, Any] = _cast(
                         Dict[str, Any], _expand_env_vars(copy.deepcopy(lkg))
                     )
+                    if fallback_kind == "durable-last-known-good":
+                        # Managed policy is not duplicated into the profile
+                        # snapshot. Reapply the live managed layer exactly as a
+                        # normal load does so recovery cannot weaken an
+                        # administrator-pinned security setting.
+                        recovery_managed = managed_scope.load_managed_config()
+                        if recovery_managed:
+                            lkg_copy = _deep_merge(
+                                lkg_copy, _expand_env_vars(recovery_managed)
+                            )
                     if cache_sig is not None:
                         # Cache under the corrupt file's signature (empty env
                         # snapshot: always valid) so repeated loads don't
@@ -7259,6 +7337,7 @@ def save_config(
             extra_content="".join(parts) if parts else None,
         )
         _secure_file(config_path)
+        _write_validated_config_snapshot(config_path, copy.deepcopy(normalized))
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 

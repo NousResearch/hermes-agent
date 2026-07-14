@@ -160,7 +160,7 @@ class TestLoadConfigParseFailure:
             # WARNING-level log was emitted with file path + reason
             assert any(
                 str(tmp_path / "config.yaml") in rec.message
-                and "Falling back to default config" in rec.message
+                and "NO VALID LAST-KNOWN-GOOD CONFIG EXISTS" in rec.message
                 for rec in caplog.records
             ), f"expected WARNING log, got: {[r.message for r in caplog.records]}"
 

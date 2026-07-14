@@ -6500,6 +6500,11 @@ def call_llm(
     Raises:
         RuntimeError: If no provider is configured.
     """
+    # Early-exit when the task is disabled via auxiliary.<task>.enabled: false
+    if task and not _get_auxiliary_task_config(task).get("enabled", True):
+        logger.debug("Auxiliary task %s disabled via config — skipping", task)
+        return None
+
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     if api_mode:
@@ -7119,6 +7124,11 @@ async def async_call_llm(
 
     Same as call_llm() but async. See call_llm() for full documentation.
     """
+    # Early-exit when the task is disabled via auxiliary.<task>.enabled: false
+    if task and not _get_auxiliary_task_config(task).get("enabled", True):
+        logger.debug("Auxiliary task %s disabled via config — skipping", task)
+        return None
+
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)

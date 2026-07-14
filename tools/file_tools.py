@@ -1635,6 +1635,46 @@ def _mark_verification_stale(
         logger.debug("verification stale marker failed", exc_info=True)
 
 
+# AI truncation signatures: placeholder strings that indicate the model
+# produced incomplete/abbreviated content rather than real file content.
+_TRUNCATION_SIGNATURES: tuple[str, ...] = (
+    "/* ... full function ... */",
+    "/* ... unchanged ... */",
+    "// ... unchanged ...",
+    "// ... rest of file ...",
+    "# ... rest of file ...",
+    "# ... unchanged ...",
+    "/* ... rest unchanged ... */",
+    "... (rest of file unchanged)",
+    "... (unchanged)",
+    "<!-- ... unchanged ... -->",
+    "# ... (rest of the function remains the same)",
+    "// ... (rest of the function remains the same)",
+)
+
+
+def _check_truncation_signatures(content: str, original: str | None = None) -> str | None:
+    """Return an error message if content contains AI truncation placeholders.
+
+    Only flags signatures absent from the original file so legitimate comments
+    are not blocked. When original is None the check is unconditional.
+    Must be called through the backend-aware file_ops pipeline so docker/modal/
+    SSH environments see the same file as the eventual write.
+    """
+    content_lower = content.lower()
+    for sig in _TRUNCATION_SIGNATURES:
+        sig_lower = sig.lower()
+        if sig_lower in content_lower:
+            if original is None or sig_lower not in original.lower():
+                return (
+                    f"Refusing to write: content contains AI truncation placeholder "
+                    f"{sig!r}. This indicates the content is incomplete — "
+                    "re-read the file fully and reconstruct the complete content "
+                    "before writing."
+                )
+    return None
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -1659,6 +1699,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             "Strip read_file line-number prefixes or reconstruct the intended "
             "file contents before writing."
         )
+    # Reject AI truncation placeholders unconditionally on write: there is no
+    # original to compare against at this point, and a write_file that contains
+    # "// ... unchanged ..." is never correct.
+    _trunc_err = _check_truncation_signatures(content)
+    if _trunc_err:
+        return tool_error(_trunc_err)
     try:
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness
@@ -1837,10 +1883,22 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 # path would let the two layers disagree about which file is
                 # being edited.
                 _replace_target = _path_to_resolved.get(path) or path
+                # Guard against AI truncation placeholders in new_string.
+                # Compare against old_string so a pre-existing placeholder
+                # in the region being replaced is not re-flagged.
+                _trunc_err = _check_truncation_signatures(new_string, old_string)
+                if _trunc_err:
+                    return tool_error(_trunc_err)
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
+                # V4A +/* ... full function ... */ patterns are a common
+                # truncation placeholder in V4A payloads. Check unconditionally
+                # since there is no convenient old_string to compare against.
+                _trunc_err = _check_truncation_signatures(patch)
+                if _trunc_err:
+                    return tool_error(_trunc_err)
                 result = file_ops.patch_v4a(patch)
             else:
                 return tool_error(f"Unknown mode: {mode}")

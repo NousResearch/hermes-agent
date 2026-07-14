@@ -851,3 +851,61 @@ class TestSilentFileMisplacementE2E:
             "file silently misplaced into config default (the #26211 bug)"
 
         ft._last_known_cwd.pop(task_id, None)
+
+
+class TestTruncationSignatureGuard:
+    """Regression tests for AI truncation placeholder detection (PR #20857).
+
+    When an AI model omits file sections it considers unchanged, it often
+    emits placeholder strings like '// ... unchanged ...' or
+    '/* ... full function ... */'. Writing these to disk produces corrupt
+    files that cannot be compiled or run. The guard must block write, replace,
+    and V4A patch paths.
+    """
+
+    def test_check_truncation_signatures_detects_placeholder(self):
+        """_check_truncation_signatures returns an error for truncation placeholders."""
+        from tools.file_tools import _check_truncation_signatures
+        result = _check_truncation_signatures("def foo():\n    // ... unchanged ...\n    pass")
+        assert result is not None
+        assert "truncation placeholder" in result.lower()
+
+    def test_check_truncation_signatures_allows_preexisting(self):
+        """Placeholders already in the original file must not be re-flagged."""
+        from tools.file_tools import _check_truncation_signatures
+        original = "def foo():\n    // ... unchanged ...\n    pass"
+        new_content = original + "\ndef bar(): pass"
+        result = _check_truncation_signatures(new_content, original)
+        assert result is None, "Pre-existing placeholder must not block the write"
+
+    def test_check_truncation_signatures_clean_content_passes(self):
+        """Normal code without placeholders must not be blocked."""
+        from tools.file_tools import _check_truncation_signatures
+        result = _check_truncation_signatures("def foo():\n    return 42\n")
+        assert result is None
+
+    def test_write_file_blocks_on_truncation_placeholder(self, tmp_path, monkeypatch):
+        """write_file_tool must reject content with AI truncation placeholders."""
+        import tools.file_tools as ft
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Seed a task environment
+        task_file = tmp_path / "blocked.py"
+        content_with_placeholder = (
+            "def foo():\n"
+            "    # ... rest of file ...\n"
+            "    pass\n"
+        )
+        result = json.loads(ft.write_file_tool(str(task_file), content_with_placeholder))
+        assert result.get("error"), (
+            "write_file_tool must return an error for content with "
+            "AI truncation placeholders, got: " + str(result)
+        )
+        assert "truncation" in str(result.get("error", "")).lower()
+
+    def test_write_file_allows_clean_content(self, tmp_path, monkeypatch):
+        """write_file_tool must succeed for content without placeholders."""
+        import tools.file_tools as ft
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        task_file = tmp_path / "clean.py"
+        result = json.loads(ft.write_file_tool(str(task_file), "def foo():\n    return 42\n"))
+        assert not result.get("error"), f"Clean write must succeed: {result}"

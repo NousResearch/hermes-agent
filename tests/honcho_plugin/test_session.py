@@ -892,6 +892,63 @@ class TestDialecticInputGuard:
         assert len(actual_query) <= 100
 
 
+class TestDialecticSessionForwarding:
+    """Verify that dialectic_query forwards session= to peer.chat() in every
+    branch: assistant self-query, assistant observing user, and the
+    non-cross-observation path."""
+
+    @staticmethod
+    def _make_manager(ai_observe_others=True):
+        """Create a HonchoSessionManager with a cached session and mocked peer."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(
+            api_key="test-key", enabled=True, recall_mode="hybrid",
+            ai_observe_others=ai_observe_others,
+        )
+        mgr = HonchoSessionManager(config=cfg)
+
+        session = HonchoSession(
+            key="test", user_peer_id="user-1", assistant_peer_id="ai-1",
+            honcho_session_id="sid-1",
+        )
+        mgr._cache["test"] = session
+
+        mock_peer = MagicMock()
+        mock_peer.chat.return_value = "answer"
+        mgr._get_or_create_peer = MagicMock(return_value=mock_peer)
+
+        return mgr, mock_peer, session
+
+    def test_ai_self_query_forwards_session(self):
+        """When _ai_observe_others is True and peer='ai', the assistant peer
+        queries itself — session= must be forwarded to chat()."""
+        mgr, mock_peer, session = self._make_manager(ai_observe_others=True)
+        mgr.dialectic_query("test", "hello", peer="ai")
+        mock_peer.chat.assert_called_once()
+        kwargs = mock_peer.chat.call_args.kwargs
+        assert kwargs.get("session") == "sid-1"
+
+    def test_ai_observing_user_forwards_session(self):
+        """When _ai_observe_others is True and peer='user', the assistant peer
+        observes the user — session= and target= must be forwarded to chat()."""
+        mgr, mock_peer, session = self._make_manager(ai_observe_others=True)
+        mgr.dialectic_query("test", "hello", peer="user")
+        mock_peer.chat.assert_called_once()
+        kwargs = mock_peer.chat.call_args.kwargs
+        assert kwargs.get("session") == "sid-1"
+        assert kwargs.get("target") == "user-1"
+
+    def test_non_cross_observation_forwards_session(self):
+        """When _ai_observe_others is False, each peer queries its own context
+        — session= must still be forwarded to chat()."""
+        mgr, mock_peer, session = self._make_manager(ai_observe_others=False)
+        mgr.dialectic_query("test", "hello", peer="user")
+        mock_peer.chat.assert_called_once()
+        kwargs = mock_peer.chat.call_args.kwargs
+        assert kwargs.get("session") == "sid-1"
+
+
 # ---------------------------------------------------------------------------
 
 

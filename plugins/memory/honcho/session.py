@@ -639,21 +639,27 @@ class HonchoSessionManager:
             level = self._default_reasoning_level()
 
         try:
+            honcho_session_id = session.honcho_session_id
             if self._ai_observe_others:
                 # AI peer can observe other peers — use assistant as observer.
                 ai_peer_obj = self._get_or_create_peer(session.assistant_peer_id)
                 if target_peer_id == session.assistant_peer_id:
-                    result = ai_peer_obj.chat(query, reasoning_level=level) or ""
+                    result = ai_peer_obj.chat(
+                        query, session=honcho_session_id, reasoning_level=level,
+                    ) or ""
                 else:
                     result = ai_peer_obj.chat(
                         query,
+                        session=honcho_session_id,
                         target=target_peer_id,
                         reasoning_level=level,
                     ) or ""
             else:
                 # Without cross-observation, each peer queries its own context.
                 target_peer = self._get_or_create_peer(target_peer_id)
-                result = target_peer.chat(query, reasoning_level=level) or ""
+                result = target_peer.chat(
+                    query, session=honcho_session_id, reasoning_level=level,
+                ) or ""
 
             # Apply Hermes-side char cap before caching
             if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:

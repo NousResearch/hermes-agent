@@ -196,6 +196,16 @@ def run_oneshot(
     # bytes reach the terminal.
     logging.disable(logging.CRITICAL)
 
+    # A one-shot runs exactly one turn and then this process exits, so nothing can
+    # route a detached subagent / watcher completion back to the agent afterwards.
+    # Declare that up front: delegate_task and terminal consult
+    # async_delivery_supported() and fall back to SYNCHRONOUS execution rather than
+    # handing out a promise that is silently dropped.  Same class of bug as #10760
+    # on the stateless API-server path.
+    from gateway.session_context import declare_headless_oneshot
+
+    declare_headless_oneshot()
+
     # --provider without --model is ambiguous: carrying the user's configured
     # model across to a different provider is usually wrong (that provider may
     # not host it), and silently picking the provider's catalog default hides

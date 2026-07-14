@@ -3466,9 +3466,7 @@ def _retry_same_provider_sync(
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
-    return _validate_llm_response(
-        retry_client.chat.completions.create(**retry_kwargs), task,
-    )
+    return _create_and_validate(retry_client, retry_kwargs, task)
 
 
 async def _retry_same_provider_async(
@@ -3523,9 +3521,7 @@ async def _retry_same_provider_async(
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
-    return _validate_llm_response(
-        await retry_client.chat.completions.create(**retry_kwargs), task,
-    )
+    return await _create_and_validate_async(retry_client, retry_kwargs, task)
 
 
 def _refresh_provider_credentials(provider: str) -> bool:
@@ -3661,8 +3657,7 @@ def _call_fallback_candidate_sync(
         tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, base_url=fb_base)
     try:
-        return _validate_llm_response(
-            fb_client.chat.completions.create(**fb_kwargs), task)
+        return _create_and_validate(fb_client, fb_kwargs, task)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3677,8 +3672,7 @@ def _call_fallback_candidate_sync(
                     extra_body=effective_extra_body,
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
-                    return _validate_llm_response(
-                        retry_client.chat.completions.create(**retry_kwargs), task)
+                    return _create_and_validate(retry_client, retry_kwargs, task)
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -3716,8 +3710,7 @@ async def _call_fallback_candidate_async(
         tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, base_url=fb_base)
     try:
-        return _validate_llm_response(
-            await fb_client.chat.completions.create(**fb_kwargs), task)
+        return await _create_and_validate_async(fb_client, fb_kwargs, task)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3733,8 +3726,7 @@ async def _call_fallback_candidate_async(
                     extra_body=effective_extra_body,
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
-                    return _validate_llm_response(
-                        await retry_client.chat.completions.create(**retry_kwargs), task)
+                    return await _create_and_validate_async(retry_client, retry_kwargs, task)
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -6255,6 +6247,83 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
 
 
 
+def _provider_requires_stream(provider: str, base_url: str | None) -> bool:
+    """Detect providers that only accept streaming (non-stream = HTTP 400).
+
+    Some OpenAI-compatible endpoints (e.g. Tencent Copilot) reject
+    non-streaming chat requests. When this returns True, the auxiliary
+    client must set stream=True and consume the stream itself.
+    """
+    _url = str(base_url or "").lower()
+    _provider = str(provider or "").lower()
+    # Tencent Copilot — "Non-stream chat request is currently not supported"
+    if "copilot.tencent.com" in _url:
+        return True
+    # Allow opt-in via provider name convention (future-proof)
+    if _provider.endswith(":stream-only"):
+        return True
+    return False
+
+
+def _consume_stream_to_response(stream: Any, model: str | None = None) -> Any:
+    """Consume an OpenAI SDK streaming iterator and return a complete
+    response object with .choices[0].message.content.
+
+    Mirrors the shape _validate_llm_response expects (SimpleNamespace,
+    which it already accepts for adapter responses).
+    """
+    content_parts: list[str] = []
+    completion_id = ""
+    resp_model = model or ""
+    finish_reason = "stop"
+    for chunk in stream:
+        if not completion_id and hasattr(chunk, "id"):
+            completion_id = chunk.id
+        if not resp_model and hasattr(chunk, "model"):
+            resp_model = chunk.model
+        if hasattr(chunk, "choices") and chunk.choices:
+            ch = chunk.choices[0]
+            if hasattr(ch, "finish_reason") and ch.finish_reason:
+                finish_reason = ch.finish_reason
+            if hasattr(ch, "delta") and ch.delta:
+                if ch.delta.content:
+                    content_parts.append(ch.delta.content)
+    content = "".join(content_parts)
+    return SimpleNamespace(
+        id=completion_id,
+        model=resp_model,
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content, role="assistant"),
+            finish_reason=finish_reason,
+            index=0,
+        )],
+    )
+
+
+def _create_and_validate(client: Any, kwargs: dict, task: str | None = None) -> Any:
+    """Call chat.completions.create and validate the response.
+
+    When stream=True is in kwargs (forced by _provider_requires_stream),
+    consume the stream into a complete response before validation.
+    """
+    if kwargs.get("stream"):
+        stream_resp = client.chat.completions.create(**kwargs)
+        resp = _consume_stream_to_response(stream_resp, kwargs.get("model"))
+    else:
+        resp = client.chat.completions.create(**kwargs)
+    return _validate_llm_response(resp, task)
+
+
+async def _create_and_validate_async(client: Any, kwargs: dict, task: str | None = None) -> Any:
+    """Async version of _create_and_validate."""
+    if kwargs.get("stream"):
+        stream_resp = await client.chat.completions.create(**kwargs)
+        resp = _consume_stream_to_response(stream_resp, kwargs.get("model"))
+    else:
+        resp = await client.chat.completions.create(**kwargs)
+    return _validate_llm_response(resp, task)
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -6353,6 +6422,10 @@ def _build_call_kwargs(
         merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:
         kwargs["extra_body"] = merged_extra
+
+    # Force streaming for providers that reject non-stream requests
+    if _provider_requires_stream(provider, base_url):
+        kwargs["stream"] = True
 
     return kwargs
 
@@ -6611,6 +6684,12 @@ def call_llm(
             kwargs["stream_options"] = stream_options
         return client.chat.completions.create(**kwargs)
 
+    # Force streaming for providers that reject non-stream requests
+    # (e.g. Tencent Copilot: "Non-stream chat request is currently not supported").
+    # _create_and_validate below consumes the stream transparently.
+    if _provider_requires_stream(resolved_provider, _base_info or resolved_base_url):
+        kwargs["stream"] = True
+
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
     try:
@@ -6631,8 +6710,7 @@ def call_llm(
         # ``first_err`` and the existing fallback handling unchanged. Unified home
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
-            return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task)
+            return _create_and_validate(client, kwargs, task)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -6663,8 +6741,7 @@ def call_llm(
                 )
                 time.sleep(_backoff)
                 try:
-                    return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                    return _create_and_validate(client, kwargs, task)
                 except Exception as retry_transient:
                     if not _is_transient_transport_error(retry_transient):
                         raise
@@ -6680,8 +6757,7 @@ def call_llm(
                 task or "call",
             )
             try:
-                return _validate_llm_response(
-                    client.chat.completions.create(**retry_kwargs), task)
+                return _create_and_validate(client, retry_kwargs, task)
             except Exception as retry_err:
                 retry_err_str = str(retry_err)
                 # If retry still fails, fall through to the max_tokens /
@@ -6718,8 +6794,7 @@ def call_llm(
             kwargs.pop("max_tokens", None)
             kwargs.pop("max_completion_tokens", None)
             try:
-                return _validate_llm_response(
-                    client.chat.completions.create(**kwargs), task)
+                return _create_and_validate(client, kwargs, task)
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
@@ -6748,8 +6823,7 @@ def call_llm(
                 )
                 kwargs["model"] = healed_model
                 try:
-                    return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                    return _create_and_validate(client, kwargs, task)
                 except Exception as retry_err:
                     first_err = retry_err
 
@@ -6781,8 +6855,7 @@ def call_llm(
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
                 try:
-                    return _validate_llm_response(
-                        refreshed_client.chat.completions.create(**kwargs), task)
+                    return _create_and_validate(refreshed_client, kwargs, task)
                 except Exception as retry_err:
                     if not (
                         _is_auth_error(retry_err)
@@ -6809,8 +6882,7 @@ def call_llm(
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
-                return _validate_llm_response(
-                    refreshed_client.chat.completions.create(**kwargs), task)
+                return _create_and_validate(refreshed_client, kwargs, task)
 
         # ── Auth refresh retry ───────────────────────────────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -6857,8 +6929,7 @@ def call_llm(
             # won't accept another request with the same exhausted key.
             if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
-                    return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                    return _create_and_validate(client, kwargs, task)
                 except Exception as retry_err:
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
@@ -7199,13 +7270,16 @@ async def async_call_llm(
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    # Force streaming for providers that reject non-stream requests
+    if _provider_requires_stream(resolved_provider, _client_base or resolved_base_url):
+        kwargs["stream"] = True
+
     try:
         # Retry ONCE on the same provider for a transient transport blip
         # before the except-chain escalates to fallback — see call_llm()
         # for the rationale. (PR #16587)
         try:
-            return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+            return await _create_and_validate_async(client, kwargs, task)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -7224,8 +7298,7 @@ async def async_call_llm(
                 "once on the same provider before fallback: %s",
                 task or "call", transient_err,
             )
-            return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+            return await _create_and_validate_async(client, kwargs, task)
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -7235,8 +7308,7 @@ async def async_call_llm(
                 task or "call",
             )
             try:
-                return _validate_llm_response(
-                    await client.chat.completions.create(**retry_kwargs), task)
+                return await _create_and_validate_async(client, retry_kwargs, task)
             except Exception as retry_err:
                 retry_err_str = str(retry_err)
                 if not (
@@ -7269,8 +7341,7 @@ async def async_call_llm(
             kwargs.pop("max_tokens", None)
             kwargs.pop("max_completion_tokens", None)
             try:
-                return _validate_llm_response(
-                    await client.chat.completions.create(**kwargs), task)
+                return await _create_and_validate_async(client, kwargs, task)
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
@@ -7298,8 +7369,7 @@ async def async_call_llm(
                 )
                 kwargs["model"] = healed_model
                 try:
-                    return _validate_llm_response(
-                        await client.chat.completions.create(**kwargs), task)
+                    return await _create_and_validate_async(client, kwargs, task)
                 except Exception as retry_err:
                     first_err = retry_err
 
@@ -7330,8 +7400,7 @@ async def async_call_llm(
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
                 try:
-                    return _validate_llm_response(
-                        await refreshed_client.chat.completions.create(**kwargs), task)
+                    return await _create_and_validate_async(refreshed_client, kwargs, task)
                 except Exception as retry_err:
                     if not (
                         _is_auth_error(retry_err)
@@ -7357,8 +7426,7 @@ async def async_call_llm(
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
-                return _validate_llm_response(
-                    await refreshed_client.chat.completions.create(**kwargs), task)
+                return await _create_and_validate_async(refreshed_client, kwargs, task)
 
         # ── Auth refresh retry (mirrors sync call_llm) ───────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -7400,8 +7468,7 @@ async def async_call_llm(
             # won't accept another request with the same exhausted key.
             if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
-                    return _validate_llm_response(
-                        await client.chat.completions.create(**kwargs), task)
+                    return await _create_and_validate_async(client, kwargs, task)
                 except Exception as retry_err:
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise

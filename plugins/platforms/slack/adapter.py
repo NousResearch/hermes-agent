@@ -2040,7 +2040,7 @@ class SlackAdapter(BasePlatformAdapter):
         falls back to the plain ``text`` payload. A ``text`` fallback is ALWAYS
         sent alongside blocks, so this can safely return ``None`` at any time.
         """
-        if not self._rich_blocks_enabled() and not self._feedback_buttons_enabled():
+        if not self._rich_blocks_enabled():
             return None
         try:
             blocks = render_blocks(content, mrkdwn_fn=self.format_message)

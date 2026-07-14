@@ -5653,26 +5653,29 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
-# slash_worker subprocess or the global approval-notify registration.
+# agent, slash_worker subprocess, or global approval-notify registration.
 # ---------------------------------------------------------------------------
 
 
-def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
+def test_session_create_close_race_does_not_orphan_resources(monkeypatch):
     """Regression guard: if session.close runs while session.create's
     _build thread is still constructing the agent, the build thread
-    must detect the orphan and clean up the slash_worker + notify
-    registration it's about to install.  Without the cleanup those
-    resources leak — the subprocess stays alive until atexit and the
-    notify callback lingers in the global registry."""
+    must detect the orphan, close the just-built agent, and avoid installing
+    a slash_worker or notify callback for the dead session. Without the early
+    abort those resources outlive the session until gateway shutdown."""
     import threading
 
     closed_workers: list[str] = []
+    created_workers: list[str] = []
+    closed_agents: list[str] = []
+    registered_keys: list[str] = []
     unregistered_keys: list[str] = []
 
     class _FakeWorker:
         def __init__(self, key, model, profile_home=None):
             self.key = key
             self._closed = False
+            created_workers.append(key)
 
         def close(self):
             self._closed = True
@@ -5684,6 +5687,9 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
             self.provider = "openrouter"
             self.base_url = ""
             self.api_key = ""
+
+        def close(self):
+            closed_agents.append("closed")
 
     # Make _build block until we release it — simulates slow agent init.
     # Also signal when _build actually reaches _make_agent so the test
@@ -5718,7 +5724,11 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # Shim register/unregister to observe leaks
     import tools.approval as _approval
 
-    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(
+        _approval,
+        "register_gateway_notify",
+        lambda key, cb: registered_keys.append(key),
+    )
     monkeypatch.setattr(
         _approval,
         "unregister_gateway_notify",
@@ -5756,27 +5766,28 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert close_resp.get("result", {}).get("closed") is True
 
-    # At this point session.close saw slash_worker=None (not yet
-    # installed) so it didn't close anything.  Release the build thread
-    # and let it finish — it should detect the orphan and clean up the
-    # worker it just allocated + unregister the notify.
+    # At this point session.close saw agent=None/slash_worker=None. Release the
+    # build thread: it must close the agent that finishes late and abort before
+    # constructing or registering any more session resources.
     release_build.set()
 
     # Give the build thread a moment to run through its finally.
     for _ in range(100):
-        if closed_workers:
+        if closed_agents:
             break
         import time
 
         time.sleep(0.02)
 
-    assert (
-        len(closed_workers) == 1
-    ), f"orphan worker was not cleaned up — closed_workers={closed_workers}"
-    # Notify may be unregistered by both session.close (unconditional)
-    # and the orphan-cleanup path; the key guarantee is that the build
-    # thread does at least one unregister call (any prior close
-    # already popped the callback; the duplicate is a no-op).
+    assert closed_agents == ["closed"], (
+        "agent built after session.close was never closed — "
+        f"closed_agents={closed_agents}"
+    )
+    assert created_workers == [], f"worker built for closed session: {created_workers}"
+    assert closed_workers == []
+    assert registered_keys == [], f"notify registered for closed session: {registered_keys}"
+    # session.close still unregisters the session key even though this build
+    # never got far enough to register a new callback.
     assert len(unregistered_keys) >= 1, (
         f"orphan notify registration was not unregistered — "
         f"unregistered_keys={unregistered_keys}"

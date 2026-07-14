@@ -1392,7 +1392,25 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
-            current["agent"] = agent
+            #
+            # Attach atomically against session teardown.  ``session.close``
+            # may have popped this session while the expensive agent build was
+            # in flight; in that case teardown could not close an agent that
+            # did not exist yet.  Do not keep building workers/callbacks for a
+            # dead session, and release the just-created agent immediately.
+            with _sessions_lock:
+                if _sessions.get(sid) is current:
+                    current["agent"] = agent
+                    agent_attached = True
+                else:
+                    agent_attached = False
+            if not agent_attached:
+                try:
+                    if hasattr(agent, "close"):
+                        agent.close()
+                except Exception:
+                    pass
+                return
             # Baseline for the per-turn config sync; the profile home
             # override is still active here.
             current["config_model_seen"] = _config_model_target()
@@ -1467,8 +1485,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             # _attach_worker already closed the worker if this session was
-            # reaped mid-build; only the late notify registration can still
-            # leak (session.close unregistered before _build registered it).
+            # reaped after the agent was attached; only the late notify
+            # registration can still leak (session.close unregistered before
+            # _build registered it).
             with _sessions_lock:
                 replaced = _sessions.get(sid) is not current
             if replaced and notify_registered:

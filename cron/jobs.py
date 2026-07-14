@@ -34,12 +34,12 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any, Set, Tuple, Union
+from typing import Optional, Dict, List, Any, Iterable, Set, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, atomic_json_write
 
 try:
     from croniter import croniter
@@ -221,6 +221,62 @@ def _job_running_in_this_process(job_id: str) -> bool:
 def _jobs_lock_file() -> Path:
     """Return the advisory lock path for the current cron directory."""
     return _current_cron_store().cron_dir / ".jobs.lock"
+
+
+def _jobs_census_file() -> Path:
+    """Path to the job-id census for the active cron store.
+
+    The census records the id set of the last sanctioned ``save_jobs`` so that
+    job-loss detection can tell whether a job vanished from ``jobs.json``
+    out-of-band (external edit/truncation, corruption repair that dropped
+    records, a partial write) versus a legitimate removal that went through the
+    store API (which rewrites the census in the same call).
+    """
+    return _current_cron_store().cron_dir / "jobs_census.json"
+
+
+def update_jobs_census(job_ids: Iterable[str]) -> None:
+    """Persist the current known job-id set. Best-effort — never raises.
+
+    Called from ``save_jobs`` so the census mirrors the last sanctioned write.
+    Only rewrites when the id-set actually changed: the hot savers
+    (``mark_job_run`` per fire, ``advance_next_run`` per due job) mutate job
+    fields but not the id-set, so the steady state pays a cheap census read and
+    skips a second durable write. A census failure must never break a job save,
+    so all errors are swallowed (worst case: a stale census → a spurious/absent
+    loss signal, never lost jobs).
+    """
+    ids = sorted({str(j) for j in job_ids if j})
+    try:
+        if set(ids) == known_job_ids():
+            return
+        atomic_json_write(
+            _jobs_census_file(),
+            {"ids": ids, "updated_at": _hermes_now().isoformat()},
+        )
+    except Exception:
+        logger.debug("Failed to update cron jobs census", exc_info=True)
+
+
+def read_jobs_census() -> Dict[str, Any]:
+    """Return the persisted census dict, or ``{}`` if missing/unreadable."""
+    path = _jobs_census_file()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    except Exception:
+        logger.debug("Failed to read cron jobs census", exc_info=True)
+    return {}
+
+
+def known_job_ids() -> set:
+    """The job-id set recorded by the last sanctioned save (from the census)."""
+    ids = read_jobs_census().get("ids", [])
+    return {str(i) for i in ids if i}
 
 
 @contextlib.contextmanager
@@ -892,6 +948,9 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
         except OSError:
             pass
         raise
+    # Refresh the job-loss census to mirror this sanctioned write. Best-effort
+    # and after the durable replace, so a census hiccup can never fail a save.
+    update_jobs_census(j.get("id") for j in jobs if isinstance(j, dict))
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):
@@ -1472,15 +1531,22 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 delivered: Optional[bool] = None):
     """
     Mark a job as having been run.
-    
+
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``delivered`` records a *durable* delivery outcome so a silent delivery
+    failure is queryable and a successful delivery is positively confirmed
+    (``last_delivery_error`` alone can't distinguish "delivered fine" from
+    "never attempted"). ``True`` → a delivery was attempted; ``False`` → skipped
+    (local-only, [SILENT], empty response); ``None`` → the caller didn't say.
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -1492,6 +1558,17 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                # Durable delivery status: a positive/negative record so a silent
+                # delivery failure is visible and a real delivery is confirmed.
+                if delivery_error:
+                    job["last_delivery_status"] = "failed"
+                elif delivered is True:
+                    job["last_delivery_status"] = "delivered"
+                    job["last_delivered_at"] = now
+                elif delivered is False:
+                    job["last_delivery_status"] = "skipped"
+                else:
+                    job["last_delivery_status"] = "unknown"
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None

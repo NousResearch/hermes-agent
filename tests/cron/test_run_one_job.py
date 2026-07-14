@@ -31,13 +31,19 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("deliver", job["id"]))
         return None
 
-    def fake_mark(jid, ok, err=None, delivery_error=None):
-        calls.append(("mark", jid, ok))
+    def fake_mark(jid, ok, err=None, delivery_error=None, delivered=None):
+        calls.append(("mark", jid, ok, delivered))
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", fake_save)
     monkeypatch.setattr(s, "_deliver_result", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", fake_mark)
+    # A real delivery target so `delivered` reflects a genuine send; local-only /
+    # target-less jobs are covered separately (test_local_only_job_not_delivered).
+    monkeypatch.setattr(
+        s, "_resolve_delivery_targets",
+        lambda job: [{"platform": "test", "chat_id": "1"}],
+    )
     return calls
 
 
@@ -51,7 +57,7 @@ def test_tick_process_job_sequence(monkeypatch):
     s.tick(verbose=False, sync=True)
 
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
-    assert calls[-1] == ("mark", "j1", True)
+    assert calls[-1] == ("mark", "j1", True, True)  # delivered
 
 
 def test_run_one_job_success_sequence(monkeypatch):
@@ -63,7 +69,7 @@ def test_run_one_job_success_sequence(monkeypatch):
 
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
-    assert calls[-1] == ("mark", "j2", True)
+    assert calls[-1] == ("mark", "j2", True, True)  # delivered
 
 
 def test_run_one_job_silent_skips_delivery(monkeypatch):
@@ -85,7 +91,7 @@ def test_run_one_job_empty_response_is_soft_failure(monkeypatch):
     s.run_one_job({"id": "j4", "name": "t"})
 
     mark = [c for c in calls if c[0] == "mark"][0]
-    assert mark == ("mark", "j4", False)
+    assert mark == ("mark", "j4", False, False)  # empty response → not delivered
 
 
 def test_run_one_job_failed_job_delivers_error(monkeypatch):
@@ -97,7 +103,21 @@ def test_run_one_job_failed_job_delivers_error(monkeypatch):
     kinds = [c[0] for c in calls]
     assert "deliver" in kinds  # failures always deliver
     mark = [c for c in calls if c[0] == "mark"][0]
-    assert mark == ("mark", "j5", False)
+    assert mark == ("mark", "j5", False, True)  # failure notice delivered
+
+
+def test_local_only_job_not_marked_delivered(monkeypatch):
+    """A job whose delivery resolves no target (local-only / origin-less) must
+    NOT be recorded as delivered — `should_deliver` is True (non-empty content)
+    but nothing is actually sent, so delivered must be False (→ status skipped)."""
+    calls = _patch_pipeline(monkeypatch)
+    # Override: no delivery target resolves for this run.
+    monkeypatch.setattr(s, "_resolve_delivery_targets", lambda job: [])
+
+    s.run_one_job({"id": "jL", "name": "t", "deliver": "local"})
+
+    mark = [c for c in calls if c[0] == "mark"][0]
+    assert mark == ("mark", "jL", True, False)  # ran ok, but nothing delivered
 
 
 def test_run_one_job_exception_marks_failure(monkeypatch):

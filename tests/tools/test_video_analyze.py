@@ -1,10 +1,13 @@
 """Tests for video_analyze tool in tools/vision_tools.py."""
 
 import asyncio
+from copy import deepcopy
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+from agent.auxiliary_client import _get_task_extra_body, _get_task_timeout
+from hermes_cli.config import DEFAULT_CONFIG
 from tools.vision_tools import (
     _detect_video_mime_type,
     _video_to_base64_data_url,
@@ -324,6 +327,52 @@ class TestVideoAnalyzeTool:
         assert content[1]["type"] == "video_url"
         assert "video_url" in content[1]
         assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
+
+    def test_uses_video_task(self, tmp_path):
+        """video_analyze_tool must pass task='video' to async_call_llm."""
+        video = tmp_path / "test.mp4"
+        video.write_bytes(b"\x00" * 100)
+
+        captured_kwargs = {}
+
+        async def capture_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "ok"
+            return mock_response
+
+        with patch("tools.vision_tools.async_call_llm", side_effect=capture_llm):
+            with patch("tools.vision_tools.extract_content_or_reasoning", return_value="ok"):
+                self._run(video_analyze_tool(str(video), "test"))
+
+        assert captured_kwargs.get("task") == "video"
+
+    def test_video_timeout_from_config(self):
+        """auxiliary.video.timeout overrides the inherited vision timeout."""
+        cfg = deepcopy(DEFAULT_CONFIG)
+        cfg["auxiliary"]["video"]["timeout"] = 300
+        cfg["auxiliary"]["vision"]["timeout"] = 240
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert _get_task_timeout("video", default=180.0) == 300.0
+
+    def test_video_timeout_falls_back_to_vision_after_default_layering(self):
+        """The layered video defaults leave a user's vision timeout effective."""
+        cfg = deepcopy(DEFAULT_CONFIG)
+        cfg["auxiliary"]["vision"]["timeout"] = 240
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert _get_task_timeout("video", default=180.0) == 240.0
+
+    def test_video_request_body_falls_back_to_vision(self):
+        """Video inherits provider-specific request fields until configured."""
+        cfg = deepcopy(DEFAULT_CONFIG)
+        cfg["auxiliary"]["vision"]["extra_body"] = {"reasoning": {"enabled": True}}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert _get_task_extra_body("video") == {"reasoning": {"enabled": True}}
+
 
 
 # ---------------------------------------------------------------------------

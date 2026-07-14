@@ -1,50 +1,52 @@
-# nix/devShell.nix — Fast dev shell with stamp-file optimization
-{ inputs, ... }: {
-  perSystem = { pkgs, ... }:
+# nix/devShell.nix — Dev shell that delegates setup to each package
+#
+# Each npm workspace package exposes passthru.packageJsonPath (e.g.
+# "ui-tui/package.json").  This file collects them all and passes the
+# list to mkNpmDevShellHook, which stamps all package.jsons at once,
+# then runs a single `npm i --package-lock-only` if any changed and
+# `npm ci` if the lockfile changed.
+{ ... }:
+{
+  perSystem =
+    { pkgs, self', ... }:
     let
-      python = pkgs.python311;
-    in {
+      packages = builtins.attrValues self'.packages;
+      hermesNpmLib = self'.packages.default.passthru.hermesNpmLib;
+
+      # Collect all packageJsonPath values from npm workspace packages.
+      npmPackageJsonPaths = builtins.filter (p: p != null) (
+        map (p: p.passthru.packageJsonPath or null) packages
+      );
+
+      # Non-npm packages may have their own devShellHook (e.g. hermes-agent
+      # stamps pyproject.toml + uv.lock for Python venv setup).
+      nonNpmHooks = map (p: p.passthru.devShellHook or "") packages;
+      combinedNonNpm = pkgs.lib.concatStringsSep "\n" (builtins.filter (h: h != "") nonNpmHooks);
+    in
+    {
       devShells.default = pkgs.mkShell {
-        packages = with pkgs; [
-          python uv nodejs_20 ripgrep git openssh ffmpeg
-        ];
-
+        packages =
+          with pkgs;
+          [
+            (pkgs.runCommand "hermes" { } ''
+              mkdir -p $out/bin
+              install -Dm755 ${../hermes} $out/bin/hermes
+            '')
+            (pkgs.runCommand "dev-sandbox" { } ''
+              mkdir -p $out/bin
+              install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
+            '')
+            uv
+          ]
+          ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          echo "Hermes Agent dev shell"
+          ${combinedNonNpm}
+          ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
 
-          # Composite stamp: changes when nix python or uv change
-          STAMP_VALUE="${python}:${pkgs.uv}"
-          STAMP_FILE=".venv/.nix-stamp"
-
-          # Create venv if missing
-          if [ ! -d .venv ]; then
-            echo "Creating Python 3.11 venv..."
-            uv venv .venv --python ${python}/bin/python3
-          fi
-
-          source .venv/bin/activate
-
-          # Only install if stamp is stale or missing
-          if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$STAMP_VALUE" ]; then
-            echo "Installing Python dependencies..."
-            uv pip install -e ".[all]"
-            if [ -d mini-swe-agent ]; then
-              uv pip install -e ./mini-swe-agent 2>/dev/null || true
-            fi
-            if [ -d tinker-atropos ]; then
-              uv pip install -e ./tinker-atropos 2>/dev/null || true
-            fi
-
-            # Install npm deps
-            if [ -f package.json ] && [ ! -d node_modules ]; then
-              echo "Installing npm dependencies..."
-              npm install
-            fi
-
-            echo "$STAMP_VALUE" > "$STAMP_FILE"
-          fi
-
-          echo "Ready. Run 'hermes' to start."
+          # for the devshell to pick up the src
+          export HERMES_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
+          echo "Hermes Agent dev shell in $HERMES_PYTHON_SRC_ROOT"
+          echo "Ready. Run 'hermes' or 'sandbox hermes' to start."
         '';
       };
     };

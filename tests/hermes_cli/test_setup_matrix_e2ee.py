@@ -1,7 +1,6 @@
 """Test that setup.py has shutil available for Matrix E2EE auto-install."""
 import ast
 
-import pytest
 
 
 def _parse_setup_imports():
@@ -22,7 +21,7 @@ def _parse_setup_imports():
 class TestSetupShutilImport:
     def test_shutil_imported_at_module_level(self):
         """shutil must be imported at module level so setup_gateway can use it
-        for the matrix-nio auto-install path (line ~2126)."""
+        for the mautrix auto-install path."""
         names = _parse_setup_imports()
         assert "shutil" in names, (
             "shutil is not imported at the top of hermes_cli/setup.py. "

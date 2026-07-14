@@ -1,11 +1,10 @@
-"""Tests for setup_model_provider — verifies the delegation to
-select_provider_and_model() and config dict sync."""
-import json
+"""Tests for setup.py configuration flows."""
 import sys
 import types
 
-from hermes_cli.auth import get_active_provider
+
 from hermes_cli.config import load_config, save_config
+from hermes_cli import setup as setup_mod
 from hermes_cli.setup import setup_model_provider
 
 
@@ -142,6 +141,124 @@ def test_setup_custom_providers_synced(tmp_path, monkeypatch):
     assert reloaded.get("custom_providers") == [{"name": "Local", "base_url": "http://localhost:8080/v1"}]
 
 
+def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch, capsys):
+    env = {
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_HOME_CHANNEL": "",
+        "DISCORD_BOT_TOKEN": "",
+        "DISCORD_HOME_CHANNEL": "",
+        "SLACK_BOT_TOKEN": "",
+        "SLACK_HOME_CHANNEL": "",
+        "MATRIX_HOMESERVER": "https://matrix.example.com",
+        "MATRIX_USER_ID": "@alice:example.com",
+        "MATRIX_PASSWORD": "",
+        "MATRIX_ACCESS_TOKEN": "token",
+        "BLUEBUBBLES_SERVER_URL": "",
+        "BLUEBUBBLES_HOME_CHANNEL": "",
+        "WHATSAPP_ENABLED": "",
+        "WEBHOOK_ENABLED": "",
+    }
+
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    # Keep the checklist pre-selection (so matrix stays "configured" and the
+    # post-config service guidance runs), but stub the migrated plugins'
+    # interactive_setup so their wizards don't read real stdin. #41112.
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _q, _items, pre=(), **k: list(pre))
+    import hermes_cli.gateway as _gw_mod
+    monkeypatch.setattr(_gw_mod, "_configure_platform", lambda *a, **k: None)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+
+    setup_mod.setup_gateway({})
+
+    out = capsys.readouterr().out
+    assert "Messaging platforms configured!" in out
+    assert "Start the gateway to bring your bots online:" in out
+    assert "hermes gateway" in out
+
+
+def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
+    """setup_gateway() in a Docker container shows Docker-specific restart instructions."""
+    env = {
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_HOME_CHANNEL": "",
+        "DISCORD_BOT_TOKEN": "",
+        "DISCORD_HOME_CHANNEL": "",
+        "SLACK_BOT_TOKEN": "",
+        "SLACK_HOME_CHANNEL": "",
+        "MATRIX_HOMESERVER": "https://matrix.example.com",
+        "MATRIX_USER_ID": "@alice:example.com",
+        "MATRIX_PASSWORD": "",
+        "MATRIX_ACCESS_TOKEN": "token",
+        "BLUEBUBBLES_SERVER_URL": "",
+        "BLUEBUBBLES_HOME_CHANNEL": "",
+        "WHATSAPP_ENABLED": "",
+        "WEBHOOK_ENABLED": "",
+    }
+
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    # Keep the checklist pre-selection (so matrix stays "configured" and the
+    # post-config service guidance runs), but stub the migrated plugins'
+    # interactive_setup so their wizards don't read real stdin. #41112.
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _q, _items, pre=(), **k: list(pre))
+    import hermes_cli.gateway as _gw_mod
+    monkeypatch.setattr(_gw_mod, "_configure_platform", lambda *a, **k: None)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+
+    # Patch is_container at the import location in setup.py
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+
+    setup_mod.setup_gateway({})
+
+    out = capsys.readouterr().out
+    assert "Messaging platforms configured!" in out
+    assert "docker" in out.lower() or "Docker" in out
+    assert "restart" in out.lower()
+
+
+def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
+    """Removing the last custom provider in model setup should persist."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    config = load_config()
+    config["custom_providers"] = [{"name": "Local", "base_url": "http://localhost:8080/v1"}]
+    save_config(config)
+
+    def fake_select():
+        cfg = load_config()
+        cfg["model"] = {"provider": "openrouter", "default": "anthropic/claude-opus-4.6"}
+        cfg["custom_providers"] = []
+        save_config(cfg)
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert reloaded.get("custom_providers") == []
+
+
 def test_setup_cancel_preserves_existing_config(tmp_path, monkeypatch):
     """When the user cancels provider selection, existing config is preserved."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -201,6 +318,73 @@ def test_setup_keyboard_interrupt_gracefully_handled(tmp_path, monkeypatch):
     setup_model_provider(config)
 
 
+def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
+    tmp_path, monkeypatch, capsys
+):
+    """If a saved custom provider is deleted mid-selection, show a warning instead of silently doing nothing."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    cfg["custom_providers"] = [{"name": "Local", "base_url": "http://localhost:8080/v1"}]
+    save_config(cfg)
+
+    def fake_prompt_provider_choice(choices, default=0):
+        current = load_config()
+        current["custom_providers"] = []
+        save_config(current)
+        return next(i for i, label in enumerate(choices) if label.startswith("Local (localhost:8080/v1)"))
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda provider: None)
+    monkeypatch.setattr("hermes_cli.main._prompt_provider_choice", fake_prompt_provider_choice)
+    monkeypatch.setattr(
+        "hermes_cli.main._model_flow_named_custom",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("named custom flow should not run")),
+    )
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    out = capsys.readouterr().out
+    assert "selected saved custom provider is no longer available" in out
+
+
+def test_select_provider_and_model_accepts_named_provider_from_providers_section(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    cfg["model"] = {
+        "provider": "volcengine-plan",
+        "default": "doubao-seed-2.0-code",
+    }
+    cfg["providers"] = {
+        "volcengine-plan": {
+            "name": "volcengine-plan",
+            "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "default_model": "doubao-seed-2.0-code",
+            "models": {"doubao-seed-2.0-code": {}},
+        }
+    }
+    save_config(cfg)
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_provider_choice",
+        lambda choices, default=0: len(choices) - 1,
+    )
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    out = capsys.readouterr().out
+    assert "Warning: Unknown provider 'volcengine-plan'" not in out
+    assert "Active provider:  volcengine-plan" in out
+
+
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
     """Codex model list fetching uses the runtime access token."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -225,7 +409,7 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
 
 
 def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = load_config()
 
@@ -267,7 +451,7 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
 
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
@@ -305,3 +489,54 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
+
+
+# test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
+# _setup_slack wizard migrated to the slack plugin's interactive_setup (#41112).
+
+
+def test_prompt_yes_no_returns_default_when_noninteractive_env_set(monkeypatch):
+    """HERMES_NONINTERACTIVE=1 (set by dashboard/desktop spawns) must make
+    prompt_yes_no fall back to its default instead of reading stdin."""
+    monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("input() must not be called in non-interactive mode")
+
+    monkeypatch.setattr("builtins.input", _boom)
+
+    assert setup_mod.prompt_yes_no("Install it now?", True) is True
+    assert setup_mod.prompt_yes_no("Install it now?", False) is False
+
+
+def test_prompt_yes_no_eof_returns_default_instead_of_exiting(monkeypatch):
+    """A closed/redirected stdin (EOFError) must yield the default, not abort.
+
+    Regression: the Windows gateway start path asks "Install it now?" when the
+    service is not installed; spawned from the desktop app (stdin=DEVNULL) the
+    EOFError used to sys.exit(1), killing every desktop-triggered restart."""
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    def _eof(*_a, **_k):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+
+    assert setup_mod.prompt_yes_no("Install it now?", True) is True
+    assert setup_mod.prompt_yes_no("Install it now?", False) is False
+
+
+def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
+    """Ctrl+C is an explicit user abort and must keep exiting."""
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    def _interrupt(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", _interrupt)
+
+    import pytest
+
+    with pytest.raises(SystemExit):
+        setup_mod.prompt_yes_no("Install it now?", True)
+

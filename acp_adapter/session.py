@@ -13,13 +13,89 @@ from hermes_constants import get_hermes_home
 import copy
 import json
 import logging
+import os
+import re
 import sys
+import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _translate_acp_cwd(cwd: str) -> str:
+    """Translate Windows ACP cwd values when Hermes itself is running in WSL.
+
+    Windows ACP clients can launch ``hermes acp`` inside WSL while still sending
+    editor workspaces as Windows drive paths (``E:\\Projects``) or
+    ``\\\\wsl.localhost\\`` UNC paths. Store and execute against the POSIX form so
+    agents, tools, and persisted ACP sessions all agree on the usable workspace.
+    Native Linux/macOS keeps the original cwd unchanged.
+    """
+    from hermes_constants import translate_cwd_for_wsl_backend
+
+    return translate_cwd_for_wsl_backend(str(cwd))
+
+
+def _normalize_cwd_for_compare(cwd: str | None) -> str:
+    raw = str(cwd or ".").strip()
+    if not raw:
+        raw = "."
+    expanded = os.path.expanduser(raw)
+
+    # Normalize Windows drive paths into the equivalent WSL mount form so
+    # ACP history filters match the same workspace across Windows and WSL.
+    from hermes_constants import windows_path_to_wsl
+
+    translated = windows_path_to_wsl(expanded)
+    if translated is not None:
+        expanded = translated
+    elif re.match(r"^/mnt/[A-Za-z]/", expanded):
+        expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
+
+    return os.path.normpath(expanded)
+
+
+def _build_session_title(title: Any, preview: Any, cwd: str | None) -> str:
+    explicit = str(title or "").strip()
+    if explicit:
+        return explicit
+    preview_text = str(preview or "").strip()
+    if preview_text:
+        return preview_text
+    leaf = os.path.basename(str(cwd or "").rstrip("/\\"))
+    return leaf or "New thread"
+
+
+def _format_updated_at(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _updated_at_sort_key(value: Any) -> float:
+    if value is None:
+        return float("-inf")
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = str(value).strip()
+    if not raw:
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        try:
+            return float(raw)
+        except Exception:
+            return float("-inf")
 
 
 def _acp_stderr_print(*args, **kwargs) -> None:
@@ -34,14 +110,38 @@ def _acp_stderr_print(*args, **kwargs) -> None:
 
 
 def _register_task_cwd(task_id: str, cwd: str) -> None:
-    """Bind a task/session id to the editor's working directory for tools."""
+    """Bind a task/session id to the editor's working directory for tools.
+
+    Zed can launch Hermes from a Windows workspace while the ACP process runs
+    inside WSL. In that case ACP sends cwd as e.g. ``E:\\Projects\\POTI``;
+    local tools need the WSL mount equivalent or subprocess creation fails
+    before the command can run.
+    """
     if not task_id:
         return
     try:
         from tools.terminal_tool import register_task_env_overrides
-        register_task_env_overrides(task_id, {"cwd": cwd})
+        register_task_env_overrides(task_id, {"cwd": _translate_acp_cwd(cwd)})
     except Exception:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
+
+
+def _expand_acp_enabled_toolsets(
+    toolsets: List[str] | None = None,
+    mcp_server_names: List[str] | None = None,
+) -> List[str]:
+    """Return ACP toolsets plus explicit MCP server toolsets for this session."""
+    expanded: List[str] = []
+    for name in list(toolsets or ["hermes-acp"]):
+        if name and name not in expanded:
+            expanded.append(name)
+
+    for server_name in list(mcp_server_names or []):
+        toolset_name = f"mcp-{server_name}"
+        if server_name and toolset_name not in expanded:
+            expanded.append(toolset_name)
+
+    return expanded
 
 
 def _clear_task_cwd(task_id: str) -> None:
@@ -65,6 +165,11 @@ class SessionState:
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
+    is_running: bool = False
+    queued_prompts: List[str] = field(default_factory=list)
+    runtime_lock: Any = field(default_factory=Lock)
+    current_prompt_text: str = ""
+    interrupted_prompt_text: str = ""
 
 
 class SessionManager:
@@ -95,6 +200,7 @@ class SessionManager:
         """Create a new session with a unique ID and a fresh AIAgent."""
         import threading
 
+        cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
         agent = self._make_agent(session_id=session_id, cwd=cwd)
         state = SessionState(
@@ -137,6 +243,7 @@ class SessionManager:
         """Deep-copy a session's history into a new session."""
         import threading
 
+        cwd = _translate_acp_cwd(cwd)
         original = self.get_session(session_id)  # checks DB too
         if original is None:
             return None
@@ -162,51 +269,83 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def list_sessions(self) -> List[Dict[str, Any]]:
+    def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
+        normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
+        db = self._get_db()
+        persisted_rows: dict[str, dict[str, Any]] = {}
+
+        if db is not None:
+            try:
+                for row in db.list_sessions_rich(source="acp", limit=1000):
+                    persisted_rows[str(row["id"])] = dict(row)
+            except Exception:
+                logger.debug("Failed to load ACP sessions from DB", exc_info=True)
+
         # Collect in-memory sessions first.
         with self._lock:
             seen_ids = set(self._sessions.keys())
-            results = [
-                {
-                    "session_id": s.session_id,
-                    "cwd": s.cwd,
-                    "model": s.model,
-                    "history_len": len(s.history),
-                }
-                for s in self._sessions.values()
-            ]
+            results = []
+            for s in self._sessions.values():
+                history_len = len(s.history)
+                if history_len <= 0:
+                    continue
+                if normalized_cwd and _normalize_cwd_for_compare(s.cwd) != normalized_cwd:
+                    continue
+                persisted = persisted_rows.get(s.session_id, {})
+                preview = next(
+                    (
+                        str(msg.get("content") or "").strip()
+                        for msg in s.history
+                        if msg.get("role") == "user" and str(msg.get("content") or "").strip()
+                    ),
+                    persisted.get("preview") or "",
+                )
+                results.append(
+                    {
+                        "session_id": s.session_id,
+                        "cwd": s.cwd,
+                        "model": s.model,
+                        "history_len": history_len,
+                        "title": _build_session_title(persisted.get("title"), preview, s.cwd),
+                        "updated_at": _format_updated_at(
+                            persisted.get("last_active") or persisted.get("started_at") or time.time()
+                        ),
+                    }
+                )
 
         # Merge any persisted sessions not currently in memory.
-        db = self._get_db()
-        if db is not None:
-            try:
-                rows = db.search_sessions(source="acp", limit=1000)
-                for row in rows:
-                    sid = row["id"]
-                    if sid in seen_ids:
-                        continue
-                    # Extract cwd from model_config JSON.
-                    cwd = "."
-                    mc = row.get("model_config")
-                    if mc:
-                        try:
-                            cwd = json.loads(mc).get("cwd", ".")
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    results.append({
-                        "session_id": sid,
-                        "cwd": cwd,
-                        "model": row.get("model") or "",
-                        "history_len": row.get("message_count") or 0,
-                    })
-            except Exception:
-                logger.debug("Failed to list ACP sessions from DB", exc_info=True)
+        for sid, row in persisted_rows.items():
+            if sid in seen_ids:
+                continue
+            message_count = int(row.get("message_count") or 0)
+            if message_count <= 0:
+                continue
+            # Extract cwd from model_config JSON.
+            session_cwd = "."
+            mc = row.get("model_config")
+            if mc:
+                try:
+                    session_cwd = json.loads(mc).get("cwd", ".")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if normalized_cwd and _normalize_cwd_for_compare(session_cwd) != normalized_cwd:
+                continue
+            results.append({
+                "session_id": sid,
+                "cwd": session_cwd,
+                "model": row.get("model") or "",
+                "history_len": message_count,
+                "title": _build_session_title(row.get("title"), row.get("preview"), session_cwd),
+                "updated_at": _format_updated_at(row.get("last_active") or row.get("started_at")),
+            })
 
+        results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
         return results
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""
+        cwd = _translate_acp_cwd(cwd)
         state = self.get_session(session_id)  # checks DB too
         if state is None:
             return None
@@ -307,25 +446,50 @@ class SessionManager:
             else:
                 # Update model_config (contains cwd) if changed.
                 try:
-                    with db._lock:
-                        db._conn.execute(
-                            "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                            (cwd_json, model_str, state.session_id),
-                        )
-                        db._conn.commit()
+                    db.update_session_meta(state.session_id, cwd_json, model_str)
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
-            # Replace stored messages with current history.
-            db.clear_messages(state.session_id)
-            for msg in state.history:
-                db.append_message(
-                    session_id=state.session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
+            # When the agent owns persistence to this same SessionDB it has
+            # already flushed the live transcript incrementally during
+            # run_conversation (append_message), and it preserves pre-compaction
+            # turns non-destructively via archive_and_compact() — keeping them on
+            # disk as searchable active=0/compacted=1 rows. Calling
+            # replace_messages() here would then be a redundant double-write that
+            # DELETEs exactly those archived rows (and, after a compression-driven
+            # id rotation where agent.session_id no longer equals
+            # state.session_id, clobbers the ended parent transcript) — silent
+            # data loss for any ACP conversation long enough to compress.
+            #
+            # Only fall back to the destructive atomic replace when the agent is
+            # NOT persisting itself to this DB (e.g. a test agent factory, or a
+            # fresh create/fork whose copied history the agent has not flushed
+            # yet). That path still rolls back on a mid-rewrite failure so the
+            # previously persisted conversation survives (salvaged from #13675).
+            agent = state.agent
+            agent_db = getattr(agent, "_session_db", None)
+            agent_owns_persistence = (
+                agent_db is not None
+                and agent_db is db
+                and bool(getattr(agent, "_session_db_created", False))
+            )
+            if not agent_owns_persistence:
+                # Even when the current agent doesn't "own" persistence, the
+                # session on disk may already carry compaction-archived rows —
+                # e.g. after a model switch or a /restore, both of which mint a
+                # fresh agent with _session_db_created=False (so the check above
+                # is False) yet leave the durable archived transcript in place.
+                # A full-history replace would DELETE those archived rows just
+                # like the owned-agent case. Guard against it: when archived
+                # rows exist, replace ONLY the live (active=1) set and leave the
+                # archived turns untouched; otherwise the destructive replace is
+                # safe (fresh create/fork with no archived history to lose).
+                try:
+                    has_archived = db.has_archived_messages(state.session_id)
+                except Exception:
+                    has_archived = False
+                db.replace_messages(
+                    state.session_id, state.history, active_only=has_archived
                 )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
@@ -444,11 +608,21 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
+        configured_mcp_servers = [
+            name
+            for name, cfg in (config.get("mcp_servers") or {}).items()
+            if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
+        ]
+
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": ["hermes-acp"],
+            "enabled_toolsets": _expand_acp_enabled_toolsets(
+                ["hermes-acp"],
+                mcp_server_names=configured_mcp_servers,
+            ),
             "quiet_mode": True,
             "session_id": session_id,
+            "session_db": self._get_db(),
             "model": model or default_model,
         }
 
@@ -469,6 +643,10 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        # Codex app-server sessions are spawned lazily on the first turn. Stamp
+        # the ACP workspace onto the agent so the Codex runtime starts from the
+        # editor/session cwd instead of the Hermes daemon's process cwd.
+        agent.session_cwd = cwd
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print

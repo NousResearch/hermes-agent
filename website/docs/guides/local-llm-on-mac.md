@@ -110,9 +110,9 @@ The `--cache-type-k q4_0 --cache-type-v q4_0` flags are the most important optim
 | q8_0 | ~8 GB |
 | **q4_0** | **~4 GB** |
 
-On an 8 GB Mac, use `q4_0` KV cache and reduce context to `-c 32768` (32K). On 16 GB, you can comfortably do 128K context. On 32 GB+, you can run larger models or multiple parallel slots.
+On an 8 GB Mac, use `q4_0` KV cache and choose a smaller model that can still fit Hermes' 64K minimum context. On 16 GB, you can comfortably do 128K context. On 32 GB+, you can run larger models or multiple parallel slots.
 
-If you're still running out of memory, reduce context size first (`-c`), then try a smaller quantization (Q3_K_M instead of Q4_K_M).
+If you're still running out of memory, reduce context only while staying at or above Hermes' 64K minimum; otherwise switch to a smaller model or smaller quantization (Q3_K_M instead of Q4_K_M).
 
 ### Test it
 
@@ -217,3 +217,24 @@ hermes model
 ```
 
 Select **Custom endpoint** and follow the prompts. It will ask for the base URL and model name — use the values from whichever backend you set up above.
+
+---
+
+## Timeouts
+
+Hermes automatically detects local endpoints (localhost, LAN IPs) and relaxes its streaming timeouts. No configuration needed for most setups.
+
+If you still hit timeout errors (e.g. very large contexts on slow hardware), you can override the streaming read timeout:
+
+```bash
+# In your .env — raise from the 120s default to 30 minutes
+HERMES_STREAM_READ_TIMEOUT=1800
+```
+
+| Timeout | Default | Local auto-adjustment | Env var override |
+|---------|---------|----------------------|------------------|
+| Stream read (socket-level) | 120s | Raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
+| Stale stream detection | 180s | Disabled entirely | `HERMES_STREAM_STALE_TIMEOUT` |
+| API call (non-streaming) | 1800s | No change needed | `HERMES_API_TIMEOUT` |
+
+The stream read timeout is the one most likely to cause issues — it's the socket-level deadline for receiving the next chunk of data. During prefill on large contexts, local models may produce no output for minutes while processing the prompt. The auto-detection handles this transparently.

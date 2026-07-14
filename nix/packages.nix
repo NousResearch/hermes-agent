@@ -1,54 +1,63 @@
 # nix/packages.nix — Hermes Agent package built with uv2nix
-{ inputs, ... }: {
-  perSystem = { pkgs, system, ... }:
+{ inputs, ... }:
+{
+  perSystem =
+    {
+      pkgs,
+      lib,
+      inputs',
+      ...
+    }:
     let
-      hermesVenv = pkgs.callPackage ./python.nix {
+      minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
+        # Only embed clean revs — dirtyRev doesn't represent any upstream
+        # commit, so comparing it would always claim "update available".
+        rev = inputs.self.rev or null;
       };
 
-      # Import bundled skills, excluding runtime caches
-      bundledSkills = pkgs.lib.cleanSourceWith {
-        src = ../skills;
-        filter = path: _type:
-          !(pkgs.lib.hasInfix "/index-cache/" path);
+      # All platform-portable optional integrations pre-built.
+      full = minimal.override {
+        extraDependencyGroups = [
+          "anthropic"
+          "azure-identity"
+          "bedrock"
+          "daytona"
+          "dingtalk"
+          "edge-tts"
+          "exa"
+          "fal"
+          "feishu"
+          "firecrawl"
+          "hindsight"
+          "honcho"
+          "messaging"
+          "modal"
+          "parallel-web"
+          "tts-premium"
+          "voice"
+        ]
+        # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
+        ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
       };
+    in
+    {
+      packages = {
+        default = full;
 
-      runtimeDeps = with pkgs; [
-        nodejs_20 ripgrep git openssh ffmpeg
-      ];
+        inherit minimal;
 
-      runtimePath = pkgs.lib.makeBinPath runtimeDeps;
-    in {
-      packages.default = pkgs.stdenv.mkDerivation {
-        pname = "hermes-agent";
-        version = (builtins.fromTOML (builtins.readFile ../pyproject.toml)).project.version;
-
-        dontUnpack = true;
-        dontBuild = true;
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-
-        installPhase = ''
-          runHook preInstall
-
-          mkdir -p $out/share/hermes-agent $out/bin
-          cp -r ${bundledSkills} $out/share/hermes-agent/skills
-
-          ${pkgs.lib.concatMapStringsSep "\n" (name: ''
-            makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
-              --suffix PATH : "${runtimePath}" \
-              --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills
-          '') [ "hermes" "hermes-agent" "hermes-acp" ]}
-
-          runHook postInstall
-        '';
-
-        meta = with pkgs.lib; {
-          description = "AI agent with advanced tool-calling capabilities";
-          homepage = "https://github.com/NousResearch/hermes-agent";
-          mainProgram = "hermes";
-          license = licenses.mit;
-          platforms = platforms.unix;
+        # Ships discord.py + python-telegram-bot + slack-sdk so a plain
+        # `nix profile install .#messaging` connects to Discord/Telegram/Slack
+        # on first run — lazy-install can't write to the read-only /nix/store.
+        messaging = minimal.override {
+          extraDependencyGroups = [ "messaging" ];
         };
+
+        tui = full.hermesTui;
+        web = full.hermesWeb;
+        desktop = full.hermesDesktop;
       };
     };
 }

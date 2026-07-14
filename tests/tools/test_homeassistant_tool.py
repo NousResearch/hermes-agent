@@ -93,6 +93,15 @@ class TestFilterAndSummarize:
         ids = {e["entity_id"] for e in result["entities"]}
         assert ids == {"sensor.humidity"}
 
+    def test_empty_registry_ids_fall_back_to_state_metadata(self):
+        result = _filter_and_summarize(
+            SAMPLE_STATES,
+            area="bedroom",
+            area_entity_ids=set(),
+        )
+        ids = {e["entity_id"] for e in result["entities"]}
+        assert ids == {"light.bedroom", "sensor.humidity"}
+
     def test_area_filter_case_insensitive(self):
         result = _filter_and_summarize(SAMPLE_STATES, area="KITCHEN")
         assert result["count"] == 2

@@ -85,7 +85,7 @@ def _filter_and_summarize(
     if domain:
         states = [s for s in states if s.get("entity_id", "").startswith(f"{domain}.")]
 
-    if area_entity_ids is not None:
+    if area_entity_ids:
         states = [s for s in states if s.get("entity_id", "") in area_entity_ids]
     elif area:
         area_lower = area.lower()

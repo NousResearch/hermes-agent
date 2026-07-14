@@ -491,7 +491,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if role == "system":
             continue
         if role == "user":
-            if not text.strip() and content not in (None, "", []):
+            if not text.strip() and isinstance(content, list) and content:
                 # Structured content with no extractable text (e.g. an
                 # image-only turn). Emitting an empty user message would be
                 # dropped/rejected by strict providers (Anthropic 400s on
@@ -499,7 +499,9 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # mode), and silently skipping the turn would break
                 # user/assistant alternation in the advisory view. Substitute
                 # a placeholder so the reference knows a non-text turn
-                # happened.
+                # happened. Only structured content qualifies — an empty or
+                # whitespace-only STRING turn carries nothing and is dropped
+                # below instead.
                 text = "[user sent non-text content (e.g. an image attachment)]"
             if not text.strip():
                 # Genuinely empty user turn (content="" / None). It carries

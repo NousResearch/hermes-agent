@@ -1241,3 +1241,27 @@ def test_reference_guidance_appends_text_part_to_decorated_trailing_user():
     assert content[0] == marked_part
     # The guidance rides as a trailing text part outside the cached span.
     assert content[1] == {"type": "text", "text": "\n\nREFERENCE BLOCK"}
+
+
+def test_reference_messages_drops_whitespace_only_string_user_turn():
+    """A whitespace-only STRING user turn is dropped, not placeholdered.
+
+    The non-text placeholder exists for structured content (image-only turns)
+    where a real turn happened that the reference should know about. A bare
+    whitespace string carries nothing — emitting it would 400 strict
+    providers (Kimi/Moonshot 'role user must not be empty'), and
+    placeholdering it would fabricate an attachment that never existed.
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": "   "},
+        {"role": "assistant", "content": "a"},
+        {"role": "user", "content": "real"},
+    ]
+
+    view = _reference_messages(messages)
+
+    assert view[0] == {"role": "assistant", "content": "a"}
+    assert view[-1] == {"role": "user", "content": "real"}
+    assert all(str(m["content"]).strip() for m in view)

@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_cli import kanban_api, kanban_db
+from hermes_cli import kanban_db
 from hermes_cli.kanban_api import router
 
 
@@ -244,32 +244,21 @@ def test_idempotency_key_is_unique_among_live_tasks(client: TestClient) -> None:
 def test_create_task_returns_existing_on_idempotency_race(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If create_task loses the UNIQUE-index race, the API returns the winner.
+    """A create deduped by the storage layer answers 200 / created=false.
 
-    The pre-INSERT lookup is forced to miss once (as it would if the racing
-    writer hadn't committed yet) and create_task is forced to raise the
-    IntegrityError the index would produce; the handler must re-fetch the
-    winner and answer 200 / created=false rather than 500.
+    ``kanban_db.create_task_idempotent`` absorbs the UNIQUE-index race (see
+    its tests in test_kanban_db.py) and reports ``created=False`` for the
+    loser; the adapter must map that to HTTP 200 with the winner task, never
+    201 or a 500.
     """
     original = _create(client, idempotency_key="winner-key")
     original_id = original["task"]["id"]
 
-    real_lookup = kanban_api._existing_idempotent_task
-    calls = {"n": 0}
-
-    def flaky_lookup(conn, key):
-        calls["n"] += 1
-        if calls["n"] == 1:  # pre-INSERT check: pretend the winner isn't visible
-            return None
-        return real_lookup(conn, key)
-
-    def boom(*args, **kwargs):
-        raise sqlite3.IntegrityError(
-            "UNIQUE constraint failed: index 'idx_tasks_idempotency_unique'"
-        )
-
-    monkeypatch.setattr(kanban_api, "_existing_idempotent_task", flaky_lookup)
-    monkeypatch.setattr(kanban_db, "create_task", boom)
+    monkeypatch.setattr(
+        kanban_db,
+        "create_task_idempotent",
+        lambda conn, **kwargs: (original_id, False),
+    )
 
     raced = client.post(
         "/api/plugins/kanban/tasks",

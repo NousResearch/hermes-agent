@@ -2456,7 +2456,7 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def create_task(
+def create_task_idempotent(
     conn: sqlite3.Connection,
     *,
     title: str,
@@ -2480,19 +2480,25 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
-) -> str:
+) -> tuple[str, bool]:
     """Create a new task and optionally link it under parent tasks.
 
-    Returns the new task id.  Status is ``ready`` when there are no
+    Returns ``(task_id, created)``.  Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
 
     If ``idempotency_key`` is provided and a non-archived task with the
-    same key already exists, returns the existing task's id instead of
-    creating a duplicate. Useful for retried webhooks / automation that
-    should not double-write.
+    same key already exists, returns the existing task's id with
+    ``created=False`` instead of creating a duplicate. Useful for retried
+    webhooks / automation that should not double-write. The guarantee is
+    concurrency-safe: a creator that loses the partial-UNIQUE-index race
+    to a simultaneous creator with the same key also resolves to the
+    winner's id (``created=False``) rather than raising. Callers that
+    surface idempotency to their own clients (e.g. the REST adapter's
+    201-vs-200 split) need the ``created`` flag; everyone else uses
+    :func:`create_task`.
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -2609,20 +2615,16 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency fast path — return the existing live task instead of
+    # creating a duplicate. Done BEFORE entering write_txn to keep the fast
+    # path fast and to avoid holding a write lock during the lookup. The
+    # check alone is racy (two concurrent creators can both miss), so the
+    # partial UNIQUE index on idempotency_key backstops it: the racing
+    # loser's INSERT fails and is resolved to the winner's id below.
     if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
+        row = _live_task_for_idempotency_key(conn, idempotency_key)
         if row:
-            return row["id"]
+            return row["id"], False
 
     now = int(time.time())
 
@@ -2753,13 +2755,98 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
-            return task_id
+            return task_id, True
         except sqlite3.IntegrityError:
+            # Two distinct causes land here: losing the idempotency-key race
+            # (a concurrent creator with the same key committed between our
+            # fast-path lookup and our INSERT, so the partial UNIQUE index
+            # rejected the row) and the extremely unlikely task-id collision.
+            # The key race must resolve to the winner's row — retrying with a
+            # fresh id would just fail again on the same key.
+            if idempotency_key:
+                row = _live_task_for_idempotency_key(conn, idempotency_key)
+                if row:
+                    return row["id"], False
             if attempt == 1:
                 raise
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+def _live_task_for_idempotency_key(
+    conn: sqlite3.Connection, idempotency_key: str
+) -> Optional[sqlite3.Row]:
+    """Return the live (non-archived) task row holding ``idempotency_key``.
+
+    The ordering tiebreak matches the survivor choice in
+    ``_migrate_unique_idempotency_index`` so every lookup path picks the
+    same row when legacy duplicates exist.
+    """
+    return conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (idempotency_key,),
+    ).fetchone()
+
+
+def create_task(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    body: Optional[str] = None,
+    assignee: Optional[str] = None,
+    created_by: Optional[str] = None,
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    parents: Iterable[str] = (),
+    triage: bool = False,
+    idempotency_key: Optional[str] = None,
+    max_runtime_seconds: Optional[int] = None,
+    skills: Optional[Iterable[str]] = None,
+    max_retries: Optional[int] = None,
+    goal_mode: bool = False,
+    goal_max_turns: Optional[int] = None,
+    initial_status: str = "running",
+    session_id: Optional[str] = None,
+    board: Optional[str] = None,
+    project_id: Optional[str] = None,
+) -> str:
+    """Create a new task and return its id.
+
+    Thin wrapper over :func:`create_task_idempotent` (see it for the full
+    contract) that drops the ``created`` flag — the common entry point for
+    callers that don't distinguish a fresh insert from an idempotent replay.
+    """
+    task_id, _created = create_task_idempotent(
+        conn,
+        title=title,
+        body=body,
+        assignee=assignee,
+        created_by=created_by,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        branch_name=branch_name,
+        tenant=tenant,
+        priority=priority,
+        parents=parents,
+        triage=triage,
+        idempotency_key=idempotency_key,
+        max_runtime_seconds=max_runtime_seconds,
+        skills=skills,
+        max_retries=max_retries,
+        goal_mode=goal_mode,
+        goal_max_turns=goal_max_turns,
+        initial_status=initial_status,
+        session_id=session_id,
+        board=board,
+        project_id=project_id,
+    )
+    return task_id
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:

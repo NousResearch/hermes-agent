@@ -20,11 +20,43 @@ That's it — no build step, no dependencies. Python 3.10+ and a browser.
 
 ```bash
 python3 server.py --offline  # demo mode: bundled sample data, no network
-python3 server.py --port 9000 --host 0.0.0.0
+python3 server.py --port 9000 --host 0.0.0.0 --token my-secret-code
 ```
 
 If live feeds are unreachable the server automatically falls back to bundled
 sample data and the UI marks affected widgets with a `DEMO DATA` chip.
+
+## Use it from your phone (Jarvis anywhere)
+
+The dashboard is a full PWA with cross-device sync: your lists, notes,
+events, apps and agent history live in a small SQLite database next to
+`server.py` (`data/hub.db`) and every device converges on it — edits flush
+within ~1.5 s, on tab close/background via `sendBeacon`, and remote changes
+are picked up by a 25 s poll (plus on tab focus).
+
+**The host machine must be on** for remote access — the server, your data
+and the agent all run there. A laptop works if it doesn't sleep; a Raspberry
+Pi or any always-on box is the comfortable long-term home (the server is
+dependency-free Python).
+
+1. **Lock it.** Any time the server is reachable beyond localhost, start it
+   with `--token <code>` (or `HERMES_HUB_TOKEN`). Phones/browsers get a lock
+   screen; the API refuses everything (except `/api/health`) without the
+   code. The static shell is public by design — the data lives behind the API.
+2. **Reach it.** Pick one:
+   - **Tailscale (recommended):** install on host + phone, sign in to the
+     same tailnet, then open `http://<host-tailscale-ip>:8787` from anywhere.
+     No ports opened to the internet, traffic is WireGuard-encrypted.
+   - **Same Wi-Fi only:** `--host 0.0.0.0` and open `http://<laptop-ip>:8787`.
+   - **Cloudflare Tunnel / Caddy:** for a public HTTPS hostname; keep the
+     token on and prefer adding real TLS in front.
+3. **Install it.** Open the URL on the phone → browser menu →
+   *Add to Home Screen*. You get an app icon, standalone window, and an
+   offline shell that shows the last-fetched data with no signal.
+
+Note: iOS treats plain-HTTP sites as insecure for some PWA features; over
+Tailscale it works, but for the full experience put HTTPS in front (Caddy
+with a local CA, or Cloudflare Tunnel).
 
 ## The agent (optional AI mode)
 
@@ -93,7 +125,9 @@ node tests/e2e.mjs http://127.0.0.1:8787 /tmp/shots
 ## Privacy notes
 
 - Personal data (tasks, notes, events, apps, agent chat log) lives in your
-  browser's `localStorage` only. Use ⚙ → Export for backups.
+  browser's `localStorage` and, for cross-device sync, in `data/hub.db` on
+  the machine running the server — never anywhere else. Use ⚙ → Export for
+  backups.
 - The reader endpoint refuses to fetch private/internal addresses.
 - In CLAUDE mode, your message plus a snapshot of dashboard context (task
   texts, event titles, note titles, headlines) is sent to the Anthropic API

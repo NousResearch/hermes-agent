@@ -5,6 +5,7 @@ Run:  python3 -m unittest discover -s apps/dashboard/tests -v
 
 import json
 import sys
+import tempfile
 import threading
 import unittest
 import urllib.request
@@ -253,13 +254,47 @@ class ScoreLevelTests(unittest.TestCase):
         self.assertEqual(server.score_level(39.9), "critical")
 
 
+class StateStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.store = server.StateStore(Path(tempfile.mkdtemp()) / "hub.db")
+
+    def test_empty(self):
+        self.assertEqual(self.store.get(), {"rev": 0, "updated": None, "state": None})
+        self.assertEqual(self.store.rev(), 0)
+
+    def test_put_and_get_roundtrip(self):
+        ok, rev = self.store.put({"tasks": [1, 2]}, None)
+        self.assertTrue(ok)
+        self.assertEqual(rev, 1)
+        data = self.store.get()
+        self.assertEqual(data["state"], {"tasks": [1, 2]})
+        self.assertIsNotNone(data["updated"])
+
+    def test_optimistic_concurrency(self):
+        self.store.put({"v": 1}, None)
+        ok, rev = self.store.put({"v": 2}, 1)
+        self.assertTrue(ok)
+        self.assertEqual(rev, 2)
+        ok, rev = self.store.put({"v": 99}, 1)  # stale base rev
+        self.assertFalse(ok)
+        self.assertEqual(rev, 2)
+        self.assertEqual(self.store.get()["state"], {"v": 2})
+
+    def test_force_put_without_base(self):
+        self.store.put({"v": 1}, None)
+        ok, rev = self.store.put({"v": 2}, None)
+        self.assertTrue(ok)
+        self.assertEqual(rev, 2)
+
+
 class HttpTests(unittest.TestCase):
     """End-to-end over a real socket, offline mode."""
 
     @classmethod
     def setUpClass(cls):
         server.CACHE.clear()
-        cls.httpd = server.make_server("127.0.0.1", 0, offline=True)
+        cls.httpd = server.make_server(
+            "127.0.0.1", 0, offline=True, data_dir=Path(tempfile.mkdtemp()))
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
@@ -371,6 +406,105 @@ class HttpTests(unittest.TestCase):
     def test_post_unknown_route_404(self):
         status, _ = self.post("/api/nope", {})
         self.assertEqual(status, 404)
+
+    def test_state_sync_roundtrip(self):
+        status, data = self.get_json("/api/state")
+        self.assertEqual(status, 200)
+        base = data["rev"]
+
+        status, data = self.post("/api/state", {"state": {"version": 1, "layout": []}, "baseRev": base})
+        self.assertEqual(status, 200)
+        new_rev = data["rev"]
+        self.assertEqual(new_rev, base + 1)
+
+        status, data = self.get_json("/api/state/rev")
+        self.assertEqual(data["rev"], new_rev)
+
+        status, data = self.get_json("/api/state")
+        self.assertEqual(data["state"]["version"], 1)
+
+        # stale write is refused
+        status, data = self.post("/api/state", {"state": {"version": 2}, "baseRev": base})
+        self.assertEqual(status, 409)
+
+        # bad payloads are rejected
+        status, _ = self.post("/api/state", {"state": "not-an-object"})
+        self.assertEqual(status, 400)
+
+
+class AuthHttpTests(unittest.TestCase):
+    """Token-locked server: API requires the bearer token, static does not."""
+
+    TOKEN = "s3cret-code"
+
+    @classmethod
+    def setUpClass(cls):
+        server.CACHE.clear()
+        cls.httpd = server.make_server(
+            "127.0.0.1", 0, offline=True, token=cls.TOKEN, data_dir=Path(tempfile.mkdtemp()))
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def request(self, path, token=None, payload=None):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode() if payload is not None else None,
+            headers=headers,
+            method="POST" if payload is not None else "GET",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as err:
+            return err.code, err.read()
+
+    def test_api_requires_token(self):
+        status, _ = self.request("/api/news?topic=top")
+        self.assertEqual(status, 401)
+        status, _ = self.request("/api/state")
+        self.assertEqual(status, 401)
+        status, _ = self.request("/api/assistant/chat", payload={"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 401)
+
+    def test_wrong_token_rejected(self):
+        status, _ = self.request("/api/news?topic=top", token="wrong")
+        self.assertEqual(status, 401)
+
+    def test_correct_token_accepted(self):
+        status, body = self.request("/api/news?topic=top", token=self.TOKEN)
+        self.assertEqual(status, 200)
+        self.assertIn(b"items", body)
+        status, _ = self.request("/api/state", token=self.TOKEN)
+        self.assertEqual(status, 200)
+
+    def test_health_stays_open_for_lock_screen(self):
+        status, _ = self.request("/api/health")
+        self.assertEqual(status, 200)
+
+    def test_static_shell_served_without_token(self):
+        status, body = self.request("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Hermes Hub", body)
+
+    def test_body_token_accepted_for_beacon_posts(self):
+        # sendBeacon cannot set headers; the token may ride in the JSON body.
+        status, _ = self.request("/api/state", payload={
+            "state": {"version": 1, "layout": []}, "token": self.TOKEN})
+        self.assertEqual(status, 200)
+
+    def test_wrong_body_token_rejected(self):
+        status, _ = self.request("/api/state", payload={
+            "state": {"version": 1, "layout": []}, "token": "nope"})
+        self.assertEqual(status, 401)
 
 
 if __name__ == "__main__":

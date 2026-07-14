@@ -1,6 +1,8 @@
 import { h, clear, uid, toast } from "./utils.js";
 import { store } from "./store.js";
 import { api } from "./api.js";
+import { showLockScreen } from "./auth.js";
+import { initSync } from "./sync.js";
 
 import { openViewer } from "./viewer.js";
 import { summarizeButton } from "./summarize.js";
@@ -495,5 +497,19 @@ function boot() {
   renderFooter();
 }
 
+window.addEventListener("hub:auth-required", () => {
+  showLockScreen({
+    onUnlocked: () => {
+      boot();
+      initSync(boot);
+    },
+  });
+});
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => { /* http or old browser */ });
+}
+
 bindShortcuts();
 boot();
+initSync(boot);

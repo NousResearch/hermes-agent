@@ -19,10 +19,13 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import email.utils
+import hmac
+import sqlite3
 import gzip
 import html
 import io
 import json
+import os
 import re
 import threading
 import time
@@ -204,6 +207,58 @@ class TTLCache:
 
 
 CACHE = TTLCache()
+
+
+class StateStore:
+    """SQLite-backed dashboard state, shared across devices.
+
+    Single-row versioned blob with optimistic concurrency: writers send the
+    revision they based their edit on; a mismatch returns a conflict so the
+    client can adopt the newer state instead of clobbering it.
+    """
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS state ("
+            " id INTEGER PRIMARY KEY CHECK (id = 1),"
+            " rev INTEGER NOT NULL,"
+            " updated TEXT NOT NULL,"
+            " payload TEXT NOT NULL)"
+        )
+        self._conn.commit()
+
+    def get(self) -> dict:
+        with self._lock:
+            row = self._conn.execute("SELECT rev, updated, payload FROM state WHERE id = 1").fetchone()
+        if row is None:
+            return {"rev": 0, "updated": None, "state": None}
+        return {"rev": row[0], "updated": row[1], "state": json.loads(row[2])}
+
+    def rev(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT rev FROM state WHERE id = 1").fetchone()
+        return row[0] if row else 0
+
+    def put(self, state: dict, base_rev: int | None) -> tuple[bool, int]:
+        """Returns (ok, current_rev). ok=False means a conflict."""
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(state, ensure_ascii=False)
+        with self._lock:
+            row = self._conn.execute("SELECT rev FROM state WHERE id = 1").fetchone()
+            current = row[0] if row else 0
+            if base_rev is not None and base_rev != current:
+                return False, current
+            new_rev = current + 1
+            self._conn.execute(
+                "INSERT INTO state (id, rev, updated, payload) VALUES (1, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET rev = ?, updated = ?, payload = ?",
+                (new_rev, now, payload, new_rev, now, payload),
+            )
+            self._conn.commit()
+            return True, new_rev
 
 
 def fetch_url(url: str, timeout: float = FETCH_TIMEOUT) -> bytes:
@@ -675,9 +730,10 @@ def live_markets() -> dict:
 # API dispatch: try cache → live → sample
 # ---------------------------------------------------------------------------
 class Api:
-    def __init__(self, offline: bool = False) -> None:
+    def __init__(self, offline: bool = False, state_store: StateStore | None = None) -> None:
         self.offline = offline
         self.assistant = assistant_module.Assistant()
+        self.state_store = state_store
 
     def _cached(self, key: str, ttl: float, live_fn, sample_fn):
         cached = CACHE.get(key)
@@ -769,7 +825,42 @@ class Api:
         )
 
     def health(self, params: dict) -> dict:
-        return {"ok": True, "offline": self.offline, "time": datetime.now(timezone.utc).isoformat()}
+        return {
+            "ok": True,
+            "offline": self.offline,
+            "sync": self.state_store is not None,
+            "time": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # -- cross-device state sync ------------------------------------------
+    def state_get(self, params: dict) -> dict:
+        if self.state_store is None:
+            raise ApiError(503, "sync is not enabled on this server")
+        return self.state_store.get()
+
+    def state_rev(self, params: dict) -> dict:
+        if self.state_store is None:
+            raise ApiError(503, "sync is not enabled on this server")
+        return {"rev": self.state_store.rev()}
+
+    def state_put(self, body: dict) -> dict:
+        if self.state_store is None:
+            raise ApiError(503, "sync is not enabled on this server")
+        state = body.get("state")
+        if not isinstance(state, dict):
+            raise ApiError(400, "state must be a JSON object")
+        base_rev = body.get("baseRev")
+        if base_rev is not None and not isinstance(base_rev, int):
+            raise ApiError(400, "baseRev must be an integer")
+        ok, rev = self.state_store.put(state, base_rev)
+        if os.environ.get("HERMES_HUB_SYNC_LOG"):  # debug aid for tests
+            marker = os.environ["HERMES_HUB_SYNC_LOG"]
+            tasks = json.dumps(state.get("tasks", {}))
+            print(f"[sync] PUT base={base_rev} -> ok={ok} rev={rev} "
+                  f"tasksHaveMarker={marker in tasks}", flush=True)
+        if not ok:
+            raise ApiError(409, f"state changed elsewhere (server rev {rev})")
+        return {"rev": rev}
 
     def assistant_status(self, params: dict) -> dict:
         return self.assistant.status()
@@ -803,6 +894,7 @@ class ApiError(Exception):
 # ---------------------------------------------------------------------------
 class HubHandler(BaseHTTPRequestHandler):
     api: Api  # set by make_server
+    token: str | None = None  # set by make_server; None disables auth
     protocol_version = "HTTP/1.1"
 
     ROUTES = {
@@ -813,23 +905,40 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/worldstate": "worldstate",
         "/api/reader": "reader",
         "/api/health": "health",
+        "/api/state": "state_get",
+        "/api/state/rev": "state_rev",
         "/api/assistant/status": "assistant_status",
     }
 
     POST_ROUTES = {
+        "/api/state": "state_put",
         "/api/assistant/chat": "assistant_chat",
         "/api/assistant/summarize": "assistant_summarize",
         "/api/assistant/briefing": "assistant_briefing",
     }
 
+    # /api/health stays open so the lock screen can probe reachability.
+    OPEN_PATHS = {"/api/health"}
+
     MAX_BODY = 512 * 1024
+
+    def _authorized(self, path: str) -> bool:
+        if self.token is None or path in self.OPEN_PATHS:
+            return True
+        header = self.headers.get("Authorization", "")
+        supplied = header[7:] if header.startswith("Bearer ") else ""
+        return hmac.compare_digest(supplied, self.token)
 
     def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path in self.ROUTES:
+            if not self._authorized(path):
+                self._send_json(401, {"error": "access code required"})
+                return
             self._handle_api(self.ROUTES[path], urllib.parse.parse_qs(parsed.query))
         else:
+            # The static shell contains no personal data; the API is the boundary.
             self._serve_static(path)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -847,6 +956,16 @@ class HubHandler(BaseHTTPRequestHandler):
                 raise ValueError("body must be a JSON object")
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json(400, {"error": f"invalid JSON body: {exc}"})
+            return
+        # sendBeacon (used for unload-time sync flushes) cannot set headers,
+        # so the access code may ride in the body instead.
+        body_token = body.pop("token", None)
+        if not self._authorized(parsed.path) and not (
+            self.token is not None
+            and isinstance(body_token, str)
+            and hmac.compare_digest(body_token, self.token)
+        ):
+            self._send_json(401, {"error": "access code required"})
             return
         self._handle_api(self.POST_ROUTES[parsed.path], body)
 
@@ -889,8 +1008,19 @@ class HubHandler(BaseHTTPRequestHandler):
         pass  # keep the terminal quiet; errors surface as JSON
 
 
-def make_server(host: str, port: int, offline: bool) -> ThreadingHTTPServer:
-    handler = type("BoundHandler", (HubHandler,), {"api": Api(offline=offline)})
+def make_server(
+    host: str,
+    port: int,
+    offline: bool,
+    token: str | None = None,
+    data_dir: Path | None = None,
+) -> ThreadingHTTPServer:
+    store = StateStore((data_dir or APP_DIR / "data") / "hub.db")
+    handler = type(
+        "BoundHandler",
+        (HubHandler,),
+        {"api": Api(offline=offline, state_store=store), "token": token},
+    )
     return ThreadingHTTPServer((host, port), handler)
 
 
@@ -903,10 +1033,28 @@ def main() -> None:
         action="store_true",
         help="never call upstream APIs; serve bundled sample data",
     )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("HERMES_HUB_TOKEN") or None,
+        help="require this access code on all API calls (env: HERMES_HUB_TOKEN). "
+        "Set it whenever the server is reachable beyond localhost.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="where to keep the sync database (default: ./data next to server.py)",
+    )
     args = parser.parse_args()
-    server = make_server(args.host, args.port, args.offline)
+
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not args.token:
+        print("WARNING: binding beyond localhost without --token / HERMES_HUB_TOKEN —")
+        print("         anyone on the network can read and write your dashboard data.")
+
+    server = make_server(args.host, args.port, args.offline, args.token, args.data_dir)
     mode = "offline (sample data)" if args.offline else "live (sample fallback)"
-    print(f"Hermes Hub → http://{args.host}:{args.port}  [{mode}]")
+    lock = "locked (access code required)" if args.token else "open (localhost)"
+    print(f"Hermes Hub → http://{args.host}:{args.port}  [{mode}] [{lock}] [sync on]")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

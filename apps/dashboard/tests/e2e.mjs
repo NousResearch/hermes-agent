@@ -43,9 +43,39 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const errors = [];
 page.on("pageerror", (err) => errors.push(String(err)));
 page.on("console", (msg) => { if (msg.type() === "error") errors.push(msg.text()); });
+if (process.env.E2E_TRACE_SYNC) {
+  page.on("response", (r) => {
+    if (r.url().includes("/api/state")) {
+      console.log(`      [state ${new Date().toISOString().slice(17, 23)}] ${r.request().method()} -> ${r.status()}`);
+    }
+  });
+}
 
 console.log(`— loading ${BASE}`);
+
+// Sync-liveness probe (enabled with E2E_TRACE_SYNC): mutate state, then see
+// whether the server revision advances within the debounce window.
+async function syncProbe(label) {
+  if (!process.env.E2E_SYNC_PROBES) return;
+  const before = await page.evaluate(async () => (await (await fetch("/api/state")).json()).rev);
+  await page.evaluate((l) => {
+    // schedule a raw store mutation through the page's own module graph
+    return import("/js/store.js").then(({ store }) => {
+      store.update((s) => { s.search.engine = s.search.engine; }, "probe-" + l);
+    });
+  }, label);
+  await page.waitForTimeout(2500);
+  const after = await page.evaluate(async () => (await (await fetch("/api/state")).json()).rev);
+  console.log(`    [probe ${label}] server rev ${before} -> ${after}  ${after > before ? "SYNC ALIVE" : "SYNC DEAD"}`);
+}
+
 await page.goto(BASE, { waitUntil: "networkidle" });
+
+// Make the run idempotent: reset local state to defaults and let sync push
+// the reset to the server (previous runs' data would otherwise be adopted).
+await page.evaluate(() => import("/js/store.js").then(({ store }) => store.reset()));
+await page.waitForTimeout(1600); // debounced sync push of the reset
+await page.reload({ waitUntil: "networkidle" });
 
 // ---- shell -----------------------------------------------------------------
 check("title", (await page.title()) === "Hermes Hub");
@@ -66,6 +96,7 @@ check("worldstate domains", (await page.locator(".ws-row").count()) >= 5);
 check("worldstate levels are labeled", (await page.locator(".ws-row .level-chip").first().innerText()).length > 2);
 check("sample badges when offline", (await page.locator(".widget-badge:not([hidden])").count()) >= 2);
 await shot(page, "01-dashboard-dark-full");
+await syncProbe("P1-after-boot");
 
 // ---- state of the world interactions ---------------------------------------
 const wsRow = page.locator(".ws-row").nth(1);
@@ -123,6 +154,7 @@ await page.locator(".cal-form .input").fill("E2E standup");
 await page.locator(".cal-form .btn-primary").click();
 check("calendar event added", (await page.locator(".cal-event-title", { hasText: "E2E standup" }).count()) === 1);
 check("calendar dot on selected day", (await page.locator(".cal-cell .cal-dot").count()) >= 1);
+await syncProbe("P2-after-widgets");
 
 // ---- agent: chat drives dashboard actions -----------------------------------
 await page.waitForFunction(() =>
@@ -214,6 +246,7 @@ await page.waitForTimeout(200);
 await shot(page, "04-dashboard-light-full");
 await themeBtn.click(); // light → dark
 check("back to dark", await page.evaluate(() => document.documentElement.dataset.theme) === "dark");
+await syncProbe("P3-pre-reload");
 
 // ---- persistence across reload ----------------------------------------------------
 await page.reload({ waitUntil: "networkidle" });
@@ -223,6 +256,96 @@ check("tasks survive reload",
   persisted.some((l) => l.items.some((i) => i.text === "E2E: buy coffee beans")) &&
   persisted.some((l) => l.name === "Errands" && l.items.some((i) => i.text.includes("e2e agent made this"))));
 check("theme survives reload", await page.evaluate(() => document.documentElement.dataset.theme) === "dark");
+
+// ---- PWA -------------------------------------------------------------------------
+const manifestOk = await page.evaluate(async () => {
+  const res = await fetch("/manifest.webmanifest");
+  if (!res.ok) return false;
+  const mf = await res.json();
+  return mf.name === "HERMES//HUB" && mf.icons.length >= 2;
+});
+check("PWA manifest served and valid", manifestOk);
+const iconOk = await page.evaluate(async () => (await fetch("/icons/icon-192.png")).ok);
+check("PWA icon served", iconOk);
+const swOk = await Promise.race([
+  page.evaluate(() => navigator.serviceWorker.ready.then(() => true)),
+  new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
+]);
+check("service worker registered", swOk === true);
+
+// ---- sync: a second "device" pulls the same state --------------------------------
+// Nudge the store so a fresh push fires (a reload can cancel a pending
+// debounced push), then wait until the server copy has this run's task.
+console.log("    [debug] pre-nudge server rev:", await page.evaluate(async () =>
+  (await fetch("/api/state")).json().then((d) => `${d.rev} hasCoffee=${JSON.stringify(d.state || {}).includes("coffee beans")}`)));
+console.log("    [debug] page A syncRev:", await page.evaluate(() => localStorage.getItem("hermesHub.syncRev")));
+await page.locator(".note-pad").fill("sync nudge " + Date.now());
+await page.waitForFunction(async () => {
+  const res = await fetch("/api/state");
+  if (!res.ok) return false;
+  const { state } = await res.json();
+  return state?.tasks?.lists?.some((l) => l.items.some((i) => i.text === "E2E: buy coffee beans"));
+}, null, { timeout: 20000 });
+const srvRev = await page.evaluate(async () => (await fetch("/api/state")).json().then((d) => d.rev));
+console.log(`    (server rev after push: ${srvRev})`);
+check("local changes pushed to sync server", true);
+
+const deviceB = await browser.newContext({ viewport: { width: 390, height: 844 } });
+const phone = await deviceB.newPage();
+const phoneErrors = [];
+phone.on("pageerror", (err) => phoneErrors.push(String(err)));
+phone.on("console", (msg) => { if (msg.type() === "error") phoneErrors.push(msg.text()); });
+await phone.goto(BASE, { waitUntil: "networkidle" });
+try {
+  await phone.waitForFunction(() => {
+    const raw = localStorage.getItem("hermesHub.v1");
+    if (!raw) return false;
+    const state = JSON.parse(raw);
+    return state.tasks.lists.some((l) => l.items.some((i) => i.text === "E2E: buy coffee beans"));
+  }, null, { timeout: 15000 });
+  check("second device adopts synced state", true);
+} catch {
+  check("second device adopts synced state", false);
+  console.log("    [debug] phone errors:", phoneErrors.slice(0, 5));
+  console.log("    [debug] phone syncRev:", await phone.evaluate(() => localStorage.getItem("hermesHub.syncRev")));
+  console.log("    [debug] phone has local state:", await phone.evaluate(() => !!localStorage.getItem("hermesHub.v1")));
+  console.log("    [debug] phone lists:", await phone.evaluate(() => {
+    const raw = localStorage.getItem("hermesHub.v1");
+    if (!raw) return "none";
+    return JSON.parse(raw).tasks.lists.map((l) => `${l.name}[${l.items.length}]`).join(", ");
+  }));
+  console.log("    [debug] server state via phone:", await phone.evaluate(async () => {
+    const res = await fetch("/api/state");
+    const data = await res.json();
+    return `status=${res.status} rev=${data.rev} hasCoffee=${JSON.stringify(data.state || {}).includes("coffee beans")}`;
+  }));
+}
+await phone.waitForSelector(".widget-agent");
+await shot(phone, "07-mobile");
+await deviceB.close();
+
+// ---- auth lock screen (separate token-protected server) ---------------------------
+if (process.env.AUTH_URL && process.env.AUTH_TOKEN) {
+  const authCtx = await browser.newContext();
+  const authPage = await authCtx.newPage();
+  await authPage.goto(process.env.AUTH_URL, { waitUntil: "domcontentloaded" });
+  await authPage.waitForSelector(".lock-backdrop", { timeout: 10000 });
+  check("lock screen appears on protected server", true);
+  await authPage.locator(".lock-input").fill("wrong-code");
+  await authPage.locator(".lock-form .btn-primary").click();
+  await authPage.waitForFunction(() =>
+    document.querySelector(".lock-status")?.textContent.includes("DENIED"));
+  check("wrong code denied", true);
+  await authPage.locator(".lock-input").fill(process.env.AUTH_TOKEN);
+  await authPage.locator(".lock-form .btn-primary").click();
+  await authPage.waitForSelector(".lock-backdrop", { state: "detached", timeout: 10000 });
+  await authPage.waitForSelector(".news-item", { timeout: 15000 });
+  check("correct code unlocks and data loads", true);
+  await shot(authPage, "08-lockscreen-unlocked");
+  await authCtx.close();
+} else {
+  console.log("  – auth lock-screen checks skipped (set AUTH_URL + AUTH_TOKEN)");
+}
 
 // ---- console health -----------------------------------------------------------------
 const realErrors = errors.filter((e) => !e.includes("favicon"));

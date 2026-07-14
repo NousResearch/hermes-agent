@@ -1129,6 +1129,77 @@ a { color: inherit; }
   text-transform: uppercase;
 }
 
+/* ---------- lock screen ---------- */
+
+.lock-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background:
+    radial-gradient(var(--grid-dot) 1px, transparent 1px) 0 0 / 22px 22px,
+    var(--page);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.lock-panel {
+  width: min(360px, 92vw);
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--hairline-2);
+  border-radius: 6px;
+  padding: 34px 28px 26px;
+  box-shadow: var(--shadow);
+}
+.lock-mark { color: var(--accent); font-size: 26px; margin-bottom: 8px; }
+.lock-title {
+  font-family: ui-monospace, Menlo, monospace;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.16em;
+}
+.lock-sub {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.26em;
+  color: var(--muted);
+  margin: 6px 0 22px;
+}
+.lock-form { display: flex; gap: 8px; }
+.lock-input { text-align: center; letter-spacing: 0.2em; }
+.lock-status { margin-top: 14px; font-family: ui-monospace, Menlo, monospace; letter-spacing: 0.08em; }
+.lock-hint { margin: 16px 0 0; }
+
+/* ---------- small screens ---------- */
+
+@media (max-width: 760px) {
+  body { font-size: 15px; }
+  .topbar {
+    padding: 8px 10px calc(8px);
+    padding-top: calc(8px + env(safe-area-inset-top));
+    gap: 10px;
+  }
+  .grid { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+  .clock-time { font-size: 38px; }
+  .btn { padding: 8px 12px; }               /* comfortable touch targets */
+  .icon-btn { width: 32px; height: 32px; }
+  .tab, .note-tab { padding: 7px 12px; }
+  .task-item { padding: 10px 4px; }
+  .task-item .icon-btn, .cal-event .icon-btn, .sum-inline { opacity: 1; } /* no hover on touch */
+  .agent-log { max-height: 45vh; }
+  .viewer-backdrop { padding: 0; }
+  .viewer { border-radius: 0; border: none; width: 100%; }
+  .viewer-head { flex-wrap: wrap; }
+  .viewer-article { padding: 20px 16px 40px; }
+  .sum-backdrop { align-items: flex-end; padding: 0; }
+  .sum-pop { width: 100%; max-height: 78vh; border-radius: 10px 10px 0 0; }
+  .palette-backdrop { padding-top: 6vh; }
+  .footer { flex-direction: column; gap: 4px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .weather-days { gap: 2px; font-size: 12px; }
+  .market-spark { display: none; }          /* keep price + change readable */
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

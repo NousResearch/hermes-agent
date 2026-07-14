@@ -110,6 +110,14 @@ export const store = {
     return JSON.stringify(this.state, null, 2);
   },
 
+  /** Replace the whole state (sync adopting another device's copy). */
+  replace(incoming) {
+    if (!incoming || !Array.isArray(incoming.layout)) return;
+    this.state = { ...defaultState(), ...incoming, editMode: false };
+    this.save();
+    for (const listener of listeners) listener("replace", this.state);
+  },
+
   importJSON(text) {
     const incoming = JSON.parse(text); // throws on invalid JSON
     if (!incoming || incoming.version !== 1 || !Array.isArray(incoming.layout)) {

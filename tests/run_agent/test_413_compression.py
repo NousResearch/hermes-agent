@@ -93,7 +93,6 @@ def agent():
         a.client = MagicMock()
         a._cached_system_prompt = "You are helpful."
         a._use_prompt_caching = False
-        a.tool_delay = 0
         # Default matches production (`compression.enabled` defaults to True).
         # Overflow-recovery tests below verify that 413 / context-overflow
         # errors DO trigger compression; the disabled-path behavior is

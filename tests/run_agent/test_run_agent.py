@@ -943,6 +943,25 @@ class TestInit:
             assert agent.api_mode == "anthropic_messages"
             mock_anthropic.Anthropic.assert_called_once()
 
+    def test_tool_delay_kwarg_is_deprecated_noop(self):
+        """tool_delay stays accepted for compatibility but warns and is ignored."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            with pytest.warns(DeprecationWarning, match="tool_delay"):
+                a = AIAgent(
+                    api_key="test-key-1234567890",
+                    base_url="https://openrouter.ai/api/v1",
+                    tool_delay=0,
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+            # The value is discarded — nothing downstream reads it anymore.
+            assert not hasattr(a, "tool_delay")
+
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
         with (
@@ -2341,6 +2360,22 @@ class TestExecuteToolCalls:
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
+
+    def test_sequential_tool_calls_run_without_delay(self, agent):
+        """Two sequential tool calls execute back-to-back with no sleep between them."""
+        tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch("agent.tool_executor.time.sleep") as mock_sleep,
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+        assert mock_hfc.call_count == 2
+        mock_sleep.assert_not_called()
+        tool_results = [m for m in messages if m["role"] == "tool"]
+        assert [m["tool_call_id"] for m in tool_results] == ["c1", "c2"]
 
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
         old_text = "stale preference entry"
@@ -4136,7 +4171,6 @@ class TestRunConversation:
         """Common setup for run_conversation tests."""
         agent._cached_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
-        agent.tool_delay = 0
         agent.compression_enabled = False
         agent.save_trajectories = False
 
@@ -5937,7 +5971,6 @@ class TestRetryExhaustion:
     def _setup_agent(self, agent):
         agent._cached_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
-        agent.tool_delay = 0
         agent.compression_enabled = False
         agent.save_trajectories = False
 
@@ -7737,7 +7770,6 @@ class TestReasoningReplayForStrictProviders:
     def _setup_agent(self, agent):
         agent._cached_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
-        agent.tool_delay = 0
         agent.compression_enabled = False
         agent.save_trajectories = False
 

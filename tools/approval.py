@@ -461,6 +461,23 @@ HARDLINE_PATTERNS_COMPILED = [
     (re.compile(pattern, _RE_FLAGS), description)
     for pattern, description in HARDLINE_PATTERNS
 ]
+_MAX_APPROVAL_DETECTION_COMMAND_LENGTH = 10000
+_MAX_APPROVAL_DETECTION_RAW_COMMAND_LENGTH = (
+    _MAX_APPROVAL_DETECTION_COMMAND_LENGTH * 2
+)
+_COMMAND_LENGTH_LIMIT_FINDING = (
+    "command length limit",
+    "command exceeds approval detection length limit",
+)
+
+
+def _classify_command_for_detection(command: str) -> tuple:
+    if len(command) > _MAX_APPROVAL_DETECTION_RAW_COMMAND_LENGTH:
+        return (None, _COMMAND_LENGTH_LIMIT_FINDING)
+    normalized = _normalize_command_for_detection(command)
+    if len(normalized) > _MAX_APPROVAL_DETECTION_COMMAND_LENGTH:
+        return (None, _COMMAND_LENGTH_LIMIT_FINDING)
+    return (normalized, None)
 
 
 # =========================================================================
@@ -478,7 +495,7 @@ _SUDO_STDIN_RE = re.compile(
     re.IGNORECASE)
 
 
-def _check_sudo_stdin_guard(command: str) -> tuple:
+def _check_sudo_stdin_guard(command: str, normalized: str | None = None) -> tuple:
     """Detect ``sudo -S`` (stdin password) without configured SUDO_PASSWORD.
 
     When SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S``
@@ -491,27 +508,35 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     """
     if "SUDO_PASSWORD" in os.environ:
         return (False, None)
-    normalized = _normalize_command_for_detection(command).lower()
-    if _SUDO_STDIN_RE.search(normalized):
+    if normalized is None:
+        normalized, _length_finding = _classify_command_for_detection(command)
+    if normalized is None:
+        return (True, _COMMAND_LENGTH_LIMIT_FINDING[1])
+    command_lower = normalized.lower()
+    if _SUDO_STDIN_RE.search(command_lower):
         return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
 
 
-def detect_hardline_command(command: str) -> tuple:
+def detect_hardline_command(command: str, normalized: str | None = None) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
 
     Returns:
         (is_hardline, description) or (False, None)
     """
-    for command_variant in _command_detection_variants(command):
-        normalized = command_variant.lower()
+    if normalized is None:
+        normalized, _length_finding = _classify_command_for_detection(command)
+    if normalized is None:
+        return (True, _COMMAND_LENGTH_LIMIT_FINDING[1])
+    for command_variant in _command_detection_variants(normalized):
+        command_lower = command_variant.lower()
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-            if pattern_re.search(normalized):
+            if pattern_re.search(command_lower):
                 return (True, description)
     return (False, None)
 
 
-def _match_user_deny_rule(command: str) -> str | None:
+def _match_user_deny_rule(command: str, normalized: str | None = None) -> str | None:
     """Return the matching ``approvals.deny`` glob, or None.
 
     ``approvals.deny`` in config.yaml is a user-defined list of fnmatch
@@ -535,7 +560,9 @@ def _match_user_deny_rule(command: str) -> str | None:
              if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _command_detection_variants(command):
+    if normalized is None:
+        normalized = _normalize_command_for_detection(command)
+    for command_variant in _command_detection_variants(normalized):
         candidate = command_variant.lower().strip()
         for pattern in globs:
             if fnmatch.fnmatchcase(candidate, pattern.lower()):
@@ -584,6 +611,23 @@ def _sudo_stdin_block_result(description: str) -> dict:
             "attack vector. Set SUDO_PASSWORD in your .env file if the "
             "agent needs passwordless sudo, or run the sudo command "
             "manually in your own terminal."
+        ),
+    }
+
+
+def _command_length_limit_block_result() -> dict:
+    """Build the standard fail-closed block for over-limit commands."""
+    pattern_key, description = _COMMAND_LENGTH_LIMIT_FINDING
+    return {
+        "approved": False,
+        "hardline": True,
+        "pattern_key": pattern_key,
+        "description": description,
+        "message": (
+            f"BLOCKED (fail-closed): {description}. "
+            "This command is too long to classify safely and cannot be "
+            "executed via the agent — not even with --yolo, /yolo, "
+            "approvals.mode=off, or cron approve mode."
         ),
     }
 
@@ -1398,8 +1442,7 @@ def _iter_shell_command_word_spans(command: str):
             break
 
 
-def _command_detection_variants(command: str):
-    normalized = _normalize_command_for_detection(command)
+def _command_detection_variants(normalized: str):
     seen = {normalized}
     yield normalized
     # Subshell `(cmd)` and brace-group `{ cmd; }` openers put `cmd` at a real
@@ -1452,22 +1495,39 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
-def detect_dangerous_command(command: str) -> tuple:
+def detect_dangerous_command(
+    command: str,
+    normalized_command: str | None = None,
+) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
+    if normalized_command is None:
+        normalized_command, length_finding = _classify_command_for_detection(command)
+        if length_finding is not None:
+            return (True, *length_finding)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
-
-    for command_variant in _command_detection_variants(command):
+    for command_variant in _command_detection_variants(normalized_command):
         command_lower = command_variant.lower()
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if pattern_re.search(command_lower):
                 pattern_key = description
                 return (True, pattern_key, description)
     return (False, None, None)
+
+
+_DETECT_DANGEROUS_COMMAND_IMPL = detect_dangerous_command
+
+
+def _call_detect_dangerous_command(command: str, normalized_command: str) -> tuple:
+    # Preserve one-arg monkeypatch seams while real code still reuses normalization.
+    detector = detect_dangerous_command
+    if detector is _DETECT_DANGEROUS_COMMAND_IMPL:
+        return detector(command, normalized_command)
+    return detector(command)
 
 
 # =========================================================================
@@ -2350,12 +2410,17 @@ def check_dangerous_command(command: str, env_type: str,
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
+    normalized_command, length_finding = _classify_command_for_detection(command)
+    if length_finding is not None:
+        logger.warning("Command length limit block: %s", command[:200])
+        return _command_length_limit_block_result()
+
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
     # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
     # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
     # trusting the agent with your files and services, not trusting it
     # to wipe the disk or power the box off.
-    is_hardline, hardline_desc = detect_hardline_command(command)
+    is_hardline, hardline_desc = detect_hardline_command(command, normalized_command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
@@ -2363,7 +2428,7 @@ def check_dangerous_command(command: str, env_type: str,
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
     # user saying "never, even under yolo".
-    deny_pattern = _match_user_deny_rule(command)
+    deny_pattern = _match_user_deny_rule(command, normalized_command)
     if deny_pattern is not None:
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
@@ -2377,7 +2442,10 @@ def check_dangerous_command(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = _call_detect_dangerous_command(
+        command,
+        normalized_command,
+    )
     if not is_dangerous:
         return {"approved": True, "message": None}
 
@@ -2651,11 +2719,16 @@ def check_all_command_guards(command: str, env_type: str,
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
+    normalized_command, length_finding = _classify_command_for_detection(command)
+    if length_finding is not None:
+        logger.warning("Command length limit block: %s", command[:200])
+        return _command_length_limit_block_result()
+
     # Hardline floor: unconditional block for catastrophic commands
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
     # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
     # no session-level setting can bypass it.
-    is_hardline, hardline_desc = detect_hardline_command(command)
+    is_hardline, hardline_desc = detect_hardline_command(command, normalized_command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
@@ -2665,7 +2738,7 @@ def check_all_command_guards(command: str, env_type: str,
     # legitimate reason for the agent to pipe passwords to sudo -S when no
     # SUDO_PASSWORD has been configured.  This must fire BEFORE the yolo
     # check so even yolo/smart approval/mode=off cannot bypass it.
-    is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
+    is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command, normalized_command)
     if is_sudo_guess:
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
@@ -2674,7 +2747,7 @@ def check_all_command_guards(command: str, env_type: str,
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny
     # rule is the user saying "never, even under yolo".
-    deny_pattern = _match_user_deny_rule(command)
+    deny_pattern = _match_user_deny_rule(command, normalized_command)
     if deny_pattern is not None:
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
@@ -2700,7 +2773,10 @@ def check_all_command_guards(command: str, env_type: str,
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
+                is_dangerous, _pk, description = _call_detect_dangerous_command(
+                    command,
+                    normalized_command,
+                )
                 if is_dangerous:
                     return {
                         "approved": False,
@@ -2806,7 +2882,10 @@ def check_all_command_guards(command: str, env_type: str,
         # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
 
     # Dangerous command check (detection only, no approval)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = _call_detect_dangerous_command(
+        command,
+        normalized_command,
+    )
 
     # --- Phase 2: Decide ---
 

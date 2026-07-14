@@ -2,6 +2,7 @@
 
 import ast
 import os
+import shlex
 import tempfile
 import threading
 import time
@@ -120,24 +121,42 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+        temp_dir = "/tmp" if os.name != "nt" else r"C:\tmp"
+        with mock_patch("tempfile.gettempdir", return_value=temp_dir):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
+                target = shlex.quote(os.path.join(temp_dir, f"{prefix}example.py"))
+                assert detect_dangerous_command(f"rm -f {target}") == (
                     False,
                     None,
                     None,
                 )
 
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
+        class _HitMatcher:
+            def search(self, _command):
+                return True
+
         real_temp = tmp_path / "real-temp"
         real_temp.mkdir()
         linked_temp = tmp_path / "linked-temp"
         linked_temp.symlink_to(real_temp, target_is_directory=True)
         basename = "hermes-verify-example.py"
-
-        with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
-            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
-            assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
+        with (
+            mock_patch("tempfile.gettempdir", return_value=str(linked_temp)),
+            mock_patch.object(
+                approval_module,
+                "DANGEROUS_PATTERNS_COMPILED",
+                [(_HitMatcher(), "sentinel dangerous delete")],
+            ),
+        ):
+            linked_target = shlex.quote(str(linked_temp / basename))
+            real_target = shlex.quote(str(real_temp / basename))
+            assert detect_dangerous_command(f"rm -f {linked_target}") == (
+                True,
+                "sentinel dangerous delete",
+                "sentinel dangerous delete",
+            )
+            assert detect_dangerous_command(f"rm -f {real_target}") == (
                 False,
                 None,
                 None,
@@ -283,6 +302,161 @@ class TestDetectDangerousSudo:
         is_dangerous, key, desc = detect_dangerous_command("ksh -c 'echo test'")
         assert is_dangerous is True
         assert key is not None
+
+
+class TestDangerousCommandLengthGuard:
+    def test_over_raw_limit_short_circuits_before_normalization(self):
+        cmd = "x" * (approval_module._MAX_APPROVAL_DETECTION_RAW_COMMAND_LENGTH + 1)
+        with mock_patch.object(
+            approval_module,
+            "_normalize_command_for_detection",
+            side_effect=AssertionError("normalization should not run"),
+        ):
+            normalized, finding = approval_module._classify_command_for_detection(cmd)
+
+        assert normalized is None
+        assert finding == (
+            "command length limit",
+            "command exceeds approval detection length limit",
+        )
+
+    def test_over_limit_command_blocks_before_matchers(self):
+        class _ExplodingMatcher:
+            def search(self, _command):
+                raise AssertionError("over-limit command reached a matcher")
+
+        cmd = "x" * (approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH + 1)
+        with (
+            mock_patch.object(approval_module, "HARDLINE_PATTERNS_COMPILED", [(_ExplodingMatcher(), "hardline")]),
+            mock_patch.object(approval_module, "_SUDO_STDIN_RE", _ExplodingMatcher()),
+            mock_patch.object(approval_module, "DANGEROUS_PATTERNS_COMPILED", [(_ExplodingMatcher(), "dangerous")]),
+            mock_patch.object(approval_module, "_YOLO_MODE_FROZEN", False),
+            mock_patch.dict(
+                "os.environ",
+                {
+                    "HERMES_INTERACTIVE": "",
+                    "HERMES_EXEC_ASK": "",
+                    "HERMES_GATEWAY_SESSION": "",
+                    "HERMES_CRON_SESSION": "",
+                },
+                clear=True,
+            ),
+        ):
+            result = approval_module.check_all_command_guards(
+                cmd,
+                "local",
+                approval_callback=lambda *_args, **_kwargs: "deny",
+            )
+
+        assert result["approved"] is False
+        assert result["hardline"] is True
+        assert result["pattern_key"] == "command length limit"
+
+    def test_over_limit_command_blocks_under_yolo(self):
+        cmd = "x" * (approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH + 1)
+        with mock_patch.object(approval_module, "_YOLO_MODE_FROZEN", True):
+            result = approval_module.check_all_command_guards(cmd, "local")
+
+        assert result["approved"] is False
+        assert result["hardline"] is True
+        assert result["pattern_key"] == "command length limit"
+
+    def test_check_dangerous_command_over_limit_blocks_before_yolo(self):
+        class _ExplodingMatcher:
+            def search(self, _command):
+                raise AssertionError("over-limit command reached a matcher")
+
+        cmd = "x" * (approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH + 1)
+        with (
+            mock_patch.object(approval_module, "HARDLINE_PATTERNS_COMPILED", [(_ExplodingMatcher(), "hardline")]),
+            mock_patch.object(approval_module, "DANGEROUS_PATTERNS_COMPILED", [(_ExplodingMatcher(), "dangerous")]),
+            mock_patch.object(approval_module, "_YOLO_MODE_FROZEN", True),
+        ):
+            result = approval_module.check_dangerous_command(cmd, "local")
+
+        assert result["approved"] is False
+        assert result["hardline"] is True
+        assert result["pattern_key"] == "command length limit"
+
+    def test_over_limit_hardline_detector_fails_closed(self):
+        cmd = "rm -rf / ; echo " + ("x" * approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH)
+        assert detect_hardline_command(cmd) == (
+            True,
+            "command exceeds approval detection length limit",
+        )
+
+    def test_over_limit_sudo_detector_fails_closed(self):
+        cmd = "sudo -S whoami ; echo " + ("x" * approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH)
+        assert approval_module._check_sudo_stdin_guard(cmd) == (
+            True,
+            "command exceeds approval detection length limit",
+        )
+
+    def test_over_limit_hardline_payload_stays_blocked(self):
+        cmd = "rm -rf / ; echo " + ("x" * approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH)
+        result = approval_module.check_all_command_guards(cmd, "local")
+
+        assert result["approved"] is False
+        assert result["hardline"] is True
+        assert result["pattern_key"] == "command length limit"
+
+    def test_over_limit_sudo_stdin_payload_stays_blocked(self):
+        cmd = "sudo -S whoami ; echo " + ("x" * approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH)
+        result = approval_module.check_all_command_guards(cmd, "local")
+
+        assert result["approved"] is False
+        assert result["hardline"] is True
+        assert result["pattern_key"] == "command length limit"
+
+    def test_cron_deny_reuses_shared_normalized_command(self):
+        calls = 0
+
+        def _normalize_once(command: str) -> str:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise AssertionError("normalization ran more than once")
+            return command
+
+        with (
+            mock_patch.object(
+                approval_module,
+                "_normalize_command_for_detection",
+                side_effect=_normalize_once,
+            ),
+            mock_patch.object(approval_module, "_get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.tirith_security.check_command_security", return_value={"action": "allow", "findings": [], "summary": ""}),
+            mock_patch.dict("os.environ", {"HERMES_CRON_SESSION": "1"}, clear=True),
+        ):
+            result = approval_module.check_all_command_guards("echo hello", "local")
+
+        assert calls == 1
+        assert result["approved"] is True
+
+    def test_raw_over_limit_can_still_reach_normal_detection_when_it_shrinks(self):
+        cmd = "rm -rf /" + ("${IFS}" * 2000)
+        assert len(cmd) > approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH
+        assert len(cmd) < approval_module._MAX_APPROVAL_DETECTION_RAW_COMMAND_LENGTH
+
+        result = approval_module.check_all_command_guards(cmd, "local")
+
+        assert result["approved"] is False
+        assert result["hardline"] is True
+        assert "recursive delete of root filesystem" in result["message"]
+
+    def test_at_limit_command_uses_normal_detection(self):
+        cmd = "x" * approval_module._MAX_APPROVAL_DETECTION_COMMAND_LENGTH
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_existing_dangerous_pattern_keeps_original_description(self):
+        is_dangerous, key, desc = detect_dangerous_command("bash -lc 'echo pwned'")
+        assert is_dangerous is True
+        assert key == desc
+        assert "shell" in desc.lower()
+        assert "length limit" not in desc
 
 
 class TestDetectSqlPatterns:

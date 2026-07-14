@@ -1043,7 +1043,7 @@ def discord_skill_commands_by_category(
             sp = _P(skill_path).resolve()
             # Hub skills are loaded via the skill hub, not surfaced as
             # slash commands.
-            if str(sp).startswith(str(_hub_dir)):
+            if sp.is_relative_to(_hub_dir):
                 continue
             # Accept skill if it lives under any scan root; record the
             # matching root so we can derive the category correctly.

@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 from subprocess import CalledProcessError
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -524,7 +525,7 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
-# ff-only fallback to reset --hard on diverged history
+# Local-commit guard and explicit sync behavior
 # ---------------------------------------------------------------------------
 
 def _make_update_side_effect(
@@ -534,6 +535,8 @@ def _make_update_side_effect(
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
+    local_commit_shas=(),
+    rebase_fails=False,
 ):
     """Build a subprocess.run side_effect for cmd_update tests."""
     recorded = []
@@ -547,11 +550,24 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if "show-ref" in joined and "--verify" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if "rev-list" in joined:
+        if "rev-list --reverse" in joined:
+            stdout = "".join(f"{sha}\n" for sha in local_commit_shas)
+            return SimpleNamespace(stdout=stdout, stderr="", returncode=0)
+        if "rev-list" in joined and "--count" in joined:
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
-        if "--ff-only" in joined:
+        if "rebase origin/" in joined:
+            return SimpleNamespace(
+                stdout="",
+                stderr="conflict\n" if rebase_fails else "",
+                returncode=1 if rebase_fails else 0,
+            )
+        if "rebase --abort" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "merge --ff-only" in joined:
             if ff_only_fails:
                 return SimpleNamespace(
                     stdout="",
@@ -559,6 +575,8 @@ def _make_update_side_effect(
                     returncode=128,
                 )
             return SimpleNamespace(stdout="Updating abc..def\n", stderr="", returncode=0)
+        if "show -s --format=%h %s" in joined:
+            return SimpleNamespace(stdout=f"abc123 local patch\n", stderr="", returncode=0)
         if "reset" in joined and "--hard" in joined:
             if reset_fails:
                 return SimpleNamespace(stdout="", stderr="error: unable to write\n", returncode=1)
@@ -568,26 +586,27 @@ def _make_update_side_effect(
     return side_effect, recorded
 
 
-def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
-    """When --ff-only fails (diverged history), update resets to origin/{branch}."""
+def test_cmd_update_rebases_local_commits_instead_of_resetting(monkeypatch, tmp_path, capsys):
+    """A carried local commit selects rebase and makes reset unreachable."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
-    side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
+    side_effect, recorded = _make_update_side_effect(local_commit_shas=("abc123",))
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     hermes_main.cmd_update(SimpleNamespace())
 
+    rebase_calls = [c for c in recorded if c[1:2] == ["rebase"]]
+    assert rebase_calls == [["git", "rebase", "origin/main"]]
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
-    assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert reset_calls == []
 
     out = capsys.readouterr().out
-    assert "Fast-forward not possible" in out
+    assert "Rebased 1 local commit(s) onto origin/main" in out
 
 
-def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
-    """When --ff-only succeeds, no reset is attempted."""
+def test_cmd_update_no_reset_when_ff_only_merge_succeeds(monkeypatch, tmp_path):
+    """When explicit ff-only merge succeeds, no reset is attempted."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
@@ -598,6 +617,266 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 0
+
+
+class _StopAfterGitSync(RuntimeError):
+    """Test sentinel raised after git sync + autostash restoration."""
+
+
+def _git(run, cwd: Path, *args: str, check: bool = True):
+    return run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def _configure_git_identity(run, repo: Path) -> None:
+    _git(run, repo, "config", "user.name", "Fixture User")
+    _git(run, repo, "config", "user.email", "fixture@example.invalid")
+
+
+def _make_real_update_repo(tmp_path: Path):
+    run = subprocess.run
+    remote = tmp_path / "remote.git"
+    upstream = tmp_path / "upstream"
+    checkout = tmp_path / "checkout"
+
+    _git(run, tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    _git(run, tmp_path, "init", "--initial-branch=main", str(upstream))
+    _configure_git_identity(run, upstream)
+    (upstream / "conflict.txt").write_text("shared line\n")
+    (upstream / "dirty.txt").write_text("clean tracked state\n")
+    (upstream / "remote.txt").write_text("remote base\n")
+    _git(run, upstream, "add", ".")
+    _git(run, upstream, "commit", "-m", "base")
+    _git(run, upstream, "remote", "add", "origin", str(remote))
+    _git(run, upstream, "push", "-u", "origin", "main")
+
+    _git(run, tmp_path, "clone", "--branch", "main", str(remote), str(checkout))
+    _configure_git_identity(run, checkout)
+    return SimpleNamespace(run=run, remote=remote, upstream=upstream, checkout=checkout)
+
+
+def _commit_file(run, repo: Path, relative: str, content: str, message: str) -> str:
+    (repo / relative).write_text(content)
+    _git(run, repo, "add", relative)
+    _git(run, repo, "commit", "-m", message)
+    return _git(run, repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def _make_dirty(repo: Path) -> None:
+    (repo / "dirty.txt").write_text("dirty tracked state\n")
+    (repo / "untracked.txt").write_text("untracked survives\n")
+
+
+def _prepare_real_cmd_update(monkeypatch, repo: Path):
+    """Run the real git path, but stop before dependency/install side effects."""
+    from hermes_cli import backup as hermes_backup
+
+    real_run = subprocess.run
+    recorded: list[list[str]] = []
+
+    def recording_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, list)
+            and cmd
+            and cmd[0] == "git"
+            and Path(kwargs.get("cwd", repo)) == repo
+        ):
+            recorded.append(cmd.copy())
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+    monkeypatch.setattr(hermes_main.subprocess, "run", recording_run)
+    monkeypatch.setattr(hermes_config, "detect_install_method", lambda root: "git")
+    monkeypatch.setattr(hermes_config, "is_unsupported_install_method", lambda method: False)
+    monkeypatch.setattr(hermes_config, "is_managed", lambda: False)
+    monkeypatch.setattr(hermes_config, "load_config", lambda: {})
+    monkeypatch.setattr(hermes_main, "_install_hangup_protection", lambda **kwargs: None)
+    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda args: None)
+    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda state: None)
+    monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(hermes_main, "_discard_lockfile_churn", lambda *args: None)
+    monkeypatch.setattr(hermes_main, "_is_fork", lambda origin_url: False)
+    monkeypatch.setattr(
+        hermes_main,
+        "_validate_critical_files_syntax",
+        lambda root: (True, None, None),
+    )
+    monkeypatch.setattr(hermes_backup, "create_quick_snapshot", lambda **kwargs: None)
+
+    def stop_after_git_sync():
+        raise _StopAfterGitSync
+
+    monkeypatch.setattr(hermes_main, "_invalidate_update_cache", stop_after_git_sync)
+    return real_run, recorded
+
+
+def _assert_dirty_state_and_no_stash(run, repo: Path) -> None:
+    assert (repo / "dirty.txt").read_text() == "dirty tracked state\n"
+    assert (repo / "untracked.txt").read_text() == "untracked survives\n"
+    status = _git(run, repo, "status", "--porcelain").stdout
+    assert " M dirty.txt" in status
+    assert "?? untracked.txt" in status
+    assert _git(run, repo, "stash", "list", "--format=%H").stdout.strip() == ""
+
+
+def test_real_update_rebases_local_commit_and_restores_dirty_tree(
+    monkeypatch, tmp_path, capsys
+):
+    repos = _make_real_update_repo(tmp_path)
+    local_message = "permanent local patch"
+    _commit_file(repos.run, repos.checkout, "local.txt", "local\n", local_message)
+    remote_sha = _commit_file(
+        repos.run, repos.upstream, "remote.txt", "remote advanced\n", "remote advance"
+    )
+    _git(repos.run, repos.upstream, "push", "origin", "main")
+    old_origin_tip = _git(repos.run, repos.checkout, "rev-parse", "origin/main").stdout.strip()
+    _make_dirty(repos.checkout)
+
+    run, recorded = _prepare_real_cmd_update(monkeypatch, repos.checkout)
+    with pytest.raises(_StopAfterGitSync):
+        hermes_main.cmd_update(SimpleNamespace(yes=True))
+
+    subjects = _git(run, repos.checkout, "log", "--format=%s").stdout.splitlines()
+    assert local_message in subjects
+    assert _git(
+        run,
+        repos.checkout,
+        "merge-base",
+        "--is-ancestor",
+        remote_sha,
+        "HEAD",
+        check=False,
+    ).returncode == 0
+    assert _git(run, repos.checkout, "rev-parse", "HEAD").stdout.strip() != old_origin_tip
+    _assert_dirty_state_and_no_stash(run, repos.checkout)
+    assert ["git", "rebase", "origin/main"] in recorded
+    assert not any(cmd[1:3] == ["reset", "--hard"] for cmd in recorded)
+    assert "Rebased 1 local commit(s) onto origin/main" in capsys.readouterr().out
+
+
+def test_real_update_rebase_conflict_aborts_and_restores_everything(
+    monkeypatch, tmp_path, capsys
+):
+    repos = _make_real_update_repo(tmp_path)
+    local_message = "local conflicting patch"
+    pre_update_head = _commit_file(
+        repos.run,
+        repos.checkout,
+        "conflict.txt",
+        "local version\n",
+        local_message,
+    )
+    _commit_file(
+        repos.run,
+        repos.upstream,
+        "conflict.txt",
+        "remote version\n",
+        "remote conflicting change",
+    )
+    _git(repos.run, repos.upstream, "push", "origin", "main")
+    _make_dirty(repos.checkout)
+
+    run, recorded = _prepare_real_cmd_update(monkeypatch, repos.checkout)
+    with pytest.raises(SystemExit, match="4"):
+        hermes_main.cmd_update(SimpleNamespace(yes=True))
+
+    output = capsys.readouterr().out
+    assert "fix:" in output
+    assert local_message in output
+    assert _git(run, repos.checkout, "rev-parse", "HEAD").stdout.strip() == pre_update_head
+    assert local_message in _git(
+        run, repos.checkout, "log", "--format=%s"
+    ).stdout.splitlines()
+    assert not (repos.checkout / ".git" / "rebase-merge").exists()
+    assert not (repos.checkout / ".git" / "rebase-apply").exists()
+    _assert_dirty_state_and_no_stash(run, repos.checkout)
+    assert ["git", "rebase", "--abort"] in recorded
+    assert not any(cmd[1:3] == ["reset", "--hard"] for cmd in recorded)
+
+
+def test_real_update_without_local_commits_fast_forwards(monkeypatch, tmp_path):
+    repos = _make_real_update_repo(tmp_path)
+    remote_sha = _commit_file(
+        repos.run, repos.upstream, "remote.txt", "remote advanced\n", "remote advance"
+    )
+    _git(repos.run, repos.upstream, "push", "origin", "main")
+    _make_dirty(repos.checkout)
+
+    run, recorded = _prepare_real_cmd_update(monkeypatch, repos.checkout)
+    with pytest.raises(_StopAfterGitSync):
+        hermes_main.cmd_update(SimpleNamespace(yes=True))
+
+    assert _git(run, repos.checkout, "rev-parse", "HEAD").stdout.strip() == remote_sha
+    _assert_dirty_state_and_no_stash(run, repos.checkout)
+    assert ["git", "merge", "--ff-only", "origin/main"] in recorded
+    assert not any(cmd[1:3] == ["reset", "--hard"] for cmd in recorded)
+
+
+def test_real_update_checks_target_main_when_another_branch_is_current(
+    monkeypatch, tmp_path
+):
+    repos = _make_real_update_repo(tmp_path)
+    local_message = "main-only permanent patch"
+    _commit_file(repos.run, repos.checkout, "local.txt", "local\n", local_message)
+    _git(repos.run, repos.checkout, "checkout", "-b", "side-branch")
+    remote_sha = _commit_file(
+        repos.run, repos.upstream, "remote.txt", "remote advanced\n", "remote advance"
+    )
+    _git(repos.run, repos.upstream, "push", "origin", "main")
+
+    run, recorded = _prepare_real_cmd_update(monkeypatch, repos.checkout)
+    with pytest.raises(_StopAfterGitSync):
+        hermes_main.cmd_update(SimpleNamespace(yes=True))
+
+    assert [
+        "git",
+        "rev-list",
+        "--reverse",
+        "origin/main..refs/heads/main",
+    ] in recorded
+    assert ["git", "rebase", "origin/main"] in recorded
+    assert local_message in _git(
+        run, repos.checkout, "log", "main", "--format=%s"
+    ).stdout.splitlines()
+    assert _git(
+        run,
+        repos.checkout,
+        "merge-base",
+        "--is-ancestor",
+        remote_sha,
+        "main",
+        check=False,
+    ).returncode == 0
+    assert not any(cmd[1:3] == ["reset", "--hard"] for cmd in recorded)
+
+
+def test_real_update_check_reports_local_only_commit_count(
+    monkeypatch, tmp_path, capsys
+):
+    repos = _make_real_update_repo(tmp_path)
+    _commit_file(
+        repos.run,
+        repos.checkout,
+        "local.txt",
+        "local\n",
+        "carried local patch",
+    )
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repos.checkout)
+    monkeypatch.setattr(hermes_config, "detect_install_method", lambda root: "git")
+    monkeypatch.setattr(
+        hermes_config, "is_unsupported_install_method", lambda method: False
+    )
+
+    hermes_main._cmd_update_check(branch="main")
+
+    output = capsys.readouterr().out
+    assert "Local-only: 1 commit on HEAD not in origin/main" in output
 
 
 # ---------------------------------------------------------------------------

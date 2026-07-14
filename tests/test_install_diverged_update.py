@@ -1,12 +1,9 @@
-"""Regression: installer/bootstrap must recover from diverged managed clones.
+"""Installer/bootstrap must refuse to destroy local-only commits.
 
-When ``~/.hermes/hermes-agent`` has local-only commits (or diverged history),
-``git pull --ff-only`` fails with exit 128 and bootstrap aborts at the
-repository stage. ``hermes update`` already resets to ``origin/$BRANCH`` in
-that case; both installer scripts must do the same.
-
-Fixes the bootstrap failure seen in #53257 and desktop update paths that run
-``install.ps1`` / ``install.sh`` non-interactively.
+Bootstrap paths retain a reset fallback for a branch proven to carry no local
+commits. A diverged managed checkout with carried commits must instead name
+those commits, print a literal ``fix:`` command, restore its autostash, and
+abort before reset is reachable.
 """
 
 from __future__ import annotations
@@ -22,7 +19,7 @@ INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 def _extract_install_sh_update_block() -> str:
     text = INSTALL_SH.read_text()
     match = re.search(
-        r"(?P<block>git checkout \"\$BRANCH\".*?fi\n\n            if \[ -n \"\$autostash_ref\" \])",
+        r"(?P<block>git fetch origin \"\$BRANCH\".*?fi\n\n            if \[ -n \"\$autostash_ref\" \])",
         text,
         re.DOTALL,
     )
@@ -32,36 +29,44 @@ def _extract_install_sh_update_block() -> str:
 
 def _extract_install_ps1_branch_update_block() -> str:
     text = INSTALL_PS1.read_text()
-    match = re.search(
-        r"(?P<block>git -c windows\.appendAtomically=false checkout \$Branch.*?elseif \(\$Tag\))",
-        text,
-        re.DOTALL,
-    )
-    assert match is not None, "branch update block not found in install.ps1"
-    return match["block"]
+    start = text.find("# Check the target branch even when another branch is")
+    end = text.find("# Default to restoring so work is never silently dropped.", start)
+    assert start != -1 and end != -1, "branch update block not found in install.ps1"
+    return text[start:end]
 
 
-def test_install_sh_resets_when_ff_only_pull_fails() -> None:
+def test_install_sh_aborts_with_fix_before_reset_for_local_commits() -> None:
     block = _extract_install_sh_update_block()
 
-    assert 'git pull --ff-only origin "$BRANCH"' in block
+    assert 'git rev-list --reverse "origin/$BRANCH..refs/heads/$BRANCH"' in block
+    assert 'git show -s --format=' in block
+    assert "fix: git -C $INSTALL_DIR rebase origin/$BRANCH" in block
+    assert "exit 4" in block
+    assert 'git stash apply "$autostash_ref"' in block
+    assert 'git merge --ff-only "origin/$BRANCH"' in block
     assert 'git reset --hard "origin/$BRANCH"' in block
-    assert "Fast-forward not possible" in block
 
-    pull_idx = block.find('git pull --ff-only origin "$BRANCH"')
+    guard_idx = block.find('git rev-list --reverse "origin/$BRANCH..refs/heads/$BRANCH"')
+    abort_idx = block.find("exit 4")
     reset_idx = block.find('git reset --hard "origin/$BRANCH"')
-    assert pull_idx != -1 and reset_idx != -1
-    assert pull_idx < reset_idx, "ff-only pull must be attempted before reset fallback"
+    assert guard_idx != -1 and abort_idx != -1 and reset_idx != -1
+    assert guard_idx < abort_idx < reset_idx
 
 
-def test_install_ps1_resets_when_ff_only_pull_fails() -> None:
+def test_install_ps1_aborts_with_fix_before_reset_for_local_commits() -> None:
     block = _extract_install_ps1_branch_update_block()
 
-    assert "pull --ff-only origin $Branch" in block
+    assert 'rev-list --reverse "origin/$Branch..refs/heads/$Branch"' in block
+    assert 'show -s --format="  • %h %s"' in block
+    assert "fix: git -C" in block
+    assert "rebase origin/$Branch" in block
+    assert "installer update refused to discard local-only commits" in block
+    assert "stash apply $autostashRef" in block
+    assert 'merge --ff-only "origin/$Branch"' in block
     assert 'reset --hard "origin/$Branch"' in block
-    assert "Fast-forward not possible" in block
 
-    pull_idx = block.find("pull --ff-only origin $Branch")
+    guard_idx = block.find('rev-list --reverse "origin/$Branch..refs/heads/$Branch"')
+    abort_idx = block.find("installer update refused to discard local-only commits")
     reset_idx = block.find('reset --hard "origin/$Branch"')
-    assert pull_idx != -1 and reset_idx != -1
-    assert pull_idx < reset_idx, "ff-only pull must be attempted before reset fallback"
+    assert guard_idx != -1 and abort_idx != -1 and reset_idx != -1
+    assert guard_idx < abort_idx < reset_idx

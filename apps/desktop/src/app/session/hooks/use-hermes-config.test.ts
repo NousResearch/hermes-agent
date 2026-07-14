@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
-import { $currentCwd, setCurrentCwd } from '@/store/session'
+import { $currentCwd, $resetModelOnNewSession, setCurrentCwd, setResetModelOnNewSession } from '@/store/session'
 
 import { useHermesConfig } from './use-hermes-config'
 
@@ -22,6 +22,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
     // Reset atoms and localStorage between tests
     setCurrentCwd('')
+    setResetModelOnNewSession(false)
     persistString(WORKSPACE_CWD_KEY, null)
   })
 
@@ -140,5 +141,40 @@ describe('useHermesConfig refreshHermesConfig', () => {
     })
 
     expect(refreshProjectBranch).toHaveBeenCalledWith('/workspace/attached-project')
+  })
+
+  it('mirrors desktop.reset_model_on_new_session=true into the store', async () => {
+    mockConfig({ desktop: { reset_model_on_new_session: true } })
+
+    const { result } = renderHook(() =>
+      useHermesConfig({
+        activeSessionIdRef: { current: null },
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
+    )
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($resetModelOnNewSession.get()).toBe(true)
+  })
+
+  it('defaults the reset-model flag to false when the config key is absent', async () => {
+    setResetModelOnNewSession(true) // prove the refresh clears a stale true
+    mockConfig({})
+
+    const { result } = renderHook(() =>
+      useHermesConfig({
+        activeSessionIdRef: { current: null },
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
+    )
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($resetModelOnNewSession.get()).toBe(false)
   })
 })

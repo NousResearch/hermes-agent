@@ -11,7 +11,8 @@ import {
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
-  setIntroPersonality
+  setIntroPersonality,
+  setResetModelOnNewSession
 } from '@/store/session'
 import { applyAutoSpeakFromConfig } from '@/store/voice-prefs'
 
@@ -87,6 +88,7 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
+      setResetModelOnNewSession(config.desktop?.reset_model_on_new_session === true)
       applyAutoSpeakFromConfig(config)
     } catch {
       // Config is nice-to-have; chat still works without it.

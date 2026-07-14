@@ -220,6 +220,12 @@ export interface HermesConfig {
     max_recording_seconds?: number
     auto_tts?: boolean
   }
+  desktop?: {
+    // When true, a fresh chat (Cmd+N / app relaunch) reseeds the composer model
+    // to the profile default instead of carrying the last-picked model forward.
+    // Default false preserves the sticky-last-pick behavior.
+    reset_model_on_new_session?: boolean
+  }
 }
 
 export type HermesConfigRecord = Record<string, unknown>

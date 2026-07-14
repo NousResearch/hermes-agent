@@ -1017,8 +1017,11 @@ export function DesktopController() {
 
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
-      void refreshCurrentModel()
-      void refreshHermesConfig()
+      // Load config first so the reset-on-new-session flag is in the store
+      // before refreshCurrentModel decides whether to force-reseed the model.
+      void refreshHermesConfig().finally(() => {
+        void refreshCurrentModel()
+      })
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])
 

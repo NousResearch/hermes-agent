@@ -265,6 +265,11 @@ export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
+// Mirror of config.yaml `desktop.reset_model_on_new_session` (default false).
+// When true, a fresh chat reseeds the composer model to the profile default
+// instead of carrying the last-picked model forward. Refreshed from backend
+// config by useHermesConfig; a plain reflection, not its own persisted state.
+export const $resetModelOnNewSession = atom(false)
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -330,6 +335,9 @@ export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
   persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
 }
+
+export const setResetModelOnNewSession = (next: Updater<boolean>) =>
+  updateAtom($resetModelOnNewSession, next)
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 

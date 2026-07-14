@@ -4,7 +4,7 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import { $activeSessionId, $currentModel, $currentProvider, $resetModelOnNewSession, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -40,19 +40,26 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
+  //
+  // When config.yaml `desktop.reset_model_on_new_session` is on, a fresh draft
+  // is treated as a forced reseed too: the sticky last-picked model is
+  // overwritten with the profile default so a new chat always starts on the
+  // default (opt-in; default off preserves the sticky behavior).
   const refreshCurrentModel = useCallback(async (force = false) => {
     try {
       if ($activeSessionId.get()) {
         return
       }
 
-      if (!force && $currentModel.get()) {
+      const effectiveForce = force || $resetModelOnNewSession.get()
+
+      if (!effectiveForce && $currentModel.get()) {
         return
       }
 
       const result = await getGlobalModelInfo()
 
-      if ($activeSessionId.get() || (!force && $currentModel.get())) {
+      if ($activeSessionId.get() || (!effectiveForce && $currentModel.get())) {
         return
       }
 

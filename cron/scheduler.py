@@ -3093,16 +3093,28 @@ def run_job(
         # Back-compat: an axis with no snapshot (pre-existing jobs, no_agent, or
         # any axis whose creation-time resolution failed) behaves exactly as
         # before — the guard never engages for it. Pinned axes are unaffected.
+        # ``inherit_model_config`` is an explicit opt-in to this drift. It is
+        # deliberately distinct from legacy unpinned jobs, which retain the
+        # fail-closed spend protection above.
+        _allow_inherited_drift = bool(job.get("inherit_model_config"))
         _drift: list[str] = []
         _provider_snapshot = (job.get("provider_snapshot") or "").strip().lower()
-        if _provider_snapshot and not (job.get("provider") or "").strip():
+        if (
+            not _allow_inherited_drift
+            and _provider_snapshot
+            and not (job.get("provider") or "").strip()
+        ):
             _current_provider = str(runtime.get("provider") or "").strip().lower()
             if _current_provider and _current_provider != _provider_snapshot:
                 _drift.append(
                     f"provider '{_provider_snapshot}' -> '{_current_provider}'"
                 )
         _model_snapshot = (job.get("model_snapshot") or "").strip().lower()
-        if _model_snapshot and not (job.get("model") or "").strip():
+        if (
+            not _allow_inherited_drift
+            and _model_snapshot
+            and not (job.get("model") or "").strip()
+        ):
             _current_model = str(model or "").strip().lower()
             if _current_model and _current_model != _model_snapshot:
                 _drift.append(

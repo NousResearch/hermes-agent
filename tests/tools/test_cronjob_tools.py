@@ -264,6 +264,91 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_inherit_mode_tracks_profile_without_snapshots(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                inherit_model_config=True,
+            )
+        )
+
+        assert created["success"] is True
+        assert created["job"]["inherit_model_config"] is True
+        from cron.jobs import get_job
+
+        stored = get_job(created["job_id"])
+        assert stored["provider"] is None
+        assert stored["model"] is None
+        assert stored["base_url"] is None
+        assert stored["provider_snapshot"] is None
+        assert stored["model_snapshot"] is None
+
+    def test_enabling_inherit_mode_atomically_clears_overrides(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                provider="custom",
+                model="qwen3",
+                base_url="http://localhost:11434/v1",
+            )
+        )
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                inherit_model_config=True,
+            )
+        )
+
+        assert updated["success"] is True
+        assert updated["job"]["inherit_model_config"] is True
+        assert updated["job"]["provider"] is None
+        assert updated["job"]["model"] is None
+        assert updated["job"]["base_url"] is None
+
+    def test_explicit_override_disables_inherit_mode(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                inherit_model_config=True,
+            )
+        )
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                provider="openrouter",
+                model="openai/gpt-5",
+            )
+        )
+
+        assert updated["success"] is True
+        assert updated["job"]["inherit_model_config"] is False
+        assert updated["job"]["provider"] == "openrouter"
+        assert updated["job"]["model"] == "openai/gpt-5"
+
+    def test_inherit_mode_rejects_simultaneous_override(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                inherit_model_config=True,
+                model="openai/gpt-5",
+            )
+        )
+
+        assert result["success"] is False
+        assert "cannot be combined" in result["error"]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 
@@ -579,6 +664,45 @@ class TestResolveModelOverride:
         assert provider == "custom:cliproxy"
         assert model == "gpt-5.4"
 
+    def test_agent_model_override_forwards_local_endpoint(self, monkeypatch):
+        """The nested model contract must not drop Ollama's routing URL."""
+        from tools.cronjob_tools import registry
+
+        captured = {}
+
+        def fake_cronjob(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True})
+
+        monkeypatch.setattr("tools.cronjob_tools.cronjob", fake_cronjob)
+        entry = registry.get_entry("cronjob")
+        assert entry is not None
+
+        result = json.loads(
+            entry.handler(
+                {
+                    "action": "create",
+                    "model": {
+                        "provider": "ollama",
+                        "model": "qwen3",
+                        "base_url": "http://localhost:11434/v1/",
+                    },
+                }
+            )
+        )
+
+        assert result["success"] is True
+        assert captured["provider"] == "ollama"
+        assert captured["model"] == "qwen3"
+        assert captured["base_url"] == "http://localhost:11434/v1/"
+
+    def test_schema_exposes_inherit_mode_and_override_endpoint(self):
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+
+        properties = CRONJOB_SCHEMA["parameters"]["properties"]
+        assert properties["inherit_model_config"]["type"] == "boolean"
+        assert properties["model"]["properties"]["base_url"]["type"] == "string"
+
 
 class TestLocalDeliveryNotice:
     """#51568 — TUI/CLI cron jobs are local-only; surface that at create time
@@ -694,6 +818,9 @@ class TestValidateCronBaseUrl:
     def test_bare_custom_allows_any_base_url(self):
         # Bare 'custom' is inline/host-derived BYOK — no stored secret to leak.
         assert self._v("custom", "https://anything.example/v1") is None
+
+    def test_local_provider_alias_allows_its_explicit_endpoint(self):
+        assert self._v("ollama", "http://localhost:11434/v1") is None
 
     def test_no_base_url_is_allowed(self):
         assert self._v("custom:legit", None) is None

@@ -22,7 +22,7 @@ Cron jobs can:
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::tip
-At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To deliberately track profile changes instead, create or update the job with `inherit_model_config=true`; this explicit opt-in reloads the active profile's provider, model, endpoint, and credentials on every run. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
 :::warning
@@ -588,6 +588,23 @@ cronjob(action="run", job_id="...")
 cronjob(action="remove", job_id="...")
 ```
 
+Choose exactly one inference mode for an agent-backed job:
+
+```python
+# Follow changes to the active profile, including rotated credentials.
+cronjob(action="create", prompt="...", schedule="every 1h",
+        inherit_model_config=True)
+
+# Pin a different provider/model/endpoint for this job.
+cronjob(action="create", prompt="...", schedule="every 1h",
+        model={"provider": "ollama", "model": "qwen3",
+               "base_url": "http://localhost:11434/v1"})
+```
+
+Inheritance and explicit overrides are mutually exclusive. Enabling inheritance
+on an existing job clears its stored `provider`, `model`, and `base_url`
+overrides atomically; setting an override later disables inheritance.
+
 For `update`, pass `skills=[]` to remove all attached skills.
 
 ## Toolsets available to cron jobs
@@ -736,7 +753,7 @@ Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to 
 Ask the agent to manage jobs through the `cronjob` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.
 :::
 
-Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
+Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. By default, creation-time snapshots still stop a later provider/model change from silently changing spend. Jobs with `inherit_model_config: true` explicitly accept that drift and always use the current profile configuration. Explicit per-job overrides are stored directly instead.
 
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 

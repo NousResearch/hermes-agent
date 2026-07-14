@@ -987,6 +987,7 @@ def _compute_provider_model_snapshots(
     model: Any,
     base_url: Any,
     no_agent: Any,
+    inherit_model_config: Any = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Snapshot unpinned inference axes for the provider/model drift guard.
 
@@ -1001,7 +1002,7 @@ def _compute_provider_model_snapshots(
         base_url,
         strip_trailing_slash=True,
     )
-    if bool(no_agent):
+    if bool(no_agent) or bool(inherit_model_config):
         return None, None
 
     provider_snapshot: Optional[str] = None
@@ -1026,13 +1027,16 @@ def _compute_provider_model_snapshots(
     return provider_snapshot, model_snapshot
 
 
-def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
+def _normalized_inference_axes(
+    job: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Optional[str], bool, bool]:
     """Return the stored inference-routing fields in their semantic form."""
     return (
         _normalize_job_optional_text(job.get("provider")),
         _normalize_job_optional_text(job.get("model")),
         _normalize_job_optional_text(job.get("base_url"), strip_trailing_slash=True),
         bool(job.get("no_agent")),
+        bool(job.get("inherit_model_config")),
     )
 
 
@@ -1048,6 +1052,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    inherit_model_config: bool = False,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
@@ -1071,6 +1076,9 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        inherit_model_config: When True, deliberately follow the active
+                profile's provider, model, endpoint, and credentials at every
+                run. Explicit inference overrides must be omitted.
         script: Optional path to a script whose stdout feeds the job. With
                 ``no_agent=True`` the script IS the job — its stdout is
                 delivered verbatim. Without ``no_agent``, its stdout is
@@ -1123,6 +1131,7 @@ def create_job(
     normalized_model = _normalize_job_optional_text(model)
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_base_url = _normalize_job_optional_text(base_url, strip_trailing_slash=True)
+    normalized_inherit_model_config = bool(inherit_model_config)
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
@@ -1138,6 +1147,15 @@ def create_job(
         raise ValueError(
             "no_agent=True requires a script — with no agent and no script "
             "there is nothing for the job to run."
+        )
+
+    if normalized_inherit_model_config and any(
+        value is not None
+        for value in (normalized_provider, normalized_model, normalized_base_url)
+    ):
+        raise ValueError(
+            "inherit_model_config=True cannot be combined with provider, model, "
+            "or base_url overrides"
         )
 
     # Normalize context_from: accept str or list of str, store as list or None
@@ -1165,6 +1183,7 @@ def create_job(
         model=normalized_model,
         base_url=normalized_base_url,
         no_agent=normalized_no_agent,
+        inherit_model_config=normalized_inherit_model_config,
     )
 
     next_run_at = compute_next_run(parsed_schedule)
@@ -1195,6 +1214,7 @@ def create_job(
         "provider_snapshot": provider_snapshot,
         "model_snapshot": model_snapshot,
         "base_url": normalized_base_url,
+        "inherit_model_config": normalized_inherit_model_config,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
         "context_from": context_from,
@@ -1319,7 +1339,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
-                {"provider", "model", "base_url", "no_agent"}.intersection(updates)
+                {
+                    "provider",
+                    "model",
+                    "base_url",
+                    "no_agent",
+                    "inherit_model_config",
+                }.intersection(updates)
             ) and _normalized_inference_axes(updated) != previous_inference_axes
 
             if "skills" in updates or "skill" in updates:
@@ -1370,6 +1396,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     model=updated.get("model"),
                     base_url=updated.get("base_url"),
                     no_agent=updated.get("no_agent"),
+                    inherit_model_config=updated.get("inherit_model_config"),
                 )
                 updated["provider_snapshot"] = provider_snapshot
                 updated["model_snapshot"] = model_snapshot

@@ -123,6 +123,22 @@ def check_skills_requirements() -> bool:
     return True  # always available: the directory is created on first use
 
 
+def _extract_conditions(frontmatter: Dict[str, Any]) -> Dict[str, list]:
+    """Extract conditional activation fields from parsed frontmatter."""
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    hermes = metadata.get("hermes") or {}
+    if not isinstance(hermes, dict):
+        hermes = {}
+    return {
+        "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
+        "requires_toolsets": hermes.get("requires_toolsets", []),
+        "fallback_for_tools": hermes.get("fallback_for_tools", []),
+        "requires_tools": hermes.get("requires_tools", []),
+    }
+
+
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
     (respects test monkeypatching), then skills.external_dirs."""
@@ -214,8 +230,13 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
+                # Conditional-activation fields ride along so callers (e.g.
+                # `skills list --enabled-only`) can apply the same gate the
+                # system-prompt builder uses.
+                conditions = _extract_conditions(frontmatter)
                 skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                               "category": _get_category_from_path(skill_md),
+                               "conditions": conditions})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:

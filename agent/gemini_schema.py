@@ -87,6 +87,26 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
         if any(not isinstance(item, str) for item in enum_val):
             cleaned.pop("enum", None)
 
+    # Gemini's Schema validator enforces that ``items`` (and the array-only
+    # ``minItems`` / ``maxItems`` constraints) may appear ONLY when ``type`` is
+    # ``ARRAY``.  Some MCP tool schemas are sloppy here -- e.g. ClickUp's
+    # ``clickup_filter_tasks`` declares a polymorphic ``value`` field as
+    # ``{type: "string", items: {type: "string"}, ...}`` to hint that the RANGE
+    # operator also accepts a two-element array.  OpenAI / Anthropic ignore the
+    # contradiction; Gemini rejects the ENTIRE tool catalog with HTTP 400
+    # INVALID_ARGUMENT ("field predicate failed: $type == Type.ARRAY"), so every
+    # request dies.  When ``type`` is an explicit non-array scalar, trust the
+    # scalar and drop the array-only keys -- the description still documents the
+    # array case.  When ``items`` is present but ``type`` is absent, the field is
+    # really an array that forgot to declare itself, so pin ``type: "array"``.
+    if "items" in cleaned and type_val != "array":
+        if type_val is None:
+            cleaned["type"] = "array"
+        else:
+            cleaned.pop("items", None)
+            cleaned.pop("minItems", None)
+            cleaned.pop("maxItems", None)
+
     return cleaned
 
 

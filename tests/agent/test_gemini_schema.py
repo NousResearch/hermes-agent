@@ -107,6 +107,86 @@ class TestSanitizeGeminiSchema:
         assert sanitize_gemini_schema("not a schema") == {}
         assert sanitize_gemini_schema([1, 2, 3]) == {}
 
+    def test_drops_items_on_non_array_scalar(self):
+        """Gemini: ``items`` is legal only when ``type == array``.
+
+        Regression for ClickUp's ``clickup_filter_tasks``: its ``value`` field
+        ships ``{type: string, items: {type: string}, description: ...}`` and
+        triggered Gemini HTTP 400 INVALID_ARGUMENT
+        "field predicate failed: $type == Type.ARRAY", rejecting the whole
+        tool catalog on every request.
+        """
+        schema = {
+            "type": "string",
+            "items": {"type": "string"},
+            "description": "Value; for RANGE provide an array of two strings.",
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["type"] == "string"
+        assert "items" not in cleaned
+        # description survives so the model still learns about the array case
+        assert "RANGE" in cleaned["description"]
+
+    def test_drops_array_only_constraints_on_non_array(self):
+        """minItems / maxItems share the array-only predicate."""
+        schema = {
+            "type": "string",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 2,
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert "items" not in cleaned
+        assert "minItems" not in cleaned
+        assert "maxItems" not in cleaned
+
+    def test_keeps_items_on_real_array(self):
+        """A legitimate array schema must keep its ``items``."""
+        schema = {"type": "array", "items": {"type": "string"}}
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["type"] == "array"
+        assert cleaned["items"] == {"type": "string"}
+
+    def test_pins_array_type_when_items_present_without_type(self):
+        """``items`` with no ``type`` is an array that forgot to say so."""
+        schema = {"items": {"type": "string"}, "description": "tags"}
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["type"] == "array"
+        assert cleaned["items"] == {"type": "string"}
+
+    def test_clickup_filter_tasks_value_no_longer_trips_gemini(self):
+        """End-to-end: the exact ``custom_fields`` shape rejected in prod."""
+        params = {
+            "type": "object",
+            "properties": {
+                "custom_fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field_id": {"type": "string"},
+                            "operator": {"type": "string"},
+                            "value": {
+                                "type": "string",
+                                "items": {"type": "string"},
+                                "description": "Value; RANGE takes two strings.",
+                            },
+                        },
+                        "required": ["field_id", "operator"],
+                    },
+                },
+            },
+        }
+        cleaned = sanitize_gemini_tool_parameters(params)
+        value = cleaned["properties"]["custom_fields"]["items"]["properties"][
+            "value"
+        ]
+        assert value["type"] == "string"
+        assert "items" not in value
+        # The outer custom_fields array keeps its items (it really is an array).
+        assert cleaned["properties"]["custom_fields"]["type"] == "array"
+        assert "items" in cleaned["properties"]["custom_fields"]
+
 
 class TestSanitizeGeminiToolParameters:
     def test_empty_parameters_return_valid_object_schema(self):

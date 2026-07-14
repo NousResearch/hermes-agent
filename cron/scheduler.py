@@ -3063,9 +3063,9 @@ def run_job(
             )
 
         fallback_model = get_fallback_chain(_cfg) or None
-        credential_pool = None
+        credential_pool = runtime.get("credential_pool")
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
-        if runtime_provider:
+        if credential_pool is None and runtime_provider:
             try:
                 from agent.credential_pool import load_pool
                 pool = load_pool(runtime_provider)

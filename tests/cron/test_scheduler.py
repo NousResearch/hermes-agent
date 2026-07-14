@@ -2032,6 +2032,51 @@ class TestRunJobConfigEnvVarExpansion:
         models = [e.get("model") for e in fb if isinstance(e, dict)]
         assert models == ["gpt-4o-mini", "claude-sonnet-4-6"]
 
+    def test_fallback_runtime_preserves_resolved_credential_pool(self, tmp_path, monkeypatch):
+        """Cron must not discard a custom fallback runtime's resolved credential pool."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    base_url: https://fallback.example/v1\n"
+            "    model: fallback-model\n"
+        )
+
+        job = {"id": "custom-fb-pool", "name": "custom fallback", "prompt": "hi"}
+        fake_db = MagicMock()
+        fallback_pool = MagicMock()
+        fallback_runtime = {
+            "api_key": "fallback-key",
+            "base_url": "https://fallback.example/v1",
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "credential_pool": fallback_pool,
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 side_effect=[
+                     AuthError("primary unavailable", provider="openrouter"),
+                     fallback_runtime,
+                 ],
+             ), \
+             patch("agent.credential_pool.load_pool") as load_pool, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        load_pool.assert_not_called()
+        assert mock_agent_cls.call_args.kwargs["credential_pool"] is fallback_pool
+
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")

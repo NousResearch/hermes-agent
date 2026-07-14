@@ -2927,17 +2927,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=False,
                             diag=request_client_holder.get("diag"),
                         )
-                        agent._buffer_status(
-                            "❌ Provider returned malformed streaming data after "
-                            f"{_max_stream_retries + 1} attempts. "
-                            "The provider may be experiencing issues — "
-                            "try again in a moment."
-                            if _is_stream_parse_err else
-                            "❌ Connection to provider failed after "
-                            f"{_max_stream_retries + 1} attempts. "
-                            "The provider may be experiencing issues — "
-                            "try again in a moment."
-                        )
+                        if _is_stream_parse_err:
+                            _exhausted_msg = (
+                                "❌ Provider returned malformed streaming data after "
+                                f"{_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        elif _is_empty_stream:
+                            # The connection SUCCEEDED (stream opened) but the
+                            # provider sent no chunks — saying "connection
+                            # failed" here sends users chasing network issues
+                            # when the problem is the provider/endpoint.
+                            _exhausted_msg = (
+                                "❌ Provider returned an empty response stream "
+                                f"after {_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        else:
+                            _exhausted_msg = (
+                                "❌ Connection to provider failed after "
+                                f"{_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        agent._buffer_status(_exhausted_msg)
                     else:
                         _err_lower = str(e).lower()
                         _is_stream_unsupported = (

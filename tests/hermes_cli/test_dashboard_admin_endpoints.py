@@ -94,9 +94,31 @@ class TestMcpEndpoints:
         body = r.json()
         assert "entries" in body and "diagnostics" in body
         # The shipped optional-mcps/ catalog has at least one entry; each must
-        # carry the install/enabled status fields the UI relies on.
+        # carry the install/enabled status fields plus the inspection detail
+        # the dashboard renders (transport target, install source, guidance) so
+        # users can vet an entry before installing.
         for e in body["entries"]:
-            assert {"name", "transport", "installed", "enabled", "needs_install"} <= set(e)
+            assert {
+                "name",
+                "transport",
+                "auth_type",
+                "installed",
+                "enabled",
+                "needs_install",
+                "command",
+                "args",
+                "url",
+                "install_url",
+                "install_ref",
+                "bootstrap",
+                "default_enabled",
+                "post_install",
+            } <= set(e)
+            # http entries expose a url; stdio entries expose a command.
+            if e["transport"] == "http":
+                assert e["url"]
+            elif e["transport"] == "stdio":
+                assert e["command"]
 
     def test_catalog_install_unknown_404(self):
         r = self.client.post("/api/mcp/catalog/install", json={"name": "no-such-mcp-xyz"})
@@ -201,6 +223,30 @@ class TestWebhookEndpoints:
         r = self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"})
         assert r.status_code == 400
 
+    def test_create_webhook_persists_script(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("platforms", {})["webhook"] = {
+            "enabled": True,
+            "extra": {"host": "0.0.0.0", "port": 8644},
+        }
+        save_config(cfg)
+
+        r = self.client.post(
+            "/api/webhooks",
+            json={
+                "name": "todoist",
+                "deliver": "log",
+                "script": "todoist_filter.py",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["script"] == "todoist_filter.py"
+
+        subs = self.client.get("/api/webhooks").json()["subscriptions"]
+        assert subs[0]["script"] == "todoist_filter.py"
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
@@ -291,6 +337,60 @@ class TestOpsEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
+
+    def test_backup_output_uses_output_flag(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+
+        def fake_spawn_action(subcommand, name):
+            captured["subcommand"] = subcommand
+            captured["name"] = name
+            return FakeProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        r = self.client.post(
+            "/api/ops/backup",
+            json={"output": "  /tmp/hermes-test.zip  "},
+        )
+
+        assert r.status_code == 200
+        assert captured == {
+            "subcommand": ["backup", "-o", "/tmp/hermes-test.zip"],
+            "name": "backup",
+        }
+
+    def test_backup_blank_output_uses_default_archive(self, monkeypatch):
+        from pathlib import Path
+
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import get_hermes_home
+
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+
+        def fake_spawn_action(subcommand, name):
+            captured["subcommand"] = subcommand
+            captured["name"] = name
+            return FakeProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        r = self.client.post("/api/ops/backup", json={"output": "   "})
+
+        assert r.status_code == 200
+        archive = Path(r.json()["archive"])
+        assert captured == {
+            "subcommand": ["backup", "-o", str(archive)],
+            "name": "backup",
+        }
+        assert archive.parent == get_hermes_home() / "backups"
 
     def test_hooks_list_reads_config(self):
         from hermes_cli.config import load_config, save_config
@@ -429,6 +529,36 @@ class TestSessionManagementEndpoints:
         assert self.client.post(
             "/api/sessions/prune", json={"older_than_days": 0}
         ).status_code == 400
+
+    def test_prune_attr_filter_suppresses_default_cutoff(self):
+        # An attribute filter without an explicit older_than_days matches all
+        # ages (mirrors the CLI: any filter disables the implicit 90-day
+        # default). dry_run so nothing is deleted; the seeded session is
+        # recent + ended, so it would be invisible under a 90-day cutoff.
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.create_session(session_id="sess-recent-ended", source="cli")
+        db.end_session("sess-recent-ended", "completed")
+        db.close()
+
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"source": "cli", "dry_run": True},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["matched"] >= 1
+        assert "oldest_started_at" in body and "newest_started_at" in body
+
+    def test_prune_explicit_older_than_kept_with_attr_filter(self):
+        # Explicit older_than_days is honored even alongside attribute filters.
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"source": "cli", "older_than_days": 9999, "dry_run": True},
+        )
+        assert r.status_code == 200
+        assert r.json()["matched"] == 0
 
 
 class TestSkillsHubSearchEndpoint:

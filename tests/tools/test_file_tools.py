@@ -92,6 +92,33 @@ class TestWriteFileHandler:
         assert not any(r.levelno >= logging.ERROR for r in caplog.records)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_rejects_read_file_line_numbered_content(self, mock_get):
+        """#19798 — do not persist read_file's LINE_NUM|CONTENT display format."""
+        from tools.file_tools import write_file_tool
+
+        content = " 1|setting: new_value\n 2|other: thing\n"
+        result = json.loads(write_file_tool("/tmp/config.yaml", content))
+
+        assert "error" in result
+        assert "line-number" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_allows_sparse_literal_pipe_content(self, mock_get):
+        """A single literal N| line should not be treated as read_file output."""
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/out.txt", "bytes": 21}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("/tmp/out.txt", "1|literal value\nplain line\n"))
+
+        assert result["status"] == "ok"
+        mock_ops.write_file.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
     def test_unexpected_exception_still_logs_error(self, mock_get, caplog):
         mock_get.side_effect = RuntimeError("boom")
 
@@ -248,6 +275,104 @@ class TestPatchHandler:
         assert "traversal" in result["error"].lower()
 
 
+class TestPatchSensitivePathExtraction:
+    """Regression tests for patch_tool sensitive-path extraction.
+
+    The sensitive path check relies on a regex that parses V4A patch
+    headers. These tests cover:
+
+    1. ``*** Move File:`` operations (previously missed — the regex only
+       matched Update/Add/Delete, so Move could target /etc/* without
+       hitting the check).
+    2. ``***Keyword File:`` with no space after ``***`` (previously missed —
+       the regex required ``\\s+`` even though patch_parser accepts ``\\s*``).
+    3. ``..`` traversal in Move headers (the Move endpoints run through the
+       same traversal rejection as the other V4A headers).
+    """
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_to_sensitive_dst_blocked(self, mock_get):
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/work.txt -> /etc/crontab\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_from_sensitive_src_blocked(self, mock_get):
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /etc/hosts -> /tmp/leak.txt\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_update_no_space_after_asterisks_blocked(self, mock_get):
+        """``***Update File:`` (no space after asterisks) must also be caught.
+
+        patch_parser.py accepts this form (``\\s*`` in its regex), so the
+        sensitive path check must be at least as lenient or the check
+        is bypassed.
+        """
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "***Update File: /etc/resolv.conf\n"
+            "@@ @@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_rejects_traversal_endpoint(self, mock_get):
+        """A Move endpoint with ``..`` traversal is rejected, same as the
+        Update/Add/Delete headers."""
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/work.txt -> ../../../etc/shadow\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_safe_paths_not_blocked(self, mock_get):
+        """Safe Move operations should still reach the file_ops dispatch."""
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.patch_v4a.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/a.txt -> /tmp/b.txt\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" not in result
+        mock_ops.patch_v4a.assert_called_once()
+
+
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_search_calls_file_ops(self, mock_get):
@@ -300,6 +425,69 @@ class TestSearchHandler:
         from tools.file_tools import search_tool
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Windows MSYS path resolution (salvage of #50488 / #46995)
+# ---------------------------------------------------------------------------
+
+class TestWindowsMsysPathResolution:
+    """File tools must translate Git Bash drive paths before Path resolution."""
+
+    def test_absolute_msys_path_normalized_before_windows_resolve(self, monkeypatch):
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
+
+        resolved = file_tools._resolve_path_for_task("/c/Users/Mark/project/app.py")
+        assert str(resolved) == r"C:\Users\Mark\project\app.py"
+
+    def test_cygdrive_path_normalized(self, monkeypatch):
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
+
+        resolved = file_tools._resolve_path_for_task("/cygdrive/d/code/main.py")
+        assert str(resolved) == r"D:\code\main.py"
+
+    def test_relative_path_uses_normalized_msys_cwd(self, monkeypatch):
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
+        monkeypatch.setattr(
+            file_tools,
+            "_authoritative_workspace_root",
+            lambda task_id="default": "/c/Users/Mark/project",
+        )
+
+        resolved = file_tools._resolve_path_for_task("src/app.py", task_id="msys")
+        assert str(resolved) == r"C:\Users\Mark\project\src\app.py"
+
+    def test_container_paths_skip_msys_translation(self, monkeypatch):
+        """WSL/docker Linux paths must not be rewritten as Windows drives."""
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": True)
+        monkeypatch.setattr(
+            file_tools,
+            "_authoritative_workspace_root",
+            lambda task_id="default": "/home/don/project",
+        )
+
+        resolved = file_tools._resolve_path_for_task("/home/don/.env")
+        assert str(resolved) == "/home/don/.env"
 
 
 # ---------------------------------------------------------------------------
@@ -486,3 +674,243 @@ class TestPatchSchemaShape:
         params = PATCH_SCHEMA["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
+
+
+# ---------------------------------------------------------------------------
+# _last_known_cwd tests (#26211: silent file creation failure in long conversations)
+# ---------------------------------------------------------------------------
+
+class TestLastKnownCwd:
+    """
+    When the terminal environment is cleaned up and re-created during a long
+    conversation, _last_known_cwd preserves the old environment's CWD so
+    subsequent file writes with relative paths land in the right directory.
+
+    Regression guard for issue #26211.
+    """
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    @patch("tools.file_tools._file_ops_cache", new_callable=dict)
+    @patch("tools.terminal_tool._get_env_config")
+    @patch("tools.terminal_tool._create_environment")
+    def test_last_known_cwd_preserved_across_env_recreation(
+        self, mock_create_env, mock_config, mock_cache, mock_active
+    ):
+        from tools.file_tools import _get_file_ops, _last_known_cwd
+
+        # Setup: create a mock env with a known CWD
+        mock_env = MagicMock()
+        mock_env.cwd = "/Users/user/project"
+        mock_create_env.return_value = mock_env
+        mock_config.return_value = {
+            "env_type": "local",
+            "cwd": "/default/path",
+            "timeout": 30,
+        }
+
+        task_id = "default"
+
+        # Preset _last_known_cwd to simulate a previous env's CWD
+        _last_known_cwd[task_id] = "/Users/user/project"
+
+        # Call _get_file_ops - should use _last_known_cwd for the new env
+        result = _get_file_ops(task_id)
+
+        # Verify the env was created with the saved CWD, not the default
+        create_call = mock_create_env.call_args
+        assert create_call is not None, "_create_environment was not called"
+        
+        # Find cwd in the kwargs
+        kwargs = create_call.kwargs if create_call.kwargs else {}
+        # cwd is passed as positional or keyword
+        cwd_passed = kwargs.get("cwd", None)
+        if cwd_passed is None:
+            # Try positional args
+            args = create_call.args if create_call.args else []
+            # Position: (env_type, image, cwd, timeout, ...)
+            if len(args) >= 3:
+                cwd_passed = args[2]
+        
+        assert cwd_passed == "/Users/user/project", \
+            f"Expected cwd='/Users/user/project', got {cwd_passed!r}"
+        
+        # Cleanup
+        _last_known_cwd.pop(task_id, None)
+        
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    @patch("tools.file_tools._file_ops_cache", new_callable=dict)
+    @patch("tools.terminal_tool._get_env_config")
+    @patch("tools.terminal_tool._create_environment")
+    def test_last_known_cwd_falls_back_to_config_default_when_not_set(
+        self, mock_create_env, mock_config, mock_cache, mock_active
+    ):
+        from tools.file_tools import _get_file_ops, _last_known_cwd
+
+        mock_env = MagicMock()
+        mock_env.cwd = "/default/path"
+        mock_create_env.return_value = mock_env
+        mock_config.return_value = {
+            "env_type": "local",
+            "cwd": "/config/default/path",
+            "timeout": 30,
+        }
+
+        # _get_file_ops resolves to "default"
+        task_id = "default"
+        
+        # Ensure _last_known_cwd is empty for this task
+        _last_known_cwd.pop(task_id, None)
+
+        result = _get_file_ops(task_id)
+        
+        create_call = mock_create_env.call_args
+        assert create_call is not None, "_create_environment was not called"
+        
+        kwargs = create_call.kwargs if create_call.kwargs else {}
+        cwd_passed = kwargs.get("cwd", None)
+        if cwd_passed is None:
+            args = create_call.args if create_call.args else []
+            if len(args) >= 3:
+                cwd_passed = args[2]
+        
+        # Should fall back to config default
+        assert cwd_passed == "/config/default/path", \
+            f"Expected cwd='/config/default/path', got {cwd_passed!r}"
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    @patch("tools.file_tools._file_ops_cache", new_callable=dict)
+    def test_live_cwd_read_mirrors_into_last_known_cwd(self, mock_cache, mock_active):
+        """Belt-and-suspenders (#26211): every successful live-cwd read records
+        the cwd in _last_known_cwd, so the durable anchor doesn't depend on the
+        cleanup-detection branch of _get_file_ops firing."""
+        from tools.file_tools import _get_live_tracking_cwd, _last_known_cwd
+
+        task_id = "default"
+        _last_known_cwd.pop(task_id, None)
+
+        cached = MagicMock()
+        cached.env = MagicMock()
+        cached.env.cwd = "/Users/user/project"
+        cached.env.cwd_owner = "default"
+        mock_cache[task_id] = cached
+
+        live = _get_live_tracking_cwd(task_id)
+
+        assert live == "/Users/user/project"
+        # The read mirrored the live cwd into the durable registry.
+        assert _last_known_cwd.get(task_id) == "/Users/user/project"
+        _last_known_cwd.pop(task_id, None)
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    @patch("tools.file_tools._file_ops_cache", new_callable=dict)
+    @patch("tools.terminal_tool._get_env_config")
+    @patch("tools.terminal_tool._create_environment")
+    def test_mirrored_cwd_survives_when_cache_already_cleared(
+        self, mock_create_env, mock_config, mock_cache, mock_active
+    ):
+        """The original save-old-cwd path only fires when _file_ops_cache still
+        holds the stale entry. If the cleanup thread popped BOTH dicts first,
+        _get_file_ops sees cached=None and never saves — but the proactive
+        mirror from an earlier live read already populated _last_known_cwd, so
+        the rebuilt env still restores the user's directory."""
+        from tools.file_tools import (
+            _get_file_ops, _get_live_tracking_cwd, _last_known_cwd,
+        )
+
+        task_id = "default"
+        _last_known_cwd.pop(task_id, None)
+
+        # 1) Env is alive and the agent has cd'd into the project. A live read
+        #    (happens on every relative-path resolution) mirrors the cwd.
+        cached = MagicMock()
+        cached.env = MagicMock()
+        cached.env.cwd = "/Users/user/project"
+        cached.env.cwd_owner = "default"
+        mock_cache[task_id] = cached
+        assert _get_live_tracking_cwd(task_id) == "/Users/user/project"
+        assert _last_known_cwd.get(task_id) == "/Users/user/project"
+
+        # 2) Cleanup thread kills the env AND clears the cache before the next
+        #    file write — so _get_file_ops' save-old-cwd branch never runs.
+        mock_cache.pop(task_id, None)
+        mock_active.clear()
+
+        mock_env = MagicMock()
+        mock_env.cwd = "/Users/user/project"
+        mock_create_env.return_value = mock_env
+        mock_config.return_value = {
+            "env_type": "local",
+            "cwd": "/config/default/path",
+            "timeout": 30,
+        }
+
+        _get_file_ops(task_id)
+
+        create_call = mock_create_env.call_args
+        assert create_call is not None, "_create_environment was not called"
+        kwargs = create_call.kwargs if create_call.kwargs else {}
+        cwd_passed = kwargs.get("cwd", None)
+        if cwd_passed is None:
+            args = create_call.args if create_call.args else []
+            if len(args) >= 3:
+                cwd_passed = args[2]
+
+        # Rebuilt env restored the mirrored cwd, NOT the config default.
+        assert cwd_passed == "/Users/user/project", \
+            f"Expected restored cwd='/Users/user/project', got {cwd_passed!r}"
+        _last_known_cwd.pop(task_id, None)
+
+
+class TestSilentFileMisplacementE2E:
+    """Real-IO regression for #26211.
+
+    Exercises the actual write_file_tool path against a temp filesystem: an
+    agent cd's into a project, the cleanup thread kills the env, and a later
+    relative-path write must land in the project dir (not the config default).
+    Mocks miss this because resolution (_resolve_path_for_task) runs BEFORE
+    _get_file_ops rebuilds the env — only the durable _last_known_cwd fallback
+    in _authoritative_workspace_root makes the resolved path correct.
+    """
+
+    def test_relative_write_after_env_cleanup_lands_in_user_cwd(self, tmp_path, monkeypatch):
+        import tools.terminal_tool as tt
+        import tools.file_tools as ft
+
+        project = tmp_path / "project"
+        config_default = tmp_path / "config_default"
+        project.mkdir()
+        config_default.mkdir()
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        _orig = tt._get_env_config
+        monkeypatch.setattr(
+            tt, "_get_env_config",
+            lambda: {**_orig(), "env_type": "local", "cwd": str(config_default)},
+        )
+
+        task_id = "default"
+        ft._last_known_cwd.pop(task_id, None)
+
+        # 1) Env alive; agent has cd'd into the project. A relative write
+        #    while alive mirrors the live cwd into the durable registry.
+        fo = ft._get_file_ops(task_id)
+        fo.env.cwd = str(project)
+        fo.env.cwd_owner = "default"
+        ft.write_file_tool("alive.txt", "1\n", task_id)
+        assert (project / "alive.txt").exists()
+
+        # 2) Cleanup thread kills the env AND clears the file_ops cache.
+        with tt._env_lock:
+            tt._active_environments.pop(task_id, None)
+            tt._last_activity.pop(task_id, None)
+        with ft._file_ops_lock:
+            ft._file_ops_cache.pop(task_id, None)
+
+        # 3) The next relative write must still land in the project dir.
+        res = json.loads(ft.write_file_tool("report.txt", "hello\n", task_id))
+        assert res.get("resolved_path") == str(project / "report.txt"), res
+        assert (project / "report.txt").exists(), "file should be in the user's cwd"
+        assert not (config_default / "report.txt").exists(), \
+            "file silently misplaced into config default (the #26211 bug)"
+
+        ft._last_known_cwd.pop(task_id, None)

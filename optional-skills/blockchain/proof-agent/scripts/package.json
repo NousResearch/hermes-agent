@@ -1,0 +1,13 @@
+{
+  "name": "proof-agent-nano-pay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nano (XNO) wallet helper for the proof-agent Hermes skill.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "nanocurrency-web": "1.4.3"
+  }
+}

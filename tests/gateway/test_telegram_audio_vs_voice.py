@@ -194,8 +194,17 @@ def test_telegram_media_type_detection_audio_vs_voice():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_voice_reply_resolves_pending_clarify_with_transcript():
-    """A voice answer to an open clarify resolves it with the RAW transcript."""
+@pytest.mark.parametrize(
+    ("platform", "event_text"),
+    [
+        (Platform.TELEGRAM, ""),
+        (Platform.MATRIX, "voice_message_123.ogg"),
+    ],
+)
+async def test_voice_reply_resolves_pending_clarify_with_transcript(
+    platform, event_text
+):
+    """A voice answer resolves clarify with the raw transcript, not its filename."""
     from gateway.run import GatewayRunner
     from gateway.session import build_session_key
     from tools import clarify_gateway as cm
@@ -208,13 +217,13 @@ async def test_voice_reply_resolves_pending_clarify_with_transcript():
     runner.session_store = None
 
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id="1", chat_type="dm", user_id="user1",
+        platform=platform, chat_id="1", chat_type="dm", user_id="user1",
     )
     session_key = build_session_key(source)
     cm.register("cid-voice", session_key, "Which option?", choices=None)
 
     event = MessageEvent(
-        text="",
+        text=event_text,
         message_type=MessageType.VOICE,
         source=source,
         media_urls=["/tmp/voice.ogg"],
@@ -236,8 +245,17 @@ async def test_voice_reply_resolves_pending_clarify_with_transcript():
 
 
 @pytest.mark.asyncio
-async def test_voice_reply_failed_transcription_keeps_clarify_pending():
-    """If STT yields no usable text, the clarify stays pending and the user is nudged to text."""
+@pytest.mark.parametrize(
+    ("platform", "event_text"),
+    [
+        (Platform.TELEGRAM, ""),
+        (Platform.MATRIX, "voice_message_456.ogg"),
+    ],
+)
+async def test_voice_reply_failed_transcription_keeps_clarify_pending(
+    platform, event_text
+):
+    """If STT yields no text, clarify stays pending even when text is a filename."""
     from gateway.run import GatewayRunner
     from gateway.session import build_session_key
     from tools import clarify_gateway as cm
@@ -250,13 +268,13 @@ async def test_voice_reply_failed_transcription_keeps_clarify_pending():
     runner.session_store = None
 
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id="1", chat_type="dm", user_id="user1",
+        platform=platform, chat_id="1", chat_type="dm", user_id="user1",
     )
     session_key = build_session_key(source)
     cm.register("cid-voice-fail", session_key, "Which option?", choices=None)
 
     event = MessageEvent(
-        text="",
+        text=event_text,
         message_type=MessageType.VOICE,
         source=source,
         media_urls=["/tmp/voice.ogg"],

@@ -8,14 +8,16 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [MCP, Health, Integrations]
-    related_skills: [native-mcp, mcporter]
+    category: health
+    homepage: https://github.com/a1c-ai-agent/sally-skills
+    related_skills: [hermes-agent, mcporter]
 ---
 
 # Sally Skills
 
-[Sally Skills](https://github.com/Sally-A1C/ai-sally-skills) is a metered Model Context Protocol server that exposes the clinical-grade metabolic-health intelligence behind the A1C Insights iOS app to AI agents. One bearer key, six skills, pay-per-call in USD, no subscription.
+[Sally Skills](https://github.com/a1c-ai-agent/sally-skills) is a metered Model Context Protocol server that exposes the clinical-grade metabolic-health intelligence behind the A1C Insights iOS app to AI agents. One bearer key, six skills, pay-per-call in USD, no subscription.
 
-Connect it through Hermes' native MCP client and the six skills appear alongside built-in tools like `terminal` and `read_file`. The agent's LLM picks the right one for each user request: pulling wearable data, interpreting a lab PDF, scoring a meal photo, generating a daily readout, or answering a preventive-health question.
+Connect it through Hermes' native MCP client (see `references/native-mcp.md` in the `hermes-agent` skill) and the six skills register as `mcp__sally__<tool>` alongside built-in tools like `terminal` and `read_file`. The agent's LLM picks the right one for each user request: pulling wearable data, interpreting a lab PDF, scoring a meal photo, generating a daily readout, or answering a preventive-health question.
 
 ## When to Use
 
@@ -40,24 +42,27 @@ Do not use this skill for diagnosis or treatment decisions. Sally Skills returns
 
 ## How to Run
 
-Hermes auto-discovers MCP servers configured in `mcp.json`. Add Sally Skills:
+This skill ships in `optional-skills/` and is not active by default. Install it first:
 
-```json
-{
-  "mcpServers": {
-    "sally": {
-      "url": "https://sally.a1c.io/mcp",
-      "headers": {
-        "Authorization": "Bearer sk-sally-..."
-      }
-    }
-  }
-}
+```bash
+hermes skills install official/health/sally-skills
 ```
 
-Restart Hermes. The six skills appear as first-class tools in every conversation.
+Then add Sally Skills as an HTTP MCP server in `~/.hermes/config.yaml` under `mcp_servers`:
+
+```yaml
+mcp_servers:
+  sally:
+    url: "https://sally.a1c.io/mcp"
+    headers:
+      Authorization: "Bearer sk-sally-..."
+```
+
+Restart Hermes. The six skills register as `mcp__sally__*` tools in every conversation.
 
 ## Quick Reference
+
+Hermes registers each tool as `mcp__sally__<tool>` (for example `mcp__sally__health_sync`); the table lists the server-side tool names.
 
 | Tool | Cost / call | Returns |
 |---|---|---|
@@ -73,14 +78,14 @@ Restart Hermes. The six skills appear as first-class tools in every conversation
 A typical multi-skill conversation looks like:
 
 1. User: "How was my morning?"
-2. Hermes calls `health_insights` with `{ window: "morning" }`.
+2. Hermes calls `mcp__sally__health_insights` with `{ window: "morning" }`.
 3. Sally returns a structured readout (sleep score, HRV, resting heart rate, morning glucose, hydration, narrative).
 4. User: "What should I eat for breakfast?"
-5. Hermes calls `chat_with_sally` with the readout as context.
+5. Hermes calls `mcp__sally__chat_with_sally` with the readout as context.
 6. Sally returns three TCM-aligned meal options with rationale and source citations.
 7. User photographs the chosen meal.
-8. Hermes calls `food_journal` with the inline image.
-9. Sally grades the meal and predicts the glucose spike based on the user's recent metabolic_overview.
+8. Hermes calls `mcp__sally__food_journal` with the inline image.
+9. Sally grades the meal and predicts the glucose spike based on the user's recent `metabolic_overview` data.
 
 Chain length is bounded by the user's wallet; every `tools/call` decrements the balance per skill price.
 
@@ -93,13 +98,13 @@ Chain length is bounded by the user's wallet; every `tools/call` decrements the 
 
 ## Verification
 
-After configuring `mcp.json` and restarting Hermes, run:
+After configuring `~/.hermes/config.yaml` and restarting Hermes, run:
 
 ```bash
-hermes tools/list | grep ^sally
+hermes tools list | grep mcp__sally
 ```
 
-You should see six `sally.*` tools listed. To smoke-test the free skill from the terminal:
+You should see six `mcp__sally__*` tools listed. To smoke-test the free skill from the terminal:
 
 ```bash
 curl -sS https://sally.a1c.io/v1/call \
@@ -114,7 +119,6 @@ A `true` response means the key resolves to your A1C account and `health_sync` i
 ## Source
 
 - Public docs and protocol guides: <https://github.com/a1c-ai-agent/sally-skills>
-- Gateway source code: <https://github.com/Sally-A1C/ai-sally-skills>
 - Developer console: <https://console.a1c.io>
 - iOS app (identity source): <https://apps.apple.com/id/app/a1c-insights/id6748399956>
 - Contact: ai@sallya1c.com

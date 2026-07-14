@@ -1,0 +1,50 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: concierge
+description: Pay-per-call market intelligence + Security Desk (x402 USDC). Macro, wire, DeFi desks, verdict, authorized passive scans. No Concierge API key.
+
+source: https://conc-exe.xyz/docs/integration/hermes
+
+# Remote HTTP MCP — same endpoint as Official MCP Registry (xyz.conc-exe/concierge-intel).
+# No local install; Hermes connects over Streamable HTTP / JSON-RPC at /api/mcp.
+transport:
+  type: http
+  url: https://conc-exe.xyz/api/mcp
+
+auth:
+  type: none
+
+# Curated default for daily desk use. Expanding:
+#   hermes mcp configure concierge
+tools:
+  default_enabled:
+    - intel_macro
+    - intel_wire
+    - intel_tvl
+    - intel_verdict
+    - intel_meteora
+    - intel_desk_brief
+    - security_headers
+    - security_scan
+
+post_install: |
+  Concierge MCP is remote HTTP — no local install.
+
+  Paid tools settle via x402 USDC (Solana / Base / Arbitrum). Options:
+    1) pay.sh — `pay setup && pay topup` then `pay curl https://conc-exe.xyz/api/...`
+    2) Hermes x402 / payments skills if installed
+    3) Pass `paymentSignature` on MCP tools/call after a 402 challenge
+
+  Free probes:
+    curl -s https://conc-exe.xyz/api/mcp
+    hermes mcp test concierge
+
+  Skill (routes, prices, cron briefs):
+    hermes skills install https://conc-exe.xyz/skills/concierge-hermes/SKILL.md
+
+  Docs: https://conc-exe.xyz/docs/integration/hermes
+  Registry: https://registry.modelcontextprotocol.io/?search=xyz.conc-exe%2Fconcierge-intel
+
+  Restart / new Hermes session after install so tools register.

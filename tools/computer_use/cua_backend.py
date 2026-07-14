@@ -1244,7 +1244,13 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_binary_available()
 
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        max_elements: Optional[int] = None,
+        max_depth: Optional[int] = None,
+    ) -> CaptureResult:
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
@@ -1453,14 +1459,14 @@ class CuaDriverBackend(ComputerUseBackend):
                     )
         else:
             # get_window_state: AX tree + screenshot.
-            gws_out = self._session.call_tool(
-                "get_window_state",
-                {
-                    "pid": self._active_pid,
-                    "window_id": self._active_window_id,
-                    "session": self._session_id,
-                },
-            )
+            gws_params: Dict[str, Any] = {
+                "pid": self._active_pid,
+                "window_id": self._active_window_id,
+                "session": self._session_id,
+                "max_elements": max_elements if max_elements is not None else 800,
+                "max_depth": max_depth if max_depth is not None else 12,
+            }
+            gws_out = self._session.call_tool("get_window_state", gws_params)
             # The persistent MCP session can return a degenerate result —
             # empty/partial data with NO exception — when the bridge is flaky
             # (e.g. it reconnected mid-call and dropped the heavy
@@ -1492,11 +1498,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 try:
                     cli_out = self._session._call_tool_via_cli(
                         "get_window_state",
-                        {
-                            "pid": self._active_pid,
-                            "window_id": self._active_window_id,
-                            "session": self._session_id,
-                        },
+                        gws_params,
                         30.0,
                     )
                     if not _gws_is_empty(cli_out):
@@ -1538,6 +1540,24 @@ class CuaDriverBackend(ComputerUseBackend):
             # structuredContent (screenshot_png_b64) depending on the driver
             # build — _image_from_tool_result handles both.
             png_b64, image_mime_type = _image_from_tool_result(gws_out)
+
+            if not png_b64 and not gws_out.get("isError") and (elements or (tree and tree.strip())):
+                logger.warning(
+                    "cua-driver get_window_state returned elements but no image over MCP "
+                    "(pid=%s window_id=%s); re-fetching screenshot via CLI transport",
+                    self._active_pid, self._active_window_id,
+                )
+                try:
+                    cli_out = self._session._call_tool_via_cli(
+                        "get_window_state", gws_params, 30.0,
+                    )
+                    cli_png, cli_mime = _image_from_tool_result(cli_out)
+                    if cli_png:
+                        png_b64, image_mime_type = cli_png, cli_mime
+                except Exception as cli_exc:
+                    logger.error(
+                        "cua-driver CLI re-fetch for som/ax screenshot failed: %s", cli_exc,
+                    )
 
             # Extract window title from the AX tree first AXWindow line.
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)

@@ -84,8 +84,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "max_elements": {
                 "type": "integer",
                 "description": (
-                    "Optional cap on the AX `elements` array returned by "
-                    "`action='capture'`. Default 100, hard maximum 1000. "
+                    "Optional cap on the AX walk and the `elements` array "
+                    "returned by `action='capture'`. The driver AX-walk "
+                    "default is 800; the model-visible response default is "
+                    "100; hard maximum 1000. "
                     "Dense UIs (Electron apps such as Obsidian or VS Code, "
                     "JetBrains IDEs) can publish 500+ AX nodes — capping "
                     "prevents a single capture from blowing session "
@@ -102,6 +104,18 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "default": 100,
                 "minimum": 1,
                 "maximum": 1000,
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": (
+                    "Optional maximum AX tree depth sent to cua-driver for "
+                    "`action='capture'`. Default 12, hard maximum 100. Lower "
+                    "values can avoid UIA provider timeouts in dense or "
+                    "unresponsive apps."
+                ),
+                "default": 12,
+                "minimum": 1,
+                "maximum": 100,
             },
             # ── click / drag / scroll targeting ────────────────────
             "element": {

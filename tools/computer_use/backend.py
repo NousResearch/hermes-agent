@@ -99,7 +99,13 @@ class ComputerUseBackend(ABC):
 
     # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult: ...
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        max_elements: Optional[int] = None,
+        max_depth: Optional[int] = None,
+    ) -> CaptureResult: ...
 
     # ── Pointer actions ─────────────────────────────────────────────
     @abstractmethod

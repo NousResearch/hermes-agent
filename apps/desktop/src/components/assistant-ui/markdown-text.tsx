@@ -8,7 +8,15 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import {
+  type ComponentProps,
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useMemo,
+  useState
+} from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -301,6 +309,32 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
   )
 }
 
+const MarkdownTaskListItemContext = createContext(false)
+
+function MarkdownInput({ checked, disabled, type, ...props }: ComponentProps<'input'>) {
+  const isTaskListItem = useContext(MarkdownTaskListItemContext)
+
+  if (type !== 'checkbox' || !isTaskListItem) {
+    return <input checked={checked} disabled={disabled} type={type} {...props} />
+  }
+
+  // GFM marks task-list inputs as disabled. Keep the Markdown value as the
+  // initial state, then let the browser own local, ephemeral toggles.
+  return <input defaultChecked={checked} type="checkbox" {...props} />
+}
+
+function MarkdownListItem({ children, className, ...props }: ComponentProps<'li'>) {
+  const isTaskListItem = className?.split(/\s+/).includes('task-list-item') ?? false
+
+  return (
+    <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+      <MarkdownTaskListItemContext.Provider value={isTaskListItem}>
+        {children}
+      </MarkdownTaskListItemContext.Provider>
+    </li>
+  )
+}
+
 interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
@@ -428,9 +462,8 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
           <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
-        li: ({ className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props} />
-        ),
+        li: MarkdownListItem,
+        input: MarkdownInput,
         table: ({ className, ...props }: ComponentProps<'table'>) => (
           <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">
             <table

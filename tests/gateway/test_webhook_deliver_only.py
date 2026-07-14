@@ -435,6 +435,49 @@ class TestDeliverOnlySecurityInvariants:
         assert mock_target.send.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_concurrent_duplicate_delivery_id_sends_once(self):
+        """The in-flight idempotency claim blocks concurrent direct duplicates."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _send(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return SendResult(success=True)
+
+        mock_target.send = AsyncMock(side_effect=_send)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-GitHub-Delivery": "same-direct-id"}
+            first = asyncio.create_task(cli.post("/webhooks/r", json={}, headers=headers))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+
+            second = await cli.post("/webhooks/r", json={}, headers=headers)
+            assert second.status == 200
+            second_data = await second.json()
+            assert second_data["status"] == "duplicate"
+
+            release.set()
+            first_resp = await first
+            assert first_resp.status == 200
+            first_data = await first_resp.json()
+            assert first_data["status"] == "delivered"
+
+        assert mock_target.send.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_rate_limit_still_applies(self):
         """Route-level rate limit caps deliver_only POSTs too."""
         routes = {

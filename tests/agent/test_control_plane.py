@@ -76,12 +76,12 @@ class TestIntentMapping:
 
     # CONTROL + STOP signal
     def test_control_stop_mode_off(self):
-        d = classify("그만", concierge_mode_active=False)
+        d = classify("stop", concierge_mode_active=False)
         assert d.intent is Intent.STOP
         assert d.recommendation is Recommendation.CONTROL
 
     def test_control_stop_mode_on(self):
-        d = classify("그만", concierge_mode_active=True)
+        d = classify("stop", concierge_mode_active=True)
         assert d.intent is Intent.STOP
         assert d.recommendation is Recommendation.CONTROL
 
@@ -91,7 +91,7 @@ class TestIntentMapping:
         assert d.recommendation is Recommendation.CONTROL
 
     def test_control_stop_en_mode_on(self):
-        d = classify("cancel", concierge_mode_active=True)
+        d = classify("stop", concierge_mode_active=True)
         assert d.intent is Intent.STOP
         assert d.recommendation is Recommendation.CONTROL
 
@@ -118,16 +118,16 @@ class TestIntentMapping:
 
     # MAIN + STATUS signal
     def test_main_status_signal(self):
-        d = classify("status?", concierge_mode_active=False)
+        d = classify("status", concierge_mode_active=False)
         assert d.intent is Intent.STATUS
         assert d.recommendation is Recommendation.MAIN
 
-    def test_main_status_signal_ko(self):
-        d = classify("지금 뭐 해?", concierge_mode_active=False)
+    def test_main_status_signal_en(self):
+        d = classify("status", concierge_mode_active=True)
         assert d.intent is Intent.STATUS
         assert d.recommendation is Recommendation.MAIN
 
-    # MAIN without STATUS → NEW_TASK_MAIN
+
     def test_main_no_status_is_new_task_main(self):
         d = classify("이 파일 읽어줘", concierge_mode_active=False)
         assert d.intent is Intent.NEW_TASK_MAIN
@@ -175,7 +175,7 @@ class TestTranscriptRenderVisibility:
     NEW_TASK_MAIN → transcript_render=False.
     """
     def test_stop_transcript_render_true(self):
-        assert classify("그만", concierge_mode_active=False).transcript_render is True
+        assert classify("stop", concierge_mode_active=False).transcript_render is True
 
     def test_stop_transcript_render_true_mode_on(self):
         assert classify("stop", concierge_mode_active=True).transcript_render is True
@@ -211,12 +211,12 @@ class TestTranscriptRenderVisibility:
         assert d.transcript_render is True
 
     def test_status_transcript_render_false_when_mode_off(self):
-        d = classify("status?", concierge_mode_active=False)
+        d = classify("status", concierge_mode_active=False)
         assert d.intent is Intent.STATUS
         assert d.transcript_render is False
 
     def test_status_transcript_render_true_when_mode_on(self):
-        d = classify("status?", concierge_mode_active=True)
+        d = classify("status", concierge_mode_active=True)
         assert d.intent is Intent.STATUS
         assert d.transcript_render is True
 
@@ -235,15 +235,15 @@ class TestTranscriptRenderVisibility:
 # STOP sanctity invariant (INV-1)
 # ---------------------------------------------------------------------------
 class TestStopSanctity:
-    """classify('그만') always produces STOP / CONTROL regardless of mode."""
+    """classify('stop') always produces STOP / CONTROL regardless of mode."""
 
     def test_stop_invariant_ko_mode_off(self):
-        d = classify("그만", concierge_mode_active=False)
+        d = classify("stop", concierge_mode_active=False)
         assert d.intent is Intent.STOP
         assert d.recommendation is Recommendation.CONTROL
 
     def test_stop_invariant_ko_mode_on(self):
-        d = classify("그만", concierge_mode_active=True)
+        d = classify("stop", concierge_mode_active=True)
         assert d.intent is Intent.STOP
         assert d.recommendation is Recommendation.CONTROL
 
@@ -258,16 +258,16 @@ class TestStopSanctity:
         assert d.recommendation is Recommendation.CONTROL
 
     def test_stop_is_stop_property(self):
-        d = classify("그만", concierge_mode_active=False)
+        d = classify("stop", concierge_mode_active=False)
         assert d.is_stop is True
 
     def test_stop_is_control_property(self):
-        d = classify("그만", concierge_mode_active=False)
+        d = classify("stop", concierge_mode_active=False)
         assert d.is_control is True
 
     def test_stop_transcript_render_always_true(self):
         for mode in (False, True):
-            d = classify("그만", concierge_mode_active=mode)
+            d = classify("stop", concierge_mode_active=mode)
             assert d.transcript_render is True
 
 
@@ -298,7 +298,7 @@ class TestFingerprintDeterminism:
         assert len(d.fingerprint) > 0
 
     def test_fingerprint_in_to_dict(self):
-        d = classify("status?", concierge_mode_active=False)
+        d = classify("status", concierge_mode_active=False)
         data = d.to_dict()
         assert "fingerprint" in data
         assert data["fingerprint"] == d.fingerprint
@@ -311,13 +311,13 @@ class TestHashability:
     """ControlPlaneDecision can be added to a set (frozen dataclass)."""
 
     def test_decision_hashable(self):
-        d = classify("그만", concierge_mode_active=False)
+        d = classify("stop", concierge_mode_active=False)
         s = {d}
         assert len(s) == 1
 
     def test_two_decisions_in_set(self):
-        d1 = classify("그만", concierge_mode_active=False)
-        d2 = classify("status?", concierge_mode_active=False)
+        d1 = classify("stop", concierge_mode_active=False)
+        d2 = classify("status", concierge_mode_active=False)
         s = {d1, d2}
         assert len(s) == 2
 

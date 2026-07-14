@@ -125,35 +125,14 @@ class ConciergeSignal(Enum):
 # boundary); English entries match against tokenised lowercase text.
 # --------------------------------------------------------------------------
 
-# STOP — whole-body equality (after trim + lowercase + trailing punctuation
-# strip).  PRD §7.1 + design review §8.1 DR-1.  PAUSE is intentionally folded
-# into STOP-graceful (design review §8.2 OQ-4).
+# STOP — English single-word whole-body only.
+# User contract: ask "stop" in English; all other free text → main model.
 STOP_TOKENS_EN: tuple[str, ...] = (
     "stop",
-    "cancel",
-    "abort",
-    "halt",
-    "nevermind",
-    "never mind",
-    "forget it",
-    "/stop",
-    "/cancel",
-    "/abort",
-    "/kill",
 )
 
-STOP_TOKENS_KO: tuple[str, ...] = (
-    "그만",
-    "그만해",
-    "그만둬",
-    "중단",
-    "취소",
-    "됐어",
-    "멈춰",
-    "잠깐만",  # soft pause folded into STOP-graceful per design review §8.2
-    "잠깐",
-    "기다려",
-)
+# Korean STOP intercept disabled.
+STOP_TOKENS_KO: tuple[str, ...] = ()
 
 # ACK — whole-body equality only (the TUI integrated module's whole-body
 # heuristic, faithfully mirrored).  "ok" / "응" are intentionally NOT here:
@@ -176,39 +155,13 @@ ACK_TOKENS_KO: tuple[str, ...] = (
     "수고했어",
 )
 
-# Status — WHOLE-BODY equality only (same contract as STOP).
-# Never substring-search free text: that is Ctrl+F routing and kills real instructions.
+# Status — English single-word whole-body only.
+# User contract: ask "status" in English; no Korean / no substring Ctrl+F.
 _STATUS_EXACT_EN: tuple[str, ...] = (
     "status",
-    "status?",
-    "what are you doing",
-    "what are you doing?",
-    "what's running",
-    "whats running",
-    "/status",
-    "/tasks",
 )
 
-_STATUS_EXACT_KO: tuple[str, ...] = (
-    "상태",
-    "상태?",
-    "진행상황",
-    "진행 상황",
-    "진행중",
-    "진행 중",
-    "지금 뭐 해",
-    "지금 뭐 해?",
-    "지금 뭐해",
-    "지금 뭐해?",
-    "지금 뭐 하고 있어",
-    "지금 뭐 하고 있어?",
-    "뭐 해",
-    "뭐 해?",
-    "뭐해",
-    "뭐해?",
-    "어디까지",
-    "어디까지야",
-)
+_STATUS_EXACT_KO: tuple[str, ...] = ()
 
 # Artifact-creation anchors.  Single-anchor → strong WORKER recommendation
 # (PRD §8.1 final paragraph).
@@ -613,22 +566,8 @@ def _has_code_edit_anchor(low_body: str, body: str) -> bool:
 
 
 def _is_status_query(body: str, low_body: str) -> bool:
-    """STATUS only on *entire message* equality — never Ctrl+F inside a sentence."""
-    if _is_whole_body_match(low_body, _STATUS_EXACT_EN) or _is_whole_body_match(
-        body, _STATUS_EXACT_KO
-    ):
-        return True
-    if body.strip() in {"?", "？"}:
-        return True
-    return False
-
-
-    if _contains_any(low_body, _STATUS_EXACT_EN) or _contains_any(body, _STATUS_EXACT_KO):
-        return True
-    # Only a pure "?" is a status ping.
-    if body.strip() in {"?", "？"}:
-        return True
-    return False
+    """STATUS only for English single-word whole-body equality (``status``)."""
+    return _is_whole_body_match(low_body, _STATUS_EXACT_EN)
 
 
 def _looks_like_steer(low_body: str, body: str) -> bool:

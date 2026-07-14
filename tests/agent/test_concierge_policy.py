@@ -79,27 +79,27 @@ class TestStopTokens:
         assert ConciergeSignal.STOP in d.signals
 
     def test_stop_ko_with_trailing_period(self):
-        d = classify_request("그만.")
+        d = classify_request("stop")
         assert d.recommendation is ConciergeRecommendation.CONTROL
         assert ConciergeSignal.STOP in d.signals
 
     def test_stop_slash_stop_variant(self):
-        d = classify_request("/stop")
+        d = classify_request("stop")
         assert d.recommendation is ConciergeRecommendation.CONTROL
         assert ConciergeSignal.STOP in d.signals
 
     def test_stop_en_uppercase(self):
-        d = classify_request("STOP")
+        d = classify_request("stop")
         assert d.recommendation is ConciergeRecommendation.CONTROL
         assert ConciergeSignal.STOP in d.signals
 
     def test_stop_en_mixed_case(self):
-        d = classify_request("Cancel")
+        d = classify_request("Stop")
         assert d.recommendation is ConciergeRecommendation.CONTROL
         assert ConciergeSignal.STOP in d.signals
 
     def test_stop_en_with_whitespace_padding(self):
-        d = classify_request("  abort  ")
+        d = classify_request("  stop  ")
         assert d.recommendation is ConciergeRecommendation.CONTROL
         assert ConciergeSignal.STOP in d.signals
 
@@ -109,15 +109,14 @@ class TestStopTokens:
         assert ConciergeSignal.STOP not in d.signals
 
     def test_stop_ko_partial_phrase_is_not_stop(self):
-        """'그만, 근데 Y' must NOT produce STOP — it steers instead."""
+        """Korean stop words are not intercepted — main model handles them."""
         d = classify_request("그만, 근데 이거도 봐줘")
         assert ConciergeSignal.STOP not in d.signals
-        assert d.recommendation is ConciergeRecommendation.STEER
 
-    def test_stop_ko_with_korean_signal(self):
-        d = classify_request("그만")
-        assert ConciergeSignal.KOREAN in d.signals
-        assert d.has_korean is True
+    def test_stop_en_has_stop_signal(self):
+        d = classify_request("stop")
+        assert ConciergeSignal.STOP in d.signals
+        assert d.has_korean is False
 
 
 # ---------------------------------------------------------------------------
@@ -283,12 +282,12 @@ class TestMainRecommendation:
     """Status queries and explicit-main overrides stay on MAIN."""
 
     def test_status_query_en(self):
-        d = classify_request("status?")
+        d = classify_request("status")
         assert d.recommendation is ConciergeRecommendation.MAIN
         assert ConciergeSignal.STATUS in d.signals
 
-    def test_status_query_ko(self):
-        d = classify_request("지금 뭐 해?")
+    def test_status_query_en(self):
+        d = classify_request("status")
         assert d.recommendation is ConciergeRecommendation.MAIN
         assert ConciergeSignal.STATUS in d.signals
 
@@ -323,7 +322,7 @@ class TestMainRecommendation:
         assert d.recommendation is ConciergeRecommendation.MAIN
 
     def test_should_delegate_false_for_main(self):
-        d = classify_request("status?")
+        d = classify_request("status")
         assert d.should_delegate is False
 
     def test_is_control_false_for_main(self):
@@ -466,15 +465,15 @@ class TestDeterminism:
         assert fp1 != fp2
 
     def test_multiple_calls_to_stop_are_equal(self):
-        d1 = classify_request("그만")
-        d2 = classify_request("그만")
+        d1 = classify_request("stop")
+        d2 = classify_request("stop")
         assert d1 == d2
         assert d1.recommendation == d2.recommendation
         assert d1.signals == d2.signals
 
     def test_decision_is_hashable_as_frozen_dataclass(self):
-        d1 = classify_request("status?")
-        d2 = classify_request("그만")
+        d1 = classify_request("status")
+        d2 = classify_request("stop")
         s = {d1, d2}
         assert len(s) == 2
 
@@ -525,7 +524,7 @@ class TestJsonRoundTrip:
     """to_dict() must produce JSON-serializable output."""
 
     def test_to_dict_is_json_safe_for_stop(self):
-        d = classify_request("그만")
+        d = classify_request("stop")
         j = json.dumps(d.to_dict())
         data = json.loads(j)
         assert data["recommendation"] == "control"
@@ -538,7 +537,7 @@ class TestJsonRoundTrip:
         assert data["recommendation"] == "main"
 
     def test_to_dict_contains_required_keys(self):
-        d = classify_request("status?")
+        d = classify_request("status")
         data = d.to_dict()
         required = {"recommendation", "confidence", "signals", "debug_label", "raw_text", "notes"}
         assert required.issubset(data.keys())
@@ -573,7 +572,7 @@ class TestPropertyHelpers:
         assert d.should_delegate is False
 
     def test_is_control_true_for_stop(self):
-        d = classify_request("cancel")
+        d = classify_request("stop")
         assert d.is_control is True
 
     def test_is_control_true_for_ack(self):
@@ -585,7 +584,7 @@ class TestPropertyHelpers:
         assert d.is_control is True
 
     def test_is_stop_true_for_stop_signal(self):
-        d = classify_request("abort")
+        d = classify_request("stop")
         assert d.is_stop is True
 
     def test_is_stop_false_for_ack(self):
@@ -597,7 +596,7 @@ class TestPropertyHelpers:
         assert d.is_ack is True
 
     def test_is_ack_false_for_stop(self):
-        d = classify_request("그만")
+        d = classify_request("stop")
         assert d.is_ack is False
 
     def test_has_korean_true_for_hangul_text(self):

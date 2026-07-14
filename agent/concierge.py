@@ -244,10 +244,8 @@ def handle_concierge(
     decision = classify(text, concierge_mode_active=True)
     intent = decision.intent
 
-    # Contract: no Ctrl+F interception of free text.
-    # Only whole-body STOP / whole-body STATUS are consumed locally.
-    # Everything else (including "진행해", long instructions, GitHub URLs)
-    # falls through to the main model to *understand* then act.
+    # Contract: only English single-word STOP/STATUS ("stop" / "status").
+    # Everything else → main model understands and acts.
 
     if intent is Intent.STOP:
         reclaimed = []

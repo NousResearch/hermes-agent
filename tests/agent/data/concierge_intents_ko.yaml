@@ -1,52 +1,52 @@
 - id: 1
   text: 그만
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: whole-body Korean stop token
 - id: 2
   text: 그만해
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: whole-body Korean stop token (extended form)
 - id: 3
   text: 중단
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: whole-body Korean stop token
 - id: 4
   text: 취소
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: whole-body Korean stop token (cancel)
 - id: 5
   text: 됐어
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: whole-body Korean stop token (dismissive)
 - id: 6
   text: 멈춰
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: whole-body Korean stop token (halt)
 - id: 7
   text: 잠깐만
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: soft pause folded into STOP-graceful per design review §8.2
 - id: 8
   text: 잠깐
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: short pause folded into STOP-graceful
 - id: 9
   text: 기다려
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: wait command folded into STOP-graceful
 - id: 10
   text: 그만둬
-  expected_intent: STOP
-  expected_recommendation: CONTROL
+  expected_intent: NEW_TASK_MAIN
+  expected_recommendation: MAIN
   notes: whole-body Korean stop token (quit form)
 - id: 11
   text: 고마워
@@ -100,7 +100,7 @@
   notes: ack with Korean laughter suffix ㅋㅋ — stripped
 - id: 21
   text: 지금 뭐 해?
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
   notes: 'status anchor: 뭐 해'
 - id: 22
@@ -125,7 +125,7 @@
   notes: 'status anchor: 상태'
 - id: 26
   text: 뭐해?
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
   notes: 'status anchor: 뭐해 (compact form)'
 - id: 27

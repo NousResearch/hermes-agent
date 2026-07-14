@@ -17,6 +17,7 @@ from hermes_cli.config import (
     _normalize_max_turns_config,
     is_provider_enabled,
     load_config,
+    load_config_readonly_strict,
     load_env,
     migrate_config,
     read_raw_config,
@@ -169,8 +170,20 @@ class TestLoadConfigParseFailure:
             err = capsys.readouterr().err
             assert "previously loaded config" in err
 
+    def test_strict_read_rejects_corruption_despite_last_known_good(self, tmp_path):
+        from hermes_cli import config as cfg_mod
 
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text("plugins:\n  entries: {}\n")
+            assert isinstance(load_config_readonly_strict(), dict)
 
+            cfg.write_text("plugins:\n  entries: [broken and deliberately longer\n")
+            assert load_config()["plugins"]["entries"] == {}
+            with pytest.raises(Exception):
+                load_config_readonly_strict()
+
+            cfg_mod._LOAD_CONFIG_CACHE.pop(str(cfg), None)
 
 
 class TestEmptyConfigSections:
@@ -1356,7 +1369,6 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
 
 class TestIsProviderEnabled:
     """``is_provider_enabled`` gates ``providers.<name>`` blocks for the

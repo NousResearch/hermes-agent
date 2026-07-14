@@ -8,23 +8,37 @@ agent does via its system_prompt.
 Four communication modes:
   - "parallel"   : all agents run concurrently; each sees others' completed
                    messages on round boundaries
-  - "streaming"  : like parallel, but agents see PARTIAL CoT tokens from peers
-                   via chunked polling (works with any OpenAI-compat backend
-                   without requiring server-side mid-generation injection)
+  - "streaming"  : parallel rounds with chunked *post-completion* peer
+                   partials exposed to listeners between / after peer
+                   streams finish in that round — NOT mid-generation
+                   injection into another agent's still-in-flight request
+                   (OpenAI-compat backends cannot do that client-side)
   - "sequential" : round-robin; each agent gets the full prior transcript
-  - "queue"      : topic-driven; agents pull from a shared queue when they
-                   declare interest in a tag
+  - "queue"      : agents run in parallel-like rounds; optional `interests`
+                   tags are reserved for future inbox routing. Current
+                   implementation does not yet route ordinary messages by
+                   @name / interests — only explicit DONE markers stop an
+                   agent early
 
 Backbone: any OpenAI-compatible /v1/chat/completions endpoint, plus Ollama's
 native /api/chat for thinking-mode models (where /v1/ silently drops thinking).
 Auto-detected at construction time:
   Ollama, llama.cpp's llama-server, vLLM, LM Studio, OpenAI, OpenRouter, etc.
 
+Provider note: this engine currently uses LLM_BASE_URL / LLM_API_KEY /
+LLM_DEFAULT_MODEL (or OLLAMA_URL) — it does **not** yet share Hermes's
+active session provider + credential pool. Point those env vars at the
+backend you want the inner agents to call.
+
 Termination: 3 layers — explicit DONE marker, max_rounds cap, per-agent timeout.
 Cost control: optional token_budget per channel.
 CoT propagation: default "strip" (cross-family-safe). Opt in to "raw" for
 same-family debate where shared reasoning amplifies; this is informed by
 arxiv 2503.13657 and the MemoryTrap (Apr 2026) attack surface.
+
+Opt-in: the `wot` toolset / `wot_chat` tool is disabled unless
+HERMES_ENABLE_WOT=1 (or true/yes/on). Do not leave it on the default
+toolset surface for ordinary sessions.
 
 Grounded in Artificial Neural Mesh V0 (Ali, 2026)
   https://doi.org/10.5281/zenodo.18112435
@@ -1057,11 +1071,31 @@ if __name__ == "__main__":
 # ─────────────────────────────────────────────────────────────────────────────
 from tools.registry import registry  # noqa: E402
 
+
+def _wot_enabled() -> bool:
+    """Gate: WoT must be deliberately enabled — never a default session tool.
+
+    Ordinary Hermes sessions load available toolsets broadly; leaving wot_chat
+    always-checkable would inject a multi-agent schema into every chat.
+    Set HERMES_ENABLE_WOT=1 (or true/yes/on) to opt in.
+    """
+    return os.getenv("HERMES_ENABLE_WOT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 try:
     from toolsets import create_custom_toolset  # type: ignore
     create_custom_toolset(
         name="wot",
-        description="Web-of-Thought multi-agent reasoning (3-7 agents debate / collaborate)",
+        description=(
+            "Web-of-Thought multi-agent reasoning (opt-in; requires "
+            "HERMES_ENABLE_WOT=1). Inner agents use LLM_BASE_URL / "
+            "LLM_API_KEY, not the parent session provider."
+        ),
         tools=["wot_chat"],
     )
 except Exception:
@@ -1088,7 +1122,7 @@ registry.register(
         "parameters": wot_chat_tool_schema["function"]["parameters"],
     },
     handler=_wot_handler,
-    check_fn=lambda: True,
+    check_fn=_wot_enabled,
     emoji="🕸",
     max_result_size_chars=200_000,
 )

@@ -8,6 +8,14 @@ metadata:
 
 # Web-of-Thought (`wot_chat`)
 
+**Opt-in only.** The tool is unavailable unless `HERMES_ENABLE_WOT=1` (or
+`true`/`yes`/`on`) is set in the environment. Even then, include the `wot`
+toolset deliberately — do not assume every session has it.
+
+Inner agents call **`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_DEFAULT_MODEL`**
+(or `OLLAMA_URL`), **not** the parent Hermes session provider. Configure those
+env vars before relying on `wot_chat`.
+
 You have access to a multi-agent reasoning tool. Use it when a task genuinely benefits from multiple independent perspectives feeding into one synthesis. Don't use it for everything.
 
 ## When to use it
@@ -51,9 +59,9 @@ Long over-scripted prompts make agents perform a role rather than think. The poi
 | Mode | When |
 |---|---|
 | `parallel` (default) | All agents react to the task simultaneously. Best for independent perspectives that meet at the synthesis. |
-| `streaming` | Like parallel but agents see each other's tokens as they're generated. Use when you want emergent cross-influence within a round, not just at round boundaries. |
+| `streaming` | Parallel rounds that surface peer *partials after/as each peer stream finishes in the round* — not true mid-token injection into another agent's still-open request (OpenAI-compat cannot do that client-side). Prefer `parallel` unless you specifically want chunked peer visibility. |
 | `sequential` | Round-robin; each agent sees the full prior transcript. Use for refinement chains where agent N improves on agent N-1's output. |
-| `queue` | Tag-driven pull. An agent only acts when an inbox message carries one of its declared `interests` tags. Use for asymmetric workloads where one agent is the "dispatcher" and others react conditionally. |
+| `queue` | Reserved for tag-driven pull. **Current engine does not yet route ordinary messages by `@name` / `interests`** — only `DONE` early-stop is implemented. Prefer `parallel` until routing lands. |
 
 If unsure, use `parallel` with 3 agents. It's the safest default.
 

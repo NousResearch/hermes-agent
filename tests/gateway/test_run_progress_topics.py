@@ -472,6 +472,8 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
         chat_type="group",
         thread_id="topic_17585",
     )
+    source.feishu_topic_starter_user_id = "ou_human"
+    source.feishu_topic_starter_user_name = "Alice"
 
     result = await runner._run_agent(
         message="hello",
@@ -486,7 +488,11 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
     assert result["final_response"] == "done"
     assert adapter.sent
     assert adapter.sent[0]["reply_to"] == "om_triggering_user_message"
-    assert adapter.sent[0]["metadata"] == {"thread_id": "topic_17585"}
+    assert adapter.sent[0]["metadata"] == {
+        "thread_id": "topic_17585",
+        "feishu_at_user_id": "ou_human",
+        "feishu_at_user_name": "Alice",
+    }
     assert adapter.edits
     assert adapter.edits[0]["message_id"] == "progress-1"
 

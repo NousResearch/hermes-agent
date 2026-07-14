@@ -6,7 +6,17 @@ export interface TriggerState {
   tokenLength: number
 }
 
-const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
+// `@` triggers stop at the first whitespace — `@file:path` and `@diff` are
+// single tokens. `/` triggers keep going so the popover stays live while the
+// user types args (`/personality alic` → arg completer suggests `alice`).
+// Restricting the slash command name to `[a-zA-Z][\w-]*` avoids matching file
+// paths like `src/foo/bar`.
+//
+// Slash commands only execute at the beginning of a message, so the `/`
+// trigger is anchored strictly at position 0 — not after whitespace — to
+// avoid opening the popover mid-message (e.g. `hello /`).
+const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@/]*)$/
+const SLASH_TRIGGER_RE = /^(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
 
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {
@@ -97,11 +107,17 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
 }
 
 export function detectTrigger(textBefore: string): TriggerState | null {
-  const match = TRIGGER_RE.exec(textBefore)
+  const slash = SLASH_TRIGGER_RE.exec(textBefore)
 
-  if (!match) {
-    return null
+  if (slash) {
+    return { kind: '/', query: slash[2], tokenLength: 1 + slash[2].length }
   }
 
-  return { kind: match[1] as '@' | '/', query: match[2], tokenLength: 1 + match[2].length }
+  const at = AT_TRIGGER_RE.exec(textBefore)
+
+  if (at) {
+    return { kind: '@', query: at[2], tokenLength: 1 + at[2].length }
+  }
+
+  return null
 }

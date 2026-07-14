@@ -105,7 +105,7 @@ class TestVerboseCommand:
 
     @pytest.mark.asyncio
     async def test_cycles_through_all_modes(self, tmp_path, monkeypatch):
-        """Calling /verbose repeatedly cycles through all four modes."""
+        """Calling /verbose repeatedly cycles through all tool-progress visibility modes."""
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -117,8 +117,8 @@ class TestVerboseCommand:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         runner = _make_runner()
 
-        # off -> new -> all -> verbose -> off
-        expected = ["new", "all", "verbose", "off"]
+        # off -> new -> all -> verbose -> log -> off
+        expected = ["new", "all", "verbose", "log", "off"]
         for mode in expected:
             result = await runner._handle_verbose_command(_make_event())
             saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -132,8 +132,7 @@ class TestVerboseCommand:
 
         Telegram's tier-1 preset overrides ``tool_progress`` to ``"off"`` so the
         platform stays final-answer-first by default on mobile inboxes.  The
-        first ``/verbose`` invocation therefore cycles ``off → new``, not
-        ``all → ...``.
+        first ``/verbose`` invocation therefore cycles ``off → new``.
         """
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()

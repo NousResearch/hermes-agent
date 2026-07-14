@@ -7866,6 +7866,13 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     return value
 
 
+def check_mark(ok: bool) -> str:
+    """Return a colored check/cross mark."""
+    if ok:
+        return color("\u2713", Colors.GREEN)
+    return color("\u2717", Colors.RED)
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -8038,15 +8045,28 @@ def show_config():
                     parts.append(f"model={mdl}")
                 print(f"  {label:12s}  {', '.join(parts)}")
     
-    # Messaging
+    # Messaging Platforms — derived from the platform registry so all
+    # built-in and plugin-registered platforms are shown automatically.
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-    
-    telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
-    discord_token = get_env_value('DISCORD_BOT_TOKEN')
-    
-    print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
-    print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+    try:
+        # Ensure plugin platforms are discovered so the registry is populated
+        from hermes_cli.plugins import get_plugin_manager
+        get_plugin_manager().discover_and_load()
+    except Exception:
+        pass
+    try:
+        from gateway.platform_registry import platform_registry
+        entries = platform_registry.all_entries()
+        if not entries:
+            print(f"  {color('(no platforms registered)', Colors.DIM)}")
+        for entry in sorted(entries, key=lambda e: e.label.lower()):
+            configured = entry.check_fn()
+            status_str = "configured" if configured else "not configured"
+            source_hint = " (plugin)" if getattr(entry, 'source', None) == 'plugin' else ""
+            print(f"  {entry.label:<14} {check_mark(configured)} {status_str}{source_hint}")
+    except Exception:
+        print(f"  {color('(registry unavailable)', Colors.DIM)}")
     
     # Skill config
     try:

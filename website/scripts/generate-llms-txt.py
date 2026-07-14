@@ -129,6 +129,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
     ]),
     ("Developer Guide", [
         ("developer-guide/contributing", "Contributing", None),
+        ("developer-guide/agentic-engineering-os", "Agentic Engineering OS", "A lightweight operating model for reliable agent-assisted engineering"),
         ("developer-guide/architecture", "Architecture", None),
         ("developer-guide/agent-loop", "Agent Loop", None),
         ("developer-guide/prompt-assembly", "Prompt Assembly", None),

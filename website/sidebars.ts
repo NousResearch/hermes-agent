@@ -715,6 +715,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'developer-guide/contributing',
+        'developer-guide/agentic-engineering-os',
         {
           type: 'category',
           label: 'Architecture',

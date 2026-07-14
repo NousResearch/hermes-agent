@@ -26,6 +26,41 @@ reviewing any change:
   high. Most new capability should arrive as a CLI command + skill, a
   service-gated tool, or a plugin — not as core surface.
 
+## Agentic Engineering OS — context by half-life
+
+Hermes should make agent work more reliable without widening the model tool
+schema or adding runtime hooks. Use a layered operating model so each kind of
+context lives at the smallest durable surface that still helps future agents:
+
+- **Permanent repo invariants live in `AGENTS.md`.** Keep only architecture,
+  test commands, branch/review discipline, security constraints, and
+  Hermes-specific pitfalls here.
+- **Reusable procedures live in skills.** Put optional step-by-step workflows in
+  `skills/<category>/<name>/SKILL.md` so descriptions stay indexed but bodies
+  load only when relevant.
+- **Fast-moving external docs live in `.references/`.** Store local snapshots of
+  SDK docs, source trees, or examples there for search-on-demand. Git ignores
+  everything under `.references/*` except `README.md` and `.gitkeep`; never put
+  credentials, logs, or live env files there.
+- **Non-trivial changes go through a review loop.** Implement, run targeted
+  validation, review, fix, re-run validation, then ship.
+
+Value proposition: this gives contributors a repeatable quality system while
+preserving Hermes' narrow waist — no new model tools, runtime hooks, provider
+changes, or core code paths. The only prompt impact is a small cached repo/skill
+index footprint. Workflow improvements become reusable skills, current upstream
+knowledge stays searchable without being committed, and the first-pass-output
+failure mode is replaced by an explicit validation loop.
+
+Built-in workflow skills for this loop:
+
+- `code-structure` — restructure messy AI-generated code into clean boundaries
+  without changing behavior.
+- `review-loop` — run implement/test/review/fix/re-review cycles until blockers
+  are resolved.
+- `simplify-code` — reduce accidental complexity while preserving behavior
+  and safety checks.
+
 ## Contribution Rubric — What We Want / What We Don't
 
 This is the project's intent layer. Use it two ways:
@@ -209,6 +244,7 @@ When 3+ open PRs try to integrate the same *category* of thing (memory
 backends, providers, notifiers), don't merge them one at a time — design an
 ABC + orchestrator, wrap the existing built-in as the first provider, and turn
 the competing PRs into plugins against that interface.
+
 
 ## Development Environment
 

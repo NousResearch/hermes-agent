@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [code-review, cleanup, refactor, delegation, subagent, parallel, simplify]
-    related_skills: [requesting-code-review, test-driven-development, plan]
+    related_skills: [code-structure, review-loop, requesting-code-review, test-driven-development, plan]
 ---
 
 # Simplify Code — Parallel Review & Cleanup
@@ -208,5 +208,8 @@ Wait for all three to return (batch mode returns them together).
 
 If your install has the `subagent-driven-development` skill (optional), it
 covers the complementary case: parallel review *during* implementation, per
-task. This skill is the standalone *after-the-fact* cleanup pass. Use
+task. This skill is the standalone *after-the-fact* cleanup pass.
+In the Agentic Engineering OS loop, it serves as the simplification pass after
+behavior is working. Use `code-structure` when the problem is architectural
+boundaries, `review-loop` while iterating on feedback, and
 `requesting-code-review` for the pre-commit security/quality gate.

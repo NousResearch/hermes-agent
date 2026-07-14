@@ -26,6 +26,7 @@ We value contributions in this order:
 - Building a new built-in core tool for Hermes itself? Start with [Adding Tools](./adding-tools.md)
 - Building a new skill? Start with [Creating Skills](./creating-skills.md)
 - Building a new inference provider? Start with [Adding Providers](./adding-providers.md)
+- Structuring an AI-assisted contribution? Start with [Agentic Engineering OS](./agentic-engineering-os.md)
 
 ## Development Setup
 

@@ -295,6 +295,50 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+
+def kanban_guidance_for_tools(valid_tool_names: set[str]) -> str:
+    """Match worker instructions to the graph-mutation tools actually exposed."""
+    if "kanban_create" in valid_tool_names and "kanban_link" in valid_tool_names:
+        return KANBAN_GUIDANCE
+    guidance = KANBAN_GUIDANCE.replace(
+        "6. **If follow-up work appears, create it; don't do it.** Use "
+        "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
+        "to spawn a child task for the appropriate specialist profile instead of "
+        "scope-creeping into the next thing.\n",
+        "6. **If follow-up work appears, request it; don't create it.** Add a "
+        "`followup-request:` comment to your own task with the proposed owner, "
+        "scope, acceptance criteria, and dependency. The orchestrator is the sole "
+        "graph writer; do not create cards or dependency links.\n",
+    )
+    guidance = guidance.replace(
+        "If your task is itself a decomposition task (e.g. a planner profile given "
+        "a high-level goal), use `kanban_create` to fan out into child tasks — one "
+        "per specialist, each with an explicit `assignee` and `parents=[...]` to "
+        "express dependencies. Then `kanban_complete` your own task with a summary "
+        "of the decomposition. Do NOT execute the work yourself; your job is "
+        "routing, not implementation.\n",
+        "If your task uncovers a decomposition, record the proposed graph as a "
+        "`followup-request:` comment and complete/block with that handoff. Do NOT "
+        "fan out directly; the orchestrator deduplicates and owns graph mutation.\n",
+    )
+    guidance = guidance.replace(
+        "- **Created cards.** List ids in `kanban_complete(created_cards=[...])` "
+        "ONLY when captured from a successful `kanban_create` return — never invent "
+        "or paste ids; the kernel rejects the completion on any phantom id.\n",
+        "- **Follow-up requests.** Put proposed work in a structured "
+        "`followup-request:` comment; never claim or invent child-card ids.\n",
+    )
+    guidance = guidance.replace(
+        "- **Orchestrating: discover profiles first.** The dispatcher SILENTLY "
+        "drops a card with an unknown assignee (it sits in `ready` forever). Ground "
+        "every assignee in a real profile (`hermes profile list`, or ask the user), "
+        "and express dependencies via `parents=[...]` on `kanban_create`, not prose.\n",
+        "- **Routing requests.** Name a known profile when possible, but leave actual "
+        "card creation and dependency wiring to the orchestrator.\n",
+    )
+    return guidance
+
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

@@ -1543,6 +1543,10 @@ DEFAULT_CONFIG = {
         # behaviour — e.g. for a profile that prefers explicit
         # ``kanban_notify-subscribe`` calls per task.
         "auto_subscribe_on_create": True,
+        # When false, dispatcher-scoped task workers cannot create cards or
+        # mutate dependency edges. They leave a ``followup-request`` comment;
+        # an orchestrator remains the sole graph writer.
+        "worker_graph_mutations": True,
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).

@@ -923,6 +923,34 @@ prompt_caching:
 
 `cache_ttl` selects the breakpoint TTL Hermes attaches for Claude via the native Anthropic API, OpenRouter, and Nous Portal. Only the two Anthropic-supported tiers (`"5m"`, `"1h"`) are honored — any other value is ignored. Providers with their own caps (e.g. Qwen Cloud, which maxes at 5 minutes) still clamp to what the upstream allows.
 
+## Smart Model Routing
+
+Smart model routing is an opt-in, deterministic per-turn policy for **CLI and gateway** conversations. It selects a cheaper same-provider model only for clearly simple prompts; code, tools, URLs, multiline prompts, long prompts, and ambiguous work remain on the configured primary model.
+
+The router never chooses a provider, credential, base URL, or API mode. It only selects a model ID under Hermes's already-resolved runtime, so credential pools, provider fallback, and authentication continue through the normal path.
+
+```yaml
+model:
+  default: gpt-5.6-sol       # primary tier
+  provider: openai-codex
+
+smart_model_routing:
+  enabled: true
+  platforms: [discord, cli]  # explicit allowlist
+  cheap_model:
+    model: gpt-5.6-luna
+  balanced_model:
+    model: gpt-5.6-terra
+  max_simple_chars: 160
+  max_simple_words: 28
+  max_balanced_chars: 512
+  max_balanced_words: 96
+```
+
+`cheap_model` handles short, plain messages. `balanced_model` handles bounded explanation, comparison, drafting, summarization, and planning requests. Each tier may include an optional `provider`, but it is only used when it exactly matches the resolved primary provider; mismatches fail closed to the primary model. Leave a tier empty to disable it.
+
+Changes take effect in a new CLI session or after the gateway restarts. Routing changes the effective agent signature, so a session safely rebuilds its agent when a different tier is selected.
+
 ## Auxiliary Models
 
 Hermes uses "auxiliary" models for side tasks like image analysis, web page summarization, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision and web extraction).

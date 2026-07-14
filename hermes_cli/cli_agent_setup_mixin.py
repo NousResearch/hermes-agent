@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 
+from hermes_cli.config import load_config
 from rich.markup import escape as _escape
 
 
@@ -172,13 +173,13 @@ class CLIAgentSetupMixin:
         return True
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
-        """Build the effective model/runtime config for a single user turn.
+        """Build the effective model/runtime config for one CLI turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        The optional smart router may select a configured **same-provider**
+        model tier before the agent is created. It never changes credentials,
+        base URL, API mode, or provider routing.
         """
+        from agent.smart_model_routing import resolve_smart_model_route
         from hermes_cli.models import resolve_fast_mode_overrides
 
         runtime = {
@@ -190,11 +191,19 @@ class CLIAgentSetupMixin:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        routing = resolve_smart_model_route(
+            user_message,
+            model=self.model,
+            runtime=runtime,
+            config=(load_config().get("smart_model_routing") or {}),
+            platform="cli",
+        )
         route = {
-            "model": self.model,
+            "model": routing["model"],
             "runtime": runtime,
+            "routing_label": routing["label"],
             "signature": (
-                self.model,
+                routing["model"],
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],

@@ -975,6 +975,19 @@ def _ensure_hermes_home_managed(home: Path):
 
 DEFAULT_CONFIG = {
     "model": "",
+    # Deterministic per-turn routing is opt-in. Tiers only select a model ID
+    # under the already-resolved provider/runtime, so credentials and fallback
+    # policy remain owned by the core resolver.
+    "smart_model_routing": {
+        "enabled": False,
+        "platforms": [],
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+        "max_balanced_chars": 512,
+        "max_balanced_words": 96,
+        "cheap_model": {},
+        "balanced_model": {},
+    },
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
@@ -5249,7 +5262,7 @@ def check_config_version() -> Tuple[int, int]:
 
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
-    "_config_version", "model", "providers", "fallback_model",
+    "_config_version", "model", "smart_model_routing", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",

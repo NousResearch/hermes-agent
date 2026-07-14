@@ -3970,6 +3970,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         route["request_overrides"] = overrides or {}
         return route
 
+    def _apply_smart_model_route(
+        self,
+        user_message: str,
+        route: dict,
+        *,
+        platform: str,
+    ) -> dict:
+        """Apply an opt-in same-provider tier to an already-resolved route.
+
+        Keeping this separate from ``_resolve_turn_agent_config`` preserves its
+        established three-argument call contract for integrations and test
+        doubles.  The helper copies the route and recomputes the model-sensitive
+        parts of its signature and `/fast` request overrides.
+        """
+        from agent.smart_model_routing import resolve_smart_model_route
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        runtime = route.get("runtime") or {}
+        routing = resolve_smart_model_route(
+            user_message,
+            model=str(route.get("model") or ""),
+            runtime=runtime,
+            config=(_load_gateway_config().get("smart_model_routing") or {}),
+            platform=platform,
+        )
+        updated = dict(route)
+        updated["routing_label"] = routing["label"]
+        if routing["model"] == route.get("model"):
+            return updated
+
+        updated["model"] = routing["model"]
+        signature = tuple(route.get("signature") or ())
+        updated["signature"] = (routing["model"], *signature[1:])
+        if getattr(self, "_service_tier", None):
+            try:
+                overrides = resolve_fast_mode_overrides(routing["model"])
+            except Exception:
+                overrides = None
+            updated["request_overrides"] = overrides or {}
+        return updated
+
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
         """Persist the runtime model/provider actually used by a gateway turn.
 
@@ -13495,6 +13536,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._apply_smart_model_route(
+                prompt, turn_route, platform=platform_key
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -18361,6 +18405,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._apply_smart_model_route(
+                message,
+                turn_route,
+                platform=_platform_config_key(source.platform),
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

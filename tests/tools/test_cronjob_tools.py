@@ -264,6 +264,33 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_show_returns_one_full_job_without_listing_noise(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status and report anomalies",
+                schedule="every 1h",
+                name="Server Check",
+                skills=["ops", "incident-review"],
+            )
+        )
+
+        shown = json.loads(cronjob(action="show", job_id=created["job_id"]))
+
+        assert shown["success"] is True
+        assert shown["job"]["job_id"] == created["job_id"]
+        assert shown["job"]["name"] == "Server Check"
+        assert shown["job"]["skills"] == ["ops", "incident-review"]
+        assert "jobs" not in shown
+
+    def test_show_accepts_inspect_alias(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+
+        shown = json.loads(cronjob(action="inspect", job_id=created["job_id"]))
+
+        assert shown["success"] is True
+        assert shown["job"]["job_id"] == created["job_id"]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

@@ -19,6 +19,31 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
+    def test_show_prints_single_job_details(self, tmp_cron_dir, capsys):
+        job = create_job(
+            prompt="Check server status and report anomalies",
+            schedule="every 1h",
+            name="Server Check",
+            skills=["ops", "incident-review"],
+            deliver="local",
+        )
+
+        rc = cron_command(Namespace(cron_command="show", job_id=job["id"]))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Server Check" in out
+        assert job["id"] in out
+        assert "Check server status and report anomalies" in out
+        assert "ops, incident-review" in out
+        assert "Deliver:" in out
+
+    def test_show_reports_missing_job(self, tmp_cron_dir, capsys):
+        rc = cron_command(Namespace(cron_command="show", job_id="missing"))
+
+        assert rc == 1
+        assert "Job not found: missing" in capsys.readouterr().out
+
     def test_pause_resume_run(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Check server status", schedule="every 1h")
 

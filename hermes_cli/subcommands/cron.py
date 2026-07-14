@@ -23,6 +23,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
 
+    cron_show = cron_subparsers.add_parser(
+        "show", aliases=["inspect"], help="Show full details for one scheduled job"
+    )
+    cron_show.add_argument("job_id", help="Job ID or unique job name to inspect")
+
     # cron create/add
     cron_create = cron_subparsers.add_parser(
         "create", aliases=["add"], help="Create a scheduled job"

@@ -291,6 +291,57 @@ def _print_active_jobs_summary(jobs) -> None:
         print("  No active jobs")
 
 
+def cron_show(args):
+    """Show full details for one scheduled job."""
+    result = _cron_api(action="show", job_id=args.job_id)
+    if not result.get("success"):
+        print(color(f"Job not found: {args.job_id}", Colors.RED))
+        return 1
+
+    job = result["job"]
+    print()
+    print(color("┌─────────────────────────────────────────────────────────────────────────┐", Colors.CYAN))
+    print(color("│                         Scheduled Job                                   │", Colors.CYAN))
+    print(color("└─────────────────────────────────────────────────────────────────────────┘", Colors.CYAN))
+    print()
+    print(f"  {color(job['job_id'], Colors.YELLOW)}")
+    print(f"    Name:      {job.get('name', '(unnamed)')}")
+    print(f"    State:     {job.get('state', '?')}")
+    print(f"    Schedule:  {job.get('schedule', '?')}")
+    print(f"    Repeat:    {job.get('repeat', '?')}")
+    print(f"    Next run:  {job.get('next_run_at') or '?'}")
+    print(f"    Deliver:   {job.get('deliver', 'local')}")
+    if job.get("skills"):
+        print(f"    Skills:    {', '.join(job['skills'])}")
+    if job.get("script"):
+        print(f"    Script:    {job['script']}")
+    if job.get("no_agent"):
+        print(f"    Mode:      {color('no-agent', Colors.DIM)} (script stdout delivered directly)")
+    if job.get("workdir"):
+        print(f"    Workdir:   {job['workdir']}")
+    if job.get("profile"):
+        print(f"    Profile:   {job['profile']}")
+    if job.get("model") or job.get("provider") or job.get("base_url"):
+        print(f"    Model:     {job.get('provider') or '?'} / {job.get('model') or '?'}")
+        if job.get("base_url"):
+            print(f"    Base URL:  {job['base_url']}")
+    if job.get("last_status"):
+        last_status = job["last_status"]
+        status_display = color("ok", Colors.GREEN) if last_status == "ok" else color(last_status, Colors.RED)
+        print(f"    Last run:  {job.get('last_run_at') or '?'}  {status_display}")
+    if job.get("last_delivery_error"):
+        print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {job['last_delivery_error']}")
+    print("    Prompt:")
+    prompt = job.get("prompt") or ""
+    if prompt:
+        for line in prompt.splitlines():
+            print(f"      {line}")
+    else:
+        print(color("      (empty)", Colors.DIM))
+    print()
+    return 0
+
+
 def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job so it fires on
     # every job-creation path (this CLI subcommand AND the agent's `cronjob`
@@ -439,6 +490,9 @@ def cron_command(args):
     if subcmd == "edit":
         return cron_edit(args)
 
+    if subcmd in {"show", "inspect"}:
+        return cron_show(args)
+
     if subcmd == "pause":
         return _job_action("pause", args.job_id, "Paused")
 
@@ -452,5 +506,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|show|create|edit|pause|resume|run|remove|status|tick]")
     sys.exit(1)

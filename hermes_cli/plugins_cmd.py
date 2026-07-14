@@ -261,8 +261,10 @@ def _repo_name_from_url(url: str) -> str:
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
-    """Read plugin.yaml and return the parsed dict, or empty dict."""
+    """Read plugin.yaml/plugin.yml and return the parsed dict, or empty dict."""
     manifest_file = plugin_dir / "plugin.yaml"
+    if not manifest_file.exists():
+        manifest_file = plugin_dir / "plugin.yml"
     if not manifest_file.exists():
         return {}
     try:

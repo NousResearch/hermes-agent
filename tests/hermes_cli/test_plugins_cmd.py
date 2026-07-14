@@ -968,11 +968,11 @@ class TestModelProviderInstallE2E:
     """Install a model-provider repository into its discovery category."""
 
     @staticmethod
-    def _make_repo(repo_root: Path) -> None:
+    def _make_repo(repo_root: Path, manifest_name: str = "plugin.yaml") -> None:
         import subprocess as sp
 
         repo_root.mkdir(parents=True)
-        (repo_root / "plugin.yaml").write_text(
+        (repo_root / manifest_name).write_text(
             "name: acme-provider\n"
             "kind: model-provider\n"
             "manifest_version: 1\n"
@@ -1033,3 +1033,25 @@ class TestModelProviderInstallE2E:
         assert profile is not None
         assert profile.name == "acme"
         _clear_provider_caches()
+
+    def test_plugin_yml_uses_model_provider_discovery_path(
+        self, tmp_path, monkeypatch
+    ):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "model-provider-yml-repo"
+        self._make_repo(repo_root, manifest_name="plugin.yml")
+        plugins_dir = tmp_path / "hermes-home" / "plugins"
+        plugins_dir.mkdir(parents=True)
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        target, manifest, key = pc._install_plugin_core(
+            f"file://{repo_root}", force=False
+        )
+
+        assert manifest["kind"] == "model-provider"
+        assert key == "model-providers/acme-provider"
+        assert target == (plugins_dir / key).resolve()

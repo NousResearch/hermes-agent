@@ -1393,6 +1393,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        reasoning_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
@@ -1510,6 +1511,7 @@ class APIServerAdapter(BasePlatformAdapter):
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
+            reasoning_callback=reasoning_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
@@ -4454,6 +4456,22 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        # Wire reasoning_callback so the model's real reasoning (e.g. DeepSeek
+        # reasoning_content) streams as reasoning.delta events, ahead of the
+        # message.delta answer stream. Mirrors tui_gateway/server.py.
+        def _reasoning_cb(text: Optional[str]) -> None:
+            if not text:
+                return
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, {
+                    "event": "reasoning.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "delta": text,
+                })
+            except Exception:
+                pass
+
         self._set_run_status(
             run_id,
             "queued",
@@ -4485,6 +4503,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    reasoning_callback=_reasoning_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
                 )

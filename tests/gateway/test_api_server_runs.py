@@ -325,7 +325,48 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_emits_reasoning_delta(self, adapter):
+        """reasoning_callback should surface model reasoning as reasoning.delta SSE events.
 
+        Verifies the wiring added so DES can stream real reasoning (e.g. DeepSeek
+        reasoning_content) ahead of the message.delta answer on /v1/runs/events.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            captured = {}
+
+            def _fake_create_agent(**kwargs):
+                # _run_and_close must pass reasoning_callback=_reasoning_cb through.
+                captured["reasoning_callback"] = kwargs.get("reasoning_callback")
+                mock_agent = MagicMock()
+
+                def _run(user_message=None, conversation_history=None, task_id=None):
+                    cb = kwargs.get("reasoning_callback")
+                    if cb:
+                        cb("thinking about the answer")
+                    return {"final_response": "the answer"}
+
+                mock_agent.run_conversation.side_effect = _run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                return mock_agent
+
+            with patch.object(adapter, "_create_agent", side_effect=_fake_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+        # _run_and_close wired reasoning_callback into _create_agent.
+        assert captured.get("reasoning_callback") is not None
+        # That callback pushes reasoning.delta onto the SSE stream.
+        assert "reasoning.delta" in body
+        assert "thinking about the answer" in body
 
     @pytest.mark.asyncio
     async def test_approval_response_without_pending_returns_409(self, adapter):

@@ -3645,6 +3645,65 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    @staticmethod
+    def _configure_anthropic_summary_agent(agent):
+        base_url = "https://summary.example/anthropic"
+        agent.api_mode = "anthropic_messages"
+        agent.model = "ep-summary"
+        agent.base_url = base_url
+        agent.max_tokens = 4096
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        agent._cached_system_prompt = "You are helpful."
+        agent._custom_providers = [
+            {
+                "base_url": base_url,
+                "models": {
+                    "ep-summary": {
+                        "anthropic_model_family": "claude-opus-4-8",
+                    },
+                },
+            }
+        ]
+        transport = MagicMock()
+        transport.build_kwargs.return_value = {"model": "ep-summary"}
+        agent._get_transport = MagicMock(return_value=transport)
+        agent._anthropic_messages_create = MagicMock(return_value=MagicMock())
+        return transport
+
+    def test_anthropic_summary_forwards_current_family(self, agent):
+        transport = self._configure_anthropic_summary_agent(agent)
+        transport.normalize_response.return_value = SimpleNamespace(
+            content="Summary",
+        )
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            60,
+        )
+
+        assert result == "Summary"
+        assert transport.build_kwargs.call_args.kwargs[
+            "anthropic_model_family"
+        ] == "claude-opus-4-8"
+
+    def test_anthropic_summary_retry_forwards_current_family(self, agent):
+        transport = self._configure_anthropic_summary_agent(agent)
+        transport.normalize_response.side_effect = [
+            SimpleNamespace(content=""),
+            SimpleNamespace(content="Retry summary"),
+        ]
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            60,
+        )
+
+        assert result == "Retry summary"
+        assert [
+            call.kwargs["anthropic_model_family"]
+            for call in transport.build_kwargs.call_args_list
+        ] == ["claude-opus-4-8", "claude-opus-4-8"]
+
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
         agent.client.chat.completions.create.return_value = resp

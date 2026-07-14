@@ -36,7 +36,7 @@ The manifest at ~/.hermes/skills/.bundled_manifest tracks install mode per skill
 
 Update logic (symlink mode):
   - Symlink intact, target git clean  → nothing to do (git pull auto-updates)
-  - Symlink intact, target git dirty  → promote to copy: cp → restore git
+  - Symlink intact, target git dirty  → skip (do not touch user's source checkout)
   - Symlink broken                     → rebuild symlink or fallback copy
 
 Update logic (copy mode, unchanged):
@@ -181,7 +181,6 @@ def _git_is_dirty(path: Path) -> bool:
         return bool(r.stdout.strip())
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
- for symlink-based skill installation)
 
 
 def _read_manifest() -> Dict[str, str]:
@@ -976,33 +975,16 @@ def sync_skills(quiet: bool = False, link: bool = False) -> dict:
                     if not quiet:
                         print(f"  ! Failed to repair {skill_name}: {e}")
             elif _is_in_git_repo(skill_src) and _git_is_dirty(skill_src):
-                # Target has uncommitted git changes — promote to copy so
-                # the user's edits survive and git pull won't be blocked.
-                try:
-                    # Remove symlink, copy the user's modified bundled dir
-                    dest.unlink()
-                    shutil.copytree(skill_src, dest)
-                    # Restore bundled dir in git repo:
-                    # 1. Restore tracked files (undo user modifications)
-                    subprocess.run(
-                        ["git", "checkout", "--", "."],
-                        cwd=skill_src, capture_output=True, timeout=10,
+                # Target has uncommitted git changes — leave the symlink
+                # alone.  skills_sync is a sync tool, not a git manager;
+                # it must not reset or discard the user's source checkout.
+                # The user can commit / stash / switch to copy mode manually.
+                skipped += 1
+                if not quiet:
+                    print(
+                        f"  - {skill_name} (symlink target has uncommitted "
+                        f"changes; skipped)"
                     )
-                    # 2. Remove untracked files the user may have added
-                    subprocess.run(
-                        ["git", "clean", "-fd"],
-                        cwd=skill_src, capture_output=True, timeout=10,
-                    )
-                    manifest[skill_name] = _dir_hash(dest)
-                    user_modified.append(skill_name)
-                    if not quiet:
-                        print(
-                            f"  ~ {skill_name} (user-modified, "
-                            f"promoted from symlink to copy)"
-                        )
-                except (OSError, IOError, subprocess.SubprocessError) as e:
-                    if not quiet:
-                        print(f"  ! Failed to promote {skill_name}: {e}")
             elif not _is_in_git_repo(skill_src):
                 # Symlink target is outside a git repo (e.g. external path)
                 # — cannot determine if user-modified. Fall back to copy mode.

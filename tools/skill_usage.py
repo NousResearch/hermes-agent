@@ -1103,17 +1103,12 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
 
-    # Symlinked skill — the real content lives outside the local skills tree.
-    # Remove the symlink itself without touching the target. The target is
-    # managed through its own external workflow (e.g. PS repo git).
-    if skill_dir.is_symlink():
-        try:
-            skill_dir.unlink()
-        except OSError as e:
-            return False, f"failed to remove symlink '{skill_dir}': {e}"
-        set_state(skill_name, STATE_ARCHIVED)
-        return True, f"symlink '{skill_name}' removed (real content preserved at {skill_dir.resolve()})"
-
+    # NOTE: Symlinked skills are filtered out earlier by _find_skill_dir()
+    # (see its symlink guard at the rglob loop).  They never reach this point
+    # because the guard ensures skill_dir is either a real directory or None
+    # for symlinks.  This keeps the curator from following symlinks into
+    # externally-managed repos (e.g. hermes-personal-suite, or skills
+    # installed via --link) and treating their mutable content as local.
     archive_root = _archive_dir()
     try:
         archive_root.mkdir(parents=True, exist_ok=True)
@@ -1271,8 +1266,12 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
     for skill_md in iter_skill_index_files(base, "SKILL.md"):
         if is_external_skill_path(skill_md):
             continue
-        # Skip skills whose directory is a symlink — the real content lives
-        # outside the local skills tree and should not be curated or archived.
+        # Skip skills whose directory is a symlink — the real content
+        # lives outside the local skills tree (e.g. in hermes-agent repo
+        # via --link install, or in hermes-personal-suite).  Following the
+        # symlink would let the curator touch content managed by external
+        # git workflows.  archive_skill() relies on this guard to avoid
+        # reaching code that would mutate external repos.
         if skill_md.parent.is_symlink():
             continue
         if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:

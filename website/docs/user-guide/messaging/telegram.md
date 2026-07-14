@@ -104,6 +104,38 @@ platforms:
 
 Telegram allows up to 100 BotCommands, but large command payloads can fail. Hermes defaults to 60 for reliability and clamps configured values to `1..100`; use `/commands` for the full command list.
 
+### Bot API 10.2: private group commands and inline rich media
+
+Telegram Bot API 10.2 adds ephemeral group commands and media embedded inside
+rich messages. Both are opt-in:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      rich_messages: true
+      rich_inline_media: true
+      # A YAML list or comma-separated string is accepted.
+      ephemeral_group_commands: status,help,commands,usage
+```
+
+- **Ephemeral group commands** are registered with `is_ephemeral=true` only in
+  Telegram's group scopes. Their replies target the invoking user with
+  `receiver_user_id` and, when Telegram supplies it, reply to the inbound
+  `ephemeral_message_id`. Private chats and unlisted commands remain durable.
+- Hermes disables typing, streaming, and interim previews for these commands.
+  If Telegram rejects private delivery, Hermes does not resend the content
+  publicly. Within Telegram's 15-second reply window Hermes anchors the reply
+  to the inbound ephemeral message; afterward it attempts an administrator-only
+  private send without the expired anchor.
+- Keep interactive commands that edit inline keyboards out of the list unless
+  their callback flow supports ephemeral edits.
+- **Rich inline media** upgrades a final rich report containing local `MEDIA:`
+  image/video/audio files into one `sendRichMessage` or `editMessageText`
+  payload. Unsupported file types, `[[as_document]]`, and permanent capability
+  errors fall back to normal separate attachments.
+- Ephemeral messages are transient. Do not use them for durable audit records.
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.

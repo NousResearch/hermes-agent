@@ -17,6 +17,7 @@ import os
 import html as _html
 import re
 import threading
+import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
@@ -592,6 +593,22 @@ class TelegramAdapter(BasePlatformAdapter):
         # as plain text, which is worse than degraded table/task-list rendering
         # for command snippets and mobile handoffs.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        self._rich_inline_media_enabled: bool = self._coerce_bool_extra(
+            "rich_inline_media", False
+        )
+        # Bot API 10.2 ephemeral commands are opt-in and group-scoped. Keep the
+        # allowlist explicit: commands with interactive edit/stream flows need
+        # dedicated ephemeral callback support before they can be private.
+        _ephemeral_commands = self.config.extra.get("ephemeral_group_commands", [])
+        if isinstance(_ephemeral_commands, str):
+            _ephemeral_commands = _ephemeral_commands.split(",")
+        if not isinstance(_ephemeral_commands, (list, tuple, set)):
+            _ephemeral_commands = []
+        self._ephemeral_group_commands: Set[str] = {
+            str(command).strip().lstrip("/").lower()
+            for command in _ephemeral_commands
+            if str(command).strip()
+        }
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
@@ -775,11 +792,20 @@ class TelegramAdapter(BasePlatformAdapter):
         (disable_notification=True) unless the caller explicitly requests a
         notification by setting ``metadata["notify"] = True``.
         """
+        kwargs: Dict[str, Any] = {}
+        if self._is_ephemeral_delivery(metadata):
+            private_kwargs = self._ephemeral_send_api_kwargs(metadata)
+            if private_kwargs is None:
+                raise ValueError(
+                    "Ephemeral delivery refused: receiver_user_id is missing"
+                )
+            kwargs["api_kwargs"] = private_kwargs
         if getattr(self, "_notifications_mode", "important") != "important":
-            return {}
+            return kwargs
         if (metadata or {}).get("notify"):
-            return {}
-        return {"disable_notification": True}
+            return kwargs
+        kwargs["disable_notification"] = True
+        return kwargs
 
     def _is_callback_user_authorized(
         self,
@@ -1026,6 +1052,8 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         reply_to_mode: Optional[str] = None,
     ) -> Optional[int]:
+        if metadata and metadata.get("telegram_ephemeral_required"):
+            return None
         if reply_to:
             return int(reply_to)
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
@@ -1378,6 +1406,178 @@ class TelegramAdapter(BasePlatformAdapter):
         return {"disable_web_page_preview": True}
 
     # ------------------------------------------------------------------
+    # Bot API 10.2 Ephemeral Messages
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _telegram_api_field(obj: Any, field: str, default: Any = None) -> Any:
+        """Read a field modeled by PTB or preserved in ``api_kwargs``.
+
+        python-telegram-bot 22.6 predates Bot API 10.2, but preserves unknown
+        response fields in ``TelegramObject.api_kwargs``. This helper naturally
+        prefers future typed fields when PTB adds them.
+        """
+        value = getattr(obj, field, None)
+        if value is not None:
+            return value
+        api_kwargs = getattr(obj, "api_kwargs", None)
+        if isinstance(api_kwargs, dict):
+            return api_kwargs.get(field, default)
+        return default
+
+    def _ephemeral_metadata_for_message(self, message: Any) -> Dict[str, Any]:
+        """Return private-delivery metadata for an opted-in group command."""
+        chat = getattr(message, "chat", None)
+        chat_type = str(getattr(chat, "type", "") or "").split(".")[-1].lower()
+        if chat_type not in {"group", "supergroup"}:
+            return {}
+        text = str(getattr(message, "text", "") or "").strip()
+        if not text.startswith("/"):
+            return {}
+        command = text.split(maxsplit=1)[0][1:].split("@", 1)[0].lower()
+        if command not in getattr(self, "_ephemeral_group_commands", set()):
+            return {}
+        user = getattr(message, "from_user", None)
+        receiver_user_id = getattr(user, "id", None)
+        if receiver_user_id is None:
+            return {}
+        metadata: Dict[str, Any] = {
+            "telegram_ephemeral_required": True,
+            "telegram_ephemeral_receiver_user_id": int(receiver_user_id),
+            "telegram_ephemeral_received_at_monotonic": time.monotonic(),
+            "suppress_streaming": True,
+            "suppress_typing": True,
+        }
+        ephemeral_message_id = self._telegram_api_field(message, "ephemeral_message_id")
+        if ephemeral_message_id is not None:
+            metadata["telegram_ephemeral_message_id"] = str(ephemeral_message_id)
+        return metadata
+
+    def _make_menu_bot_commands(
+        self,
+        menu_commands: List[tuple],
+        *,
+        group_scope: bool,
+    ) -> List[Any]:
+        """Build BotCommand objects with Bot API 10.2 private flags."""
+        from telegram import BotCommand
+
+        private_names = getattr(self, "_ephemeral_group_commands", set())
+        commands: List[Any] = []
+        for name, description in menu_commands:
+            if group_scope and str(name).lower() in private_names:
+                commands.append(
+                    BotCommand(name, description, api_kwargs={"is_ephemeral": True})
+                )
+            else:
+                commands.append(BotCommand(name, description))
+        return commands
+
+    @staticmethod
+    def _is_ephemeral_delivery(metadata: Optional[Dict[str, Any]]) -> bool:
+        return bool(metadata and metadata.get("telegram_ephemeral_required"))
+
+    def _ephemeral_send_api_kwargs(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Build Bot API 10.2 private-target fields, or ``None`` if invalid."""
+        if not self._is_ephemeral_delivery(metadata):
+            return {}
+        receiver_user_id = (metadata or {}).get("telegram_ephemeral_receiver_user_id")
+        if receiver_user_id is None:
+            return None
+        try:
+            receiver_user_id = int(receiver_user_id)
+        except (TypeError, ValueError):
+            return None
+        kwargs: Dict[str, Any] = {"receiver_user_id": receiver_user_id}
+        received_at = (metadata or {}).get("telegram_ephemeral_received_at_monotonic")
+        within_reply_window = True
+        if received_at is not None:
+            try:
+                within_reply_window = (time.monotonic() - float(received_at)) < 14.0
+            except (TypeError, ValueError):
+                within_reply_window = False
+        ephemeral_message_id = (metadata or {}).get("telegram_ephemeral_message_id")
+        if ephemeral_message_id and within_reply_window:
+            kwargs["reply_parameters"] = {
+                "ephemeral_message_id": str(ephemeral_message_id)
+            }
+        return kwargs
+
+    async def _send_ephemeral_text(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        """Send private group text and never fall back to a public message."""
+        private_kwargs = self._ephemeral_send_api_kwargs(metadata)
+        if private_kwargs is None:
+            return SendResult(
+                success=False,
+                error="Ephemeral delivery refused: receiver_user_id is missing",
+                retryable=False,
+            )
+
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(
+            formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+        )
+        if len(chunks) > 1:
+            chunks = [
+                _separate_chunk_indicator_from_fence(
+                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                )
+                for chunk in chunks
+            ]
+
+        try:
+            for index, chunk in enumerate(chunks):
+                if index:
+                    await asyncio.sleep(
+                        getattr(self, "_text_batch_split_delay_seconds", 0.0)
+                    )
+                notification_kwargs = self._notification_kwargs(metadata)
+                notification_kwargs.pop("api_kwargs", None)
+                payload: Dict[str, Any] = {
+                    "chat_id": normalize_telegram_chat_id(chat_id),
+                    "text": chunk,
+                    "parse_mode": "MarkdownV2",
+                    **private_kwargs,
+                    **notification_kwargs,
+                }
+                if getattr(self, "_disable_link_previews", False):
+                    payload["link_preview_options"] = {"is_disabled": True}
+                try:
+                    await self._bot.do_api_request("sendMessage", api_kwargs=payload)
+                except Exception as markdown_exc:
+                    if not any(
+                        marker in str(markdown_exc).lower()
+                        for marker in ("parse", "markdown", "entity")
+                    ):
+                        raise
+                    plain_payload = dict(payload)
+                    plain_payload["text"] = _strip_mdv2(chunk)
+                    plain_payload.pop("parse_mode", None)
+                    await self._bot.do_api_request(
+                        "sendMessage", api_kwargs=plain_payload
+                    )
+        except Exception as exc:
+            # Privacy invariant: never retry through send_message() without the
+            # Bot API 10.2 target fields. Failed private delivery beats a leak.
+            safe_error = _redact_telegram_error_text(exc)
+            logger.warning(
+                "[%s] Ephemeral send failed closed (no public fallback): %s",
+                self.name, safe_error,
+            )
+            return SendResult(
+                success=False,
+                error=f"Ephemeral delivery failed: {safe_error}",
+                retryable=False,
+            )
+        return SendResult(success=True, message_id=None)
+
+    # ------------------------------------------------------------------
     # Bot API 10.1 Rich Messages (sendRichMessage)
     #
     # Final / new-message replies opportunistically use sendRichMessage with
@@ -1562,6 +1762,201 @@ class TelegramAdapter(BasePlatformAdapter):
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
+
+    @staticmethod
+    def _rich_inline_media_type(path: str, is_voice: bool) -> Optional[tuple[str, str]]:
+        """Return ``(InputMedia.type, tg:// scheme)`` for supported local media."""
+        ext = os.path.splitext(path)[1].lower()
+        if ext in {".jpg", ".jpeg", ".png", ".webp"}:
+            return "photo", "photo"
+        if ext == ".gif":
+            return "animation", "video"
+        if ext == ".mp4":
+            return "video", "video"
+        if ext in {".mp3", ".m4a"}:
+            return "audio", "audio"
+        if is_voice and ext in {".ogg", ".opus"}:
+            return "voice_note", "audio"
+        return None
+
+    def _build_rich_inline_media_payload(
+        self,
+        content: str,
+        media_files: List[tuple],
+        stack: Any,
+    ) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Build InputRichMessage.media plus multipart InputFile parameters."""
+        # Defensive bound: cap simultaneously opened files and multipart parts.
+        if not media_files or len(media_files) > 50:
+            return None
+        from telegram import InputFile
+
+        media_entries: List[Dict[str, Any]] = []
+        markdown_blocks: List[str] = []
+        uploads: Dict[str, Any] = {}
+        for index, item in enumerate(media_files):
+            try:
+                path, is_voice = item
+            except (TypeError, ValueError):
+                return None
+            path = str(path)
+            media_type = self._rich_inline_media_type(path, bool(is_voice))
+            if media_type is None or not os.path.isfile(path):
+                return None
+            input_type, scheme = media_type
+            file_obj = stack.enter_context(open(path, "rb"))
+            input_file = InputFile(
+                file_obj,
+                filename=os.path.basename(path),
+                attach=True,
+            )
+            media_id = f"media_{index}"
+            media_entries.append(
+                {
+                    "id": media_id,
+                    "media": {
+                        "type": input_type,
+                        "media": input_file.attach_uri,
+                    },
+                }
+            )
+            markdown_blocks.append(f"![](tg://{scheme}?id={media_id})")
+            # PTB 22.6 cannot recursively discover InputFile inside the new
+            # InputRichMessage.media object. Supplying each InputFile as a
+            # top-level multipart value makes PTB add the attachment part; the
+            # Bot API ignores the extra scalar field and resolves attach://.
+            uploads[input_file.attach_name] = input_file
+
+        rich_message = self._rich_message_payload(content)
+        rich_message["markdown"] = (
+            rich_message["markdown"].rstrip()
+            + "\n\n"
+            + "\n\n".join(markdown_blocks)
+        )
+        rich_message["media"] = media_entries
+        return rich_message, uploads
+
+    async def _rich_media_request(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        content: str,
+    ) -> Optional[SendResult]:
+        """Execute rich-media send/edit with the existing no-duplicate contract."""
+        try:
+            raw = await self._bot.do_api_request(endpoint, api_kwargs=payload)
+        except Exception as exc:
+            if self._is_rich_fallback_error(exc):
+                if self._is_rich_capability_error(exc):
+                    self._rich_send_disabled = True
+                logger.debug(
+                    "[%s] %s inline-media rejected (%s) — using separate attachments",
+                    self.name, endpoint, exc,
+                )
+                return None
+            safe_error = _redact_telegram_error_text(exc)
+            logger.warning(
+                "[%s] %s inline-media transient failure (no duplicate fallback): %s",
+                self.name, endpoint, safe_error,
+            )
+            return SendResult(success=False, error=safe_error, retryable=True)
+
+        message_id = None
+        if isinstance(raw, dict):
+            message_id = raw.get("message_id")
+            if message_id is None:
+                message_id = (raw.get("result") or {}).get("message_id")
+        else:
+            message_id = getattr(raw, "message_id", None)
+        if message_id is not None:
+            try:
+                from gateway import rich_sent_store
+                rich_sent_store.record(str(payload.get("chat_id")), str(message_id), content)
+            except Exception:
+                pass
+        return SendResult(
+            success=True,
+            message_id=str(message_id) if message_id is not None else None,
+        )
+
+    async def send_rich_media(
+        self,
+        chat_id: str,
+        content: str,
+        media_files: List[tuple],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[SendResult]:
+        """Send one Bot API 10.2 rich report with embedded local media."""
+        if self._is_ephemeral_delivery(metadata):
+            # The generic caller retains both text and files when this returns
+            # None, then routes them through targetable ephemeral send methods.
+            return None
+        if (
+            not getattr(self, "_rich_inline_media_enabled", False)
+            or not getattr(self, "_rich_messages_enabled", False)
+            or getattr(self, "_rich_send_disabled", False)
+            or not self._bot_supports_rich()
+        ):
+            return None
+        from contextlib import ExitStack
+
+        routing = self._compute_single_send_routing(
+            chat_id, reply_to, metadata, self._metadata_thread_id(metadata)
+        )
+        if routing is None:
+            return None
+        reply_to_id, thread_kwargs = routing
+        with ExitStack() as stack:
+            built = self._build_rich_inline_media_payload(content, media_files, stack)
+            if built is None:
+                return None
+            rich_message, uploads = built
+            payload: Dict[str, Any] = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "rich_message": rich_message,
+                **uploads,
+            }
+            payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
+            payload.update(self._notification_kwargs(metadata))
+            if reply_to_id is not None:
+                payload["reply_parameters"] = {"message_id": reply_to_id}
+            return await self._rich_media_request("sendRichMessage", payload, content)
+
+    async def edit_rich_media(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        media_files: List[tuple],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[SendResult]:
+        """Upgrade a streamed text preview to rich text with embedded media."""
+        if self._is_ephemeral_delivery(metadata):
+            # Ephemeral delivery disables streaming, so no public preview is
+            # eligible for an in-place rich edit.
+            return None
+        if (
+            not getattr(self, "_rich_inline_media_enabled", False)
+            or not getattr(self, "_rich_messages_enabled", False)
+            or getattr(self, "_rich_send_disabled", False)
+            or not self._bot_supports_rich()
+        ):
+            return None
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            built = self._build_rich_inline_media_payload(content, media_files, stack)
+            if built is None:
+                return None
+            rich_message, uploads = built
+            payload: Dict[str, Any] = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "message_id": int(message_id),
+                "rich_message": rich_message,
+                **uploads,
+            }
+            return await self._rich_media_request("editMessageText", payload, content)
 
     def _is_rich_capability_error(self, exc: Exception) -> bool:
         """True ⇒ the rich endpoint itself is unavailable (old PTB/server).
@@ -3146,7 +3541,6 @@ class TelegramAdapter(BasePlatformAdapter):
             # gateway command there automatically adds it to the Telegram menu.
             try:
                 from telegram import (
-                    BotCommand,
                     BotCommandScopeAllPrivateChats,
                     BotCommandScopeAllGroupChats,
                     BotCommandScopeDefault,
@@ -3161,15 +3555,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 # platforms.telegram.extra.command_menu.
                 max_commands = telegram_menu_max_commands()
                 menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                default_commands = self._make_menu_bot_commands(
+                    menu_commands, group_scope=False
+                )
+                group_commands = self._make_menu_bot_commands(
+                    menu_commands, group_scope=True
+                )
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
                 # through to AllGroupChats or Default).
-                for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
+                for scope_cls, commands in (
+                    (BotCommandScopeDefault, default_commands),
+                    (BotCommandScopeAllPrivateChats, default_commands),
+                    (BotCommandScopeAllGroupChats, group_commands),
+                ):
                     scope_name = getattr(scope_cls, "__name__", str(scope_cls))
                     try:
-                        await self._bot.set_my_commands(bot_commands, scope=scope_cls())
-                        logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
+                        await self._bot.set_my_commands(commands, scope=scope_cls())
+                        logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(commands))
                     except Exception as scope_err:
                         logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
                 # Forum topics don't inherit AllGroupChats — Telegram resolves
@@ -3853,6 +4256,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        # Ephemeral privacy is a hard routing contract, not a preference. Keep
+        # this before rich/legacy sends so no exception can drop into a public
+        # group message.
+        if self._is_ephemeral_delivery(metadata):
+            return await self._send_ephemeral_text(chat_id, content, metadata)
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -6219,6 +6628,31 @@ class TelegramAdapter(BasePlatformAdapter):
         if not images:
             return
 
+        # sendMediaGroup has no Bot API 10.2 receiver_user_id parameter. For
+        # private group replies, send each image through sendPhoto instead;
+        # falling back to a public album would violate the privacy contract.
+        if self._is_ephemeral_delivery(metadata):
+            from urllib.parse import unquote as _unquote
+
+            for image_url, alt_text in images:
+                if human_delay > 0:
+                    await asyncio.sleep(human_delay)
+                if image_url.startswith("file://"):
+                    await self.send_image_file(
+                        chat_id=chat_id,
+                        image_path=_unquote(image_url[7:]),
+                        caption=alt_text,
+                        metadata=metadata,
+                    )
+                else:
+                    await self.send_image(
+                        chat_id=chat_id,
+                        image_url=image_url,
+                        caption=alt_text,
+                        metadata=metadata,
+                    )
+            return
+
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
@@ -7758,10 +8192,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id = int(chat.id)
                 if chat_id in self._forum_command_registered:
                     return
-                from telegram import BotCommand, BotCommandScopeChat
+                from telegram import BotCommandScopeChat
                 from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
                 menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                bot_commands = self._make_menu_bot_commands(
+                    menu_commands, group_scope=True
+                )
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
@@ -8708,6 +9144,10 @@ class TelegramAdapter(BasePlatformAdapter):
             message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False,
         )
+        ephemeral_metadata = self._ephemeral_metadata_for_message(message)
+        # Delivery metadata is deliberately separate from SessionSource's
+        # identity fields and is forwarded by the generic gateway send paths.
+        source.delivery_metadata = ephemeral_metadata
         
         # Extract reply context if this message is a reply.
         # Prefer Telegram's native partial quote (message.quote, TextQuote)
@@ -8765,6 +9205,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            metadata=ephemeral_metadata,
             timestamp=message.date,
         )
 

@@ -72,6 +72,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         scope_id = getattr(source, "scope_id", None)
         if scope_id:
             metadata["slack_team_id"] = str(scope_id)
+    # Platform adapters may attach short-lived outbound constraints without
+    # changing session identity. Preserve them across background delivery.
+    delivery_metadata = getattr(source, "delivery_metadata", None)
+    if isinstance(delivery_metadata, dict):
+        metadata.update(delivery_metadata)
     if not metadata:
         return None
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
@@ -4887,7 +4892,10 @@ class BasePlatformAdapter(ABC):
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         typing_task: Optional[asyncio.Task] = None
-        if getattr(self.config, "typing_indicator", True):
+        if (
+            getattr(self.config, "typing_indicator", True)
+            and not (event.metadata or {}).get("suppress_typing")
+        ):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
             try:
                 _keep_typing_sig = inspect.signature(self._keep_typing)
@@ -5055,6 +5063,32 @@ class BasePlatformAdapter(ABC):
                             os.remove(_tts_path)
                         except OSError:
                             pass
+
+                # Adapter rich-media hook. Only explicit MEDIA: files
+                # participate; bare local paths and image URLs retain their
+                # established attachment behavior. ``None`` means unsupported
+                # and falls through. Any SendResult owns the attempt, including
+                # uncertain transient failures, so we do not duplicate-send.
+                if (
+                    media_files
+                    and text_content
+                    and not force_document_attachments
+                    and not _tts_caption_delivered
+                ):
+                    rich_media_impl = getattr(type(self), "send_rich_media", None)
+                    if callable(rich_media_impl):
+                        rich_media_result = await rich_media_impl(
+                            self,
+                            event.source.chat_id,
+                            text_content,
+                            media_files,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_final_thread_metadata,
+                        )
+                        if rich_media_result is not None:
+                            _record_delivery(rich_media_result)
+                            text_content = ""
+                            media_files = []
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:

@@ -402,6 +402,26 @@ class ChatCompletionsTransport(ProviderTransport):
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
+        # DeepSeek: top-level reasoning_effort (OpenAI-native, not extra_body).
+        # DeepSeek API only supports "high" (default) and "max". All other
+        # levels are compatibility-mapped per the DeepSeek API docs:
+        #   low/medium → high, xhigh → max.
+        # Thinking toggle defaults to enabled; only explicit "none" disables it.
+        if params.get("is_deepseek", False):
+            _ds_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _ds_thinking_off:
+                _ds_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in {"xhigh", "max", "ultra"}:
+                        _ds_effort = "max"
+                    # low/medium/high/minimal all map to "high"
+                api_kwargs["reasoning_effort"] = _ds_effort
+
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
         if is_tokenhub:
             _tokenhub_thinking_off = bool(
@@ -466,6 +486,15 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body["thinking"] = {
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
+
+        # DeepSeek extra_body.thinking (thinking toggle; reasoning_effort is top-level above)
+        if params.get("is_deepseek", False):
+            _ds_thinking = "disabled" if (
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            ) else "enabled"
+            extra_body["thinking"] = {"type": _ds_thinking}
 
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.

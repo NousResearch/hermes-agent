@@ -1164,3 +1164,123 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+
+class TestDeepSeekReasoningEffort:
+    """DeepSeek direct API: reasoning_effort as top-level param + thinking toggle.
+
+    DeepSeek's native API (api.deepseek.com) uses OpenAI-style top-level
+    ``reasoning_effort`` (not extra_body.reasoning). Before this, the
+    web UI dropdown had zero effect on direct DeepSeek calls."""
+
+    DS_BASE_URL = "https://api.deepseek.com/v1"
+
+    # ── effort level mapping ──────────────────────────────────────────
+
+    @pytest.mark.parametrize(
+        "effort,expected",
+        [
+            ("high", "high"),
+            ("minimal", "high"),
+            ("low", "high"),
+            ("medium", "high"),
+            ("xhigh", "max"),
+            ("max", "max"),
+            ("ultra", "max"),
+        ],
+    )
+    def test_reasoning_effort_top_level(self, transport, effort, expected):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_deepseek=True,
+            base_url=self.DS_BASE_URL,
+            reasoning_config={"enabled": True, "effort": effort},
+            max_tokens=None,
+        )
+        assert kw.get("reasoning_effort") == expected, (
+            f"effort={effort} -> expected reasoning_effort={expected}, "
+            f"got {kw.get('reasoning_effort')}"
+        )
+
+    # ── thinking toggle ───────────────────────────────────────────────
+
+    def test_thinking_enabled_when_reasoning_on(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_deepseek=True,
+            base_url=self.DS_BASE_URL,
+            reasoning_config={"enabled": True, "effort": "high"},
+            max_tokens=None,
+        )
+        assert kw["extra_body"]["thinking"]["type"] == "enabled"
+
+    def test_thinking_disabled_when_reasoning_off(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_deepseek=True,
+            base_url=self.DS_BASE_URL,
+            reasoning_config={"enabled": False},
+            max_tokens=None,
+        )
+        assert kw["extra_body"]["thinking"]["type"] == "disabled"
+        # No reasoning_effort when thinking is off
+        assert "reasoning_effort" not in kw
+
+    # ── regression guards ─────────────────────────────────────────────
+
+    def test_no_effect_when_not_deepseek(self, transport):
+        """Non-DeepSeek providers must NOT get DeepSeek-specific params."""
+        kw = transport.build_kwargs(
+            model="openai/gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_deepseek=False,
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": True, "effort": "high"},
+            max_tokens=None,
+        )
+        assert "reasoning_effort" not in kw
+        if "extra_body" in kw:
+            assert "thinking" not in kw["extra_body"], (
+                "DeepSeek thinking toggle leaked to non-DeepSeek provider"
+            )
+
+    def test_no_is_deepseek_flag_no_effect(self, transport):
+        """Without is_deepseek flag, DeepSeek params must not appear (back compat)."""
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            # is_deepseek omitted
+            base_url=self.DS_BASE_URL,
+            reasoning_config={"enabled": True, "effort": "high"},
+            max_tokens=None,
+        )
+        assert "reasoning_effort" not in kw, (
+            "reasoning_effort leaked without is_deepseek flag"
+        )
+
+    def test_reasoning_effort_not_in_extra_body(self, transport):
+        """DeepSeek uses top-level reasoning_effort, NOT extra_body.reasoning."""
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_deepseek=True,
+            base_url=self.DS_BASE_URL,
+            reasoning_config={"enabled": True, "effort": "high"},
+            max_tokens=None,
+        )
+        assert kw.get("reasoning_effort") == "high"
+        # Must NOT duplicate in extra_body.reasoning
+        if "extra_body" in kw:
+            assert "reasoning" not in kw["extra_body"], (
+                "DeepSeek puts reasoning_effort as top-level param, "
+                "not in extra_body.reasoning"
+            )

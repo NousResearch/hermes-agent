@@ -42,10 +42,7 @@ from tools.terminal_tool import (
     get_active_env,
 )
 from tools.thread_context import propagate_context_to_thread
-from tools.tool_result_storage import (
-    maybe_persist_tool_result,
-    enforce_turn_budget,
-)
+from tools.tool_result_storage import maybe_persist_tool_result
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
@@ -65,6 +62,37 @@ def _budget_for_agent(agent) -> BudgetConfig:
         return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
     except Exception:
         return DEFAULT_BUDGET
+
+
+def _allocated_tool_result_budget(
+    tool_messages: list[dict],
+    pending_tool_names: list[str],
+    config: BudgetConfig,
+) -> int | None:
+    """Fairly allocate remaining turn room across eligible pending calls.
+
+    ``None`` preserves a tool's infinite/pinned threshold (notably read_file).
+    Previously flushed messages are treated as immutable: each new result is
+    bounded before it is appended and incrementally persisted.
+    """
+    used = 0
+    for message in tool_messages:
+        tool_name = str(message.get("tool_name") or message.get("name") or "")
+        if config.resolve_threshold(tool_name) == float("inf"):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            used += len(content)
+
+    eligible_pending = [
+        str(name)
+        for name in pending_tool_names
+        if config.resolve_threshold(str(name)) != float("inf")
+    ]
+    if not eligible_pending:
+        return None
+    remaining = max(0, config.turn_budget - used)
+    return remaining // len(eligible_pending)
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -334,6 +362,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # Resolve the context-scaled tool-output budget once per turn (cheap, but
     # avoids rebuilding it per result inside the loop below).
     _tool_budget = _budget_for_agent(agent)
+    _turn_tool_messages: list[dict] = []
 
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
@@ -943,14 +972,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=name,
-            tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
-
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
             if _is_multimodal_tool_result(function_result):
@@ -959,6 +980,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
             else:
                 function_result += subdir_hints
+
+        _allocated_budget = _allocated_tool_result_budget(
+            _turn_tool_messages,
+            [pending[1] for pending in parsed_calls[i:]],
+            _tool_budget,
+        )
+        function_result = maybe_persist_tool_result(
+            content=function_result,
+            tool_name=name,
+            tool_use_id=tc.id,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+            threshold=_allocated_budget,
+        ) if (
+            not _is_multimodal_tool_result(function_result)
+            and _allocated_budget is not None
+        ) else function_result
 
         # Unwrap _multimodal dicts to an OpenAI-style content list so any
         # vision-capable provider receives [{type:text},{type:image_url}]
@@ -976,6 +1014,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             effect_disposition=effect_disposition,
         )
         messages.append(tool_message)
+        _turn_tool_messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if (
             risk_metadata is not None
@@ -1004,11 +1043,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # result so the steer lands as early as possible.
         agent._apply_pending_steer_to_tool_results(messages, 1)
 
-    # ── Per-turn aggregate budget enforcement ─────────────────────────
+    # Results were bounded against the evolving turn budget before each
+    # incremental flush. Never mutate a flushed tool message afterward.
     num_tools = len(parsed_calls)
-    if num_tools > 0:
-        turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -1023,6 +1060,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+    _turn_tool_messages: list[dict] = []
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -1634,14 +1672,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=function_name,
-            tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
-
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
         if subdir_hints:
@@ -1650,11 +1680,30 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             else:
                 function_result += subdir_hints
 
+        _allocated_budget = _allocated_tool_result_budget(
+            _turn_tool_messages,
+            [function_name]
+            + [pending.function.name for pending in assistant_message.tool_calls[i:]],
+            _tool_budget,
+        )
+        function_result = maybe_persist_tool_result(
+            content=function_result,
+            tool_name=function_name,
+            tool_use_id=tool_call.id,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+            threshold=_allocated_budget,
+        ) if (
+            not _is_multimodal_tool_result(function_result)
+            and _allocated_budget is not None
+        ) else function_result
+
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
         messages.append(tool_message)
+        _turn_tool_messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if (
             risk_metadata is not None
@@ -1714,10 +1763,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):
             time.sleep(agent.tool_delay)
 
-    # ── Per-turn aggregate budget enforcement ─────────────────────────
+    # Results were bounded against the evolving turn budget before each
+    # incremental flush. Never mutate a flushed tool message afterward.
     num_tools_seq = len(assistant_message.tool_calls)
-    if num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,

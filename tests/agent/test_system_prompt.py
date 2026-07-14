@@ -232,6 +232,24 @@ def _prompt_parts(agent):
         return build_system_prompt_parts(agent)
 
 
+class TestHermesAgentHelpGuidance:
+    def test_stable_prompt_keeps_skill_pointer_and_same_thread_reuse(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "core" / "hermes-agent"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: Hermes Agent workflow help\n---\n"
+        )
+        stable = _stable_prompt(_make_agent(valid_tool_names={"skill_view"}))
+
+        assert "https://hermes-agent.nousresearch.com/docs" in stable
+        assert "skill_view(name='hermes-agent')" in stable
+        assert "authoritative reference and always holds the latest" in stable
+        assert "If that same skill is already loaded for the current task or thread" in stable
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""

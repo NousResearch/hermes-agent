@@ -99,3 +99,42 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+def test_moa_prompt_guidance_uses_concrete_aggregator_model():
+    """Prompt-family guidance follows MoA's acting model, not its preset slug."""
+    from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE, TOOL_USE_ENFORCEMENT_GUIDANCE
+
+    agent = _make_agent(
+        provider="moa",
+        model="default",
+        valid_tool_names=["terminal"],
+        _tool_use_enforcement="auto",
+    )
+    config = {
+        "moa": {
+            "presets": {
+                "default": {
+                    "aggregator": {"provider": "deepseek", "model": "deepseek-v4-pro"}
+                }
+            }
+        }
+    }
+    with patch("hermes_cli.config.load_config", return_value=config):
+        stable = _stable_prompt(agent)
+
+    assert TOOL_USE_ENFORCEMENT_GUIDANCE in stable
+    assert OPENAI_MODEL_EXECUTION_GUIDANCE in stable
+
+
+def test_known_non_openai_tool_enforcement_families_get_execution_guidance():
+    """DeepSeek, GLM, and Qwen need the same execution-discipline block."""
+    from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+
+    for model in ("deepseek/deepseek-r1", "glm/glm-5", "qwen/qwen-plus"):
+        agent = _make_agent(
+            model=model,
+            valid_tool_names=["terminal"],
+            _tool_use_enforcement="auto",
+        )
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in _stable_prompt(agent)

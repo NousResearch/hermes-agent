@@ -112,6 +112,37 @@ def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> 
     return base
 
 
+def _acting_model_for_prompt_guidance(provider: str, model: str) -> tuple[str, str]:
+    """Return the concrete provider/model used by prompt-family gates.
+
+    MoA keeps the preset slug in ``agent.model`` while the aggregator is the
+    model that actually receives and follows the system prompt. Resolve only
+    the local guidance decision; the agent's public provider/model remain
+    unchanged for session identity and prompt caching.
+    """
+    provider_s = str(provider or "").strip()
+    model_s = str(model or "").strip()
+    if provider_s.lower() != "moa" or not model_s:
+        return provider_s, model_s
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import resolve_moa_preset
+
+        preset = resolve_moa_preset(load_config().get("moa") or {}, model_s)
+        aggregator = preset.get("aggregator") or {}
+        aggregator_provider = str(aggregator.get("provider") or "").strip()
+        aggregator_model = str(aggregator.get("model") or "").strip()
+        if (
+            aggregator_provider
+            and aggregator_model
+            and aggregator_provider.lower() != "moa"
+        ):
+            return aggregator_provider, aggregator_model
+    except Exception:
+        pass
+    return provider_s, model_s
+
+
 _TUI_EMBEDDED_PANE_CLARIFIER = (
     " You're in its embedded terminal pane, beside the GUI chat — the user can "
     "select your output (Option-drag on macOS, Shift-drag elsewhere) and press "
@@ -263,20 +294,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.valid_tool_names:
         _enforce = agent._tool_use_enforcement
         _inject = False
+        _, model_for_guidance = _acting_model_for_prompt_guidance(
+            getattr(agent, "provider", ""), getattr(agent, "model", "")
+        )
         if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
             _inject = True
         elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
             _inject = False
         elif isinstance(_enforce, list):
-            model_lower = (agent.model or "").lower()
+            model_lower = model_for_guidance.lower()
             _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
         else:
             # "auto" or any unrecognised value — use hardcoded defaults
-            model_lower = (agent.model or "").lower()
+            model_lower = model_for_guidance.lower()
             _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
         if _inject:
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
-            _model_lower = (agent.model or "").lower()
+            _model_lower = model_for_guidance.lower()
             # Google model operational guidance (conciseness, absolute
             # paths, parallel tool calls, verify-before-edit, etc.)
             if "gemini" in _model_lower or "gemma" in _model_lower:
@@ -286,7 +320,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # Also applied to xAI Grok — same failure modes (claims completion
             # without tool calls, suggests workarounds instead of using
             # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            if any(
+                family in _model_lower
+                for family in ("gpt", "codex", "grok", "deepseek", "glm", "qwen")
+            ):
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])

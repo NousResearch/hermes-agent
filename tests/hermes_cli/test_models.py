@@ -82,7 +82,13 @@ class TestFetchOpenRouterModels:
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
+        with patch(
+            "hermes_cli.model_catalog.get_curated_openrouter_models",
+            return_value=None,
+        ), patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            side_effect=OSError("boom"),
+        ):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == OPENROUTER_MODELS

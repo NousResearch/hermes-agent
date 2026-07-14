@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-09T18:38:59Z",
+  "updated_at": "2026-07-14T15:51:41Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -147,6 +147,10 @@
         {
           "id": "openrouter/pareto-code",
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
+        },
+        {
+          "id": "openrouter/free",
+          "description": "free"
         },
         {
           "id": "openrouter/elephant-alpha",

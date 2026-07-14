@@ -415,6 +415,24 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_skill_loading_guidance_is_targeted(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "clearly applies and materially improves execution" in result
+        assert "smallest non-overlapping set" in result
+        assert "core instructions are already in context" in result
+        assert "partial or incidental relevance" in result
+        assert "even partially relevant" not in result
+        assert "Err on the side of loading" not in result
+        assert "Only proceed without loading a skill" not in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

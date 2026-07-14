@@ -631,6 +631,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
     return app
 
 
@@ -3849,6 +3850,129 @@ class TestSessionKeyHeader:
             assert resp.headers.get("X-Hermes-Session-Key") == "webui:chan-1"
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["gateway_session_key"] == "webui:chan-1"
+
+    @pytest.mark.asyncio
+    async def test_stored_responses_are_scoped_to_session_key(self, auth_adapter):
+        """Stored Responses API records cannot be read, deleted, or chained from another session key."""
+        mock_result = {
+            "final_response": "private answer",
+            "messages": [{"role": "assistant", "content": "private answer"}],
+            "api_calls": 1,
+        }
+        owner_headers = {
+            "X-Hermes-Session-Key": "webui:owner",
+            "Authorization": "Bearer sk-secret",
+        }
+        other_headers = {
+            "X-Hermes-Session-Key": "webui:other",
+            "Authorization": "Bearer sk-secret",
+        }
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                create_resp = await cli.post(
+                    "/v1/responses",
+                    headers=owner_headers,
+                    json={"model": "hermes-agent", "input": "secret"},
+                )
+                assert create_resp.status == 200
+                response_id = (await create_resp.json())["id"]
+
+                get_resp = await cli.get(f"/v1/responses/{response_id}", headers=other_headers)
+                assert get_resp.status == 404
+
+                chain_resp = await cli.post(
+                    "/v1/responses",
+                    headers=other_headers,
+                    json={
+                        "model": "hermes-agent",
+                        "input": "continue",
+                        "previous_response_id": response_id,
+                    },
+                )
+                assert chain_resp.status == 404
+
+                delete_resp = await cli.delete(f"/v1/responses/{response_id}", headers=other_headers)
+                assert delete_resp.status == 404
+
+                owner_get_resp = await cli.get(f"/v1/responses/{response_id}", headers=owner_headers)
+                assert owner_get_resp.status == 200
+
+                owner_delete_resp = await cli.delete(f"/v1/responses/{response_id}", headers=owner_headers)
+                assert owner_delete_resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_runs_previous_response_id_is_scoped_to_session_key(self, auth_adapter):
+        """Runs API previous_response_id chaining cannot cross X-Hermes-Session-Key owners."""
+        response_id = "resp_owner"
+        auth_adapter._response_store.put(
+            response_id,
+            {
+                "response": {"id": response_id},
+                "conversation_history": [{"role": "user", "content": "private context"}],
+                "instructions": "private instructions",
+                "session_id": "owner-session",
+                "gateway_session_key": "webui:owner",
+            },
+        )
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create_agent:
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={
+                        "X-Hermes-Session-Key": "webui:other",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "input": "continue",
+                        "previous_response_id": response_id,
+                    },
+                )
+
+        assert resp.status == 404
+        mock_create_agent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_conversation_names_are_not_reused_across_session_keys(self, auth_adapter):
+        """A conversation name owned by one session key starts fresh for another key."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "first", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                first_resp = await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "X-Hermes-Session-Key": "webui:owner",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={"model": "hermes-agent", "input": "hello", "conversation": "shared-name"},
+                )
+                assert first_resp.status == 200
+
+                mock_run.return_value = (
+                    {"final_response": "second", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                second_resp = await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "X-Hermes-Session-Key": "webui:other",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={"model": "hermes-agent", "input": "hello again", "conversation": "shared-name"},
+                )
+                assert second_resp.status == 200
+                assert mock_run.call_args.kwargs["conversation_history"] == []
 
     @pytest.mark.asyncio
     async def test_capabilities_advertises_session_key_header(self, adapter):

@@ -1293,6 +1293,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    @staticmethod
+    def _response_visible_to_session_key(
+        stored: Dict[str, Any],
+        gateway_session_key: Optional[str],
+    ) -> bool:
+        """Return whether a stored response belongs to the caller's session key."""
+        owner_key = stored.get("gateway_session_key")
+        return not owner_key or owner_key == gateway_session_key
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -2882,6 +2891,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "conversation_history": conversation_history_snapshot,
                 "instructions": instructions,
                 "session_id": session_id,
+                "gateway_session_key": gateway_session_key,
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
@@ -3392,6 +3402,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # Resolve conversation name to latest response_id
         if conversation:
             previous_response_id = self._response_store.get_conversation(conversation)
+            if previous_response_id:
+                stored = self._response_store.get(previous_response_id)
+                if stored is None or not self._response_visible_to_session_key(stored, gateway_session_key):
+                    previous_response_id = None
             # No error if conversation doesn't exist yet — it's a new conversation
 
         # Normalize input to message list
@@ -3441,7 +3455,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stored_session_id = None
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
-            if stored is None:
+            if stored is None or not self._response_visible_to_session_key(stored, gateway_session_key):
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")
@@ -3630,6 +3644,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "conversation_history": full_history,
                 "instructions": instructions,
                 "session_id": session_id,
+                "gateway_session_key": gateway_session_key,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
@@ -3650,10 +3665,13 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
 
         response_id = request.match_info["response_id"]
         stored = self._response_store.get(response_id)
-        if stored is None:
+        if stored is None or not self._response_visible_to_session_key(stored, gateway_session_key):
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
         return web.json_response(stored["response"])
@@ -3663,8 +3681,15 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
 
         response_id = request.match_info["response_id"]
+        stored = self._response_store.get(response_id)
+        if stored is None or not self._response_visible_to_session_key(stored, gateway_session_key):
+            return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
+
         deleted = self._response_store.delete(response_id)
         if not deleted:
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
@@ -4394,11 +4419,12 @@ class APIServerAdapter(BasePlatformAdapter):
         stored_session_id = None
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
-            if stored:
-                conversation_history = list(stored.get("conversation_history", []))
-                stored_session_id = stored.get("session_id")
-                if instructions is None:
-                    instructions = stored.get("instructions")
+            if stored is None or not self._response_visible_to_session_key(stored, gateway_session_key):
+                return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
+            conversation_history = list(stored.get("conversation_history", []))
+            stored_session_id = stored.get("session_id")
+            if instructions is None:
+                instructions = stored.get("instructions")
 
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).

@@ -146,11 +146,14 @@ class _patch_discord_sender:
         self._entry = None
         self._original = None
 
-    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None):
+    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None, caption=None):
         token = getattr(pconfig, "token", None)
+        # Only forward caption= when set, so mocks written against the
+        # pre-caption signature (no caption kwarg) keep working.
+        extra = {"caption": caption} if caption is not None else {}
         return await self._mock(
             token, chat_id, message,
-            thread_id=thread_id, media_files=media_files,
+            thread_id=thread_id, media_files=media_files, **extra,
         )
 
     def __enter__(self):
@@ -637,7 +640,9 @@ class TestSendMessageTool:
 
 
 class TestSendTelegramMediaDelivery:
-    def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
+    def test_sends_photo_with_caption_for_media_tag(self, tmp_path, monkeypatch):
+        # A single captionable image + short text now rides as the photo's
+        # native caption (MEDIA:<path> caption), not a separate text message.
         image_path = tmp_path / "photo.png"
         image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
 
@@ -661,11 +666,10 @@ class TestSendTelegramMediaDelivery:
 
         assert result["success"] is True
         assert result["message_id"] == "2"
-        bot.send_message.assert_awaited_once()
+        # No separate text send — the caption rides the photo bubble.
+        bot.send_message.assert_not_awaited()
         bot.send_photo.assert_awaited_once()
-        sent_text = bot.send_message.await_args.kwargs["text"]
-        assert "MEDIA:" not in sent_text
-        assert sent_text == "Hello there"
+        assert bot.send_photo.await_args.kwargs.get("caption") == "Hello there"
 
     def test_sends_voice_for_ogg_with_voice_directive(self, tmp_path, monkeypatch):
         voice_path = tmp_path / "voice.ogg"
@@ -2090,7 +2094,7 @@ class TestSendToPlatformDiscordMedia:
         assert call_log[1]["media_files"] == [("/fake/img.png", False)]  # Last chunk: media attached
 
     def test_single_chunk_gets_media(self):
-        """Short message (single chunk) gets media_files directly."""
+        """Short message + single image rides as the media caption."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
         with _patch_discord_sender(send_mock):
@@ -2108,6 +2112,9 @@ class TestSendToPlatformDiscordMedia:
         send_mock.assert_awaited_once()
         call_kwargs = send_mock.await_args.kwargs
         assert call_kwargs["media_files"] == [("/fake/img.png", False)]
+        # Text rides as the caption, not a separate positional message body.
+        assert call_kwargs.get("caption") == "short message"
+        assert send_mock.await_args.args[2] == ""
 
 
 class TestSendMatrixUrlEncoding:
@@ -3376,13 +3383,17 @@ class TestSendTelegramThreadNotFoundRetry:
             "retry should drop message_thread_id after thread-not-found"
 
     def test_disable_web_page_preview_not_leaked_to_media_sends(self):
-        """disable_web_page_preview should only appear in text send, not media sends."""
-        text_kwargs_seen = []
+        """disable_web_page_preview must never leak into a media send.
+
+        A single captionable file + short text now rides as the document's
+        caption (no separate text send), so the invariant to protect is that
+        the captioned send_document does not inherit disable_web_page_preview
+        (valid only for send_message).
+        """
         media_kwargs_seen = []
 
         class FakeBot:
             async def send_message(self, **kwargs):
-                text_kwargs_seen.append(kwargs)
                 return SimpleNamespace(message_id=1)
 
             async def send_document(self, **kwargs):
@@ -3406,9 +3417,9 @@ class TestSendTelegramThreadNotFoundRetry:
 
             result = asyncio.run(run_test())
             assert result["success"] is True
-            # Text send should have disable_web_page_preview
-            assert text_kwargs_seen[0].get("disable_web_page_preview") is True
-            # Media send should NOT have disable_web_page_preview
+            # Caption rides the document bubble.
+            assert media_kwargs_seen[0].get("caption") == "check preview"
+            # Media send must NOT carry disable_web_page_preview.
             assert "disable_web_page_preview" not in media_kwargs_seen[0], \
                 "disable_web_page_preview leaked into send_document kwargs"
         finally:

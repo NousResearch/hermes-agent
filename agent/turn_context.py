@@ -118,12 +118,12 @@ class TurnContext:
 
 def build_turn_context(
     agent,
-    user_message: str,
+    user_message: Any,
     system_message: Optional[str],
     conversation_history: Optional[List[Dict[str, Any]]],
     task_id: Optional[str],
     stream_callback,
-    persist_user_message: Optional[str],
+    persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
     *,
     restore_or_build_system_prompt,
@@ -271,6 +271,29 @@ def build_turn_context(
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
 
+    # The CLI may already have staged this input outside the history passed to
+    # ``run_conversation``. Reuse it only when its clean transcript text matches
+    # this turn; a stale handoff from a failed prior turn must not replace a
+    # later, different user input. Voice turns compare against their explicit
+    # clean persistence override rather than the API-only prefixed payload.
+    pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
+    expected_persist_content = (
+        persist_user_message if persist_user_message is not None else user_message
+    )
+    if (
+        isinstance(pending_cli_message, dict)
+        and pending_cli_message.get("content") == expected_persist_content
+    ):
+        user_msg = pending_cli_message
+        # The CLI-staged value is the clean transcript text. Restore the
+        # API-facing variant (for example, a voice-mode prefix) while retaining
+        # the same dict and any close-path durable marker.
+        user_msg["content"] = user_message
+    else:
+        user_msg = {"role": "user", "content": user_message}
+        if isinstance(pending_cli_message, dict):
+            agent._pending_cli_user_message = None
+
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():
         agent._hydrate_todo_store(conversation_history)
@@ -284,6 +307,13 @@ def build_turn_context(
             agent._user_turn_count = prior_user_turns
             if agent._memory_nudge_interval > 0 and agent._turns_since_memory == 0:
                 agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
+
+    # Add the current user message after the prompt/session setup has made
+    # close persistence safe. The handoff above preserves any marker already
+    # stamped by an earlier close flush.
+    messages.append(user_msg)
+    current_turn_user_idx = len(messages) - 1
+    agent._persist_user_message_idx = current_turn_user_idx
 
     # Track user turns for memory flush and periodic nudge logic.
     agent._user_turn_count += 1
@@ -313,11 +343,19 @@ def build_turn_context(
             should_review_memory = True
             agent._turns_since_memory = 0
 
-    # Add user message.
-    user_msg = {"role": "user", "content": user_message}
-    messages.append(user_msg)
-    current_turn_user_idx = len(messages) - 1
-    agent._persist_user_message_idx = current_turn_user_idx
+    # Cosmetic side-signal: detect an affection "reaction" (ily / <3 / good bot)
+    # and notify the host so it can play hearts. Token-free, never touches the
+    # conversation, and never fatal — a purely optional UI beat.
+    reaction_callback = getattr(agent, "reaction_callback", None)
+    if reaction_callback is not None:
+        try:
+            from agent.reactions import detect_reaction
+
+            kind = detect_reaction(original_user_message)
+            if kind:
+                reaction_callback(kind)
+        except Exception:
+            pass
 
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
@@ -334,18 +372,33 @@ def build_turn_context(
 
     # Create the DB session row now that _cached_system_prompt is populated, so
     # the persisted snapshot is written non-NULL on the first turn (Issue
-    # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.
-    agent._ensure_db_session()
+    # #45499). Keep row creation and the marker-based append in the same
+    # per-agent critical section as CLI close persistence.
+    persist_lock = getattr(agent, "_session_persist_lock", None)
+
+    def _ensure_and_persist() -> None:
+        agent._ensure_db_session()
+        agent._persist_session(messages, conversation_history)
 
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
     try:
-        agent._persist_session(messages, conversation_history)
+        if persist_lock is None:
+            _ensure_and_persist()
+        else:
+            with persist_lock:
+                _ensure_and_persist()
     except Exception:
         logger.warning(
             "Early turn-start session persistence failed for session=%s",
             agent.session_id or "none",
             exc_info=True,
         )
+    finally:
+        # Keep an unmarked staged input available to a later close retry if the
+        # normal persistence attempt failed. Once the marker is present, the
+        # close path must no longer treat it as a pre-worker UI input.
+        if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
+            agent._pending_cli_user_message = None
 
     # ── Preflight context compression ──
     # Gate the (expensive) full token estimate behind a cheap pre-check.

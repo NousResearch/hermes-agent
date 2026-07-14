@@ -314,15 +314,18 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
-# Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.4/5.5.
-# The raw OpenAI API and OpenRouter expose 1.05M for the same slug, but the
-# Codex backend hard-caps at 272K (verified live: a ~330K-token request to
+# Context window enforced by ChatGPT's Codex OAuth backend for the
+# gpt-5.4 / gpt-5.5 / gpt-5.6 families. The raw OpenAI API and OpenRouter
+# expose 1.05M for the same slugs, but the Codex backend hard-caps at 272K
+# (verified live for 5.4/5.5: a ~330K-token request to
 # chatgpt.com/backend-api/codex/responses is rejected with
-# ``context_length_exceeded`` while ~250K succeeds). With a 272K ceiling the
-# default 50% compaction trigger fires at ~136K — wasteful, since the model
-# can hold far more raw context before summarization actually buys anything.
-# We raise the trigger to 85% (~231K) on this exact route so Codex gpt-5.4/
-# gpt-5.5 sessions use the window they actually have.
+# ``context_length_exceeded`` while ~250K succeeds; gpt-5.6 shares the same
+# 272K Codex cap — see _CODEX_OAUTH_CONTEXT_FALLBACK in model_metadata.py).
+# With a 272K ceiling the default 50% compaction trigger fires at ~136K —
+# wasteful, since the model can hold far more raw context before
+# summarization actually buys anything. We raise the trigger to 85% (~231K)
+# on this exact route so Codex gpt-5.4 / gpt-5.5 / gpt-5.6 sessions use the
+# window they actually have.
 _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
 
 # gpt-5.3-codex-spark is Codex-OAuth-only (ChatGPT Pro entitlement) with a
@@ -336,14 +339,16 @@ _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4 / gpt-5.5 on the ChatGPT Codex OAuth backend.
+    """True for gpt-5.4 / gpt-5.5 / gpt-5.6 on the ChatGPT Codex OAuth backend.
 
     Matches only the Codex OAuth route (provider ``openai-codex``), not the
     direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
     larger context window for the same slug and must keep the user's default
-    compaction threshold. ``gpt-5.4-pro`` / ``gpt-5.5-pro`` and dated snapshots
-    are matched via prefix so the override tracks both 272K-capped families
-    without re-listing every variant.
+    compaction threshold. ``-pro`` variants and dated snapshots are matched
+    via prefix so the override tracks every 272K-capped family (5.4, 5.5,
+    5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
+    variant. (Name kept for backward compatibility with the
+    ``compression.codex_gpt55_autoraise`` config key.)
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
@@ -356,6 +361,9 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         or bare == "gpt-5.5"
         or bare.startswith("gpt-5.5-")
         or bare.startswith("gpt-5.5.")
+        or bare == "gpt-5.6"
+        or bare.startswith("gpt-5.6-")
+        or bare.startswith("gpt-5.6.")
     )
 
 
@@ -410,11 +418,12 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 on the Codex OAuth route → 0.85, because Codex caps
-        both families at 272K and the default 50% trigger would compact at
-        ~136K. Gated by ``allow_codex_gpt55_autoraise`` (historical config-key
-        name kept for backward compatibility) so the user can opt back down to
-        the global default (the caller passes the config flag through here).
+      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
+        Codex caps all three families at 272K and the default 50% trigger
+        would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
+        (historical config-key name kept for backward compatibility) so the
+        user can opt back down to the global default (the caller passes the
+        config flag through here).
       - gpt-5.3-codex-spark on the Codex OAuth route → 0.70, because the model
         has a native 128K window and the default 50% trigger would compact at
         ~64K — wasting half the usable context. Not gated by the gpt-5.5
@@ -465,6 +474,10 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "kilocode": "google/gemini-3-flash-preview",
     "ollama-cloud": "nemotron-3-nano:30b",
     "tencent-tokenhub": "hy3-preview",
+    # NB: no "deepinfra" entry — its aux model lives on the ProviderProfile
+    # (plugins/model-providers/deepinfra: default_aux_model), which
+    # _get_aux_model_for_provider() reads first. Duplicating it here would be
+    # dead data that drifts when the profile's value is bumped.
 }
 
 # Legacy alias — callers that haven't been updated to _get_aux_model_for_provider()
@@ -479,6 +492,33 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
 }
+
+
+def _resolve_provider_vision_default(provider: str) -> Optional[str]:
+    """Return the provider's preferred default vision model id, or None.
+
+    Static entries in :data:`_PROVIDER_VISION_MODELS` win first (xiaomi /
+    zai have dedicated vision-only model names that don't live in any
+    discoverable catalog). Otherwise the provider's :class:`ProviderProfile`
+    gets a chance to supply one via its ``default_vision_model()`` hook —
+    that's where catalog-backed providers (DeepInfra) resolve a live default,
+    keeping the discovery logic inside their plugin instead of a name-check
+    branch here.
+    """
+    static = _PROVIDER_VISION_MODELS.get(provider)
+    if static:
+        return static
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    try:
+        return profile.default_vision_model()
+    except Exception:
+        return None
 
 # Providers whose endpoint does not accept image input, even though the
 # provider's broader ecosystem has vision models available elsewhere.  When
@@ -863,6 +903,7 @@ class _CodexCompletionsAdapter:
         # `function_call_output` items with a valid call_id, so every
         # Responses path normalizes tool history identically and cannot drift.
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from utils import base_url_host_matches
 
         instructions = "You are a helpful assistant."
         replay_messages: List[Dict[str, Any]] = []
@@ -874,7 +915,18 @@ class _CodexCompletionsAdapter:
             else:
                 replay_messages.append(msg)
 
-        input_items = _chat_messages_to_responses_input(replay_messages)
+        # Copilot (githubcopilot.com) binds replayed codex_message_items ids
+        # to a backend "connection" that doesn't survive credential
+        # rotation/gateway restarts — replaying one gets HTTP 401 "input
+        # item ID does not belong to this connection" (#32716). Auxiliary
+        # calls (context compression, flush_memories, MoA aggregation) go
+        # through this adapter instead of agent/transports/codex.py's
+        # build_kwargs, so they need the same guard applied independently.
+        _host_for_input = str(getattr(self._client, "base_url", "") or "")
+        _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        input_items = _chat_messages_to_responses_input(
+            replay_messages, is_github_responses=_is_github_for_input,
+        )
 
         resp_kwargs: Dict[str, Any] = {
             "model": model,
@@ -1254,12 +1306,24 @@ class _AnthropicCompletionsAdapter:
             elif choice_type in {"auto", "required", "none"}:
                 normalized_tool_choice = choice_type
 
+        # Honor extra_body.reasoning (chat.completions shape) so auxiliary
+        # tasks configured with auxiliary.<task>.reasoning_effort (or an
+        # explicit extra_body.reasoning) control Anthropic thinking too —
+        # build_anthropic_kwargs translates the config dict into the native
+        # ``thinking`` field and handles models where thinking is mandatory.
+        _reasoning_cfg = None
+        _eb = kwargs.get("extra_body")
+        if isinstance(_eb, dict):
+            _rc = _eb.get("reasoning")
+            if isinstance(_rc, dict):
+                _reasoning_cfg = _rc
+
         anthropic_kwargs = build_anthropic_kwargs(
             model=model,
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
-            reasoning_config=None,
+            reasoning_config=_reasoning_cfg,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
@@ -4707,8 +4771,8 @@ def resolve_provider_client(
         if custom_entry is None:
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
-            custom_base = custom_entry.get("base_url", "").strip()
-            custom_key = custom_entry.get("api_key", "").strip()
+            custom_base = (custom_entry.get("base_url") or "").strip()
+            custom_key = (custom_entry.get("api_key") or "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
@@ -5157,6 +5221,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "deepinfra",
 )
 
 
@@ -5213,6 +5278,21 @@ def _resolve_strict_vision_backend(
         return resolve_provider_client("openai-codex", model, is_vision=True)
     if provider == "anthropic":
         return _try_anthropic()
+    if provider == "deepinfra":
+        # DeepInfra exposes vision-capable models (Llama-4 Scout/Maverick,
+        # Qwen3-VL, Gemma 3, Gemini) on the same OpenAI-compatible endpoint
+        # as its chat models. The default is discovered live via the profile's
+        # default_vision_model() hook (key-gated, chat-surface + vision tag) so
+        # we don't pin a hardcoded id that may rot when DeepInfra retires a
+        # model, and this module stays provider-agnostic.
+        vision_model = model or _resolve_provider_vision_default("deepinfra")
+        if not vision_model:
+            logger.debug(
+                "Vision auto-detect: deepinfra catalog unreachable or "
+                "returned no vision-tagged models — skipping"
+            )
+            return None, None
+        return resolve_provider_client("deepinfra", vision_model, is_vision=True)
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None
@@ -5298,16 +5378,29 @@ def resolve_vision_provider_client(
         #      _PROVIDER_VISION_MODELS provides per-provider vision model
         #      overrides when the provider has a dedicated multimodal model
         #      that differs from the chat model (e.g. xiaomi → mimo-v2-omni,
-        #      zai → glm-5v-turbo). Nous is the exception: it has a dedicated
-        #      strict vision backend with tier-aware defaults, so it must not
-        #      fall through to the user's text chat model here.
-        #   2. OpenRouter  (vision-capable aggregator fallback)
+        #      zai → glm-5v-turbo). DeepInfra is similar but resolves its
+        #      default vision model live from the catalog (see
+        #      :func:`_resolve_provider_vision_default`). Nous is the
+        #      exception: it has a dedicated strict vision backend with
+        #      tier-aware defaults, so it must not fall through to the
+        #      user's text chat model here.
+        #   2. OpenRouter (vision-capable aggregator fallback)
         #   3. Nous Portal (vision-capable aggregator fallback)
-        #   4. Stop
+        #   4. DeepInfra   (OpenAI-compatible; vision model discovered
+        #                   live from the catalog — tried when
+        #                   DEEPINFRA_API_KEY is set)
+        #   5. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in {"auto", ""}:
-            vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+            # A provider-specific vision default wins over the user's chat model:
+            # static overrides (xiaomi/zai) and catalog-backed discovery (the
+            # DeepInfra profile hook) both yield a *known* vision-capable model,
+            # whereas the pinned chat model is usually NOT multimodal (e.g. the
+            # DeepSeek-V4-Flash default) and _main_model_supports_vision can't be
+            # trusted to catch that. Only fall back to the chat model when no
+            # provider default is available (catalog unreachable).
+            vision_model = _resolve_provider_vision_default(main_provider) or main_model
             if main_provider == "nous":
                 sync_client, default_model = _resolve_strict_vision_backend(
                     main_provider, vision_model
@@ -6060,12 +6153,34 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
-    """Read auxiliary.<task>.extra_body and return a shallow copy when valid."""
+    """Read auxiliary.<task>.extra_body and return a shallow copy when valid.
+
+    Also folds in ``auxiliary.<task>.reasoning_effort`` as an
+    ``extra_body.reasoning`` config dict ({"enabled": ..., "effort": ...})
+    when set. An explicit ``extra_body.reasoning`` in config wins over the
+    ``reasoning_effort`` shorthand (it is the more specific wire control).
+    Downstream, each wire already translates ``extra_body.reasoning``:
+    chat.completions passes it through, the Codex Responses adapter maps it
+    to top-level ``reasoning``/``include``, and the Anthropic auxiliary
+    client maps it to ``build_anthropic_kwargs(reasoning_config=...)``.
+    """
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("extra_body")
-    if isinstance(raw, dict):
-        return dict(raw)
-    return {}
+    result = dict(raw) if isinstance(raw, dict) else {}
+    if "reasoning" not in result:
+        effort = task_config.get("reasoning_effort")
+        if effort is not None and effort != "":
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(effort)
+            if parsed is not None:
+                result["reasoning"] = parsed
+            else:
+                logger.warning(
+                    "auxiliary.%s.reasoning_effort %r is not a valid level "
+                    "(none, minimal, low, medium, high, xhigh, max, ultra) — ignoring",
+                    task, effort,
+                )
+    return result
 
 
 # ---------------------------------------------------------------------------

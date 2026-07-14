@@ -90,9 +90,14 @@ export const en: Translations = {
       retry: 'Retry',
       repairInstall: 'Repair install',
       useLocalGateway: 'Use local gateway',
+      gatewaySettings: 'Gateway settings',
+      back: 'Back',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
-      remoteSignInHint: 'Opens the gateway login window. Use local gateway to switch to the bundled backend instead.',
+      remoteSignInHint: signInLabel =>
+        `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
+      signOutAndSignIn: 'Sign out & sign in',
+      remoteFailureHint: 'Check the gateway URL and sign-in under Gateway settings, or switch to the local gateway.',
       hideRecentLogs: 'Hide recent logs',
       showRecentLogs: 'Show recent logs',
       signedInTitle: 'Signed in',
@@ -387,6 +392,8 @@ export const en: Translations = {
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      backdropTitle: 'Chat Backdrop',
+      backdropDesc: 'The faint statue image behind the conversation.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',
@@ -530,11 +537,44 @@ export const en: Translations = {
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
+      modeTitle: 'Connection mode',
       localTitle: 'Local gateway',
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
       remoteTitle: 'Remote gateway',
-      remoteDesc:
-        'Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      remoteDesc: 'Connect this desktop shell to a remote Hermes backend.',
+      remoteAuthHint:
+        'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      cloudTitle: 'Hermes Cloud',
+      cloudDesc: 'Sign in once to Hermes Cloud and pick from the agents on your account — no URL to paste.',
+      cloudSignInTitle: 'Hermes Cloud',
+      cloudSignIn: 'Sign in to Hermes Cloud',
+      cloudSignedIn: 'Signed in to Hermes Cloud',
+      cloudNeedsSignIn: 'Sign in to Hermes Cloud to discover the agents on your account.',
+      cloudSignedInDesc: 'You are signed in. Pick an agent below; the session refreshes automatically.',
+      cloudAgentsTitle: 'Your agents',
+      cloudOrgPickerTitle: 'Choose an organization',
+      cloudOrgSelect: 'Select',
+      cloudOrgChange: 'Change org',
+      cloudOrgRole: role => `Role: ${role}`,
+      cloudLoadingAgents: 'Loading your agents…',
+      cloudNoAgents: {
+        before: 'No agents found on this account. Create one in the ',
+        linkText: 'Nous portal',
+        after: ', then refresh.'
+      },
+      cloudRefresh: 'Refresh',
+      cloudConnect: 'Connect',
+      cloudConnecting: 'Connecting…',
+      cloudDiscoverFailed: 'Could not load your Hermes Cloud agents',
+      cloudConnectFailed: 'Could not connect to that agent',
+      cloudSignInFailed: 'Hermes Cloud sign-in failed',
+      cloudSignedOutTitle: 'Signed out of Hermes Cloud',
+      cloudSignedOutMessage: 'Cleared the Hermes Cloud session.',
+      cloudConnectedTitle: 'Connected',
+      cloudConnectedPill: 'Connected',
+      cloudConnectedTo: name => `Connected to ${name}.`,
+      cloudAgentProvisioning: 'Provisioning…',
+      cloudStatusLabel: status => `Status: ${status}`,
       remoteUrlTitle: 'Remote URL',
       remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',
@@ -568,7 +608,7 @@ export const en: Translations = {
       enterUrlFirst: 'Enter a remote URL first.',
       restartingTitle: 'Gateway connection restarting',
       savedTitle: 'Gateway settings saved',
-      restartingMessage: 'Hermes Desktop will reconnect using the saved settings.',
+      restartingMessage: 'Hermes Desktop will reconnect using the saved settings — the shell stays open.',
       savedMessage: 'Saved for the next restart.',
       connectedTo: (baseUrl, version) => `Connected to ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
       reachableTitle: 'Remote gateway reachable',
@@ -669,6 +709,9 @@ export const en: Translations = {
       change: 'Change',
       autoUseMain: 'auto · use main model',
       providerDefault: '(provider default)',
+      fallbackAdd: 'Add fallback',
+      fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
+      notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
@@ -1437,7 +1480,10 @@ export const en: Translations = {
     customPlaceholder: '0 9 * * * or weekdays at 9am',
     customHint: 'Cron expression, or phrases like "every hour" or "weekdays at 9am".',
     optional: 'Optional',
+    promptRequired: 'Prompt is required.',
     promptScheduleRequired: 'Prompt and schedule are required.',
+    scheduleRequired: 'Schedule is required.',
+    scriptOnlyEditHint: 'Script-only job (no AI prompt). Job id:',
     saveChanges: 'Save changes',
     createAction: 'Create cron'
   },
@@ -1541,6 +1587,9 @@ export const en: Translations = {
       newWorktreeTitle: 'New worktree',
       newWorktreeDesc: 'Name the branch for this worktree.',
       branchPlaceholder: 'e.g. my-feature',
+      branchOff: () => ({ after: '', before: 'branch off ' }),
+      baseBranchPlaceholder: 'Search branches…',
+      baseBranchNone: 'No branches found',
       startWorkFailed: 'Could not create worktree',
       convertBranch: 'Convert a branch…',
       convertBranchTitle: 'Convert a branch',
@@ -1897,6 +1946,10 @@ export const en: Translations = {
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
+      fireworks: {
+        short: 'direct model API',
+        description: 'Direct access to models hosted by Fireworks AI.'
+      },
       openrouter: {
         short: 'one key, many models',
         description: 'Hosts hundreds of models behind a single key. Good default for new installs.'
@@ -1999,7 +2052,9 @@ export const en: Translations = {
       low: 'Low',
       medium: 'Medium',
       high: 'High',
+      xhigh: 'Extra High',
       max: 'Max',
+      ultra: 'Ultra',
       updateFailed: 'Model option update failed',
       fastFailed: 'Fast mode update failed'
     },
@@ -2017,6 +2072,16 @@ export const en: Translations = {
       recentActivity: 'Recent activity',
       viewAllLogs: 'View all logs →',
       messagingPlatforms: 'Messaging platforms'
+    },
+    approvalMode: {
+      title: 'Approval mode',
+      ariaLabel: mode => `Approval mode: ${mode}`,
+      manual: 'Manual',
+      manualDescription: 'Ask before actions that require approval',
+      smart: 'Smart',
+      smartDescription: 'Automatically assess actions and ask when needed',
+      off: 'Off',
+      offDescription: 'Run without approval prompts'
     },
     statusbar: {
       unknown: 'unknown',
@@ -2277,6 +2342,7 @@ export const en: Translations = {
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
       skip: 'Skip',
+      skipped: 'Skipped',
       continueLabel: 'Continue'
     },
     tool: {

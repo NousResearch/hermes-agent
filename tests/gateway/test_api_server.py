@@ -568,14 +568,29 @@ class TestConcurrencyCap:
         assert resp.headers.get("Retry-After")
 
     def test_cap_counts_both_buckets(self):
-        # /v1/runs (tracked by _run_streams) + chat/responses (inflight)
+        # /v1/runs (tracked by live tasks) + chat/responses (inflight)
         adapter = _make_adapter()
         adapter._max_concurrent_runs = 4
         adapter._inflight_agent_runs = 2
-        adapter._run_streams = {"r1": object(), "r2": object()}
-        resp = adapter._concurrency_limited_response()
-        assert resp is not None
-        assert resp.status == 429
+
+        async def _assert_live_tasks_are_counted_without_streams():
+            blocker = asyncio.Event()
+
+            async def _live_run():
+                await blocker.wait()
+
+            tasks = [asyncio.create_task(_live_run()) for _ in range(2)]
+            adapter._active_run_tasks = {f"r{i}": task for i, task in enumerate(tasks)}
+            adapter._run_streams = {}
+            try:
+                resp = adapter._concurrency_limited_response()
+                assert resp is not None
+                assert resp.status == 429
+            finally:
+                blocker.set()
+                await asyncio.gather(*tasks)
+
+        asyncio.run(_assert_live_tasks_are_counted_without_streams())
 
     def test_zero_disables_cap(self):
         adapter = _make_adapter()
@@ -738,7 +753,7 @@ class TestHealthDetailedEndpoint:
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }):
+        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
@@ -764,7 +779,8 @@ class TestHealthDetailedEndpoint:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data["status"] == "ok"
+                assert data["status"] == "degraded"
+                assert data["readiness"]["checks"]["gateway"]["status"] == "degraded"
                 assert data["gateway_state"] is None
                 assert data["platforms"] == {}
                 # No runtime file ⇒ state None ⇒ not busy, not drainable.
@@ -788,6 +804,51 @@ class TestHealthDetailedEndpoint:
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed", headers=headers)
                 assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_reports_runtime_readiness(self, adapter):
+        """Detailed health exposes bounded readiness probes without changing /health."""
+        app = _create_app(adapter)
+        expected = {
+            "status": "degraded",
+            "checks": {
+                "state_db": {"status": "ok"},
+                "config": {"status": "degraded", "detail": "invalid config"},
+            },
+        }
+        with patch("gateway.status.read_runtime_status", return_value={"gateway_state": "running"}), \
+             patch("gateway.platforms.api_server.collect_runtime_readiness", return_value=expected):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "degraded"
+                assert data["readiness"] == expected
+
+    @pytest.mark.asyncio
+    async def test_public_health_does_not_run_readiness_probes(self, adapter):
+        app = _create_app(adapter)
+        with patch("gateway.platforms.api_server.collect_runtime_readiness") as probe:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health")
+                assert resp.status == 200
+                assert (await resp.json())["status"] == "ok"
+        probe.assert_not_called()
+
+    def test_readiness_work_counts_exclude_retained_completed_runs(self, adapter):
+        adapter._run_statuses = {
+            "queued": {"status": "queued"},
+            "running": {"status": "running"},
+            "approval": {"status": "waiting_for_approval"},
+            "done": {"status": "completed"},
+            "failed": {"status": "failed"},
+        }
+        # Completed streams may remain attached for replay; they are not work.
+        adapter._run_streams = {"done": object(), "failed": object()}
+
+        with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=4), \
+             patch("tools.async_delegation.active_count", return_value=2):
+            assert adapter._readiness_work_counts() == (3, 4, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -3826,7 +3887,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: {})
+        "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
     )
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)

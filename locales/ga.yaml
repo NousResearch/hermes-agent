@@ -24,7 +24,7 @@ approval:
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
 
 gateway:
-  approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
+  approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht a thuilleadh). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining:         "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
   goal_cleared:     "✓ Sprioc glanta."
   no_active_goal:   "Níl aon sprioc ghníomhach ann."
@@ -33,7 +33,7 @@ gateway:
 
   model:
     error_prefix:           "Earráid: {error}"
-    switched:               "Athraíodh an tsamhail go `{model}`"
+    switched:               "Samhail athraithe go `{model}`"
     provider_label:         "Soláthraí: {provider}"
     context_label:          "Comhthéacs: {tokens} comhartha"
     max_output_label:       "Aschur uasta: {tokens} comhartha"
@@ -55,11 +55,11 @@ gateway:
     active_agents:         "**Gníomhairí gníomhacha:** {count}"
     this_chat:             " · an comhrá seo"
     more:                  "... agus {count} eile"
-    running_processes:     "**Próisis chúlra ag rith:** {count}"
+    running_processes:     "**Próisis chúlra ar siúl:** {count}"
     async_jobs:            "**Tascanna asincrónacha gateway:** {count}"
-    none:                  "Níl aon ghníomhairí gníomhacha ná tascanna ag rith."
+    none:                  "Níl aon ghníomhairí gníomhacha ná tascanna ar siúl."
     state_starting:        "ag tosú"
-    state_running:         "ag rith"
+    state_running:         "ar siúl"
 
   approve:
     no_pending:            "Níl aon ordú ag fanacht le ceadú."
@@ -71,7 +71,7 @@ gateway:
     always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
 
   background:
-    usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
+    usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta Hacker News inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
     started:               "🔄 Tasc cúlra tosaithe: \"{preview}\"\nAitheantas an tasc: {task_id}\nIs féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe."
 
   branch:
@@ -93,15 +93,15 @@ gateway:
     out_of_range:          "_(Bhí leathanach {requested} a iarradh as raon, ag taispeáint leathanach {page}.)_"
 
   compress:
-    not_enough:            "Níl go leor comhrá le dlúthú (teastaíonn 4 theachtaireacht ar a laghad)."
-    no_provider:           "Níl aon soláthraí cumraithe — ní féidir dlúthú."
-    nothing_to_do:         "Níl aon rud le dlúthú fós (tá an traschríbhinn fós uile mar chomhthéacs cosanta)."
+    not_enough:            "Níl go leor comhrá le comhbhrú (teastaíonn 4 theachtaireacht ar a laghad)."
+    no_provider:           "Níl aon soláthraí cumraithe — ní féidir comhbhrú."
+    nothing_to_do:         "Níl aon rud le comhbhrú fós (tá an traschríbhinn fós uile mar chomhthéacs cosanta)."
     aggressive_unsupported: "Ní thacaítear le --aggressive; úsáid '/compress here [N]' chun na malartuithe is déanaí amháin a choinneáil, nó /undo chun sealanna a scriosadh."
     focus_line:            "Fócas: \"{topic}\""
     summary_failed:        "⚠️ Theip ar ghiniúint achoimre ({error}). Baineadh {count} teachtaireacht stairiúil agus cuireadh ionadaí ina n-áit; níl an comhthéacs roimhe seo in-aisghabhála a thuilleadh. Smaoinigh ar an gcumraíocht auxiliary.compression a sheiceáil."
-    aborted:               "⚠️ Cuireadh deireadh leis an dlúthú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
-    aux_failed:            "ℹ️ Theip ar an tsamhail dlúthúcháin chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
-    failed:                "Theip ar dhlúthú: {error}"
+    aborted:               "⚠️ Cuireadh deireadh leis an gcomhbhrú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
+    aux_failed:            "ℹ️ Theip ar an tsamhail chomhbhrúite chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
+    failed:                "Theip ar chomhbhrú: {error}"
 
   debug:
     upload_failed:         "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
@@ -139,12 +139,12 @@ gateway:
 
   goal:
     unavailable:           "Níl spriocanna ar fáil sa seisiún seo."
-    no_goal_set:           "Níl aon sprioc socraithe."
+    no_goal_set:           "Níl aon sprioc shocraithe."
     paused:                "⏸ Sprioc curtha ar sos: {goal}"
     no_resume:             "Níl aon sprioc le hatosú."
     resumed:               "▶ Sprioc atosaithe: {goal}\nSeol teachtaireacht ar bith chun leanúint, nó fan — déanfaidh mé an chéad chéim eile sa chéad seal eile."
     invalid:               "Sprioc neamhbhailí: {error}"
-    set:                   "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ Sprioc shocraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Orduithe Hermes**\n"
@@ -178,7 +178,7 @@ gateway:
     usage:                 "\nÚsáid: `/personality <name>`"
     save_failed:           "⚠️ Theip ar shábháil athraithe pearsantachta: {error}"
     cleared:               "🎭 Pearsantacht glanta — ag úsáid iompair bunúsaigh an ghníomhaire.\n_(éifeachtach ón gcéad teachtaireacht eile)_"
-    set_to:                "🎭 Pearsantacht socraithe go **{name}**\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+    set_to:                "🎭 Pearsantacht shocraithe go **{name}**\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     unknown:               "Pearsantacht anaithnid: `{name}`\n\nAr fáil: {available}"
 
   profile:
@@ -198,9 +198,9 @@ gateway:
     reset_global_unsupported:  "⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an réamhshocrú domhanda a athrú."
     reset_done:                "🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda."
     unknown_arg:               "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
-    set_global:                "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (sábháilte sa chumraíocht)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
-    set_global_save_failed:    "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — theip ar shábháil cumraíochta)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
-    set_session:               "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — cuir `--global` leis chun é a choinneáil)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+    set_global:                "🧠 ✓ Iarracht réasúnaíochta shocraithe go `{effort}` (sábháilte sa chumraíocht)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+    set_global_save_failed:    "🧠 ✓ Iarracht réasúnaíochta shocraithe go `{effort}` (seisiún amháin — theip ar shábháil cumraíochta)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+    set_session:               "🧠 ✓ Iarracht réasúnaíochta shocraithe go `{effort}` (seisiún amháin — cuir `--global` leis chun é a choinneáil)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cealaithe. Tá uirlisí MCP gan athrú."
@@ -295,7 +295,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Comharthaí:** {tokens}"
-    agent_running:         "**Gníomhaire ag rith:** {state}"
+    agent_running:         "**Gníomhaire ar siúl:** {state}"
     state_yes:             "Tá ⚡"
     state_no:              "Níl"
     queued:                "**Tascanna i scuaine:** {count}"
@@ -335,7 +335,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   update:
     platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."
     not_git_repo:            "✗ Ní stór git é seo — ní féidir nuashonrú."
-    hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
+    hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ar siúl, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
     start_failed:            "✗ Theip ar nuashonrú a thosú: {error}"
     starting:                "⚕ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
 
@@ -352,7 +352,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_cost:               "Costas: {prefix}${amount}"
     label_cost_included:      "Costas: san áireamh"
     label_context:            "Comhthéacs: {used} / {total} ({pct}%)"
-    label_compressions:       "Dlúthuithe: {count}"
+    label_compressions:       "Comhbhrúite: {count}"
     breakdown_header: "🧩 **Miondealú comhthéacs** _(measta)_"
     breakdown_line: "• {label}: ~{count} ({pct}%)"
     breakdown_cat_system_prompt: "Leid an chórais"

@@ -641,7 +641,7 @@ export const ja: Translations = {
     unassigned: "未割り当て",
     untitled: "（タイトルなし）",
     loadingDetail: "読み込み中…",
-    addComment: "コメントを追加…（Enter で送信）",
+    addComment: "コメントを追加…（Enter で送信、画像の貼り付け/ドロップ可）",
     comment: "コメント",
     status: "ステータス",
     workspace: "ワークスペース",

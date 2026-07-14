@@ -641,7 +641,7 @@ export const it: Translations = {
     unassigned: "non assegnato",
     untitled: "(senza titolo)",
     loadingDetail: "Caricamento…",
-    addComment: "Aggiungi un commento… (Enter per inviare)",
+    addComment: "Aggiungi un commento… (Enter per inviare, incolla/trascina immagini)",
     comment: "Commento",
     status: "Stato",
     workspace: "Workspace",

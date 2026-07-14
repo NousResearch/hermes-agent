@@ -643,7 +643,7 @@ export const uk: Translations = {
     unassigned: "не призначено",
     untitled: "(без назви)",
     loadingDetail: "Завантаження…",
-    addComment: "Додати коментар… (Enter для надсилання)",
+    addComment: "Додати коментар… (Enter для надсилання, вставити/перетягнути зображення)",
     comment: "Коментар",
     status: "Статус",
     workspace: "Робоча область",

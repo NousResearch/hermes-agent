@@ -641,7 +641,7 @@ export const zhHant: Translations = {
     unassigned: "未指派",
     untitled: "（無標題）",
     loadingDetail: "載入中…",
-    addComment: "新增留言…（按 Enter 送出）",
+    addComment: "新增留言…（按 Enter 送出，可貼上/拖入圖片）",
     comment: "留言",
     status: "狀態",
     workspace: "工作區",

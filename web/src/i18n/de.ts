@@ -641,7 +641,7 @@ export const de: Translations = {
     unassigned: "nicht zugewiesen",
     untitled: "(ohne Titel)",
     loadingDetail: "Wird geladen…",
-    addComment: "Kommentar hinzufügen… (Enter zum Senden)",
+    addComment: "Kommentar hinzufügen… (Enter zum Senden, Bilder einfügen/ablegen)",
     comment: "Kommentar",
     status: "Status",
     workspace: "Arbeitsbereich",

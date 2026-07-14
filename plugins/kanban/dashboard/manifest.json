@@ -3,7 +3,7 @@
   "label": "Kanban",
   "description": "Multi-agent collaboration board — drag-drop cards across columns, read comment threads, see which profile is running what",
   "icon": "Package",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "tab": {
     "path": "/kanban",
     "position": "after:skills"

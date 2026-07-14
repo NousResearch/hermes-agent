@@ -637,7 +637,7 @@ export const zh: Translations = {
     unassigned: "未分配",
     untitled: "（无标题）",
     loadingDetail: "加载中…",
-    addComment: "添加评论…（按回车提交）",
+    addComment: "添加评论…（按回车提交，可粘贴/拖入图片）",
     comment: "评论",
     status: "状态",
     workspace: "工作区",

@@ -641,7 +641,7 @@ export const ko: Translations = {
     unassigned: "미지정",
     untitled: "(제목 없음)",
     loadingDetail: "불러오는 중…",
-    addComment: "댓글 추가… (Enter로 전송)",
+    addComment: "댓글 추가… (Enter로 전송, 이미지 붙여넣기/드롭 가능)",
     comment: "댓글",
     status: "상태",
     workspace: "작업 공간",

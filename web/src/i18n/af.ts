@@ -642,7 +642,7 @@ export const af: Translations = {
     unassigned: "nie toegewys nie",
     untitled: "(sonder titel)",
     loadingDetail: "Word gelaai…",
-    addComment: "Voeg 'n opmerking by… (Enter om in te dien)",
+    addComment: "Voeg 'n opmerking by… (Enter om in te dien, plak/sleep beelde)",
     comment: "Opmerking",
     status: "Status",
     workspace: "Werkruimte",

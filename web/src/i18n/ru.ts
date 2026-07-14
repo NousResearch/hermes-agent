@@ -642,7 +642,7 @@ export const ru: Translations = {
     unassigned: "без исполнителя",
     untitled: "(без названия)",
     loadingDetail: "Загрузка…",
-    addComment: "Добавить комментарий… (Enter — отправить)",
+    addComment: "Добавить комментарий… (Enter — отправить, вставить/перетащить изображения)",
     comment: "Комментарий",
     status: "Статус",
     workspace: "Рабочая область",

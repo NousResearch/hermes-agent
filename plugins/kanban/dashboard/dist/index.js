@@ -244,6 +244,65 @@
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
 
+  function sessionAuthHeaders(extra) {
+    const token = window.__HERMES_SESSION_TOKEN__ || "";
+    const headers = Object.assign({}, extra || {});
+    if (token) {
+      headers["X-Hermes-Session-Token"] = token;
+      if (!headers.Authorization) headers.Authorization = "Bearer " + token;
+    }
+    return headers;
+  }
+
+  function pasteImageFilename(file, index) {
+    if (file.name && file.name.trim() && file.name !== "image.png") {
+      return file.name;
+    }
+    const ext = ((file.type || "image/png").split("/")[1] || "png")
+      .replace("jpeg", "jpg")
+      .replace(/[^a-z0-9]/gi, "") || "png";
+    const suffix = index > 0 ? "-" + (index + 1) : "";
+    return "paste-" + Date.now() + suffix + "." + ext;
+  }
+
+  function namedClipboardImage(file, index) {
+    const name = pasteImageFilename(file, index);
+    try {
+      return new File([file], name, { type: file.type || "image/png" });
+    } catch (_e) {
+      return file;
+    }
+  }
+
+  function uploadTaskAttachment(taskId, boardSlug, file) {
+    const fd = new FormData();
+    fd.append("file", file, file.name || "attachment");
+    const url = withBoard(
+      `${API}/tasks/${encodeURIComponent(taskId)}/attachments`,
+      boardSlug,
+    );
+    // SDK.authedFetch handles auth in BOTH modes (loopback token header /
+    // gated cookie) and applies the dashboard base-path prefix.
+    return SDK.authedFetch(url, { method: "POST", body: fd }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (txt) {
+          throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      if (!data || !data.attachment) throw new Error("upload failed");
+      return data.attachment;
+    });
+  }
+
+  function attachmentImageCommentBody(att) {
+    const name = String(att.filename || "screenshot").replace(/\]/g, "");
+    return "![" + name + "](attachment:" + att.id + ")";
+  }
+
+  const ATTACHMENT_IMG_RE = /!\[([^\]]*)\]\(attachment:(\d+)\)/g;
+
   // The SDK's Select component fires ``onValueChange(value)`` directly
   // (it's a shadcn-style popup, not a native <select>). Older plugin
   // code calls ``onChange({target: {value}})`` which silently never
@@ -386,6 +445,88 @@
       className: "hermes-kanban-md",
       dangerouslySetInnerHTML: { __html: sanitizeMarkdownHtml(renderMarkdown(props.source || "")) },
     });
+  }
+
+  function parseCommentParts(source) {
+    const parts = [];
+    const text = String(source || "");
+    let last = 0;
+    let m;
+    ATTACHMENT_IMG_RE.lastIndex = 0;
+    while ((m = ATTACHMENT_IMG_RE.exec(text)) !== null) {
+      if (m.index > last) {
+        parts.push({ type: "md", text: text.slice(last, m.index) });
+      }
+      parts.push({ type: "img", alt: m[1], id: Number(m[2]) });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) parts.push({ type: "md", text: text.slice(last) });
+    if (!parts.length) parts.push({ type: "md", text: text });
+    return parts;
+  }
+
+  function AttachmentImage(props) {
+    const [src, setSrc] = useState(null);
+    const [err, setErr] = useState(null);
+    useEffect(function () {
+      let objUrl = null;
+      const url = withBoard(`${API}/attachments/${props.attachmentId}`, props.boardSlug);
+      fetch(url, {
+        headers: sessionAuthHeaders(),
+        credentials: "same-origin",
+      }).then(function (resp) {
+        if (!resp.ok) {
+          return resp.text().then(function (txt) {
+            throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+          });
+        }
+        return resp.blob();
+      }).then(function (blob) {
+        objUrl = URL.createObjectURL(blob);
+        setSrc(objUrl);
+      }).catch(function (e) {
+        setErr(String(e.message || e));
+      });
+      return function () {
+        if (objUrl) URL.revokeObjectURL(objUrl);
+      };
+    }, [props.attachmentId, props.boardSlug]);
+    if (err) {
+      return h("span", { className: "text-xs text-destructive" }, err);
+    }
+    if (!src) {
+      return h("span", { className: "text-xs text-muted-foreground" },
+        tx(props.i18n, "loadingImage", "Loading image…"));
+    }
+    return h("img", {
+      className: "hermes-kanban-comment-img",
+      src: src,
+      alt: props.alt || "attachment",
+      title: props.alt || "",
+    });
+  }
+
+  function CommentBody(props) {
+    const parts = parseCommentParts(props.source);
+    return h("div", { className: "hermes-kanban-comment-body" },
+      parts.map(function (part, idx) {
+        if (part.type === "img") {
+          return h(AttachmentImage, {
+            key: "img-" + idx + "-" + part.id,
+            attachmentId: part.id,
+            alt: part.alt,
+            boardSlug: props.boardSlug,
+            i18n: props.i18n,
+          });
+        }
+        if (!part.text || !part.text.trim()) return null;
+        return h(MarkdownBlock, {
+          key: "md-" + idx,
+          source: part.text,
+          enabled: props.renderMarkdown,
+        });
+      }),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -2957,7 +3098,7 @@
   // -------------------------------------------------------------------------
 
   function TaskDrawer(props) {
-    const { t } = useI18n();
+    const { t, locale } = useI18n();
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState(null);
@@ -2967,6 +3108,8 @@
     // Ready/Block/Complete buttons feel like no-ops.  See #26744.
     const [patchErr, setPatchErr] = useState(null);
     const [newComment, setNewComment] = useState("");
+    const [pendingImages, setPendingImages] = useState([]);
+    const pendingImagesRef = useRef([]);
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
@@ -3003,47 +3146,104 @@
       return function () { window.removeEventListener("keydown", onKey); };
     }, [props.onClose, editing]);
 
-    const handleComment = function () {
-      const body = newComment.trim();
-      if (!body) return;
-      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body }),
-      }).then(function () {
-        setNewComment("");
-        load();
-        props.onRefresh();
-      }).catch(function (e) { setErr(String(e.message || e)); });
+    function revokePendingPreview(item) {
+      if (item && item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    }
+
+    function clearPendingImages() {
+      pendingImagesRef.current.forEach(revokePendingPreview);
+      pendingImagesRef.current = [];
+      setPendingImages([]);
+    }
+
+    useEffect(function () {
+      clearPendingImages();
+      return function () { clearPendingImages(); };
+    }, [props.taskId]);
+
+    function addPendingCommentImages(rawFiles) {
+      const files = Array.prototype.slice.call(rawFiles || []);
+      const added = [];
+      files.forEach(function (f, idx) {
+        if (!f.type || f.type.indexOf("image/") !== 0) return;
+        const file = namedClipboardImage(f, pendingImagesRef.current.length + idx);
+        added.push({
+          id: "pimg-" + Date.now() + "-" + idx + "-" + Math.random().toString(36).slice(2, 7),
+          file: file,
+          previewUrl: URL.createObjectURL(file),
+        });
+      });
+      if (!added.length) return;
+      pendingImagesRef.current = pendingImagesRef.current.concat(added);
+      setPendingImages(pendingImagesRef.current.slice());
+      setUploadErr(null);
+    }
+
+    function removePendingCommentImage(id) {
+      pendingImagesRef.current = pendingImagesRef.current.filter(function (item) {
+        if (item.id === id) revokePendingPreview(item);
+        return item.id !== id;
+      });
+      setPendingImages(pendingImagesRef.current.slice());
+    }
+
+    const postAttachmentComment = function (att) {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: attachmentImageCommentBody(att) }),
+        },
+      );
     };
 
-    // File upload uses raw fetch (not SDK.fetchJSON, which JSON-encodes)
-    // so the browser sets the multipart boundary. Auth rides the session
-    // cookie + bearer token, matching the rest of the dashboard.
+    const handleComment = function () {
+      const body = newComment.trim();
+      const pending = pendingImagesRef.current.slice();
+      if (!body && !pending.length) return;
+      setUploadBusy(true);
+      setUploadErr(null);
+      let chain = Promise.resolve();
+      if (body) {
+        chain = chain.then(function () {
+          return SDK.fetchJSON(
+            withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug),
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ body }),
+            },
+          );
+        });
+      }
+      pending.forEach(function (item) {
+        chain = chain.then(function () {
+          return uploadTaskAttachment(props.taskId, boardSlug, item.file)
+            .then(function (att) { return postAttachmentComment(att); });
+        });
+      });
+      chain.then(function () {
+        setNewComment("");
+        clearPendingImages();
+        load();
+        props.onRefresh();
+      }).catch(function (e) {
+        setUploadErr(String(e.message || e));
+      }).finally(function () {
+        setUploadBusy(false);
+      });
+    };
+
     const handleUpload = function (fileList) {
       const files = Array.prototype.slice.call(fileList || []);
       if (!files.length) return;
       setUploadBusy(true);
       setUploadErr(null);
-      const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
-      // Upload sequentially so a partial failure leaves a clear state.
       let chain = Promise.resolve();
       files.forEach(function (f) {
         chain = chain.then(function () {
-          const fd = new FormData();
-          fd.append("file", f, f.name);
-          // SDK.authedFetch handles auth in BOTH modes (loopback token header /
-          // gated cookie) and applies the dashboard base-path prefix. The old
-          // hand-rolled Authorization:Bearer + credentials:'same-origin' sent
-          // an empty token and 401'd in gated mode.
-          return SDK.authedFetch(url, { method: "POST", body: fd })
-            .then(function (resp) {
-              if (!resp.ok) {
-                return resp.text().then(function (txt) {
-                  throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
-                });
-              }
-            });
+          return uploadTaskAttachment(props.taskId, boardSlug, f);
         });
       });
       chain.then(function () {
@@ -3054,6 +3254,35 @@
       }).finally(function () {
         setUploadBusy(false);
       });
+    };
+
+    const handleCommentPaste = function (e) {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      const imageFiles = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === "file" && item.type && item.type.indexOf("image/") === 0) {
+          const f = item.getAsFile();
+          if (f) imageFiles.push(f);
+        }
+      }
+      if (!imageFiles.length) return;
+      e.preventDefault();
+      addPendingCommentImages(imageFiles);
+    };
+
+    const handleCommentDrop = function (e) {
+      const dt = e.dataTransfer;
+      if (!dt || !dt.files || !dt.files.length) return;
+      const imageFiles = [];
+      for (let i = 0; i < dt.files.length; i++) {
+        const f = dt.files[i];
+        if (f.type && f.type.indexOf("image/") === 0) imageFiles.push(f);
+      }
+      if (!imageFiles.length) return;
+      e.preventDefault();
+      addPendingCommentImages(imageFiles);
     };
 
     const handleDeleteAttachment = function (attachmentId) {
@@ -3228,22 +3457,86 @@
             if (props.onOpenTask) props.onOpenTask(taskId);
           },
         }) : null,
-        data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
-          h(Input, {
-            value: newComment,
-            onChange: function (e) { setNewComment(e.target.value); },
-            onKeyDown: function (e) {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault(); handleComment();
+        data ? h("div", { className: "hermes-kanban-drawer-comment-wrap" },
+          uploadErr
+            ? h("div", { className: "hermes-kanban-drawer-comment-err" }, uploadErr)
+            : null,
+          h("div", {
+            className: cn(
+              "hermes-kanban-drawer-comment-row",
+              uploadBusy ? "hermes-kanban-drawer-comment-row--busy" : "",
+            ),
+            onDragOver: function (e) {
+              if (e.dataTransfer && e.dataTransfer.types &&
+                  Array.prototype.indexOf.call(e.dataTransfer.types, "Files") >= 0) {
+                e.preventDefault();
               }
             },
-            placeholder: tx(t, "addComment", "Add a comment… (Enter to submit)"),
-            className: "h-8 text-sm flex-1",
-          }),
-          h(Button, {
-            onClick: handleComment,
-            size: "sm",
-          }, tx(t, "comment", "Comment")),
+            onDrop: handleCommentDrop,
+          },
+            h("div", {
+              className: cn(
+                "hermes-kanban-comment-composer",
+                pendingImages.length > 0 ? "hermes-kanban-comment-composer--has-attachments" : "",
+              ),
+            },
+              pendingImages.length > 0
+                ? h("div", { className: "hermes-kanban-comment-pending" },
+                    pendingImages.map(function (item) {
+                      return h("div", {
+                        key: item.id,
+                        className: "hermes-kanban-comment-pending-chip",
+                      },
+                        h("img", {
+                          className: "hermes-kanban-comment-pending-thumb",
+                          src: item.previewUrl,
+                          alt: item.file.name || "image",
+                        }),
+                        h("span", {
+                          className: "hermes-kanban-comment-pending-name",
+                          title: item.file.name || "image",
+                        }, item.file.name || "image.png"),
+                        h("button", {
+                          type: "button",
+                          className: "hermes-kanban-comment-pending-remove",
+                          title: tx(t, "removePendingImage", "Remove image"),
+                          disabled: !!uploadBusy,
+                          onClick: function () { removePendingCommentImage(item.id); },
+                        }, "×"),
+                      );
+                    }),
+                  )
+                : null,
+              h("textarea", {
+                value: newComment,
+                onChange: function (e) { setNewComment(e.target.value); },
+                onPaste: handleCommentPaste,
+                onKeyDown: function (e) {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault(); handleComment();
+                  }
+                },
+                placeholder: (function () {
+                  var base = tx(t, "addComment", "Add a comment… (Enter to submit)");
+                  if (/粘贴|paste\/drop|Paste\/drop/i.test(base)) return base;
+                  var loc = String(locale || "");
+                  return base + (loc.indexOf("zh") === 0
+                    ? "，可粘贴/拖入图片"
+                    : " · paste/drop images");
+                })(),
+                className: "hermes-kanban-comment-input",
+                rows: 1,
+                disabled: !!uploadBusy,
+              }),
+            ),
+            h(Button, {
+              onClick: handleComment,
+              size: "sm",
+              disabled: !!uploadBusy || (!newComment.trim() && !pendingImages.length),
+            }, uploadBusy
+                ? tx(t, "uploading", "Uploading…")
+                : tx(t, "comment", "Comment")),
+          ),
         ) : null,
       ),
     );
@@ -3512,7 +3805,12 @@
                   h("span", { className: "hermes-kanban-comment-ago" },
                     timeAgo ? timeAgo(c.created_at) : ""),
                 ),
-                h(MarkdownBlock, { source: c.body, enabled: props.renderMarkdown }),
+                h(CommentBody, {
+                  source: c.body,
+                  renderMarkdown: props.renderMarkdown,
+                  boardSlug: props.boardSlug,
+                  i18n: i18n,
+                }),
               );
             }),
       ),
@@ -4101,6 +4399,22 @@
   // -------------------------------------------------------------------------
   // Register
   // -------------------------------------------------------------------------
+
+  (function ensureKanbanDashboardStyles() {
+    var version = "1.0.1";
+    var marker = "data-hermes-kanban-css";
+    var existing = document.querySelector("link[" + marker + "]");
+    if (existing && existing.getAttribute(marker) === version) return;
+    if (existing) existing.remove();
+    var basePath = (typeof window.__HERMES_BASE_PATH__ === "string")
+      ? window.__HERMES_BASE_PATH__
+      : "";
+    var link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = basePath + "/dashboard-plugins/kanban/dist/style.css?v=" + encodeURIComponent(version);
+    link.setAttribute(marker, version);
+    document.head.appendChild(link);
+  })();
 
   if (window.__HERMES_PLUGINS__ && typeof window.__HERMES_PLUGINS__.register === "function") {
     window.__HERMES_PLUGINS__.register("kanban", KanbanPage);

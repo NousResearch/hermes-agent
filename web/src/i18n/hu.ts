@@ -642,7 +642,7 @@ export const hu: Translations = {
     unassigned: "nincs felelős",
     untitled: "(névtelen)",
     loadingDetail: "Betöltés…",
-    addComment: "Hozzászólás hozzáadása… (Enter a beküldéshez)",
+    addComment: "Hozzászólás hozzáadása… (Enter a beküldéshez, kép beillesztése/húzása)",
     comment: "Hozzászólás",
     status: "Állapot",
     workspace: "Munkaterület",

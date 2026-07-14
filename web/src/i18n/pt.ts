@@ -643,7 +643,7 @@ export const pt: Translations = {
     unassigned: "sem atribuição",
     untitled: "(sem título)",
     loadingDetail: "A carregar…",
-    addComment: "Adicionar um comentário… (Enter para submeter)",
+    addComment: "Adicionar um comentário… (Enter para submeter, colar/largar imagens)",
     comment: "Comentário",
     status: "Estado",
     workspace: "Espaço de trabalho",

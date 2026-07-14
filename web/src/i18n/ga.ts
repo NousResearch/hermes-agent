@@ -650,7 +650,7 @@ export const ga: Translations = {
     unassigned: "gan sannadh",
     untitled: "(gan teideal)",
     loadingDetail: "Á luchtú…",
-    addComment: "Cuir nóta tráchta… (Enter chun seoladh)",
+    addComment: "Cuir nóta tráchta… (Enter chun seoladh, greamaigh/tarraing íomhánna)",
     comment: "Nóta tráchta",
     status: "Stádas",
     workspace: "Workspace",

@@ -576,15 +576,137 @@
   max-width: 280px;
 }
 
+.hermes-kanban-drawer-comment-wrap {
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+}
+.hermes-kanban-drawer-comment-err {
+  padding: 0.35rem 0.75rem 0;
+  font-size: 0.75rem;
+  color: var(--color-destructive, #ef4444);
+}
+
 .hermes-kanban-drawer-comment-row {
   display: flex;
   gap: 0.4rem;
+  align-items: flex-end;
   padding: 0.55rem 0.75rem;
-  /* Keep the comment input clear of the mobile browser nav bar / home
-     indicator by extending the bottom padding with the safe-area inset. */
   padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
-  border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+}
+.hermes-kanban-drawer-comment-row--busy {
+  opacity: 0.85;
+}
+
+.hermes-kanban-comment-composer {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  padding: 0.45rem 0.55rem;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-foreground) 4%, transparent);
+}
+.hermes-kanban-comment-composer:focus-within {
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ring) 30%, transparent);
+}
+.hermes-kanban-comment-composer--has-attachments {
+  padding-top: 0.45rem;
+}
+
+.hermes-kanban-comment-input {
+  width: 100%;
+  min-height: 1.6rem;
+  max-height: 6rem;
+  resize: vertical;
+  background: transparent;
+  color: var(--color-foreground);
+  border: none;
+  border-radius: 0;
+  padding: 0.1rem 0.15rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  font-family: inherit;
+}
+.hermes-kanban-comment-input:focus {
+  outline: none;
+  box-shadow: none;
+}
+.hermes-kanban-comment-input:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.hermes-kanban-comment-pending {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0 0.05rem;
+}
+.hermes-kanban-comment-pending-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.2rem 0.35rem 0.2rem 0.2rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-card) 92%, transparent);
+}
+.hermes-kanban-comment-pending-thumb {
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: calc(var(--radius-sm, 0.25rem) - 1px);
+  object-fit: cover;
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+}
+.hermes-kanban-comment-pending-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.78rem;
+  line-height: 1.2;
+  color: var(--color-ring, #3b82f6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hermes-kanban-comment-pending-remove {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  border: none;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.hermes-kanban-comment-pending-remove:hover {
+  color: var(--color-foreground);
+}
+
+.hermes-kanban-comment-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.hermes-kanban-comment-img {
+  display: block;
+  max-width: 100%;
+  max-height: 16rem;
+  width: auto;
+  height: auto;
+  border-radius: var(--radius-sm, 0.25rem);
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  object-fit: contain;
 }
 
 .hermes-kanban-count {

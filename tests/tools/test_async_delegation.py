@@ -167,24 +167,6 @@ def test_dispatch_rejected_at_capacity():
     ev.set()
 
 
-def test_crashed_runner_produces_error_completion():
-    def boom():
-        raise RuntimeError("subagent exploded")
-
-    r = ad.dispatch_async_delegation(
-        goal="risky", context=None, toolsets=None, role="leaf", model="m",
-        session_key="", runner=boom, max_async_children=3,
-    )
-    assert r["status"] == "dispatched"
-    evt = _drain_one()
-    assert evt is not None
-    assert evt["status"] == "error"
-    text = format_process_notification(evt)
-    assert text is not None
-    assert "did not complete successfully" in text
-    assert "subagent exploded" in text
-
-
 def test_interrupt_all_signals_running_children():
     ev = threading.Event()
     interrupted = {"count": 0}

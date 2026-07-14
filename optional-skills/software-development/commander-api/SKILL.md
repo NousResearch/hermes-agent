@@ -1,6 +1,6 @@
 ---
 name: commander-api
-description: "Commander sprint dashboard API: board, sprints, tickets, issues."
+description: "Commander sprint API — read /api/agent-guide docs first."
 version: 1.0.0
 author: zealchaiwut, Hermes Agent
 license: MIT
@@ -34,7 +34,7 @@ metadata:
 
 Bridges Hermes to a locally running **Commander** dashboard — a FastAPI app
 that runs a BA → Coder → Tester → UAT agent pipeline against GitHub Issues,
-with sprints, tickets, milestones, and a Kanban board. ~155 routes, no
+with sprints, tickets, milestones, and a Kanban board. ~271 routes, no
 GraphQL/gRPC, a handful of SSE streams. Commander's own docs already name
 Hermes as an intended headless caller (`Authorization: Bearer <token>`), so
 this skill is read **and** write — but every mutating call is confirm-gated,
@@ -49,8 +49,9 @@ before the script will run them at all.
 - User wants to dispatch, monitor, or finish a sprint
 - User wants to create, triage, or approve tickets/issues
 - User wants advisor suggestions or mis-sizing flags for a project
-- Anything else touching Commander's ~155 routes — reachable via the
-  generic client, catalogued in `references/endpoints.md`
+- Anything else touching Commander's ~271 routes — reachable via the
+  generic client, catalogued in `references/endpoints.md`, or Commander's
+  own docs (see Canonical Docs below)
 
 ## Prerequisites
 
@@ -62,6 +63,31 @@ before the script will run them at all.
   - `commander_api.port` — `8000` (PRD) or `8001` (UAT)
   - `commander_api.token` — bearer token, blank is fine for localhost calls
   - `commander_api.default_project` — optional, saves asking every time
+
+## Canonical Docs — read these, never grep Commander's source
+
+For anything beyond this file's own live-verified notes, Commander's own
+docs are the authority. Read via `call GET <path>` (see How to Run), in
+this order:
+
+| Priority | Call | Why |
+|---|---|---|
+| 1 | `call GET /api/agent-guide` | Canonical operate recipes — run sprint, rerun, complete, sign-off chains. Response is `{content, version}`; the `version` field is a fingerprint — cache the content and only re-fetch when it changes. |
+| 2 | `call GET /api/projects/commander/docs/docs/features/api.md` | Full API reference — all ~271 routes, auth model, body fields (`callback_url`, `migrate_from`, `ticket_numbers`). |
+| 3 | `call GET /api/projects/commander/docs/docs/workflow.md` | The Bulk Create → Run Sprint → Finish/Rerun operating loop. |
+| 4 | `call GET /api/projects/commander/docs/docs/features/sprint-manager.md` | Sprint manager semantics — dispatch levels, gates, fix-loop, rerun lineage. |
+| 5 | `spec` (`GET /openapi.json`) | Machine schema when exact request/response models are needed. |
+
+For anything not covered by the above: `call GET /api/projects/commander/docs`
+lists all ~90 doc paths — fetch the one you need by path. The same pattern
+works for other tracked projects: `/api/projects/perf-coach/docs`,
+`/api/projects/asset-studio/docs`, etc.
+
+**Never search the Commander source tree on disk for how something works —
+read it from the running server via these calls instead**; the source can
+be a different worktree/branch than what's actually serving the API (see
+How to Run), and these doc routes are the maintained, agent-facing
+source of truth.
 
 ## Critical: project identifier quirk
 
@@ -135,7 +161,7 @@ are capped at 15 items so a single call can't blow the context budget.
 | `milestones <repo>` | `GET /api/projects/{slug}/milestones` | List milestones + `active` one — check before `plan-next` |
 | `spec [--path <substr>]` | `GET /openapi.json` | Live schema — the source of truth if this doc drifts |
 | `stream <path> [--max-seconds N]` | any SSE route | Capped read of a live stream (default 20s) |
-| `call <METHOD> <path> [--json '<body>'] [--confirm]` | any of the ~155 routes | Escape hatch — see `references/endpoints.md` |
+| `call <METHOD> <path> [--json '<body>'] [--confirm]` | any of the ~271 routes | Escape hatch — see `references/endpoints.md` or Canonical Docs |
 
 ## Procedure
 
@@ -298,8 +324,9 @@ Commander pre-computes these judgments — relay them, don't re-derive:
 
 ### Everything Else
 
-For any of the remaining ~140 routes: look up the method/path/risk tier in
-`references/endpoints.md`, then `call <METHOD> <path> [--json ...] [--confirm]`.
+For any of the remaining routes: look up the method/path/risk tier in
+`references/endpoints.md`, or check the Canonical Docs above (`agent-guide`,
+`docs/features/api.md`), then `call <METHOD> <path> [--json ...] [--confirm]`.
 If the reference looks stale, `spec --path <substring>` pulls the live
 schema straight from Commander.
 

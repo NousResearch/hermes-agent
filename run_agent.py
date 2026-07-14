@@ -232,6 +232,8 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
+    # kanban worker stop-guard: narrated exit without kanban_complete/block
+    "_kanban_stop_synthetic",
 )
 
 

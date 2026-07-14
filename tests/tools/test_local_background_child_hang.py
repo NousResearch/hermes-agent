@@ -91,6 +91,44 @@ class TestBackgroundChildDoesNotHang:
         assert lines[0] == "1"
         assert lines[-1] == "3000"
 
+    def test_foreground_capture_is_bounded_while_draining(
+        self, local_env, monkeypatch
+    ):
+        monkeypatch.setattr("tools.tool_output_limits.get_max_bytes", lambda: 10_000)
+        command = (
+            "python3 -c \"import sys; "
+            "sys.stdout.write('HEAD-SENTINEL\\n' + 'x' * 2000000 + "
+            "'\\nTAIL-SENTINEL')\""
+        )
+
+        result = local_env.execute(command, timeout=10)
+
+        assert result["returncode"] == 0
+        assert len(result["output"]) <= 10_000
+        assert result["output"].startswith("HEAD-SENTINEL")
+        assert result["output"].endswith("TAIL-SENTINEL")
+        assert "[OUTPUT TRUNCATED" in result["output"]
+
+    def test_continuous_output_still_honors_foreground_timeout(
+        self, local_env, monkeypatch
+    ):
+        monkeypatch.setattr("tools.tool_output_limits.get_max_bytes", lambda: 5_000)
+        command = (
+            "python3 -c \"import sys; "
+            "chunk = 'x' * 4096; "
+            "exec('while True: sys.stdout.write(chunk); sys.stdout.flush()')\""
+        )
+
+        started = time.monotonic()
+        result = local_env.execute(command, timeout=1)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 4.0
+        assert result["returncode"] == 124
+        assert len(result["output"]) <= 5_000
+        assert "[OUTPUT TRUNCATED" in result["output"]
+        assert result["output"].endswith("[Command timed out after 1s]")
+
     def test_timeout_path_still_works(self, local_env):
         """Foreground command exceeding timeout must still be killed."""
         t0 = time.monotonic()

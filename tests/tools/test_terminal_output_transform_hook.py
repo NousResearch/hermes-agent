@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import hermes_cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
+from tools.environments.local import LocalEnvironment
 
 
 _UNSET = object()
@@ -136,6 +137,61 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     assert "OPENAI_API_KEY=" in result["output"]
     assert "sk-pro" in result["output"]  # prefix marker from _mask_token
     assert "abc123def456" not in result["output"]  # secret body is gone
+
+
+def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
+    monkeypatch, tmp_path
+):
+    limit = 10_000
+    monkeypatch.setattr("tools.tool_output_limits.get_max_bytes", lambda: limit)
+    monkeypatch.setattr(
+        terminal_tool_module, "_get_env_config", lambda: _make_env_config(tmp_path)
+    )
+    monkeypatch.setattr(terminal_tool_module, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool_module,
+        "_check_all_guards",
+        lambda *_args, **_kwargs: {"approved": True},
+    )
+
+    sudo_input_lengths = []
+    hook_inputs = []
+
+    def _sudo_spy(output):
+        sudo_input_lengths.append(len(output))
+        return False
+
+    def _hook_spy(hook_name, **kwargs):
+        if hook_name == "transform_terminal_output":
+            hook_inputs.append(kwargs["output"])
+        return []
+
+    monkeypatch.setattr(
+        terminal_tool_module, "_sudo_wrong_password_failure", _sudo_spy
+    )
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _hook_spy)
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+    monkeypatch.setitem(terminal_tool_module._active_environments, "default", env)
+    monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
+    try:
+        command = (
+            "python3 -c \"import sys; "
+            "sys.stdout.write('HEAD-SENTINEL\\n' + 'x' * 2000000 + "
+            "'\\nTAIL-SENTINEL')\""
+        )
+        result = json.loads(terminal_tool_module.terminal_tool(command=command))
+    finally:
+        env.cleanup()
+
+    assert sudo_input_lengths
+    assert max(sudo_input_lengths) <= limit
+    assert len(hook_inputs) == 1
+    assert len(hook_inputs[0]) <= limit
+    assert hook_inputs[0].startswith("HEAD-SENTINEL")
+    assert hook_inputs[0].endswith("TAIL-SENTINEL")
+    assert "[OUTPUT TRUNCATED" in hook_inputs[0]
+    assert len(result["output"]) <= limit
 
 
 def test_terminal_output_transform_hook_exception_falls_back(monkeypatch, tmp_path):

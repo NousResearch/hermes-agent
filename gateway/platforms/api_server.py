@@ -1744,6 +1744,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_reasoning_effort": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "mobile_notifications": True,
+                "active_session_registry": True,
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
@@ -1769,6 +1771,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "active_sessions": {"method": "GET", "path": "/v1/active-sessions"},
+                "mobile_device": {"method": "PUT", "path": "/v1/mobile/devices/{installation_id}"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
@@ -4377,6 +4381,114 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _mobile_session_title(self, session_id: str) -> str:
+        """Resolve a short session title without exposing message contents."""
+        try:
+            db = self._get_session_db()
+            title = db.get_session_title(session_id) if db is not None else None
+        except Exception:
+            title = None
+        clean = " ".join(str(title or "Hermes session").split())
+        return clean[:120] or "Hermes session"
+
+    def _queue_mobile_notification(self, event: Dict[str, Any]) -> None:
+        """Schedule best-effort FCM delivery without delaying an API run."""
+        try:
+            from gateway.mobile_notifications import FCMNotifier
+
+            payload = dict(event)
+            payload.setdefault("active_count", len(self._active_mobile_sessions()))
+            task = asyncio.create_task(asyncio.to_thread(FCMNotifier().send, payload))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            logger.debug("Unable to schedule mobile notification", exc_info=True)
+
+    def _active_mobile_sessions(self) -> List[Dict[str, Any]]:
+        from hermes_cli.active_sessions import active_session_registry_snapshot
+
+        sessions: List[Dict[str, Any]] = []
+        for entry in active_session_registry_snapshot():
+            session_id = str(entry.get("session_id") or "")
+            metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+            sessions.append({
+                "lease_id": str(entry.get("lease_id") or ""),
+                "session_id": session_id,
+                "surface": str(entry.get("surface") or "unknown"),
+                "title": self._mobile_session_title(session_id),
+                "state": str(metadata.get("state") or "active"),
+                "run_id": str(metadata.get("run_id") or ""),
+                "started_at": entry.get("started_at"),
+                "updated_at": entry.get("updated_at"),
+            })
+        return sessions
+
+    async def _watch_mobile_active_sessions(self) -> None:
+        """Publish lifecycle changes for CLI, TUI, and messaging surfaces."""
+        known: Dict[str, Dict[str, Any]] = {}
+        while True:
+            try:
+                current_items = self._active_mobile_sessions()
+                current = {item["lease_id"]: item for item in current_items if item["lease_id"]}
+                active_count = len(current)
+                for lease_id, item in current.items():
+                    if lease_id not in known and item["surface"] != "api_server":
+                        self._queue_mobile_notification({
+                            "event": "session.started", **item, "active_count": active_count,
+                        })
+                for lease_id, item in known.items():
+                    if lease_id not in current and item["surface"] != "api_server":
+                        self._queue_mobile_notification({
+                            "event": "session.completed", **item,
+                            "state": "completed", "active_count": active_count,
+                        })
+                known = current
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Mobile active-session watcher failed", exc_info=True)
+            await asyncio.sleep(2)
+
+    async def _handle_active_sessions(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        sessions = self._active_mobile_sessions()
+        return web.json_response({"object": "list", "active_count": len(sessions), "data": sessions})
+
+    async def _handle_mobile_device_upsert(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("JSON object required")
+            body["installation_id"] = request.match_info["installation_id"]
+            from gateway.mobile_notifications import MobileDeviceStore
+
+            device = MobileDeviceStore().upsert(body)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+        except Exception:
+            logger.exception("Failed to register mobile device")
+            return web.json_response(_openai_error("Unable to register mobile device"), status=500)
+        return web.json_response({
+            "object": "hermes.mobile_device",
+            "installation_id": device.installation_id,
+            "host_profile_id": device.host_profile_id,
+            "updated_at": device.updated_at,
+        })
+
+    async def _handle_mobile_device_delete(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from gateway.mobile_notifications import MobileDeviceStore
+
+        deleted = MobileDeviceStore().delete(request.match_info["installation_id"])
+        return web.json_response({"deleted": deleted})
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -4563,9 +4675,42 @@ class APIServerAdapter(BasePlatformAdapter):
         # Per-client model routing for /v1/runs (see model_routes).
         route = self._resolve_route(body.get("model"))
 
+        try:
+            from hermes_cli.active_sessions import try_acquire_active_session
+            from hermes_cli.config import load_config
+
+            active_lease, limit_message = try_acquire_active_session(
+                session_id=str(session_id),
+                surface="api_server",
+                config=load_config() or {},
+                metadata={"run_id": run_id, "state": "running"},
+            )
+        except Exception:
+            logger.exception("Failed to register API run as an active session")
+            active_lease, limit_message = None, None
+        if limit_message is not None:
+            self._run_streams.pop(run_id, None)
+            self._run_streams_created.pop(run_id, None)
+            self._run_approval_sessions.pop(run_id, None)
+            self._run_statuses.pop(run_id, None)
+            return web.json_response(
+                _openai_error(limit_message, code="active_session_limit"),
+                status=429,
+                headers={"Retry-After": "1"},
+            )
+        session_title = self._mobile_session_title(str(session_id))
+
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
+                self._queue_mobile_notification({
+                    "event": "session.started",
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "title": session_title,
+                    "state": "running",
+                    "active_count": len(self._active_mobile_sessions()),
+                })
                 if run_id in self._stopping_run_ids:
                     _put_event_if_active({
                         "event": "run.cancelled",
@@ -4613,6 +4758,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         "waiting_for_approval",
                         last_event="approval.request",
                     )
+                    loop.call_soon_threadsafe(self._queue_mobile_notification, {
+                        "event": "approval.required",
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "title": session_title,
+                        "state": "waiting_for_approval",
+                    })
                     try:
                         loop.call_soon_threadsafe(q.put_nowait, event)
                     except Exception:
@@ -4743,6 +4895,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             finally:
+                terminal_status = self._run_statuses.get(run_id, {}).get("status", "completed")
+                terminal_event = {
+                    "failed": "session.failed",
+                    "cancelled": "session.cancelled",
+                }.get(str(terminal_status), "session.completed")
+                try:
+                    if active_lease is not None:
+                        active_lease.release()
+                except Exception:
+                    logger.debug("Failed to release API active-session lease", exc_info=True)
+                self._queue_mobile_notification({
+                    "event": terminal_event,
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "title": session_title,
+                    "state": terminal_status,
+                    "active_count": len(self._active_mobile_sessions()),
+                })
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
                 # on an approval Event.  Unregistering here releases those
@@ -5077,6 +5247,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/v1/active-sessions", self._handle_active_sessions)
+            self._app.router.add_put("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_upsert)
+            self._app.router.add_delete("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_delete)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
@@ -5127,6 +5300,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
+
+            mobile_watch_task = asyncio.create_task(self._watch_mobile_active_sessions())
+            self._background_tasks.add(mobile_watch_task)
+            mobile_watch_task.add_done_callback(self._background_tasks.discard)
 
             # Loud warning when a network-accessible API server runs against an
             # unsandboxed local terminal backend. The API server can drive the

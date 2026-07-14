@@ -240,19 +240,12 @@ def try_acquire_active_session(
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot.
 
-    Returns ``(lease, None)`` on success.  When the cap is disabled, the lease is
-    a no-op object so callers can unconditionally call ``release()``.
+    Returns ``(lease, None)`` on success. The registry remains active when the
+    concurrency cap is disabled so external clients can discover every open
+    Hermes surface; the optional cap only controls admission.
     """
     max_sessions = resolve_max_concurrent_sessions(config)
     lease_id = uuid.uuid4().hex
-    if max_sessions is None:
-        return ActiveSessionLease(
-            lease_id=lease_id,
-            session_id=session_id,
-            surface=surface,
-            enabled=False,
-        ), None
-
     now = time.time()
     entry = {
         "lease_id": lease_id,
@@ -276,7 +269,7 @@ def try_acquire_active_session(
         if pruned:
             logger.info("Pruned %d stale active session lease(s)", pruned)
         active_count = len(entries)
-        if active_count >= max_sessions:
+        if max_sessions is not None and active_count >= max_sessions:
             _write_entries(state_path, entries)
             logger.info(
                 "Active session limit reached: active=%d max=%d surface=%s",

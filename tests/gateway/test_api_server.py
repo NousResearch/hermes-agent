@@ -625,6 +625,9 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/v1/active-sessions", adapter._handle_active_sessions)
+    app.router.add_put("/v1/mobile/devices/{installation_id}", adapter._handle_mobile_device_upsert)
+    app.router.add_delete("/v1/mobile/devices/{installation_id}", adapter._handle_mobile_device_delete)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -1002,10 +1005,13 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["mobile_notifications"] is True
+            assert data["features"]["active_session_registry"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            assert data["endpoints"]["active_sessions"]["path"] == "/v1/active-sessions"
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -1021,6 +1027,49 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+
+class TestMobileControlPlane:
+    @pytest.mark.asyncio
+    async def test_register_and_unregister_device(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.put("/v1/mobile/devices/install-1", json={
+                "token": "device-token",
+                "host_profile_id": "mobile-host-1",
+                "app_version": "0.2.0",
+                "capabilities": {"notifications": True, "overlay": True},
+            })
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["installation_id"] == "install-1"
+            assert "token" not in data
+
+            deleted = await cli.delete("/v1/mobile/devices/install-1")
+            assert deleted.status == 200
+            assert (await deleted.json())["deleted"] is True
+
+    @pytest.mark.asyncio
+    async def test_active_sessions_returns_privacy_safe_rows(self, adapter):
+        app = _create_app(adapter)
+        with patch(
+            "hermes_cli.active_sessions.active_session_registry_snapshot",
+            return_value=[{
+                "lease_id": "lease-1",
+                "session_id": "session-1",
+                "surface": "gateway:telegram",
+                "started_at": 1,
+                "updated_at": 2,
+                "metadata": {"state": "active"},
+            }],
+        ), patch.object(adapter, "_mobile_session_title", return_value="Release work"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/active-sessions")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["active_count"] == 1
+                assert data["data"][0]["title"] == "Release work"
+                assert "messages" not in data["data"][0]
 
 
 # ---------------------------------------------------------------------------

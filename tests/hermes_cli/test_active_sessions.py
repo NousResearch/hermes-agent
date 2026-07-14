@@ -36,6 +36,24 @@ def test_resolve_max_concurrent_sessions_values(caplog):
     )
 
 
+def test_registry_tracks_sessions_when_concurrency_cap_is_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="uncapped-session",
+        surface="gateway:api_server",
+        config={},
+    )
+
+    assert message is None
+    assert lease is not None
+    assert [item["session_id"] for item in active_sessions.active_session_registry_snapshot()] == [
+        "uncapped-session"
+    ]
+    lease.release()
+    assert active_sessions.active_session_registry_snapshot() == []
+
+
 def test_active_session_lease_blocks_until_release(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))

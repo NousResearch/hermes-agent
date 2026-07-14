@@ -2548,6 +2548,23 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _notify_mobile_job(*, event: str, job_id: str, job_name: str, session_id: str) -> None:
+    """Best-effort, status-only mobile delivery for a terminal cron run."""
+    try:
+        from gateway.mobile_notifications import FCMNotifier
+
+        FCMNotifier().send({
+            "event": event,
+            "session_id": session_id,
+            "run_id": job_id,
+            "title": " ".join(str(job_name or "Scheduled job").split())[:120],
+            "state": "completed" if event == "job.completed" else "failed",
+            "active_count": 0,
+        })
+    except Exception:
+        logger.debug("Job '%s': mobile notification delivery failed", job_id, exc_info=True)
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -3654,12 +3671,24 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        _notify_mobile_job(
+            event="job.completed" if success else "job.failed",
+            job_id=str(job["id"]),
+            job_name=str(job.get("name") or job.get("prompt") or "Scheduled job"),
+            session_id=f"cron-job-{job['id']}",
+        )
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], False, str(e))
+        _notify_mobile_job(
+            event="job.failed",
+            job_id=str(job["id"]),
+            job_name=str(job.get("name") or job.get("prompt") or "Scheduled job"),
+            session_id=f"cron-job-{job['id']}",
+        )
         return False
 
 

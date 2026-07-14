@@ -100,6 +100,21 @@ def test_run_one_job_failed_job_delivers_error(monkeypatch):
     assert mark == ("mark", "j5", False)
 
 
+def test_run_one_job_emits_status_only_mobile_completion(monkeypatch):
+    _patch_pipeline(monkeypatch)
+    events = []
+    monkeypatch.setattr(s, "_notify_mobile_job", lambda **event: events.append(event))
+
+    assert s.run_one_job({"id": "mobile-job", "name": "Nightly report"}) is True
+
+    assert events == [{
+        "event": "job.completed",
+        "job_id": "mobile-job",
+        "job_name": "Nightly report",
+        "session_id": "cron-job-mobile-job",
+    }]
+
+
 def test_run_one_job_exception_marks_failure(monkeypatch):
     """If run_job raises, the helper marks the run failed and returns False
     rather than propagating."""

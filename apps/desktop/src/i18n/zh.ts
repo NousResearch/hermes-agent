@@ -2,6 +2,8 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { Translations } from './types'
 
+const REBUILD_NEEDED = '源代码已更改 — 重建以应用本地更改。'
+
 export const zh: Translations = {
   common: {
     apply: '应用',
@@ -667,6 +669,8 @@ export const zh: Translations = {
       cantReach: '无法连接更新服务器。',
       tapCheck: '点击"立即检查"以查找更新。',
       updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
+      rebuildNeeded: REBUILD_NEEDED,
+      rebuildNow: '立即重建',
       lastChecked: age => `上次检查:${age}`,
       justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动更新',
@@ -2031,6 +2035,8 @@ export const zh: Translations = {
     allSetTitle: '已是最新',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安装。',
+    rebuildTitle: '源代码已更改',
+    rebuildBody: 'Hermes 源代码自上次构建以来已更改。重建以应用本地更改。',
     availableTitleBackend: '后端有可用更新',
     availableBodyBackend: '已连接的 Hermes 后端有新版本可安装。',
     availableBodyNoChangelog: '已有新版本可用。此安装方式无法显示更新日志。',
@@ -2251,6 +2257,7 @@ export const zh: Translations = {
       update: '更新',
       updateInProgress: '正在更新',
       commitsBehind: (count, branch) => `落后 ${branch} ${count} 个提交`,
+      rebuildNeeded: REBUILD_NEEDED,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `后端 v${version}`,
       clientLabel: version => `客户端 v${version}`,

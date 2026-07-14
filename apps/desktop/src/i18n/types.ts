@@ -389,6 +389,8 @@ export interface Translations {
       cantReach: string
       tapCheck: string
       updateReady: (count: number) => string
+      rebuildNeeded: string
+      rebuildNow: string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
@@ -1520,6 +1522,8 @@ export interface Translations {
     allSetTitle: string
     availableTitle: string
     availableBody: string
+    rebuildTitle: string
+    rebuildBody: string
     availableTitleBackend: string
     availableBodyBackend: string
     availableBodyNoChangelog: string
@@ -1718,6 +1722,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      rebuildNeeded: string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

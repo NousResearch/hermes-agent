@@ -48,16 +48,27 @@ This skill loads standard reusable prompts from HermesAgent. The v2 prompt files
 
 When the user invokes a shortcut:
 
-1. Read the mapped prompt file in full.
+1. Read `references/worktree-lifecycle-contract.md` first, then read the mapped prompt file in full.
 2. Apply the prompt to the user's current task or the task text that follows the shortcut.
 3. If the shortcut is invoked without a target task, ask what task the user wants to apply it to.
-4. Follow any safety or approval constraints inside the loaded prompt exactly.
+4. Follow any safety or approval constraints inside the loaded prompt exactly. If an older prompt says to share one folder or forbids managed task worktrees, the Worktree Lifecycle Contract v1 takes precedence.
+
+## Worktree Lifecycle Gate (WTL v1)
+
+ทุก Shortcut ใช้สัญญา `references/worktree-lifecycle-contract.md` รุ่นเดียวกัน:
+
+- ก่อนเขียน: ต้องระบุ `project_id + task_id + staff_id + machine_id` และให้ `hermes worktree status` คืน `WTL_READY` สำหรับ task worktree ที่ตรงทะเบียน
+- หนึ่ง task มีผู้เขียนได้ครั้งละหนึ่งเครื่อง; ผู้ตรวจอ่านอย่างเดียว; การย้าย Notebook↔VPS ต้องผ่าน `handoff` และ `accept`
+- Shortcut ที่สร้าง/แก้ไฟล์ห้ามสร้าง worktree เอง ให้เรียก Worktree Manager; Shortcut ที่อ่านอย่างเดียวต้องรายงาน path/branch/SHA ที่ตรวจ
+- การปิดงานใช้ `close`; การลบใช้ `cleanup` เท่านั้น และต้องผ่าน 6/6 + dry-run + กักพัก 72 ชั่วโมง
+- worktree root เป็นพื้นที่ห้ามย้าย/ลบโดย `Use Move Folder`; การสำรวจของเดิมใช้ `hermes worktree scan` ซึ่งไม่เปลี่ยน Git
+- Decision token กลางคือ `WTL_READY`, `WTL_READ_ONLY`, `WTL_BLOCKED`, `WTL_HANDOFF_READY`, `WTL_CLEANUP_PROPOSED`, `WTL_CLEANUP_READY`, `WTL_ARCHIVED`
 
 ## Important Behavior
 
 For `Use Act-As`, the loaded prompt requires deep role definition and work decomposition, and explicitly says not to create files until the user approves. Respect that constraint even if the surrounding task sounds implementation-ready.
 
-For `Use Comply`, build phase-level plans with detailed issue checklists, numeric completion percentages, and localhost/VPS verification before delivery.
+For `Use Comply`, build phase-level plans with detailed issue checklists, numeric completion percentages, and localhost/VPS verification before delivery. Mark every issue as Zone A (safe work the AI continues autonomously inside the approved task/worktree scope) or Zone B (work requiring grouped phase-level owner approval); finish unblocked Zone A work first and never ask for approval issue by issue.
 
 For `Use Summary`, summarize and analyze user-provided links plus content, present routing options first, and do not write to memory, KITS, registry, or files until the owner approves unless the owner explicitly says to choose and proceed.
 
@@ -66,7 +77,7 @@ For `Use Scan Feature`, scan the real repository phase by phase, refuse to claim
 
 For `Use AI Pair`, default to the 3-AI pilot when context is sufficient: Claude plans/final-reviews, Codex writes, and Qwen reviews read-only. Do not stop by asking whether to create a brief or whether to proceed when the next safe step is obvious; create the coder brief, reviewer packet, and handoff immediately when file writes are allowed, or print them in chat when they are not. Ask only when the target repo/task/branch is unknowable, a risky write/deploy lacks approval, or a required secret/account/runtime is unavailable. Keep the reviewer read-only by default, route review through controlled diff/brief/evidence, and use GitLab Merge Request/CI as the final gate.
 
-For `Use AI Relay`, load `references/use-ai-relay.md` and `references/ai-relay-catalog.md`. Honor the owner's mode from Use New Chat without asking twice: mode 1 assigns separate AIs to study/plan, production, and review; mode 2 uses a primary AI to produce the study/analysis output and a second AI to review it before acceptance. If no mode was supplied, ask once. Every code call also requires a fresh task-scoped Write Permit from Use New Chat; never reuse one for a new request or expanded path set. Fable/Faber/Fiber 5 is removed from the active path. Use `relay-call --role review` for AI reviews so Codex is read-only, silence alone does not stop it, one compact retry stays under the same issue, retry suffixes cannot reset counters, and concurrent duplicate work returns `already_running`. The same reviewer plus review method may fail at most twice per root issue; after that split the findings and switch to deterministic gates or a different-vendor reviewer, never a third identical review. Use `gate-run` for real verification; never treat an AI claim or partial timeout output as verified without a gate row.
+For `Use AI Relay`, load `references/use-ai-relay.md` and `references/ai-relay-catalog.md`. Honor the owner's mode from Use New Chat without asking twice: mode 1 assigns separate AIs to study/plan, production, and review; mode 2 uses a primary AI to produce the study/analysis output and a second AI to review it before acceptance. If no mode was supplied, ask once. Every code call also requires a fresh task-scoped Write Permit from Use New Chat; never reuse one for a new request or expanded path set. The coder must run in the `WTL_READY` task worktree; reviewers stay read-only against the same path/SHA. Relay must never create, discard, or switch a worktree itself. Fable/Faber/Fiber 5 is removed from the active path. Use `relay-call --role review` for AI reviews so Codex is read-only, silence alone does not stop it, one compact retry stays under the same issue, retry suffixes cannot reset counters, and concurrent duplicate work returns `already_running`. The same reviewer plus review method may fail at most twice per root issue; after that split the findings and switch to deterministic gates or a different-vendor reviewer, never a third identical review. Use `gate-run` for real verification; never treat an AI claim or partial timeout output as verified without a gate row.
 
 For `Use Business Plan`, review the owner's raw business/marketing/pitch/tender/website question before execution, choose the right business modules and expert roles, build phase and issue checklists, ask for missing inputs first, and do not create files or durable writes until approved.
 
@@ -82,9 +93,9 @@ For `Use Blog Auto`, extract useful work knowledge into a One Man Fleet blog rou
 
 For `Use WOW Resource`, read the mapped prompt, route through WOW System and Web Design Intelligence, select resources based on the project goal, reject mismatched/generic options, and transform the selected patterns into project-specific layout/design/script direction. Do not copy scripts or visual patterns directly.
 
-For `Use Flow Guardian`, apply Home OS Agent safe workflow before project work: resolve and report the registered staff+project folder, branch, and dirty status; for new writable work propose only a branch inside that existing folder. Never propose or create a new worktree. Require no-write audit, approval gates, verification, tracking, and handoff when applicable.
+For `Use Flow Guardian`, apply Home OS Agent safe workflow before project work: resolve and report task, machine, registered worktree, branch, writer lease, runtime namespace, and dirty status. New writable work must go through Worktree Manager; do not create a branch/worktree directly. Require no-write audit, approval gates, verification, tracking, and handoff when applicable.
 
-For `Use New Chat`, run the startup checklist plus AI Relay Startup and `hermes-hook-doctor` from a single invocation before any readiness response. The doctor must prove the plain-language, independent-review, and prompt-evidence gates block their bad fixtures; file presence alone is insufficient. Inspect current folder, Git root, registered staff+project folder, folder match, branch, dirty status, local/remote/VPS equality, service/endpoint, and Relay readiness when applicable. After the report, ask the owner to choose mode 1 (separate AIs for study/plan, production, and review) or mode 2 (a primary AI creates the study/analysis output and a second AI reviews it), then pass that choice to AI Relay without asking twice. Before every distinct writable request in the same chat, re-check branch/status/claim and issue a task+scope+paths Write Permit; approval never carries to another task. Load `references/use-new-chat-conditional-gates.md` only when its legacy-memory, optional-check, or team-routing condition is present. Never propose or create a new worktree; new writable work may create only a branch inside the clean registered folder after approval. Return a New Chat Startup Report, not only "ready for commands".
+For `Use New Chat`, run the startup checklist plus AI Relay Startup and `hermes-hook-doctor` from a single invocation before any readiness response. The doctor must prove the plain-language, independent-review, and prompt-evidence gates block their bad fixtures; file presence alone is insufficient. Resolve or propose a task through Worktree Manager, then inspect current folder, Git root, registered task worktree, task/machine/writer match, branch, dirty status, local/remote/VPS equality, runtime namespace, service/endpoint, and Relay readiness when applicable. After the report, ask the owner to choose mode 1 (separate AIs for study/plan, production, and review) or mode 2 (a primary AI creates the study/analysis output and a second AI reviews it), then pass that choice to AI Relay without asking twice. Before every distinct writable request in the same chat, re-check WTL status/branch/claim and issue a task+scope+paths Write Permit; approval never carries to another task. Load `references/use-new-chat-conditional-gates.md` only when its legacy-memory, optional-check, or team-routing condition is present. New writable work uses `hermes worktree open` (dry-run first, `--apply` only after approval); existing work uses `status`/`enter`. Return a New Chat Startup Report, not only "ready for commands".
 
 For `Use Close Chat`, close the chat by checking real work status, quality gate evidence, commit/push/merge handoff, and memory writes before returning CLOSED_CLEAN, CLOSED_WITH_PENDING, or NEED_OWNER_ACTION_BEFORE_CLOSE. It does not push, merge, or deploy by itself.
 
@@ -92,7 +103,7 @@ For `Use Save Git`, enforce the safe Git/GitLab/VPS shipping gate before push, m
 
 For `Use Merge to Production`, treat it as a merger-only production path. Confirm the caller and target are allowed, run the Save Git merge gate and ship gate, deploy only from the approved remote/branch, and stop on any unknown state.
 
-For `Use Continue`, continue autonomously through phases, make best-judgment choices when selection is needed, require each phase to reach 100%, and provide a final phase percentage table for review. Treat `Go to Sleep` and sleep-related names only as legacy aliases for this same behavior.
+For `Use Continue`, continue autonomously through phases, make best-judgment choices when selection is needed, require each phase to reach 100%, and provide a final phase percentage table for review. Split work into Zone A (safe, reversible, inside the approved task/worktree scope; continue without per-issue approval) and Zone B (risky, scope-expanding, external, destructive, shipping, or identity-uncertain; gather into one phase-level approval request after Zone A). Treat `Go to Sleep` and sleep-related names only as legacy aliases for this same behavior.
 
 For `Use Move Folder`, load `references/use-move-folder.md`, then read the live VPS registry under `/home/linux-nat/.codex/use-move-folder/project-registry` before doing any cleanup, folder move, retention review, or disk-space work. Do not claim the shortcut is missing just because it is stored in Codex runtime state. Do not scan protected/no-touch roots or mutate anything unless the owner gives exact approval.
 

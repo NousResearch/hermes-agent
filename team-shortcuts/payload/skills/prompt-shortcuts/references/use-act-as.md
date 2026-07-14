@@ -95,6 +95,10 @@ Use Act-As กับงานนี้
 ข้อห้าม: วางแผนรื้อ decision เดิมโดยไม่บอก · เดาชื่อ agent · แตะไฟล์ก่อนอนุมัติ · ใช้ "ว้าว" ลอย ๆ · ศัพท์เทคนิคไม่แปล
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · แผนที่มีการเขียนต้องประกาศ `project/task/staff/machine/worktree` และแบ่งบทบาท writer หนึ่งตัว + reviewer read-only; ยังไม่เปิด Worktree จนเจ้าของอนุมัติแผน
+
 ## Changelog
 
 - v3.1 (2026-07-05): เกาะ Memory Schema v1.2 — อ่านความจำจาก `.project/` (OverviewProgress/plan/decisions) · เขียนแผนลง `.project/plan.md` (เดิม `.hermes/plan.md`) · เพิ่ม Migration ของเก่าตาม §1b · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05)

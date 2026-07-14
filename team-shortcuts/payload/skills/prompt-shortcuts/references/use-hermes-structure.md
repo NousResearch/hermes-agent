@@ -59,6 +59,10 @@ Use Hermes Structure
 - ถ้าเจ้าของพิมพ์ "Use Hermes Structure ทั้งหมด" หรือระบุข้อมาเลย → ข้ามเมนู ทำข้อนั้นทันที
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · การติดตั้ง/อัปเดตมาตรฐาน Hermes ต้องติดตั้ง contract, Manager route, registry path, tracking และคำสั่งตรวจ Notebook/VPS รุ่นเดียวกัน
+
 ## Changelog
 
 - v1.0 (2026-06-28): สร้างใหม่ · ประตูเดียวคุมมาตรฐานกลาง Hermes (ใช้/อัปเดต/ตรวจ/ทั้งหมด) · ผูกกับ hermes-standard/bin/ 9 เครื่องมือ

@@ -146,6 +146,10 @@ Fix needed: <ถ้ามี>
 Owner action: deploy ได้ / ห้าม deploy เพราะ...
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · หลังยืนยัน merge SHA ให้ `hermes worktree close --merged --merge-sha ...`; จากนั้นสถานะมีสิทธิ์เข้า cleanup review แต่ยังห้ามลบจนผ่าน 6/6 + dry-run + quarantine
+
 ## Changelog
 
 - v1.1 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex ด้านความปลอดภัย deploy) · ยืนยัน merger จาก GitLab actor จริง (ไม่ใช่ชื่อที่พิมพ์) · allowlist อ่านจาก .savegit.json บน origin/target เท่านั้น (กัน privilege escalation) + MR แตะ .savegit.json = block · แยก mergers/deployers · เพิ่ม rollback บังคับ (rollback_command + verify ซ้ำหลัง rollback) · deploy command อ่านจาก config ไม่ผูก Lotto · static site ต้องมี build manifest (commitSha/buildTime/sourceBranch) ไม่มี = PRODUCTION_NOT_VERIFIED · เพิ่มชั้น GitLab protected environment

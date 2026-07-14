@@ -15,12 +15,12 @@ tags:
   - compliance
   - phase-tracking
 status: active
-version: "3.1"
-updated: 2026-07-05
+version: "3.2"
+updated: 2026-07-14
 schema: memory-schema-v1.2
 ---
 
-# Use Comply (v3.1 · 2026-07-05)
+# Use Comply (v3.2 · 2026-07-14)
 
 คู่กับ Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 
@@ -55,15 +55,23 @@ Use Comply กับงานนี้
 
 [สูตร %] ราย issue: verified=100% นอกนั้น=0% · % เฟส = verified÷ทั้งหมดในเฟส ×100 · % รวม = verified÷ทั้งหมด ×100 · ปัดจำนวนเต็ม · ห้าม % จากความรู้สึก
 
+[Two-Zone Gate — จำแนกก่อนส่งให้ Use Continue]
+- ทุก issue ต้องมี `zone` ก่อนเริ่มทำงาน: `ZONE_A` หรือ `ZONE_B` · ไม่มี zone = ยังเริ่มไม่ได้
+- `ZONE_A` = งานไม่มีผลภายนอกหรือย้อนกลับได้ในขอบเขตที่อนุมัติ เช่น อ่าน/วิเคราะห์/แก้ไฟล์ใน allowed_paths/เขียน test หรือ doc/รัน test-lint-build · Use Continue ทำต่อเองได้ทั้ง Phase โดยไม่ถามราย issue
+- `ZONE_B` = งานข้าม scope/ownership, พื้นที่ dirty ของคนอื่น, dependency/config ที่มีผลกว้าง, push/merge/deploy, production, migration, ลบถาวร, เงิน, secret หรือสื่อสารภายนอก
+- รวม `ZONE_B` ที่มีเป้าหมายเดียวกันเป็น `approval_phase` เดียว · เจ้าของอนุมัติครั้งเดียวครอบทุก issue ใน Phase ที่ระบุ `task_id + branch + base_sha + allowed_paths`
+- ถ้า path/branch/SHA/ผลภายนอกเปลี่ยน = สิทธิ์เดิมหมดอายุ ต้องจัด Phase ใหม่ · ห้ามขยายสิทธิ์เงียบ
+- การอนุมัติ Zone A หรือ Phase ไม่ยกเลิกด่านจริง: worktree/claim/secret/test/save-git/production ยังต้องผ่านตามชนิดงาน
+
 ลำดับการทำ:
 
 1. แยกเป้าหมาย — ผลสุดท้าย / scope / out of scope / ถ้าเสร็จผู้ใช้ได้อะไร
 
 2. แตก phase — แต่ละเฟส: `phase_id` (จาก plan.md ถ้ามี) / ชื่อ / เป้าหมาย / รายการ issue / เกณฑ์ผ่าน / วิธีตรวจ / output
 
-3. แตก issue — แต่ละ issue: `issue_id` (P1-I1…) / ชื่อ / รายละเอียด / ไฟล์เกี่ยวข้อง / เงื่อนไขเสร็จ / วิธีตรวจ / สถานะ / blocker
+3. แตก issue — แต่ละ issue: `issue_id` (P1-I1…) / ชื่อ / รายละเอียด / ไฟล์เกี่ยวข้อง / เงื่อนไขเสร็จ / วิธีตรวจ / สถานะ / blocker / `zone` / `risk_reason` / `approval_phase` / `allowed_paths` / `external_effect`
 
-4. ตาราง comply — | phase_id | issue_id | สถานะ | % | หลักฐาน | (หลักฐานละเอียดเฉพาะ verified/blocked/failed)
+4. ตาราง comply — | phase_id | issue_id | zone | approval_phase | สถานะ | % | หลักฐาน | (หลักฐานละเอียดเฉพาะ verified/blocked/failed)
 
 5. Verification — ค้น gate เอง (ใหม่)
    - งานโค้ด: ค้น quality gate จาก repo เอง (Schema §5: package.json/Makefile/CI) แล้วรันจริง + แปะ output · localhost เปิดได้จริง
@@ -82,8 +90,13 @@ Use Comply กับงานนี้
 ข้อห้าม: เดา verified · % จากความรู้สึก · เขียน secret ลงหลักฐาน · ถามเจ้าของว่าใช้ test ตัวไหน · ตั้ง phase ใหม่ทับ id จาก plan.md · ศัพท์เทคนิคไม่แปล
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · ทุก Issue ที่เขียนไฟล์ต้องผูก `task_id + worktree + machine + evidence`; ตารางเปอร์เซ็นต์แยกสถานะ lifecycle และห้ามนับ verified ถ้า WTL gate ไม่พร้อม
+
 ## Changelog
 
+- v3.2 (2026-07-14): เพิ่ม Two-Zone Gate ตามคำสั่งเจ้าของ · ทุก issue ต้องเป็น ZONE_A/ZONE_B · Zone A ทำต่อเองได้ทั้ง Phase · Zone B รวมขออนุมัติครั้งเดียวต่อ approval_phase แทนการถามราย issue
 - v3.1 (2026-07-05): เกาะ Memory Schema v1.2 — อ่านแผนจาก `.project/plan.md` (เดิม `.hermes/plan.md`) + อ่านสถานะจาก `.project/OverviewProgress.md` · เจอไฟล์เก่า = Migration §1b ก่อน · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05)
 - v3.0 (2026-06-26): เกาะ Memory Schema v1.1 · เพิ่มขั้น 0 อ่าน plan.md + handoff + token ก่อนแตกงาน (แตก issue ใต้ phase_id เดิม) · ค้น quality gate เอง (§5) · ใช้ issue_id ร่วม (P1-I1 ตาม §10) · กฎเหล็ก "ไม่มี output = claimed" (§3) · จับคู่สถานะ §11 · deploy วัดจาก CI run ของ merge SHA (§4) · redact secret (§7) · กฎ non-dev
 - v2.1 (2026-06-24): เพิ่มสูตร % (นับเฉพาะ verified) · สถานะมาตรฐาน 6 ค่า + แยก failed กับ blocked · เกณฑ์ "งานใหญ่" · แบบฟอร์มหลักฐาน

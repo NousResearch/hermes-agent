@@ -22,13 +22,13 @@ tags:
   - phase-tracking
   - completion
 status: active
-version: "4.4"
-updated: 2026-07-13
+version: "4.5"
+updated: 2026-07-14
 schema: memory-schema-v1.2
 replaces: go-to-sleep
 ---
 
-# Use Continue (v4.4 · 2026-07-13)
+# Use Continue (v4.5 · 2026-07-14)
 
 คู่กับ Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 
@@ -59,15 +59,26 @@ Use Continue
 [กฎ re-anchor — กันลืมแผนหลังคำถามแทรก · แผน GRD 2026-07-07]
 หลังตอบคำถามแทรก / ออกนอกเรื่อง / สลับงาน — ก่อนแตะไฟล์หรือลงมือครั้งถัดไป ต้องเปิด `.project/plan.md` ทวน "เฟสปัจจุบัน + ข้อห้าม" ก่อนเสมอ · ห้ามทำต่อจากความจำในแชท (ปฐมเหตุ: AI ตอบคำถามเสร็จแล้วลืมแผน ทำโปรเจกต์พัง · ละเมิด "ตอบโดยไม่ทวนโจทย์" 3,790 ครั้ง)
 
+[Two-Zone Execution — ลดการกดอนุมัติรายนาที]
+- รับตารางจาก Use Comply ที่ติดป้ายทุก issue เป็น `ZONE_A` หรือ `ZONE_B` · ไม่มีป้าย = กลับไปจำแนกก่อน ไม่ถามเจ้าของราย issue
+- `ZONE_A`: ทำต่อเองทั้ง Phase จน verified 100% — อ่าน/วิเคราะห์/แก้ใน allowed_paths/เขียน test-doc/รัน test-lint-build/แก้ผลตรวจใน scope เดิม · ห้ามหยุดขออนุมัติระหว่าง issue
+- `ZONE_B`: ยังไม่ทำ · รวบ issue ที่เกี่ยวกันเป็น `approval_phase` พร้อมคำสั่ง ผลกระทบ วิธีย้อนกลับ และเงื่อนไขหยุด แล้วขอเจ้าของครั้งเดียวต่อ Phase
+- อนุมัติ Phase แล้วทำทุก issue ใน Phase ต่อเองได้ ตราบใดที่ `task_id + branch + base_sha + allowed_paths + external_effect` ยังตรง
+- หยุดและจัด Phase ใหม่เฉพาะเมื่อ scope/path/branch/SHA เปลี่ยน, ชน ownership, พบ secret, ด่านจริง BLOCKED, จะแตะ production/เงิน/บุคคลภายนอก/ลบถาวร
+- คำถามย่อย การเลือกวิธีภายใน scope และการแก้ test ที่ไม่ผ่าน ไม่ใช่เหตุให้ขออนุมัติใหม่ · เลือกทางที่ปลอดภัยสุดแล้วบันทึกเหตุผล
+
 [ระดับอิสระ 3 ชั้น — ตัดสินก่อนทำทุกอย่าง · อิง Schema §12]
-ชั้น 1 ทำเองได้เลย: อ่านไฟล์ / แก้โค้ดใน scope รอบนี้ / รันเทส / เขียนไฟล์ทดสอบ / เขียน doc
+ชั้น 1 = ZONE_A ทำเองได้เลย: อ่านไฟล์ / แก้โค้ดใน scope รอบนี้ / รันเทส / เขียนไฟล์ทดสอบ / เขียน doc
 ชั้น 2 รายงานแล้วทำต่อได้ (แนบหลักฐานก่อน): ลง dependency (+ lockfile diff + license/security) / ลบหลายไฟล์ (+ dry-run list) / แตะไฟล์ข้าม ownership (+ สรุปผลกระทบ) / แก้ config ที่ไม่ใช่ production
 ชั้น 3A auto ผ่านด่านอัตโนมัติได้: push ขึ้น branch ตัวเอง / tag / deploy staging / แก้ CI ที่ไม่กระทบ prod / external API บน sandbox
 
-[Write Permit จาก Use New Chat — บังคับก่อนงานเขียนทุกก้อน]
-- ก่อนแก้ไฟล์ครั้งแรกของคำสั่งผู้ใช้แต่ละก้อน ต้องมี `task_id / branch / base_sha / allowed_paths / owner_approval / claim_status` ที่ยังตรงกับ Git จริง
-- สิทธิ์เดิมใช้ต่อได้เฉพาะ issue และขอบเขต path เดิม · คำสั่งใหม่ เปลี่ยนหัวข้อ เพิ่ม path หรือกลับมาหลังคำถามแทรก ต้องตรวจ branch/status/claim ใหม่
-- ถ้าเป็น `NEW_WRITABLE_TASK` ต้องกลับไป Branch Gate ขออนุมัติ branch ใหม่ใน registered folder เดิมก่อนเขียน · ห้ามถือว่า Use Continue อนุญาตใช้ branch เดิมกับทุกงาน
+ชั้น 2/3A จัดเป็น ZONE_B ก่อนเสมอ · เมื่อ approval_phase ได้รับอนุมัติและด่านเครื่องมือคืน SAFE จึงทำต่อได้โดยไม่ถามซ้ำราย issue
+
+[Phase Write Permit จาก Use New Chat — หนึ่งสิทธิ์ต่อ Phase ไม่ใช่ต่อ issue]
+- ก่อนแก้ไฟล์ครั้งแรกของ Phase ต้องมี `task_id / approval_phase / branch / base_sha / allowed_paths / owner_approval / claim_status` ที่ยังตรงกับ Git จริง
+- สิทธิ์เดียวใช้ได้กับทุก issue ใน Phase และ allowed_paths เดิม · ห้ามถามอนุมัติซ้ำระหว่าง Phase
+- คำสั่งใหม่ เปลี่ยนเป้าหมาย เพิ่ม path เปลี่ยน branch/SHA หรือกลับมาหลังบริบทไม่แน่นอน ต้องตรวจ branch/status/claim ใหม่ แต่ถ้าทุกค่าตรงให้ทำต่อได้ทันที ไม่ต้องขอเจ้าของซ้ำ
+- ถ้าเป็น `NEW_WRITABLE_TASK` ต้องกลับไป WTL Gate ให้ Manager แสดง dry-run และขออนุมัติก่อน `--apply` · ห้ามถือว่า Use Continue อนุญาตใช้ task/branch เดิมกับทุกงาน
 
 [เปลี่ยนสำคัญ] ต้องขอคนเสมอ (ค่าตั้งต้น · แม้ด่าน SAFE):
 - merge → main · deploy production · migration prod → เพราะ merge→main = CI/CD ดันขึ้น prod ที่มีผู้ใช้จริงอัตโนมัติ
@@ -113,8 +124,13 @@ Use Continue
 
 ชื่อเก่า `Go to Sleep`, `Sleep Mode`, `เข้าโหมดนอน`, และ `โหมดนอน` เป็น alias เพื่อความเข้ากันได้ย้อนหลังเท่านั้น ชื่อหลักที่ต้องใช้และแสดงให้ผู้ใช้เห็นคือ `Use Continue`
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · กลับงานเดิมด้วย `task_id` + `hermes worktree status/enter`; ห้ามเดา cwd หรือเปิด branch ใหม่ · writer ไม่ตรง/lease หายให้หยุด `WTL_BLOCKED` หรือทำ handoff ก่อน
+
 ## Changelog
 
+- v4.5 (2026-07-14): เพิ่ม Two-Zone Execution + Phase Write Permit ตามคำสั่งเจ้าของ · Zone A ทำต่อเองจน verified 100% · Zone B รวมขออนุมัติครั้งเดียวต่อ Phase · เลิกถามราย issue ภายใน scope เดิม
 - v4.4 (2026-07-13): ผู้ตรวจและวิธีเดิมไม่ผ่าน 2 รอบต้องหยุด เปลี่ยนเป็นการตรวจด้วยเครื่องมือจริงหรือผู้ตรวจคนละค่าย ห้ามวนรอบที่ 3
 - v4.3 (2026-07-12): รับ Write Permit ต่อหนึ่งงานจาก Use New Chat ป้องกัน Use Continue นำ branch เดิมไปใช้กับคำสั่งใหม่จนไฟล์ทับกัน
 - v4.2 (2026-07-08): เพิ่มกฎ re-anchor (หลังตอบคำถามแทรก ต้องเปิด plan.md ทวนเฟส+ข้อห้ามก่อนลงมือ) + เลขงานต้องขึ้นต้นด้วย plan_id ของแผน · จากการสอบสวนแผน GRD 2026-07-07 (ต้นตอ: AI ลืมแผนหลังตอบคำถาม + เลขงานชนกันข้ามแผน)

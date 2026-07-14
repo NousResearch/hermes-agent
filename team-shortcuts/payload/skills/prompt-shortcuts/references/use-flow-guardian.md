@@ -82,6 +82,10 @@ next step:
 protected areas (ห้ามแตะ):
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · ก่อนเขียนต้องตรวจ `task_id + machine_id + writer lease + branch + runtime namespace` ด้วย `hermes worktree status` · task ใหม่ส่งให้ Manager เปิดพื้นที่; ห้าม Guardian สร้างหรือสลับเอง
+
 ## Changelog
 
 - v1.1 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · context เป็น path จริง $HERMES_OBSIDIAN_ROOT (หาไม่เจอ=รายงาน ไม่เดา) · ใส่คำสั่ง git จริง (+pwd/HEAD/remote) · นิยาม "เสี่ยง" มี threshold · STOP เฉพาะงานเขียน/เสี่ยง (อ่านได้) · เพิ่ม handoff template · เชื่อมระบบจองงาน claim เดียวกับ New Chat · ชี้ความต่างจาก New Chat + ถอด alias "New Chat Gate"

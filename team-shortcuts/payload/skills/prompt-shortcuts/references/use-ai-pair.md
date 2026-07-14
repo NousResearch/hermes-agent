@@ -135,6 +135,10 @@ Use AI Pair กับงานนี้
 |---|---|---:|---:|---|---|
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · writer ทำงานใน `WTL_READY` task worktree เพียงตัวเดียว; AI คู่ตรวจอ่านอย่างเดียวที่ path/SHA เดียวกัน · ใช้ Manager เดียวกับ AI Relay และห้ามแต่ละ AI สร้าง worktree เอง
+
 ## Changelog
 
 - v1.3 (2026-07-04): ติดป้าย superseded_by use-ai-relay (คง status active กัน shortcut หาย) · เก็บเป็น fallback เครื่องไม่มี relay

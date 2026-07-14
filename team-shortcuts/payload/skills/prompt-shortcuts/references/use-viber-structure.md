@@ -243,6 +243,10 @@ Done = ?       : ต้องเห็นผลอะไรถึงนับว
 - ห้ามสร้างไฟล์ถาวรจากความรู้ใหม่ก่อนเจ้าของงานอนุมัติ เว้นแต่เจ้าของงานสั่งชัดว่าให้ทำได้เลย
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · โครง Viber ต้องมี registered roots, task worktree naming, lifecycle, single-writer handoff, runtime isolation, cleanup 6/6, tracking และ PDCA ตั้งแต่เริ่มโครงการ
+
 ## Graph Links
 
 - Parent hub: [[skills/prompt-shortcuts/Prompt Shortcuts|Prompt Shortcuts]]

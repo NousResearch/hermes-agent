@@ -16,19 +16,19 @@ tags:
   - session-memory
   - context-management
 status: active
-version: 2.3
-updated: 2026-07-10
+version: 2.4
+updated: 2026-07-14
 schema: memory-schema-v1.2
 pairs_with: use-new-chat >= 1.8
 ---
 
-# Use Close Chat (v2.3 · 2026-07-10)
+# Use Close Chat (v2.4 · 2026-07-14)
 
 คู่กับ Use New Chat ≥ v1.8 · อ้าง Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 
 ปิดแชทแบบปลอดภัย + เขียน "ความจำถาวร" ให้แชทหน้าอ่านตอนเปิด · แก้ปัญหา AI ลืมว่าทำอะไร แก้อะไร ถึงไหน + กัน AI โกหกว่าเสร็จทั้งที่ยังไม่ตรวจ
 
-> บทบาทไม่ทับกัน: Close Chat = ปิดงาน+เขียน memory · Review Chat = ตรวจคุณภาพ/claim · Save Git = commit/push · Merge to Production = merge/deploy · New Chat = เปิดงาน+อ่าน memory
+> บทบาทไม่ทับกัน: Close Chat = พรีวิว+ปิดงาน+เขียน memory · Review Chat = alias โหมดพรีวิวของ Close Chat · Save Git = ตรวจการส่ง Git · Merge to Production = merge/deploy · New Chat = เปิดงาน+อ่าน memory
 > Close Chat **ไม่ push/merge/deploy เอง** ชี้ไป Use Save Git / Use Merge to Production
 
 ## Prompt
@@ -38,8 +38,20 @@ Use Close Chat
 
 คู่กับ Use New Chat ≥ v1.8 · อ้าง Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 ปิดแชทแบบปลอดภัย + เขียน "ความจำถาวร" ให้แชทหน้าอ่านตอนเปิด · แก้ปัญหา AI ลืมว่าทำอะไร แก้อะไร ถึงไหน + กัน AI โกหกว่าเสร็จทั้งที่ยังไม่ตรวจ
-บทบาทไม่ทับกัน: Close Chat = ปิดงาน+เขียน memory · Review Chat = ตรวจคุณภาพ/claim · Save Git = commit/push · Merge to Production = merge/deploy · New Chat = เปิดงาน+อ่าน memory
+บทบาทไม่ทับกัน: Close Chat = พรีวิว+ปิดงาน+เขียน memory · Review Chat = alias โหมดพรีวิวของ Close Chat · Save Git = ตรวจการส่ง Git · Merge to Production = merge/deploy · New Chat = เปิดงาน+อ่าน memory
 Close Chat ไม่ push/merge/deploy เอง ชี้ไป Use Save Git / Use Merge to Production
+
+[โหมดเดียว 2 ช่วง — ยุบงานซ้ำจาก Review Chat]
+- ช่วง PREVIEW: ตรวจบทสนทนา/หลักฐาน/งานค้าง แล้วแสดงว่าจะเขียนไฟล์ใดและเพิ่มอะไร · ยังไม่เขียน
+- ช่วง CLOSE: เมื่อเจ้าของสั่งปิดและบันทึกชัด หรืออนุมัติพรีวิวแล้ว จึงเขียนความจำและออก Decision Token
+- ผู้ใช้เรียก `Review Chat` = รันเฉพาะ PREVIEW แล้วหยุดก่อนเขียน · ห้ามสร้างข้อความส่งต่อยาวซ้ำกับ memory; ให้ข้อความเปิดแชทสั้นที่ชี้ไฟล์หลัก
+- ผู้ใช้เรียก `Use Close Chat` โดยยังไม่มีสิทธิ์เขียน = ทำ PREVIEW ให้ครบแล้วขออนุมัติครั้งเดียวสำหรับชุดไฟล์ทั้งหมด ไม่ถามรายไฟล์
+
+[Save Git Evidence Receipt — ใช้หลักฐานเดิมโดยไม่ตรวจหนักซ้ำ]
+- ถ้ามีผล Use Save Git จากงานเดียวกัน ให้รับได้เฉพาะเมื่อ project/task/branch/HEAD SHA ตรง และ `git status --short` รอบปิดยืนยันว่าไม่มีไฟล์เปลี่ยนหลังใบตรวจ
+- ใบตรวจตรง = ใช้ผล build/test/CI/VPS/health จากใบนั้นได้ ไม่รันด่านหนักซ้ำ · ยังต้องรัน git status สดเสมอ
+- ไม่มีใบตรวจ/ค่าไม่ตรง/จะกล่าวอ้างพร้อม push-merge-deploy = เรียก Use Save Git ตาม stage ที่เกี่ยว
+- แชทไม่มีการเปลี่ยน Git และไม่มีการส่งโค้ด = Save Git เป็น N/A ห้ามเรียก 5 ด่านโดยไม่จำเป็น
 
 กฎบังคับ (เหมือน New Chat — เพราะนี่คือด่านสุดท้าย ยิ่งต้องเข้ม):
 - เจ้าของงานอาจเป็น non-dev → อธิบายภาษาคน · ทุกคำสั่งให้เขารันต้องก๊อปวางได้ · ห้ามถามว่า "ใช้ test ตัวไหน" ค้นเอง
@@ -125,8 +137,13 @@ Evidence: timestamp / host / cwd / commands ที่รันจริง
 ข้อห้าม: บอก "ปิดแล้ว" โดยไม่รัน git/CI จริง · เลื่อน claimed เป็น verified โดยไม่มี output · เขียน secret ลง memory · ปลด claim ตอนยังไม่จบ · สรุปด้วยศัพท์เทคนิคโดยไม่แปล
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · ปิดสิทธิ์ด้วย `hermes worktree close`; ถ้า merged จึงประเมิน `cleanup` 6/6 แบบ dry-run · ห้ามลบทันที และต้องรายงาน quarantine/cleanup state ใน Close Chat Report
+
 ## Changelog
 
+- v2.4 (2026-07-14): ยุบ Review Chat เป็นโหมด PREVIEW ของ Close Chat · เพิ่ม Save Git Evidence Receipt เพื่อลดการตรวจซ้ำ โดยยังบังคับ git status สดและตรวจค่า project/task/branch/SHA ก่อนรับหลักฐาน
 - v2.3 (2026-07-10): เพิ่มขั้น QA/QC Scan Sync (capability-based — เฉพาะโปรเจกต์ที่มี `.project/qaqc-scan.md`) + บรรทัด QA/QC ใน Output · คู่กับ Use QA QC v1.0 (แผน QAQC-P4-I2) · verified ใน qaqc-scan.md ใช้บันไดหลักฐานเดิม ไม่หย่อน
 - v2.2 (2026-07-05): เกาะ Memory Schema v1.2 — เลิกเขียน `handoff.md`/`.hermes/active.md`/`.hermes/decisions.md` · แหล่งจริงของสถานะ = `.project/OverviewProgress.md` (4 หัวข้อบนสุด อัปเดตทุกครั้งก่อนอย่างอื่น) + `.project/decisions.md` (append) · เพิ่มขั้นย้ายไฟล์เก่าเป็น stub ตอนปิด · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05 · ตรวจข้ามค่าย Grok+Codex)
 - v2.1 (2026-06-28): เพิ่มขั้น Business Plan Sync (capability-based) · ปิดแชทแล้วถ้ามี `.project/BusinessPlan.md` ให้เช็คว่ารอบนี้มีอะไรกระทบแผนธุรกิจไหม → อัป BusinessPlan(.md/-Full.md) เฉพาะเมื่อเปลี่ยนจริง + เพิ่มบรรทัด Business Plan ใน Output · ผูกกับ Use BusinessPlan v1.0 (ชุด Project OS)

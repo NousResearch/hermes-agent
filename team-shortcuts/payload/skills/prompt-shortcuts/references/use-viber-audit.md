@@ -590,6 +590,10 @@ $HERMES_OBSIDIAN_ROOT/sources/viber-enterprise-standard-project-audit.md
 - ห้ามเปิดเผย secret หรือคัดลอกค่า `.env` ลงรายงาน ให้รายงานเฉพาะชื่อ key หรือสถานะ
 ````
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · Audit ต้องตรวจว่าทุกงานเขียนมี task worktree, single writer, runtime namespace, handoff และ cleanup evidence; audit เองเป็น read-only จนเจ้าของอนุมัติ fix task
+
 ## Changelog
 
 - v1.1 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · เพิ่มโหมด Quick(triage)/Full 360/Portfolio คุมขนาดไม่ให้ผลล้น · default "ตรวจทุกโปรเจกต์" = Portfolio Quick + stop gate เมื่อโปรเจกต์/ไฟล์เยอะ · path เป็น $PROJECT_ROOT + $HERMES_OBSIDIAN_ROOT (พกพา) + รายงานที่มา PROJECT_ROOT · scoring partial แยก low/mid/high + บังคับหลักฐานทุก partial · คะแนนสูงไม่ override critical blocker (Gate 5/8 missing = critical) · issue output มาตรฐาน (id/severity/status/verify/evidence/fix/done-when)

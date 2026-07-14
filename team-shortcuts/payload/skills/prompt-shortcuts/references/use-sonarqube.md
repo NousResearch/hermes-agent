@@ -162,6 +162,10 @@ export SONAR_TOKEN="<TOKEN_FROM_SONARQUBE>"
 Use SonarQube กับโปรเจกต์นี้
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · ผูกผล SonarQube กับ `task_id + worktree path + branch + commit SHA`; scan เป็น read-only ส่วนการแก้ finding ต้องเปิด/ใช้ task worktree ที่ `WTL_READY`
+
 ## กรณีที่ต้องหยุด
 
 - SonarQube ไม่ตอบหรือสถานะไม่ใช่ `UP`

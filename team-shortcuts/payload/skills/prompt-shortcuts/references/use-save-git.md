@@ -3,6 +3,9 @@ title: Use Save Git
 aliases:
   - Use Save Git
   - Save Git
+  - Save Grid
+  - save-grid
+  - Use Save Grid
   - save-git
   - use-save-git
   - ใช้ Save Git
@@ -25,12 +28,12 @@ tags:
   - vps
   - safety-gate
 status: active
-version: 2.1
-updated: 2026-06-24
+version: 2.2
+updated: 2026-07-14
 supersedes: v1.3 (retired 2026-06-08 · do not use old action-based flow)
 ---
 
-# Use Save Git (v2)
+# Use Save Git (v2.2)
 
 ## Shortcut
 
@@ -45,6 +48,15 @@ Use Save Git
 
 `gate` = ด่านตรวจ · `decision token` = คำตัดสินคำเดียว เช่น SAFE_TO_MERGE · `Grid` = ตารางสรุปทุกชั้นในที่เดียว
 `SHA` = เลข commit ใช้เทียบว่าแต่ละที่เป็นโค้ดชุดเดียวกัน · `dry-run` = ลองรันบน VPS โดยยังไม่แตะ production จริง
+
+`Save Grid` / `Use Save Grid` เป็น alias ของ `Use Save Git` — หมายถึงให้สร้างตาราง Grid จากด่านตรวจเดียวกัน ไม่ใช่ Shortcut อีกตัว
+
+## Entry Gate · เรียกเมื่อจำเป็นเท่านั้น
+
+- เรียกเมื่อจะ commit, push, merge, deploy หรือกล่าวอ้างว่า Git พร้อมส่ง
+- ถ้าแชทไม่มีการเปลี่ยน Git/ไม่มีการส่งโค้ด/เป็นงานอ่านหรือวางแผน ให้คืน `SAVE_GIT_NOT_APPLICABLE` โดยไม่รัน 5 ด่าน
+- Close Chat เรียก Save Git เฉพาะเมื่อ Entry Gate เข้าเงื่อนไข ห้ามเรียกทุกครั้งที่ปิดแชท
+- ผลสำเร็จต้องออก evidence receipt: project / task_id / branch / HEAD SHA / stage / timestamp / dirty state · ตัวรับใช้ซ้ำได้เฉพาะเมื่อค่าทั้งหมดตรงและไม่มีไฟล์เปลี่ยน
 
 ## เปลี่ยนจาก v1.3 (retired) — ทำไมต้องเขียนใหม่
 
@@ -295,8 +307,13 @@ Gate rerun result: commitSha=def222 ตรง → PRODUCTION_VERIFIED
 Owner action: ตัด local ได้
 ```
 
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · ก่อน commit/push ตรวจ `hermes worktree status` ว่า task/path/branch/writer ตรงทะเบียน และตรวจ unpushed/permit จริง · `WTL_BLOCKED` = ห้ามส่ง Git
+
 ## Changelog
 
+- v2.2 (2026-07-14): เพิ่ม alias `Save Grid` + Entry Gate ไม่รัน 5 ด่านในแชทที่ไม่มี Git action + evidence receipt ให้ Close/New ใช้ผลเดิมโดยตรวจ project/task/branch/SHA ก่อน
 - v2.1 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · แยก skip เป็น skip-ok/skip-risk (skip-risk ห้ามออก SAFE) + field ขั้นต่ำต่อ stage (ขาด = OWNER_DECISION/BLOCKED ไม่ใช่ skip เงียบ) + โหมด --audit ให้โปรเจกต์เก่า · เพิ่ม machine JSON output (schema_version/exit_code/fail-closed) คู่ Grid · path สคริปต์เป็น $HERMES_OBSIDIAN_ROOT (พกพา) · กัน commitSha หลอก (3-way SHA + build provenance + no-store/freshness + เช็ก dirty/unpushed/detached ก่อนเทียบ)
 - v2.0 (2026-06-08): เขียนใหม่เป็นด่านรันได้จริง 5 ชั้น + decision token + Grid (เลิก v1.3)
 

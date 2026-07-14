@@ -15,12 +15,13 @@ tags:
   - handoff
   - context-management
 status: active
-version: 2.3
-updated: 2026-07-05
+version: 2.4
+updated: 2026-07-14
 schema: memory-schema-v1.2
+routes_to: use-close-chat-preview
 ---
 
-# Review Chat
+# Review Chat (v2.4 · Preview Alias)
 
 ## Shortcut
 
@@ -33,77 +34,30 @@ Review Chat
 ```text
 Review Chat
 
-ให้รีวิวแชทนี้ทั้งหมดเพื่อปิดงานอย่างเป็นระบบ และเตรียมให้เปิดแชทใหม่ต่อได้โดยไม่หลุดบริบท
+เรียก `Use Close Chat` v2.4 ในโหมด `PREVIEW_ONLY`
 
-อ้าง Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำ · ไฟล์ความจำที่เสนออัปเดต = `.project/OverviewProgress.md` (4 หัวข้อบนสุด) + `.project/decisions.md` ตามโครง Schema v1.2 §1 (เลิกใช้ handoff/active แยกไฟล์แล้ว)
+กฎบังคับ:
+- ตรวจบทสนทนา งานค้าง หลักฐานจริง ไฟล์สำคัญ และความเสี่ยงตาม Use Close Chat ทุกข้อที่เกี่ยวข้อง
+- แยก "ตรวจจากหลักฐานจริง" ออกจาก "สรุปจากบทสนทนา"
+- แสดงรายการไฟล์ความจำที่จะอัปเดตและสิ่งที่จะเพิ่ม แต่ห้ามเขียนไฟล์ ห้ามปลด claim และห้ามเปลี่ยน Git
+- สร้างข้อความเปิดแชทใหม่แบบสั้น โดยชี้ `.project/OverviewProgress.md`, `.project/decisions.md` และ session log ล่าสุดแทนการคัดลอกความจำยาวซ้ำอีกชุด
+- ไม่ประเมินเปอร์เซ็นต์ context window ถ้าหน้าจอไม่แสดงค่าจริง; ให้บอกเพียงว่าเห็นหรือไม่เห็นค่า
+- ผลลัพธ์ต้องจบด้วย `PREVIEW_READY_FOR_CLOSE` และคำขออนุมัติครั้งเดียวสำหรับชุดไฟล์ทั้งหมดเมื่อจำเป็น
 
-กฎพื้นฐาน (บังคับ):
-- default = review-before-write · ทุก action ที่เป็นการเขียน (update handoff/registry/memory/review-queue, ปลด claim)
-  ต้อง "เสนอก่อนว่าจะเขียนไฟล์ไหน เพิ่มอะไร" รออนุมัติ · ห้ามเขียน/อัปเดตอัตโนมัติถ้าไม่มีคำสั่งชัด
-- แยกให้ชัดเสมอ: "ตรวจแล้วจากหลักฐานจริง" กับ "สรุปจากบทสนทนา" · ห้ามปนกัน
-- ห้ามอ้างว่าผ่านถ้าไม่มีหลักฐาน
-
-ให้ทำตามลำดับนี้:
-
-1. ตรวจงานที่คุยกันทั้งหมด
-- ผู้ใช้สั่งอะไรไว้ / เสร็จอะไร / ค้างอะไร / ทำผิดหรือควรแก้อะไร / ตัดสินใจสำคัญอะไร / ไฟล์ไหนถูกสร้าง-แก้
-
-2. ตรวจสถานะงานจริง
-- ไฟล์มีจริงไหม / คำสั่งตรวจรันแล้วยัง / รายงานอยู่ไหน / localhost-VPS ตรวจจริงหรือไม่ได้ตรวจ
-
-3. เสนออัปเดตไฟล์ประสานงาน (review-before-write — เสนอก่อน รออนุมัติ)
-เลือกเฉพาะไฟล์ที่ "เกี่ยวกับงานในแชทนี้จริง" · path มาตรฐาน:
-- Hermes Agent project: `projects/hermes-agent-dev/handoff.md`, `active-memory.md`, `review-queue/`
-- Coding repo (Schema v1.2): `.project/OverviewProgress.md` + `.project/decisions.md` · เจอไฟล์เก่า (`handoff.md`/`.hermes/active.md`/`.hermes/decisions.md`) = เสนอย้ายตาม Schema §1b (ย้าย + stub ห้ามลบ)
-- งาน Shortcut: `prompt-shortcut-registry.md` หรือ report เฉพาะเมื่อเจ้าของสั่งชัด
-- ไม่พบไฟล์มาตรฐาน → บอกว่าไม่พบ ห้ามสร้างใหม่เอง เว้นแต่เจ้าของงานอนุมัติ
-
-4. ปิดงานฝั่ง Team-Safe (ถ้าโปรเจกต์ใช้ระบบจองงาน claim)
-- รายงานสถานะ claim ปัจจุบัน + เสนอ action ปิดงาน (ปลด claim หรือเปลี่ยนเป็น handoff)
-- ทำจริงเฉพาะเมื่อเจ้าของอนุมัติ หรือมีคำสั่งปิด claim ชัดเจนในรอบนั้น
-
-5. สรุปสำหรับเจ้าของงาน (ภาษาคน)
-- ทำอะไรไปแล้ว / เหลืออะไร / ต้องระวังอะไร / ต่อแชทใหม่เริ่มอย่างไร
-
-6. สร้างข้อความเปิดแชทใหม่
-ต้องมี: เป้าหมายงาน / สิ่งที่เสร็จแล้ว / ไฟล์สำคัญ / งานค้าง / กติกาที่ AI ใหม่ต้องทำตาม / วิธีตรวจงาน
-
-7. ตรวจ context window
-- เห็น % จริง → บอกถ้าเกิน 40% · ไม่เห็น % → บอกข้อจำกัด + ประเมินจากความยาวบทสนทนา/จำนวนไฟล์/tool output/งานซ้อน
-
-รูปแบบคำตอบ:
-
-## สถานะงาน
-| งาน | สถานะ | หลักฐาน (จริง/จากบทสนทนา) | ค้างไหม |
-
-## สิ่งที่ต้องจำ
-[bullet สั้น ๆ]
-
-## ไฟล์สำคัญ
-[path + หน้าที่]
-
-## งานค้าง
-[ถ้าไม่มีให้บอกว่าไม่มี]
-
-## หลักฐานที่ยังขาด
-[ยังตรวจอะไรไม่ครบ เช่น ยังไม่รัน test, ยังไม่เปิดดู UI, VPS ไม่ได้ตรวจ]
-
-## ไฟล์ที่เสนอจะอัปเดต (รออนุมัติ)
-[ไฟล์ + จะเพิ่มอะไร · ยังไม่เขียนจนกว่าอนุมัติ]
-
-## ข้อความเปิดแชทใหม่
-[ข้อความพร้อมใช้]
+ห้ามทำขั้น CLOSE หรือเขียน memory จนกว่าเจ้าของสั่ง `Use Close Chat` หรืออนุมัติพรีวิวชัดเจน
 ```
+
+## Worktree Lifecycle v1
+
+อ่าน `worktree-lifecycle-contract.md` ก่อนใช้ Prompt นี้ · เพิ่มหลักฐาน `task_id / machine_id / worktree / branch / writer / lifecycle / cleanup` ในรายงาน · Review Chat อ่านสถานะและเสนอ action เท่านั้น เว้นแต่เจ้าของอนุมัติการเขียน/ปิดชัดเจน
 
 ## Changelog
 
-- v2.2 (2026-07-04): ผูก Memory Schema v1.1 (เพิ่ม schema field + เช็ก version) — เป็นคู่ขนาน Close Chat ไม่ใช่สมาชิกโซ่ lifecycle · ลบ orphan code fence ท้ายไฟล์
-- v2.1 (2026-06-24): ผ่านตรวจ 2 AI (Claude+Codex) · เปลี่ยนขั้น "อัปเดตไฟล์ถ้าควร" เป็น review-before-write (เสนอก่อน รออนุมัติ ห้ามเขียนอัตโนมัติ) · ใส่ path ไฟล์ประสานงานมาตรฐานชัดเจน · เพิ่มช่อง "หลักฐานที่ยังขาด" + "ไฟล์ที่เสนอจะอัปเดต" · แยก "ตรวจจากหลักฐานจริง" กับ "สรุปจากบทสนทนา" · เชื่อม Team-Safe (ปลด claim/handoff) แต่อยู่ใต้ review-before-write · แก้ code fence ที่เพี้ยน
-- v2.0 (2026-05-28): เวอร์ชันก่อนหน้า
+- v2.4 (2026-07-14): ยุบ Review Chat เป็น alias โหมด PREVIEW_ONLY ของ Use Close Chat v2.4 · ตัดการอ่าน/สรุป/สร้างความจำซ้ำ · ไม่เดาเปอร์เซ็นต์ context ที่มองไม่เห็น
+- v2.3 (2026-07-05): ผูก Memory Schema v1.2 และใช้ review-before-write
 
 ## Graph Links
 
 - Parent hub: [[skills/README|skills]]
-- Router: [[00-Center/docs/AI_SKILL_ROUTER|AI Skill Router]]
-- Graph: [[00-Center/docs/SKILL_GRAPH|Skill Graph]]
-- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.1]]
+- Close engine: [[skills/prompt-shortcuts/references/use-close-chat|Use Close Chat]]
+- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.2]]

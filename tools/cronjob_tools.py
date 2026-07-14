@@ -45,6 +45,19 @@ def _notify_provider_jobs_changed_safe() -> None:
         pass
 
 
+def _active_gateway_hooks():
+    """Return the live gateway hook registry without importing gateway.run."""
+    gateway_run = sys.modules.get("gateway.run")
+    runner_ref = getattr(gateway_run, "_gateway_runner_ref", None)
+    if runner_ref is None:
+        return None
+    try:
+        runner = runner_ref()
+        return getattr(runner, "hooks", None) if runner is not None else None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Cron prompt scanning
 # ---------------------------------------------------------------------------
@@ -638,7 +651,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+        processed = run_one_job(job, hooks=_active_gateway_hooks())
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {

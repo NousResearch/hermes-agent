@@ -10,7 +10,17 @@ The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the
 extracted helper directly.
 """
+import pytest
+
 import cron.scheduler as s
+
+
+class _RecordingHooks:
+    def __init__(self):
+        self.events = []
+
+    async def emit(self, event_type, context):
+        self.events.append((event_type, context))
 
 
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
@@ -98,6 +108,52 @@ def test_run_one_job_failed_job_delivers_error(monkeypatch):
     assert "deliver" in kinds  # failures always deliver
     mark = [c for c in calls if c[0] == "mark"][0]
     assert mark == ("mark", "j5", False)
+
+
+@pytest.mark.parametrize(
+    ("pipeline", "job", "expected"),
+    [
+        (
+            {"success": True, "final": "completed"},
+            {"id": "hook-success", "name": "success"},
+            {"success": True, "silent": False, "no_agent": False, "error": None},
+        ),
+        (
+            {"success": False, "final": "", "error": "boom"},
+            {"id": "hook-failure", "name": "failure"},
+            {"success": False, "silent": False, "no_agent": False, "error": "boom"},
+        ),
+        (
+            {"success": True, "final": "[SILENT]"},
+            {"id": "hook-silent", "name": "silent"},
+            {"success": True, "silent": True, "no_agent": False, "error": None},
+        ),
+        (
+            {"success": True, "final": "script output"},
+            {"id": "hook-script", "name": "script", "no_agent": True},
+            {"success": True, "silent": False, "no_agent": True, "error": None},
+        ),
+    ],
+    ids=("success", "failure", "silent", "script-only"),
+)
+def test_run_one_job_emits_job_end_for_all_outcomes(
+    monkeypatch, pipeline, job, expected
+):
+    """The shared completion boundary emits job:end for every job mode."""
+    _patch_pipeline(monkeypatch, **pipeline)
+    hooks = _RecordingHooks()
+
+    assert s.run_one_job(job, hooks=hooks) is True
+
+    assert len(hooks.events) == 1
+    event_type, context = hooks.events[0]
+    assert event_type == "job:end"
+    assert context["job_id"] == job["id"]
+    assert context["job_name"] == job["name"]
+    assert context["response"] == pipeline["final"]
+    assert context["delivery_error"] is None
+    for key, value in expected.items():
+        assert context[key] == value
 
 
 def test_run_one_job_exception_marks_failure(monkeypatch):

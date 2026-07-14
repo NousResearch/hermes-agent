@@ -153,11 +153,15 @@ def test_inprocess_provider_ticks_and_stops():
     calls = []
     stop = threading.Event()
     prov = InProcessCronScheduler()
+    hooks = object()
     assert prov.name == "builtin"
 
     with patch("cron.scheduler.tick", side_effect=lambda *a, **k: calls.append(k) or 0):
         t = threading.Thread(
-            target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True
+            target=prov.start,
+            args=(stop,),
+            kwargs={"interval": 0, "hooks": hooks},
+            daemon=True,
         )
         t.start()
         # Wait for the loop to actually call tick() at least once rather than
@@ -170,6 +174,7 @@ def test_inprocess_provider_ticks_and_stops():
     assert not t.is_alive(), "provider did not exit after stop_event was set"
     assert len(calls) >= 1, "provider never called tick()"
     assert calls[0].get("sync") is False
+    assert calls[0].get("hooks") is hooks
 
 
 def test_inprocess_provider_skips_dispatch_while_draining():
@@ -363,12 +368,51 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
+    hooks = object()
     monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
     monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
-    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kw: ran.append((job["id"], kw.get("hooks"))) or True,
+    )
 
-    assert InProcessCronScheduler().fire_due("j1") is True
-    assert ran == ["j1"]
+    assert InProcessCronScheduler().fire_due("j1", hooks=hooks) is True
+    assert ran == [("j1", hooks)]
+
+
+def test_fire_due_emits_job_end_through_shared_helper(monkeypatch):
+    """A provider-fired job reaches the same job:end lifecycle boundary."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    events = []
+
+    class Hooks:
+        async def emit(self, event_type, context):
+            events.append((event_type, context))
+
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
+    monkeypatch.setattr(
+        jobs,
+        "get_job",
+        lambda jid: {"id": jid, "name": "provider fire", "no_agent": False},
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_job",
+        lambda job, *, defer_agent_teardown=None: (True, "out", "done", None),
+    )
+    monkeypatch.setattr(sched, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(sched, "_deliver_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sched, "mark_job_run", lambda *args, **kwargs: None)
+
+    assert InProcessCronScheduler().fire_due("provider-job", hooks=Hooks()) is True
+    assert len(events) == 1
+    assert events[0][0] == "job:end"
+    assert events[0][1]["job_id"] == "provider-job"
+    assert events[0][1]["success"] is True
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):

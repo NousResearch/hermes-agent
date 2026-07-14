@@ -39,6 +39,7 @@ description: Log all agent activity to a file
 events:
   - agent:start
   - agent:end
+  - job:end
   - agent:step
 ```
 
@@ -81,6 +82,7 @@ async def handle(event_type: str, context: dict):
 | `agent:start` | Agent 开始处理消息 | `platform`、`user_id`、`session_id`、`message` |
 | `agent:step` | 工具调用循环的每次迭代 | `platform`、`user_id`、`session_id`、`iteration`、`tool_names` |
 | `agent:end` | Agent 完成处理 | `platform`、`user_id`、`session_id`、`message`、`response` |
+| `job:end` | Cron 任务完成处理 | `job_id`、`job_name`、`success`、`response`、`error`、`delivery_error`、`silent`、`no_agent` |
 | `command:*` | 任意斜杠命令执行 | `platform`、`user_id`、`command`、`args` |
 
 #### 通配符匹配

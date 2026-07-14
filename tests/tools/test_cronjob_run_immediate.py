@@ -7,6 +7,8 @@ last_run_at stayed null forever. Now action='run' claims the job (at-most-once,
 blocking a concurrent tick) and fires it inline via the shared run_one_job body.
 """
 import json
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.cronjob_tools import cronjob, _execute_job_now
@@ -17,6 +19,25 @@ _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
 
 
 class TestCronjobRunExecutesImmediately:
+    def test_run_forwards_active_gateway_hooks(self, monkeypatch):
+        """Immediate gateway runs reach the shared job:end hook boundary."""
+        hooks = object()
+        runner = SimpleNamespace(hooks=hooks)
+        monkeypatch.setitem(
+            sys.modules,
+            "gateway.run",
+            SimpleNamespace(_gateway_runner_ref=lambda: runner),
+        )
+        ran = {"job": "after-run", "last_status": "ok", "last_error": None}
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=ran):
+            result = _execute_job_now(dict(_JOB))
+
+        assert result["success"] is True
+        m_run.assert_called_once_with(_JOB, hooks=hooks)
+
     def test_run_action_claims_and_fires_via_run_one_job(self):
         """action='run' must claim the job then fire it through run_one_job."""
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}

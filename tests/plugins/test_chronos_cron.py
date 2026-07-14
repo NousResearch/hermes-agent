@@ -168,6 +168,23 @@ def test_reconcile_skips_already_armed_same_time(temp_home, chronos, monkeypatch
 
 # -- fire_due re-arm ----------------------------------------------------------
 
+
+def test_start_hooks_reach_provider_fire(chronos, monkeypatch):
+    """The additive start hook registry is retained for later external fires."""
+    prov, _fake = chronos
+    hooks = object()
+    forwarded = []
+    monkeypatch.setattr(prov, "reconcile", lambda: None)
+    monkeypatch.setattr(
+        "cron.scheduler_provider.CronScheduler.fire_due",
+        lambda self, jid, **kw: forwarded.append(kw.get("hooks")) or False,
+    )
+
+    prov.start(object(), hooks=hooks)
+    assert prov.fire_due("j1") is False
+    assert forwarded == [hooks]
+
+
 def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
     prov, fake = chronos
     # super().fire_due runs the job; stub the ABC default to "ran".

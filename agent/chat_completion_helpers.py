@@ -1636,37 +1636,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
 
         # Re-resolve reasoning_config for the new fallback model (Closes #21256).
-        # Per-model override (if any) takes precedence, else global reasoning_effort.
-        # Wrapped in try/except because config load failure must not kill the swap.
+        # Shared chokepoint: per-model override > global reasoning_effort
+        # (YAML boolean False = disabled). Wrapped in try/except because a
+        # config load failure must not kill the swap.
         try:
             from hermes_cli.config import load_config
-            from hermes_constants import parse_reasoning_effort, resolve_per_model_reasoning_effort
+            from hermes_constants import resolve_reasoning_config
 
-            _fb_cfg = load_config() or {}
-            _fb_agent_cfg = _fb_cfg.get("agent", {}) or {}
-            _fb_overrides = _fb_agent_cfg.get("reasoning_overrides", {}) or {}
-            _fb_per_model = resolve_per_model_reasoning_effort(agent.model, _fb_overrides)
-            if _fb_per_model is not None:
-                agent.reasoning_config = _fb_per_model
-                logger.info(
-                    "Fallback %s: reasoning_config resolved to per-model override: %s",
-                    agent.model, _fb_per_model,
-                )
-            else:
-                # Raw value — a YAML boolean False means thinking disabled,
-                # see parse_reasoning_effort. Do NOT coerce with ``or ""``.
-                _fb_global_effort = _fb_agent_cfg.get("reasoning_effort", "")
-                agent.reasoning_config = parse_reasoning_effort(_fb_global_effort)
-                if agent.reasoning_config:
-                    logger.info(
-                        "Fallback %s: reasoning_config resolved to global effort: %s",
-                        agent.model, _fb_global_effort,
-                    )
-                else:
-                    logger.info(
-                        "Fallback %s: reasoning_config resolved to None (disabled or default)",
-                        agent.model,
-                    )
+            agent.reasoning_config = resolve_reasoning_config(
+                load_config() or {}, agent.model
+            )
+            logger.info(
+                "Fallback %s: reasoning_config resolved: %s",
+                agent.model, agent.reasoning_config,
+            )
         except Exception as _reasoning_err:
             logger.debug(
                 "Failed to resolve reasoning_config for fallback %s; keeping current: %s",

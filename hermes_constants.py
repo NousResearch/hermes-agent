@@ -948,6 +948,67 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     return None
 
 
+def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
+    """Resolve the effective reasoning config for *model* from a config dict.
+
+    Single chokepoint for reasoning-effort resolution, shared by every
+    surface (CLI startup, messaging gateway, Desktop/TUI, cron, ``/model``
+    switch, fallback activation). Priority:
+
+    1. Per-model override from ``agent.reasoning_overrides``
+       (spelling-tolerant — see :func:`resolve_per_model_reasoning_effort`)
+    2. Global ``agent.reasoning_effort`` — the raw value is passed through
+       so a YAML boolean ``False`` (``reasoning_effort: false``/``off``/
+       ``no``) means "thinking disabled", never silently re-enabled.
+
+    Session-scoped overrides (gateway ``/reasoning --session``) are resolved
+    by the caller BEFORE this function — they always win.
+
+    Args:
+        cfg: A loaded config dict (any of the three loaders' shapes — only
+             the ``agent`` and ``model`` sections are read).
+        model: The effective model for this surface/session. When empty,
+               it is derived from the config's ``model`` section (string
+               form, or a dict's ``default``/``model`` keys).
+
+    Returns:
+        The parsed reasoning config dict, or None when unset/unrecognized
+        (caller uses the provider default).
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    agent_cfg = cfg.get("agent")
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+
+    if not model:
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, str):
+            model = model_cfg.strip()
+        elif isinstance(model_cfg, dict):
+            model = str(
+                model_cfg.get("default") or model_cfg.get("model") or ""
+            ).strip()
+        else:
+            model = ""
+
+    overrides = agent_cfg.get("reasoning_overrides") or {}
+    per_model = resolve_per_model_reasoning_effort(model, overrides)
+    if per_model is not None:
+        return per_model
+
+    # Global fallback — keep the raw value; coercing with ``or ""`` turns a
+    # YAML boolean False into "", silently re-enabling thinking for users
+    # who explicitly disabled it.
+    effort = agent_cfg.get("reasoning_effort", "")
+    result = parse_reasoning_effort(effort)
+    if effort and str(effort).strip() and result is None:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Unknown reasoning_effort '%s', using default (medium)", effort
+        )
+    return result
+
+
 def is_termux() -> bool:
     """Return True when running inside a Termux (Android) environment.
 

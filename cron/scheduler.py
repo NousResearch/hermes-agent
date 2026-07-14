@@ -2988,25 +2988,13 @@ def run_job(
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (per-model override > global)
-        from hermes_constants import (
-            parse_reasoning_effort,
-            resolve_per_model_reasoning_effort,
+        # Reasoning config from config.yaml (per-model override > global) —
+        # resolved through the shared chokepoint against the job's effective
+        # model (per-job override > HERMES_MODEL env > config.yaml default).
+        from hermes_constants import resolve_reasoning_config
+        reasoning_config = resolve_reasoning_config(
+            _cfg if isinstance(_cfg, dict) else {}, str(model)
         )
-        _cron_model_cfg = _cfg.get("model", {}) if isinstance(_cfg.get("model", {}), dict) else {}
-        _cron_model = str(
-            _cron_model_cfg.get("default", "") or _cron_model_cfg.get("model", "") or ""
-        ).strip()
-        _cron_overrides = (_cfg.get("agent", {}) or {}).get("reasoning_overrides", {}) or {}
-        _cron_per_model = resolve_per_model_reasoning_effort(_cron_model, _cron_overrides)
-        if _cron_per_model is not None:
-            reasoning_config = _cron_per_model
-        else:
-            # Raw value — a YAML boolean False means thinking disabled,
-            # see parse_reasoning_effort. Do NOT str()/strip() coerce.
-            reasoning_config = parse_reasoning_effort(
-                _cfg.get("agent", {}).get("reasoning_effort", "")
-            )
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is

@@ -3917,19 +3917,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
-        # Per-model override takes precedence over global effort (Closes #21256).
-        _reasoning_overrides = CLI_CONFIG["agent"].get("reasoning_overrides", {}) or {}
-        from hermes_constants import resolve_per_model_reasoning_effort
-        _per_model_reasoning = resolve_per_model_reasoning_effort(
-            self.model, _reasoning_overrides
-        )
-        self.reasoning_config = (
-            _per_model_reasoning
-            if _per_model_reasoning is not None
-            else _parse_reasoning_config(
-                CLI_CONFIG["agent"].get("reasoning_effort", "")
-            )
-        )
+        # Per-model override > global reasoning_effort — resolved through the
+        # shared chokepoint in hermes_constants (Closes #21256).
+        from hermes_constants import resolve_reasoning_config
+        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )

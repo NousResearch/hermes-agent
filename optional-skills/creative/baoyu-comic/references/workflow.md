@@ -41,6 +41,7 @@ Read source content, save it if needed, and perform deep analysis.
    - If user provides a file path: use as-is
    - If user pastes content: save to `source-{slug}.md` in the target directory using `write_file`, where `{slug}` is the kebab-case topic slug used for the output directory
    - **Backup rule**: If `source-{slug}.md` already exists, rename it to `source-{slug}-backup-YYYYMMDD-HHMMSS.md` before writing
+   - Redact API keys, tokens, credentials, cookies, and private keys before writing any source, analysis, storyboard, prompt, or image prompt file.
 2. Read source content
 3. **Deep analysis** following `analysis-framework.md`:
    - Target audience identification

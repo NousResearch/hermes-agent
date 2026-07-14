@@ -242,7 +242,7 @@ docker system prune -a                 # also unused images
 docker system prune -a --volumes       # EVERYTHING — named volumes too
 ```
 
-**Warning:** Never run `docker system prune -a --volumes` without confirming with the user. This removes named volumes with potentially important data.
+**Warning:** Never run a volume-destructive command (`docker system prune --volumes`, `docker compose down -v`, `docker volume rm`, `docker volume prune`) without confirming the exact project/context and affected volumes with the user. Named volumes may contain databases, uploads, and other state that cannot be recovered from images.
 
 ## Pitfalls
 

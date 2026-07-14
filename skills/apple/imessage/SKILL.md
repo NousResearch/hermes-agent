@@ -82,10 +82,11 @@ imsg watch --chat-id 1 --attachments
 
 ## Rules
 
-1. **Always confirm recipient and message content** before sending
-2. **Never send to unknown numbers** without explicit user approval
-3. **Verify file paths** exist before attaching
-4. **Don't spam** — rate-limit yourself
+1. **Resolve first, send second** — show phone/chat ID, service, text, and attachments
+2. **Wait for explicit approval of the shown preview** before `imsg send`
+3. **Never send to unknown numbers** unless the user approves the resolved number
+4. **Verify file paths** exist before attaching
+5. **Don't spam** — rate-limit yourself
 
 ## Example Workflow
 

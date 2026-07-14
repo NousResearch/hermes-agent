@@ -244,4 +244,4 @@ Full step-by-step workflow (analysis, storyboard, review gates, regeneration var
 - **Step 2 confirmation required** - do not skip
 - **Steps 4/6 conditional** - only if user requested in Step 2
 - **Step 7.1 character sheet** - recommended for multi-page comics, optional for simple presets. The PNG is a review/regeneration aid; page prompts (written in Step 5) use the text descriptions in `characters/characters.md`, not the PNG. `image_generate` does not accept images as visual input
-- **Strip secrets** — scan source content for API keys, tokens, or credentials before writing any output file
+- **Strip secrets before writing** — redact API keys, tokens, credentials, cookies, and private keys before writing source, analysis, storyboard, or prompt files.

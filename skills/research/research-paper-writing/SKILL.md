@@ -337,10 +337,12 @@ def doi_to_bibtex(doi: str) -> str:
 If you cannot verify a citation:
 
 ```latex
-\cite{PLACEHOLDER_author2024_verify_this}  % TODO: Verify this citation exists
+[CITATION NEEDED: specific claim or paper]
 ```
 
-**Always tell the scientist**: "I've marked [X] citations as placeholders that need verification."
+Do not create a fake BibTeX key or placeholder `\cite{...}` for an unverified paper; use plain `[CITATION NEEDED: ...]` text until the paper and claim pass verification.
+
+**Always tell the scientist**: "I've marked [X] citations as [CITATION NEEDED] because they need verification."
 
 See [references/citation-workflow.md](references/citation-workflow.md) for complete API documentation and the full `CitationManager` class.
 

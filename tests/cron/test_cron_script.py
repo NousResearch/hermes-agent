@@ -579,3 +579,86 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestBashFriendlyPath:
+    """Windows Git Bash path conversion for #60857."""
+
+    def test_non_windows_passthrough(self, monkeypatch):
+        from pathlib import Path
+        from cron.scheduler import _bash_friendly_path
+
+        monkeypatch.setattr("cron.scheduler.sys.platform", "darwin")
+        p = Path("/tmp/example.sh")
+        assert _bash_friendly_path(p) == str(p)
+
+    def test_windows_drive_to_posix(self, monkeypatch):
+        from cron.scheduler import _bash_friendly_path
+
+        monkeypatch.setattr("cron.scheduler.sys.platform", "win32")
+
+        class _WinPath:
+            def __init__(self, posix: str, drive: str = "C:"):
+                self._posix = posix
+                self.drive = drive
+
+            def is_absolute(self):
+                return True
+
+            def resolve(self):
+                return self
+
+            def as_posix(self):
+                return self._posix
+
+        got = _bash_friendly_path(
+            _WinPath("C:/Users/marce/AppData/Local/hermes/scripts/tareas_format.sh")
+        )
+        assert got == "/c/Users/marce/AppData/Local/hermes/scripts/tareas_format.sh"
+
+    def test_run_job_script_passes_posix_path_to_bash(self, cron_env, monkeypatch):
+        """On win32, argv[1] for .sh jobs must be Git-Bash friendly."""
+        import cron.scheduler as sched
+
+        monkeypatch.setattr(sched.sys, "platform", "win32")
+        monkeypatch.setattr(sched.shutil, "which", lambda name: "C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe" if name == "bash" else None)
+
+        script = cron_env / "scripts" / "hello.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = list(argv)
+            captured["cwd"] = kwargs.get("cwd")
+            class R:
+                returncode = 0
+                stdout = "hi\n"
+                stderr = ""
+            return R()
+
+        monkeypatch.setattr(sched.subprocess, "run", fake_run)
+        # Path.resolve on POSIX won't make Windows drives; force helper use via
+        # monkeypatch on _bash_friendly_path is overkill — on non-win host the
+        # path is POSIX and _bash_friendly_path under win32 without drive falls
+        # back to as_posix. Still asserts the conversion helper is invoked by
+        # ensuring we patch it.
+        calls = []
+        real = sched._bash_friendly_path
+
+        def spy(path):
+            out = real(path)
+            calls.append(out)
+            return out
+
+        monkeypatch.setattr(sched, "_bash_friendly_path", spy)
+
+        ok, out = sched._run_job_script("hello.sh")
+        assert ok is True
+        assert out == "hi"
+        assert "bash" in captured["argv"][0].lower()
+        # First conversion is the script path, second is cwd (path.parent)
+        assert len(calls) >= 2
+        assert captured["argv"][1] == calls[0]
+        assert captured["cwd"] == calls[1]
+        assert not any(ch == "\\" for ch in captured["argv"][1])

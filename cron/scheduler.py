@@ -2011,6 +2011,34 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+
+def _bash_friendly_path(path: Path) -> str:
+    """Return a path string safe to pass as an argv entry to Git Bash.
+
+    On Windows, Git Bash re-interprets backslashes as escape sequences when
+    binding argv to the bash process (observed as ``C:Users...`` after
+    stripping backslashes — see #60857). Convert ``C:\\Users\\...`` forms
+    to ``/c/Users/...`` POSIX drive notation. Non-Windows returns
+    ``str(path)`` unchanged.
+    """
+    if sys.platform != "win32":
+        return str(path)
+    resolved = path if path.is_absolute() else path.resolve()
+    try:
+        drive = resolved.drive  # e.g. 'C:'
+        if drive and len(drive) == 2 and drive[1] == ":":
+            rest = resolved.as_posix()
+            # as_posix keeps 'C:/Users/...' — strip drive letter colon.
+            if len(rest) >= 2 and rest[1] == ":":
+                rest = rest[2:]
+            if not rest.startswith("/"):
+                rest = "/" + rest
+            return f"/{drive[0].lower()}{rest}"
+    except Exception:
+        pass
+    return resolved.as_posix().replace("\\", "/")
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2089,9 +2117,15 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        # Git Bash on Windows treats backslashes in argv as shell escapes when
+        # it re-parses Windows paths (C:\\Users\\... becomes C:Users... and the
+        # script is not found — #60857). Hand bash a POSIX-style absolute path.
+        bash_script = _bash_friendly_path(path)
+        run_cwd = _bash_friendly_path(path.parent)
+        argv = [_bash, bash_script]
     else:
         argv = [sys.executable, str(path)]
+        run_cwd = str(path.parent)
 
     try:
         from tools.environments.local import _sanitize_subprocess_env
@@ -2102,7 +2136,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=run_cwd,
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )

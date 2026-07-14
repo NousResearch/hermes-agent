@@ -1269,6 +1269,71 @@ class TelegramAdapter(BasePlatformAdapter):
                 stack.append(context)
         return False
 
+    @staticmethod
+    def _looks_like_connect_phase_network_error(error: Exception) -> bool:
+        """Return True when a Telegram ``NetworkError`` wraps a connect-phase failure.
+
+        A connect-phase error (DNS resolution failure, TCP connect refused /
+        timeout, socket connect error) happens *before* the HTTP request is
+        written to the wire, so re-sending is safe and cannot duplicate a
+        message. A read-phase error (connection reset, ``httpx.ReadError``,
+        ``httpx.RemoteProtocolError``) happens *after* the request body was
+        written and is exactly as ambiguous as a generic ``TimedOut`` — Telegram
+        may have already accepted the request, so re-sending risks a duplicate.
+
+        This mirrors the principle already applied to ``TimedOut`` via
+        ``_looks_like_connect_timeout``: only resend the explicit connect-phase
+        shapes, treat everything else (including ``ReadError`` /
+        ``RemoteProtocolError`` / connection-reset) as ambiguous and
+        non-retryable. The default is non-resend (False) so an unrecognized
+        error errs on the side of not duplicating a possibly-delivered message.
+        """
+        seen: set[int] = set()
+        stack: list[BaseException] = [error]
+        while stack:
+            cur = stack.pop()
+            ident = id(cur)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            name = cur.__class__.__name__.lower()
+            text = str(cur).lower()
+            # Read-phase markers: the request was already written — ambiguous,
+            # do NOT resend. Checked first so "connection reset" (which contains
+            # "connect") is not mistaken for a connect-phase error.
+            if (
+                "readerror" in name
+                or "remoteprotocolerror" in name
+                or "connection reset" in text
+                or "reset by peer" in text
+                or "readtimeout" in name
+                or "broken pipe" in text
+                or "incomplete read" in text
+                or "chunked encoding" in text
+                or "remote disconnected" in text
+            ):
+                return False
+            # Connect-phase markers: the request never left the process.
+            if (
+                "connecterror" in name
+                or "connect timeout" in text
+                or "connect timed out" in text
+                or "connection refused" in text
+                or "nameresolutionerror" in name
+                or "failed to establish" in text
+                or "cannot connect" in text
+                or ("dns" in text and ("resolve" in text or "lookup" in text))
+            ):
+                return True
+            cause = getattr(cur, "__cause__", None)
+            context = getattr(cur, "__context__", None)
+            if cause is not None:
+                stack.append(cause)
+            if context is not None:
+                stack.append(context)
+        # Ambiguous by default: preserve the request-may-have-landed principle.
+        return False
+
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
@@ -3810,6 +3875,23 @@ class TelegramAdapter(BasePlatformAdapter):
                             raise
                         if is_pool_timeout:
                             await self._drain_general_connections_after_pool_timeout()
+                        # A non-TimedOut NetworkError is a subclass of
+                        # NetworkError too. The request may have already been
+                        # written to the wire (connection reset / ReadError /
+                        # RemoteProtocolError under flood-control pressure) — same
+                        # ambiguity as a generic TimedOut. Only resend when the
+                        # error is demonstrably connect-phase (DNS/refused/
+                        # ConnectError occurred before the request was written),
+                        # mirroring _looks_like_connect_timeout. Otherwise raise
+                        # non-retryable so the outer gateway layer does not resend
+                        # either (duplicates are worse than a single silent drop).
+                        is_connect_phase = self._looks_like_connect_phase_network_error(send_err)
+                        if (
+                            not (_TimedOut and isinstance(send_err, _TimedOut))
+                            and not is_pool_timeout
+                            and not is_connect_phase
+                        ):
+                            raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
                             safe_send_error = _redact_telegram_error_text(send_err)
@@ -3880,14 +3962,27 @@ class TelegramAdapter(BasePlatformAdapter):
             # Exceptions: a wrapped ConnectTimeout (no connection established)
             # and an httpx pool timeout (request explicitly not sent) -- both
             # are safe to re-send and must not be silently dropped.
+            # A plain NetworkError (connection reset / ReadError /
+            # RemoteProtocolError) is likewise ambiguous: the request may have
+            # been written to the wire, so only mark it retryable when it is
+            # demonstrably connect-phase (see #64238 — blind resend produced up
+            # to 6 duplicate messages under sustained flood-control pressure).
             _to = locals().get("_TimedOut")
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             is_pool_timeout = self._looks_like_pool_timeout(e)
+            is_connect_phase_neterr = (
+                not is_timeout
+                and self._looks_like_connect_phase_network_error(e)
+            )
             return SendResult(
                 success=False,
                 error=safe_error,
-                retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
+                retryable=(
+                    is_connect_timeout
+                    or is_pool_timeout
+                    or (is_connect_phase_neterr and not is_timeout)
+                ),
                 error_kind=error_kind,
             )
 

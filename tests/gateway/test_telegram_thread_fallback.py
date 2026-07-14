@@ -1276,7 +1276,13 @@ async def test_send_without_thread_id_unaffected():
 
 @pytest.mark.asyncio
 async def test_send_retries_network_errors_normally():
-    """Real transient network errors (not BadRequest) should still be retried."""
+    """Real transient *connect-phase* network errors (not BadRequest) should still be retried.
+
+    A connect-phase NetworkError (e.g. connection refused / DNS failure) happens
+    before the request is written to the wire, so re-sending is safe. A read-phase
+    NetworkError (connection reset / ReadError) is now treated as ambiguous and
+    must NOT be retried — see #64238.
+    """
     adapter = _make_adapter()
 
     attempt = [0]
@@ -1284,7 +1290,7 @@ async def test_send_retries_network_errors_normally():
     async def mock_send_message(**kwargs):
         attempt[0] += 1
         if attempt[0] < 3:
-            raise FakeNetworkError("Connection reset")
+            raise FakeNetworkError("Connection refused")
         return SimpleNamespace(message_id=200)
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
@@ -1296,6 +1302,114 @@ async def test_send_retries_network_errors_normally():
 
     assert result.success is True
     assert attempt[0] == 3  # Two retries then success
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_retry_read_phase_network_error():
+    """#64238: a non-TimedOut NetworkError after the request was written must
+    NOT be blindly resent. A connection reset (ReadError / RemoteProtocolError
+    class) is ambiguous — Telegram may have already accepted the message — so
+    the send() loop must stop at a single attempt (no in-loop resend) and return
+    a non-retryable failure.
+    """
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        raise FakeNetworkError("Connection reset by peer")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+    )
+
+    assert result.success is False
+    assert "Connection reset" in result.error
+    # CRITICAL: only 1 attempt — no resend for an ambiguous read-phase error
+    assert attempt[0] == 1
+    # And the outer gateway retry layer must not resend either
+    assert result.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_retry_wrapped_readerror():
+    """#64238: a NetworkError wrapping httpx.ReadError (read-phase) must not be
+    retried regardless of how it is wired as __cause__ / __context__.
+    """
+    adapter = _make_adapter()
+
+    class FakeReadError(Exception):
+        pass
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        err = FakeNetworkError("Network error")
+        err.__cause__ = FakeReadError("httpx.ReadError")
+        raise err
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is False
+    assert attempt[0] == 1
+    assert result.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_send_marks_connect_phase_network_error_retryable():
+    """#64238: a connect-phase NetworkError (DNS / refused / ConnectError) is
+    safe to resend — it occurred before the request was written — so it stays
+    retryable for the outer gateway retry layer and keeps its in-loop retry.
+    """
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] < 3:
+            raise FakeNetworkError("Failed to establish a new connection: [Errno 111] Connection refused")
+        return SimpleNamespace(message_id=210)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "210"
+    assert attempt[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_retry_remote_protocol_error():
+    """#64238: httpx.RemoteProtocolError (server closed connection mid-response)
+    is read-phase and ambiguous — must not be resent.
+    """
+    adapter = _make_adapter()
+
+    class FakeRemoteProtocolError(Exception):
+        pass
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        raise FakeNetworkError("httpx.RemoteProtocolError: Server disconnected")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is False
+    assert attempt[0] == 1
+    assert result.retryable is False
 
 
 @pytest.mark.asyncio

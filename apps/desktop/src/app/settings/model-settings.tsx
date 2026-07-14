@@ -317,6 +317,38 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     []
   )
 
+  // Guard against stale save responses overwriting newer state.
+  const moaSaveGeneration = useRef(0)
+
+  // Strip slots with an empty model from every preset before autosave, so a
+  // half-filled slot (provider selected but no model yet) is never sent to the
+  // backend.  Without this guard, _clean_slot rejects the empty-model slot and
+  // _normalize_preset falls back to hardcoded defaults.  Both reference and
+  // aggregator slots are sanitized.  Presets keep their empty reference_models
+  // array rather than being dropped.
+  const sanitizeMoaRefsForSave = useCallback((config: MoaConfigResponse): MoaConfigResponse => {
+    const presets: MoaConfigResponse['presets'] = {}
+    let changed = false
+
+    for (const [name, preset] of Object.entries(config.presets)) {
+      const refs = preset.reference_models.filter(slot => slot.provider.trim() && slot.model.trim())
+      if (refs.length !== preset.reference_models.length) {
+        changed = true
+      }
+      const agg = preset.aggregator
+      const aggValid = agg && agg.provider.trim() && agg.model.trim()
+      const cleanAgg = aggValid ? agg : { provider: agg?.provider ?? '', model: agg?.model ?? '' }
+
+      presets[name] = {
+        ...preset,
+        reference_models: refs,
+        aggregator: cleanAgg
+      }
+    }
+
+    return changed ? { ...config, presets } : config
+  }, [])
+
   // Quiet debounced persist for inline MoA edits — mirrors the config page's
   // autosave so slot/aggregator tweaks save themselves, matching the
   // preset-level ops (set default / add / delete) that already persist on
@@ -326,12 +358,23 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       window.clearTimeout(moaSaveTimer.current)
     }
 
+    const generation = moaSaveGeneration.current + 1
+    moaSaveGeneration.current = generation
+
     moaSaveTimer.current = window.setTimeout(() => {
-      void saveMoaModels(next)
-        .then(setMoa)
-        .catch(err => setError(err instanceof Error ? err.message : String(err)))
+      void saveMoaModels(sanitizeMoaRefsForSave(next))
+        .then(saved => {
+          if (moaSaveGeneration.current === generation) {
+            setMoa(saved)
+          }
+        })
+        .catch(err => {
+          if (moaSaveGeneration.current === generation) {
+            setError(err instanceof Error ? err.message : String(err))
+          }
+        })
     }, 600)
-  }, [])
+  }, [sanitizeMoaRefsForSave])
 
   const updateMoaPreset = useCallback(
     (updater: (preset: NonNullable<typeof currentMoaPreset>) => NonNullable<typeof currentMoaPreset>) => {
@@ -991,11 +1034,14 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         <SelectValue placeholder={m.provider} />
                       </SelectTrigger>
                       <SelectContent>
-                        {moaSlotProviderOptions.map(provider => (
-                          <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                            {provider.name}
-                          </SelectItem>
-                        ))}
+                        {withActive(moaSlotProviderOptions.map(p => p.slug || 'none'), slot.provider).map(slug => {
+                          const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
+                          return (
+                            <SelectItem key={slug} value={slug}>
+                              {provider?.name || slug}
+                            </SelectItem>
+                          )
+                        })}
                       </SelectContent>
                     </Select>
                     <Select
@@ -1070,11 +1116,14 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       <SelectValue placeholder={m.provider} />
                     </SelectTrigger>
                     <SelectContent>
-                      {moaSlotProviderOptions.map(provider => (
-                        <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                          {provider.name}
-                        </SelectItem>
-                      ))}
+                      {withActive(moaSlotProviderOptions.map(p => p.slug || 'none'), currentMoaPreset.aggregator.provider).map(slug => {
+                        const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
+                        return (
+                          <SelectItem key={slug} value={slug}>
+                            {provider?.name || slug}
+                          </SelectItem>
+                        )
+                      })}
                     </SelectContent>
                   </Select>
                   <Select

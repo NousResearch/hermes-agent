@@ -1286,6 +1286,18 @@ class AIAgent:
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
+            # Local dflash must stay bounded: the request can park on an open
+            # local socket forever without ever producing a first byte, so
+            # mirror the streaming path's dflash cap (resolve_stream_stale_timeout)
+            # here.  Every other local provider keeps the historical
+            # "detector disabled" (inf) behavior for generous prefill.
+            from agent.chat_completion_helpers import _dflash_local_stale_timeout
+            model = (
+                api_payload.get("model") if isinstance(api_payload, dict) else None
+            ) or self.model
+            dflash_timeout = _dflash_local_stale_timeout(api_payload, model)
+            if dflash_timeout is not None:
+                return dflash_timeout
             return float("inf")
 
         from agent.chat_completion_helpers import estimate_request_context_tokens

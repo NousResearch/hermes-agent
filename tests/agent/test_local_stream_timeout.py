@@ -11,6 +11,11 @@ import pytest
 from unittest.mock import patch
 
 from agent.model_metadata import is_local_endpoint
+from agent.chat_completion_helpers import (
+    _dflash_local_first_chunk_timeout,
+    _dflash_local_stale_timeout,
+    resolve_stream_stale_timeout,
+)
 
 
 class TestLocalStreamReadTimeout:
@@ -71,6 +76,135 @@ class TestLocalStreamReadTimeout:
             if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
                 _stream_read_timeout = _base_timeout
             assert _stream_read_timeout == 120.0
+
+
+class TestLocalDflashStaleTimeout:
+    """dflash is local, but must not be allowed to wait forever with no chunks."""
+
+    @staticmethod
+    def _payload_for_estimated_tokens(tokens: int) -> dict[str, list[str]]:
+        return {"messages": ["x" * (tokens * 4)]}
+
+    def _make_agent(self, *, model="dflash", base_url="http://10.10.20.211:8080/v1"):
+        from run_agent import AIAgent
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=256_000):
+            return AIAgent(
+                api_key="sk-dummy",
+                base_url=base_url,
+                provider="taro",
+                model=model,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                platform="cli",
+            )
+
+    def test_default_local_dflash_stream_stale_timeout_is_bounded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_DFLASH_STALE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_DFLASH_STREAM_STALE_TIMEOUT", raising=False)
+
+        agent = self._make_agent(model="dflash")
+
+        timeout = resolve_stream_stale_timeout(
+            agent,
+            {"model": "dflash", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+        assert timeout == 75.0
+
+    def test_dflash_first_chunk_timeout_does_not_scale_with_context(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DFLASH_FIRST_CHUNK_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_DFLASH_TTFB_TIMEOUT", raising=False)
+
+        timeout = _dflash_local_first_chunk_timeout(
+            self._payload_for_estimated_tokens(66_000),
+            "dflash",
+        )
+
+        assert timeout == 75.0
+
+    def test_dflash_first_chunk_timeout_has_independent_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DFLASH_FIRST_CHUNK_TIMEOUT", "45")
+
+        assert _dflash_local_first_chunk_timeout({"messages": []}, "dflash") == 45.0
+
+    def test_generic_local_stream_stale_timeout_still_disables_by_default(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+
+        agent = self._make_agent(model="qwen3.6-27b")
+
+        timeout = resolve_stream_stale_timeout(
+            agent,
+            {"model": "qwen3.6-27b", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+        assert timeout == float("inf")
+
+    def test_default_local_dflash_non_stream_stale_timeout_is_bounded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_DFLASH_STALE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_DFLASH_STREAM_STALE_TIMEOUT", raising=False)
+
+        agent = self._make_agent(model="dflash")
+
+        assert agent._compute_non_stream_stale_timeout({"messages": []}) == 75.0
+
+    def test_explicit_stream_stale_timeout_still_wins_for_dflash(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "12")
+        monkeypatch.setenv("HERMES_DFLASH_STALE_TIMEOUT", "75")
+
+        agent = self._make_agent(model="dflash")
+
+        assert resolve_stream_stale_timeout(agent, {"model": "dflash", "messages": []}) == 12.0
+
+    @pytest.mark.parametrize(
+        ("estimated_tokens", "expected_timeout"),
+        [
+            (10_000, 75.0),
+            (10_001, 90.0),
+            (25_000, 90.0),
+            (25_001, 150.0),
+            (50_000, 150.0),
+            (50_001, 240.0),
+            (100_000, 240.0),
+            (100_001, 300.0),
+        ],
+    )
+    def test_default_dflash_stale_timeout_threshold_boundaries(
+        self,
+        monkeypatch,
+        estimated_tokens,
+        expected_timeout,
+    ):
+        monkeypatch.delenv("HERMES_DFLASH_STALE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_DFLASH_STREAM_STALE_TIMEOUT", raising=False)
+
+        timeout = _dflash_local_stale_timeout(
+            self._payload_for_estimated_tokens(estimated_tokens),
+            "dflash",
+        )
+
+        assert timeout == expected_timeout
+
+    def test_non_positive_dflash_stale_timeout_disables_watchdog(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DFLASH_STALE_TIMEOUT", "0")
+
+        timeout = _dflash_local_stale_timeout(
+            self._payload_for_estimated_tokens(1),
+            "dflash",
+        )
+
+        assert timeout == float("inf")
 
 
 class TestIsLocalEndpoint:

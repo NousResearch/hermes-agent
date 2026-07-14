@@ -6,6 +6,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
+    _terminal_probe_family,
     canonical_tool_args,
     classify_tool_failure,
 )
@@ -33,7 +34,7 @@ def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposi
     assert "☤" not in json.dumps(metadata)
 
 
-def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
+def test_default_config_warns_and_redirects_without_hard_stop():
     cfg = ToolCallGuardrailConfig()
 
     assert cfg.warnings_enabled is True
@@ -41,9 +42,12 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
+    assert cfg.low_information_warn_after == 3
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
+    assert cfg.low_information_redirect_after == 4
+    assert cfg.low_information_halt_after == 6
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
@@ -55,11 +59,14 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
                 "exact_failure": 3,
                 "same_tool_failure": 4,
                 "idempotent_no_progress": 5,
+                "low_information": 6,
             },
             "hard_stop_after": {
                 "exact_failure": 6,
                 "same_tool_failure": 7,
                 "idempotent_no_progress": 8,
+                "low_information_redirect": 9,
+                "low_information": 10,
             },
         }
     )
@@ -69,9 +76,12 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.exact_failure_warn_after == 3
     assert cfg.same_tool_failure_warn_after == 4
     assert cfg.no_progress_warn_after == 5
+    assert cfg.low_information_warn_after == 6
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
     assert cfg.no_progress_block_after == 8
+    assert cfg.low_information_redirect_after == 9
+    assert cfg.low_information_halt_after == 10
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():
@@ -90,6 +100,32 @@ def test_default_repeated_identical_failed_call_warns_without_blocking():
     assert {d.code for d in decisions[1:]} == {"repeated_exact_failure_warning"}
     assert controller.before_call("web_search", args).action == "allow"
     assert controller.halt_decision is None
+
+
+def test_tool_reported_loop_block_halts_even_when_hard_stop_disabled():
+    controller = ToolCallGuardrailController()
+    args = {"pattern": "def.*drain", "path": "/repo", "target": "content"}
+    result = json.dumps(
+        {
+            "error": (
+                "BLOCKED: You have run this exact search 4 times in a row. "
+                "The results have NOT changed."
+            ),
+            "already_searched": 4,
+        }
+    )
+
+    decision = controller.after_call(
+        "search_files",
+        args,
+        result,
+        failed=True,
+    )
+
+    assert decision.action == "halt"
+    assert decision.code == "tool_reported_loop_block"
+    assert decision.count == 4
+    assert controller.halt_decision == decision
 
 
 def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution():
@@ -164,6 +200,8 @@ def test_same_tool_varying_args_warns_by_default_without_halting():
     assert "keep using tools" in second.message
     assert "diagnose before retrying" in second.message
     assert "different tool" in second.message
+    assert "verify the commit/PR state" in second.message
+    assert "python3.11" in second.message
     assert controller.halt_decision is None
 
 
@@ -205,6 +243,47 @@ def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_defaul
     assert controller.halt_decision is None
 
 
+def test_low_information_search_variants_redirect_before_exact_repeat_block():
+    controller = ToolCallGuardrailController()
+    empty_search = json.dumps({"total_count": 0})
+
+    decisions = [
+        controller.after_call(
+            "search_files",
+            {"pattern": pattern, "path": "/repo", "target": "content"},
+            empty_search,
+            failed=False,
+        )
+        for pattern in ("def.*drain", "drain_command", "dispatch_command", "select.*task")
+    ]
+
+    assert [decision.action for decision in decisions] == ["allow", "allow", "warn", "warn"]
+    assert decisions[2].code == "low_information_strategy_warning"
+    assert decisions[3].code == "low_information_strategy_warning"
+
+    redirected = controller.before_call(
+        "search_files",
+        {"pattern": "another variation", "path": "/repo", "target": "content"},
+    )
+
+    assert redirected.action == "redirect"
+    assert redirected.code == "low_information_tool_redirect"
+    assert redirected.should_halt is False
+    assert controller.halt_decision is None
+
+    controller.after_call(
+        "terminal",
+        {"command": "pwd && rg --files | head"},
+        json.dumps({"exit_code": 0, "output": "/repo\nrun_agent.py"}),
+        failed=False,
+    )
+
+    assert controller.before_call(
+        "search_files",
+        {"pattern": "run_conversation", "path": "/repo", "target": "content"},
+    ).action == "allow"
+
+
 def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(
@@ -226,6 +305,152 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     blocked = controller.before_call("read_file", args)
     assert blocked.action == "block"
     assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_terminal_filtered_empty_probe_streak_redirects_more_filter_churn():
+    controller = ToolCallGuardrailController()
+    empty_success = json.dumps({"exit_code": 0, "stdout": "", "stderr": ""})
+    commands = [
+        'cd ~/Workspaces/Projects/meshboard && git diff main --name-only 2>/dev/null | head -30',
+        'cd ~/Workspaces/Projects/meshboard && git diff main --name-only 2>/dev/null | grep -v "^tests/" | head -20',
+        'cd ~/Workspaces/Projects/meshboard && grep -r "dispatch.*history" tools/ --include="*.py" -l 2>/dev/null | head -10',
+        'cd ~/Workspaces/Projects/meshboard && rg -n "dispatch history" tools | head -20',
+    ]
+
+    decisions = []
+    for command in commands:
+        assert controller.before_call("terminal", {"command": command}).action == "allow"
+        decisions.append(
+            controller.after_call(
+                "terminal",
+                {"command": command},
+                empty_success,
+                failed=False,
+            )
+        )
+
+    assert decisions[2].code == "low_information_strategy_warning"
+    assert decisions[3].code == "low_information_strategy_warning"
+
+    redirected = controller.before_call(
+        "terminal",
+        {
+            "command": (
+                'cd ~/Workspaces/Projects/meshboard && git diff main --name-only '
+                '2>/dev/null | grep -v "^docs/" | head -20'
+            )
+        },
+    )
+
+    assert redirected.action == "redirect"
+    assert redirected.code == "low_information_tool_redirect"
+    assert "filtered shell probes" in redirected.message
+
+
+def test_terminal_filter_redirect_allows_broad_diagnostic_to_reset():
+    controller = ToolCallGuardrailController()
+    empty_success = json.dumps({"exit_code": 0, "output": ""})
+    for i in range(4):
+        controller.after_call(
+            "terminal",
+            {"command": f'git diff main --name-only | grep -v "path-{i}" | head -20'},
+            empty_success,
+            failed=False,
+        )
+
+    broad = controller.before_call("terminal", {"command": "pwd && ls -la"})
+
+    assert broad.action == "allow"
+    assert controller.before_call(
+        "terminal",
+        {"command": 'git diff main --name-only | grep -v "docs" | head -20'},
+    ).action == "allow"
+
+
+def test_terminal_probe_family_detects_find_xargs_grep_but_not_xargs_mutation():
+    assert _terminal_probe_family(
+        {"command": 'find tools -type f -name "*.py" | xargs grep -n "dispatch"'}
+    ) == "filter_probe"
+    assert _terminal_probe_family(
+        {"command": 'find tools -type f -print0 | xargs -0 rg -n "dispatch"'}
+    ) == "filter_probe"
+    assert _terminal_probe_family(
+        {"command": 'find tools -type f -name "*.tmp" | xargs rm'}
+    ) is None
+
+
+def test_terminal_filtered_empty_probe_streak_includes_find_xargs_grep_chains():
+    controller = ToolCallGuardrailController()
+    empty_success = json.dumps({"exit_code": 0, "stdout": "", "stderr": ""})
+    commands = [
+        'find tools -type f -name "*.py" | xargs grep -n "dispatch"',
+        'find tools -type f -name "*.py" | xargs grep -n "dispatch_history"',
+        'find tools -type f -print0 | xargs -0 grep -n "route history"',
+        'find tools -type f -print0 | xargs -0 rg -n "dispatch history"',
+    ]
+
+    for command in commands:
+        assert controller.before_call("terminal", {"command": command}).action == "allow"
+        controller.after_call("terminal", {"command": command}, empty_success, failed=False)
+
+    redirected = controller.before_call(
+        "terminal",
+        {"command": 'find tools -type f -name "*.py" | xargs grep -n "again"'},
+    )
+
+    assert redirected.action == "redirect"
+    assert redirected.code == "low_information_tool_redirect"
+
+
+def test_terminal_filter_redirect_does_not_halt_by_default():
+    controller = ToolCallGuardrailController()
+    empty_success = json.dumps({"exit_code": 0, "stdout": "", "stderr": ""})
+    for i in range(4):
+        controller.after_call(
+            "terminal",
+            {"command": f'git diff main --name-only | grep "path-{i}" | head -20'},
+            empty_success,
+            failed=False,
+        )
+
+    last = None
+    for i in range(10):
+        last = controller.before_call(
+            "terminal",
+            {"command": f'git diff main --name-only | grep "again-{i}" | head -20'},
+        )
+
+    assert last is not None
+    assert last.action == "redirect"
+    assert last.code == "low_information_tool_redirect"
+    assert not last.should_halt
+    assert controller.halt_decision is None
+
+
+def test_terminal_filter_redirect_can_halt_when_hard_stop_is_enabled():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True)
+    )
+    empty_success = json.dumps({"exit_code": 0, "stdout": "", "stderr": ""})
+    for i in range(4):
+        controller.after_call(
+            "terminal",
+            {"command": f'git diff main --name-only | grep "path-{i}" | head -20'},
+            empty_success,
+            failed=False,
+        )
+
+    last = None
+    for i in range(2):
+        last = controller.before_call(
+            "terminal",
+            {"command": f'git diff main --name-only | grep "again-{i}" | head -20'},
+        )
+
+    assert last is not None
+    assert last.action == "halt"
+    assert last.code == "low_information_tool_halt"
+    assert controller.halt_decision == last
 
 
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():

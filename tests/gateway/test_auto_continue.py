@@ -96,7 +96,7 @@ class TestAutoDetection:
 
 
 class TestInterruptedReplayFiltering:
-    def test_interrupted_tool_tail_is_removed_from_agent_history(self):
+    def test_interrupted_side_effect_is_replayed_as_unknown(self):
         from gateway.run import _build_gateway_agent_history
 
         history = [
@@ -118,9 +118,12 @@ class TestInterruptedReplayFiltering:
         agent_history, observed_context = _build_gateway_agent_history(history)
 
         assert observed_context is None
-        assert agent_history == [{"role": "user", "content": "transcribe this video"}]
+        assert agent_history[:2] == history[:2]
+        assert agent_history[-1]["role"] == "tool"
+        assert agent_history[-1]["tool_call_id"] == "call_1"
+        assert agent_history[-1]["effect_disposition"] == "unknown"
 
-    def test_mixed_tail_with_one_interrupted_result_is_removed(self):
+    def test_mixed_tail_preserves_results_and_marks_interrupted_effect_unknown(self):
         from gateway.run import _build_gateway_agent_history
 
         history = [
@@ -143,7 +146,10 @@ class TestInterruptedReplayFiltering:
 
         agent_history, _observed_context = _build_gateway_agent_history(history)
 
-        assert agent_history == [{"role": "user", "content": "search and transcribe"}]
+        assert agent_history[:3] == history[:3]
+        assert agent_history[-1]["role"] == "tool"
+        assert agent_history[-1]["tool_call_id"] == "call_2"
+        assert agent_history[-1]["effect_disposition"] == "unknown"
 
     def test_successful_tool_tail_is_preserved(self):
         from gateway.run import _build_gateway_agent_history
@@ -165,14 +171,14 @@ class TestInterruptedReplayFiltering:
         assert agent_history[-1]["role"] == "tool"
         assert agent_history[-1]["content"] == "deployed successfully"
 
-    def test_dangling_unanswered_tool_call_tail_is_removed(self):
-        """A trailing assistant(tool_calls) with NO tool answers is stripped.
+    def test_dangling_unanswered_side_effect_is_replayed_as_unknown(self):
+        """A trailing side-effecting call gets an UNKNOWN result, not a retry.
 
         This is the SIGKILL signature from #49201: the tool itself ran a
         restart/shutdown command and killed the gateway before its result was
         persisted. The transcript tail is an assistant message with tool_calls
-        and zero matching tool rows. Without stripping it, the model re-issues
-        the unanswered call on resume and loops the restart forever.
+        and zero matching tool rows. A synthetic UNKNOWN result closes the tool
+        pair without claiming the restart did not happen or inviting a retry.
         """
         from gateway.run import _build_gateway_agent_history
 
@@ -195,13 +201,16 @@ class TestInterruptedReplayFiltering:
 
         agent_history, _observed_context = _build_gateway_agent_history(history)
 
-        assert agent_history == [{"role": "user", "content": "restart the container"}]
+        assert agent_history[:2] == history
+        assert agent_history[-1]["role"] == "tool"
+        assert agent_history[-1]["tool_call_id"] == "call_1"
+        assert agent_history[-1]["effect_disposition"] == "unknown"
 
-    def test_dangling_tail_after_completed_pair_is_removed_only_at_tail(self):
-        """Only the trailing unanswered tool-call block is stripped.
+    def test_dangling_tail_after_completed_pair_gets_unknown_result(self):
+        """The completed pair survives and the trailing call becomes UNKNOWN.
 
-        An earlier completed assistant→tool pair must survive — we only drop
-        the final assistant(tool_calls) that has no answers.
+        An earlier completed assistant→tool pair must survive, and the final
+        assistant(tool_calls) receives a matching UNKNOWN result.
         """
         from gateway.run import _build_gateway_agent_history
 
@@ -232,18 +241,19 @@ class TestInterruptedReplayFiltering:
 
         agent_history, _observed_context = _build_gateway_agent_history(history)
 
-        # The completed call_1 pair survives; the dangling call_2 tail is gone.
+        # The completed call_1 pair survives; call_2 is closed truthfully.
         assert agent_history[-1]["role"] == "tool"
-        assert agent_history[-1]["content"] == "found it"
-        # The surviving assistant(tool_calls) is the completed call_1 (which
-        # has a matching tool answer), not the stripped dangling call_2.
+        assert agent_history[-1]["tool_call_id"] == "call_2"
+        assert agent_history[-1]["effect_disposition"] == "unknown"
+        assert agent_history[2]["content"] == "found it"
+        # Both assistant calls survive with matching tool results.
         _surviving_calls = [
             tc.get("id")
             for m in agent_history
             if m.get("role") == "assistant" and m.get("tool_calls")
             for tc in m["tool_calls"]
         ]
-        assert _surviving_calls == ["call_1"]
+        assert _surviving_calls == ["call_1", "call_2"]
 
     def test_persisted_auto_continue_note_is_not_replayed(self):
         from gateway.run import _build_gateway_agent_history

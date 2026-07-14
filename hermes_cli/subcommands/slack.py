@@ -57,4 +57,21 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
         help="Emit only the features.slash_commands array (for merging "
         "into an existing manifest manually).",
     )
+    slack_messaging = slack_manifest.add_mutually_exclusive_group()
+    slack_messaging.add_argument(
+        "--no-assistant",
+        action="store_true",
+        help="Omit Slack AI Assistant mode (assistant_view, assistant:write "
+        "scope, assistant_thread_* events). DMs then render as a flat chat "
+        "where bare slash commands (/help, /new) work inline instead of "
+        "Slack's Assistant thread pane.",
+    )
+    slack_messaging.add_argument(
+        "--agent-view",
+        action="store_true",
+        help="Emit Slack's Agent messaging experience (agent_view, "
+        "app_home_opened + message.im) instead of the legacy assistant_view "
+        "experience. This changes Slack's app messaging surface and cannot "
+        "be reversed in Slack after applying the manifest.",
+    )
     slack_parser.set_defaults(func=cmd_slack)

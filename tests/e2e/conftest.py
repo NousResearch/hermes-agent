@@ -228,6 +228,13 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     # Disable destructive slash confirm gate so /new executes immediately
     runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
 
+    # Keep /new hermetic: the real _reset_notice_session_info resolves provider
+    # credentials and may probe model context length over the network. CI has no
+    # credentials, so resolution walks the whole fallback chain and can exceed
+    # send_and_capture's poll window on slow runners (flaked in run 28856659216,
+    # telegram param only — first parametrization pays the cold-resolution cost).
+    runner._reset_notice_session_info = lambda source: ""
+
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")
@@ -264,11 +271,18 @@ def make_adapter(platform: Platform, runner=None):
 
 
 async def send_and_capture(adapter, text: str, platform: Platform, **event_kwargs) -> AsyncMock:
-    """Send a message through the full e2e flow and return the send mock."""
+    """Send a message through the full e2e flow and return the send mock.
+
+    Polls for the send rather than waiting a fixed delay: handler DB work now
+    hops to worker threads (AsyncSessionDB), so completion latency varies.
+    """
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    await asyncio.sleep(0.3)
+    for _ in range(40):  # up to ~2s; returns as soon as the send lands
+        if adapter.send.called:
+            break
+        await asyncio.sleep(0.05)
     return adapter.send
 
 

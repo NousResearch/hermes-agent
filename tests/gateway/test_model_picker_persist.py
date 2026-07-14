@@ -171,7 +171,7 @@ async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model)
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
-    assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert "base_url" not in written["model"]
     assert "api_key" not in written["model"]
     assert "api_mode" not in written["model"]
 

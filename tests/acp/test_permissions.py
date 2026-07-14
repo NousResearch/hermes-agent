@@ -23,6 +23,7 @@ def _invoke_callback(
     outcome,
     *,
     allow_permanent=True,
+    smart_denied=False,
     timeout=60.0,
     use_prompt_path=False,
 ):
@@ -45,6 +46,7 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
+                smart_denied=smart_denied,
                 approval_callback=cb,
             )
         else:
@@ -52,6 +54,7 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
+                smart_denied=smart_denied,
             )
 
     scheduled["coro"].close()
@@ -76,12 +79,22 @@ class TestApprovalBridge:
         assert tool_call.tool_call_id.startswith("perm-check-")
         assert tool_call.kind == "execute"
         assert tool_call.status == "pending"
-        assert tool_call.title == "dangerous command"
+        assert "dangerous command" in tool_call.title
+        assert "rm -rf /" in tool_call.title
+        content_text = tool_call.content[0].content.text
+        assert "$ rm -rf /" in content_text
+        assert "dangerous command" in content_text
         assert tool_call.raw_input == {
             "command": "rm -rf /",
             "description": "dangerous command",
         }
-        assert option_ids == ["allow_once", "allow_session", "allow_always", "deny"]
+        assert option_ids == [
+            "allow_once",
+            "allow_session",
+            "allow_always",
+            "deny",
+            "deny_always",
+        ]
 
     def test_tool_call_ids_are_unique(self):
         _, first_kwargs, _, _, _ = _invoke_callback(
@@ -103,7 +116,43 @@ class TestApprovalBridge:
         option_ids = [option.option_id for option in kwargs["options"]]
 
         assert result == "session"
-        assert option_ids == ["allow_once", "allow_session", "deny"]
+        assert option_ids == ["allow_once", "allow_session", "deny", "deny_always"]
+
+    def test_smart_deny_prompt_only_offers_once_and_deny(self):
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+            allow_permanent=False,
+            smart_denied=True,
+            use_prompt_path=True,
+        )
+
+        assert result == "once"
+        assert [option.option_id for option in kwargs["options"]] == [
+            "allow_once", "deny",
+        ]
+
+    def test_smart_deny_rejects_disallowed_session_outcome(self):
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_session", outcome="selected"),
+            smart_denied=True,
+        )
+
+        assert result == "deny"
+        assert [option.option_id for option in kwargs["options"]] == [
+            "allow_once", "deny",
+        ]
+
+    def test_reject_always_outcome_denies_without_changing_policy(self):
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="deny_always", outcome="selected"),
+            use_prompt_path=True,
+        )
+
+        deny_always = [option for option in kwargs["options"] if option.option_id == "deny_always"]
+
+        assert result == "deny"
+        assert len(deny_always) == 1
+        assert deny_always[0].kind == "reject_always"
 
     def test_allow_always_maps_correctly(self):
         result, _, _, _, _ = _invoke_callback(

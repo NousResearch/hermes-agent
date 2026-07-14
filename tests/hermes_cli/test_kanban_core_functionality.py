@@ -18,7 +18,6 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
 
 import pytest
 
@@ -35,7 +34,19 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Existing crash-detection tests pre-date the grace window; pin to 0
+    # so they keep their immediate-reclaim semantics.
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Disable the detect_crashed_workers grace period for legacy tests in
+    # this file that claim a task and immediately expect
+    # ``detect_crashed_workers`` to act on it. The grace period (30s by
+    # default, see ``DEFAULT_CRASH_GRACE_SECONDS``) prevents the
+    # multi-dispatcher reap race in production; setting it to 0 here
+    # restores the pre-fix instant-reclaim semantics these tests were
+    # written against. The grace-period itself is covered by dedicated
+    # tests in tests/hermes_cli/test_kanban_db.py.
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
     kb.init_db()
     return home
 
@@ -757,6 +768,37 @@ def test_cli_archive_bulk(kanban_home):
     try:
         assert kb.get_task(conn, a).status == "archived"
         assert kb.get_task(conn, b).status == "archived"
+    finally:
+        conn.close()
+
+
+def test_cli_archive_rm_deletes_archived_tasks(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="gone")
+        assert kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+    out = run_slash(f"archive --rm {tid}")
+    assert f"Deleted {tid}" in out
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid) is None
+    finally:
+        conn.close()
+
+
+def test_cli_archive_rm_rejects_live_tasks(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="still-live")
+    finally:
+        conn.close()
+    out = run_slash(f"archive --rm {tid}")
+    assert "cannot delete" in out.lower()
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid) is not None
     finally:
         conn.close()
 
@@ -1655,6 +1697,68 @@ def test_build_worker_context_uses_parent_run_summary(kanban_home):
         assert "Parent task results" in ctx
         assert "three angles explored; B looks strongest" in ctx
         assert '"sources"' in ctx  # metadata JSON serialized
+    finally:
+        conn.close()
+
+
+def test_relative_age_renders_coarse_buckets():
+    """Freshness helper turns epoch seconds into coarse human ages, and
+    degrades safely on missing / future timestamps."""
+    now = 1_000_000
+    assert kb._relative_age(now, now) == "just now"
+    assert kb._relative_age(now - 30, now) == "just now"
+    assert kb._relative_age(now - 5 * 60, now) == "5m ago"
+    assert kb._relative_age(now - 18 * 3600, now) == "18h ago"
+    assert kb._relative_age(now - 2 * 86400, now) == "2d ago"
+    # Clock skew across machines/profiles must not claim "in the future".
+    assert kb._relative_age(now + 500, now) == "just now"
+    # Missing / unparseable timestamps render empty so callers can append
+    # unconditionally.
+    assert kb._relative_age(None, now) == ""
+    # Defensive: an unparseable value (e.g. a stray string) renders empty
+    # rather than raising.
+    assert kb._relative_age("garbage", now) == ""  # type: ignore[arg-type]
+
+
+def test_build_worker_context_stamps_parent_freshness(kanban_home):
+    """Parent handoffs carry a relative age + a 'verify against source'
+    frame so a worker doesn't read a day-old result as live state.
+
+    This is the multi-agent staleness gap: an orchestrator + sibling
+    workers leave reports/handoffs that the next worker reads as current
+    truth. The age stamp is the signal that prompts re-verification.
+    """
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="research", assignee="researcher")
+        child = kb.create_task(
+            conn, title="write", assignee="writer", parents=[parent],
+        )
+        kb.claim_task(conn, parent)
+        kb.complete_task(
+            conn, parent,
+            result="done",
+            summary="meeting ingest workflow finished; pipeline ready",
+        )
+        # Backdate the parent's completion to 18h ago — both the task row
+        # and its completed run row, which is where build_worker_context
+        # reads the handoff timestamp from.
+        old = int(time.time()) - 18 * 3600
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET completed_at = ? WHERE id = ?", (old, parent),
+            )
+            conn.execute(
+                "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+                (old, parent),
+            )
+
+        ctx = kb.build_worker_context(conn, child)
+        # The handoff still appears...
+        assert "meeting ingest workflow finished" in ctx
+        # ...now stamped with its age and framed as a point-in-time snapshot.
+        assert "completed 18h ago" in ctx
+        assert "point-in-time snapshots, not live state" in ctx
     finally:
         conn.close()
 
@@ -2661,10 +2765,13 @@ def test_build_worker_context_caps_huge_summary(kanban_home):
         conn.close()
 
 
-def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
-    """The dispatcher's _default_spawn must include --skills kanban-worker
-    in its argv so every worker loads the skill automatically, even if
-    the profile hasn't wired it into its default skills config.
+def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
+    """The dispatcher no longer auto-loads a bundled kanban skill.
+
+    The kanban lifecycle (formerly the kanban-worker/kanban-orchestrator
+    skills) is now injected into every worker's system prompt via
+    KANBAN_GUIDANCE, so _default_spawn must NOT append a `--skills` flag
+    when the task carries no per-task skills.
 
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
@@ -2694,10 +2801,12 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
         conn.close()
 
     cmd = captured["cmd"]
-    assert "--skills" in cmd, f"spawn argv missing --skills: {cmd}"
-    idx = cmd.index("--skills")
-    assert cmd[idx + 1] == "kanban-worker", (
-        f"expected 'kanban-worker', got {cmd[idx + 1]!r}"
+    assert "--skills" not in cmd, (
+        f"spawn argv should not auto-load any skill: {cmd}"
+    )
+    assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
+    assert cmd.index("--accept-hooks") < cmd.index("chat"), (
+        f"--accept-hooks must come before 'chat' in argv: {cmd}"
     )
     # Assignee + task env are still present
     assert "some-profile" in cmd
@@ -2933,7 +3042,7 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
-    in addition to the built-in kanban-worker."""
+    in declared order. No skill is auto-loaded anymore."""
     captured = {}
 
     class FakeProc:
@@ -2966,10 +3075,8 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     for i, tok in enumerate(cmd):
         if tok == "--skills" and i + 1 < len(cmd):
             skill_names.append(cmd[i + 1])
-    # kanban-worker first (built-in), then per-task extras in order.
-    assert skill_names[0] == "kanban-worker", skill_names
-    assert "translation" in skill_names
-    assert "github-code-review" in skill_names
+    # Only the per-task skills, in declared order — nothing auto-loaded.
+    assert skill_names == ["translation", "github-code-review"], skill_names
     # --skills must appear BEFORE the `chat` subcommand so argparse
     # attaches them to the top-level parser, not the subcommand.
     chat_idx = cmd.index("chat")
@@ -2981,8 +3088,9 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     )
 
 
-def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
-    """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
+def test_default_spawn_passes_task_skills_verbatim(kanban_home, monkeypatch):
+    """Per-task skills are passed through verbatim — there is no built-in
+    kanban skill to dedupe against anymore."""
     captured = {}
 
     class FakeProc:
@@ -2998,7 +3106,7 @@ def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monke
     try:
         tid = kb.create_task(
             conn, title="dup", assignee="x",
-            skills=["kanban-worker", "translation"],
+            skills=["translation", "github-code-review"],
         )
         task = kb.get_task(conn, tid)
         workspace = kb.resolve_workspace(task)
@@ -3007,12 +3115,14 @@ def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monke
         conn.close()
 
     cmd = captured["cmd"]
-    worker_pairs = [
-        i for i, tok in enumerate(cmd)
-        if tok == "--skills" and i + 1 < len(cmd) and cmd[i + 1] == "kanban-worker"
+    skill_names = [
+        cmd[i + 1]
+        for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd)
     ]
-    assert len(worker_pairs) == 1, (
-        f"kanban-worker appeared {len(worker_pairs)} times in argv: {cmd}"
+    # Exactly the task's skills, once each, in order — no auto-loaded extras.
+    assert skill_names == ["translation", "github-code-review"], (
+        f"unexpected --skills in argv: {cmd}"
     )
 
 
@@ -3559,6 +3669,191 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("corrupt_exc", ["sqlite", "guard"])
+def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
+    monkeypatch, tmp_path, caplog, corrupt_exc
+):
+    """Corrupt board DBs log one actionable error and stop retrying per tick."""
+    import asyncio
+    import logging
+    import sqlite3
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    corrupt_db = tmp_path / "kanban.db"
+    corrupt_db.write_text("not sqlite", encoding="utf-8")
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: corrupt_db)
+
+    calls = {"connect": 0, "to_thread": 0}
+
+    def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        if corrupt_exc == "guard":
+            raise _kb.KanbanDbCorruptError(
+                corrupt_db,
+                corrupt_db.with_suffix(".db.corrupt.test.bak"),
+                "sqlite refused to open file: database disk image is malformed",
+            )
+        raise sqlite3.DatabaseError("file is not a database")
+
+    async def _to_thread(fn, *args, **kwargs):
+        # PR salvage (#32857 commit 7): the dispatcher now reaps zombies at
+        # the top of each tick via ``asyncio.to_thread(_kb.reap_worker_zombies)``
+        # BEFORE the per-board tick work. Each tick now issues 3 ``to_thread``
+        # calls (reaper + ``_tick_once`` + ``_ready_nonempty``) instead of 2,
+        # so this counter must reach 6 to allow the same 2 dispatch ticks the
+        # pre-reaper test expected at 4. Connect counts in the assertion below
+        # are unchanged.
+        calls["to_thread"] += 1
+        result = fn(*args, **kwargs)
+        if calls["to_thread"] >= 6:
+            runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("not a valid SQLite database" in msg for msg in messages) == 1
+    assert not any("tick failed on board" in msg for msg in messages)
+    assert not any(record.exc_info for record in caplog.records)
+    # First tick connect (dispatch) + two probes per `_has_ready_work` call
+    # (ready then review, both via _kb.connect). The second dispatch tick
+    # skips the dispatch connect because the corrupt board fingerprint is
+    # disabled, but the ready/review probes still each connect. PR f55d94a1e
+    # added the review-column probe alongside the existing ready-column
+    # probe, bumping this from 3 → 5.
+    assert calls["connect"] == 5
+
+
+def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
+    monkeypatch, tmp_path, caplog
+):
+    """A corrupt-looking board is retried after the quarantine TTL expires."""
+    import asyncio
+    import inspect
+    import logging
+    import sqlite3
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    corrupt_db = tmp_path / "kanban.db"
+    corrupt_db.write_text("not sqlite", encoding="utf-8")
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: corrupt_db)
+
+    real_monotonic = time.monotonic
+    time_values = iter([1000.0, 1001.0, 1301.0, 1301.0])
+
+    def _monotonic_for_gateway_dispatcher():
+        caller = inspect.currentframe().f_back  # type: ignore[union-attr]
+        code = caller.f_code if caller is not None else None
+        filename = code.co_filename if code is not None else ""
+        # The kanban dispatcher/notifier watcher loops were extracted from
+        # gateway/run.py into gateway/kanban_watchers.py (god-file Phase 3),
+        # so accept either filename for the time-travel mock.
+        if filename.endswith("gateway/run.py") or filename.endswith("gateway/kanban_watchers.py"):
+            return next(time_values, 1301.0)
+        return real_monotonic()
+
+    monkeypatch.setattr("gateway.run.time.monotonic", _monotonic_for_gateway_dispatcher)
+    monkeypatch.setattr("gateway.kanban_watchers.time.monotonic", _monotonic_for_gateway_dispatcher)
+
+    calls = {"tick": 0}
+
+    def _connect(*args, **kwargs):
+        raise sqlite3.DatabaseError("file is not a database")
+
+    async def _to_thread(fn, *args, **kwargs):
+        result = fn(*args, **kwargs)
+        if getattr(fn, "__name__", "") == "_tick_once":
+            calls["tick"] += 1
+            if calls["tick"] >= 3:
+                runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("not a valid SQLite database" in msg for msg in messages) == 2
+    assert any("database fingerprint unchanged" in msg for msg in messages)
+    assert calls["tick"] == 3
+
+
 # ---------------------------------------------------------------------------
 # Hallucination gate (created_cards verify + prose scan)
 # ---------------------------------------------------------------------------
@@ -4103,43 +4398,71 @@ def test_detect_crashed_workers_increments_counter(kanban_home):
         conn.close()
 
 
-def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
-    """A worker that exited rc=0 while its task was still ``running``
-    is a protocol violation (agent answered conversationally without
-    calling kanban_complete / kanban_block). Retrying will just loop,
-    so auto-block immediately instead of waiting for the breaker to
-    trip at ``DEFAULT_FAILURE_LIMIT``.
+def _drive_worker_exit(conn, tid, fake_pid, raw_status):
+    """Claim ``tid``, record ``raw_status`` for its dead worker pid, and run
+    one reaper pass.
 
-    Regression test for the respawn-loop-after-completion bug reported
-    against small local models (gemma4-e2b q4) where the model writes
-    the answer as plain text and the CLI exits rc=0 cleanly.
+    Deliberately resolves ``hermes_cli.kanban_db`` fresh and uses that single
+    module object for the exit registry, the liveness patch, AND the reaper:
+    earlier tests in a full-suite run can reload the module, and recording
+    the exit into one module object while reaping through another (stale)
+    one makes ``_classify_worker_exit`` return ``unknown`` — silently turning
+    a clean-exit protocol violation into a plain crash.
     """
     import hermes_cli.kanban_db as _kb
+    host_prefix = _kb._claimer_id().split(":", 1)[0]
+    claimed = _kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+    assert claimed is not None, "task was not claimable for the next attempt"
+    _kb._set_worker_pid(conn, tid, fake_pid)
+    _kb._record_worker_exit(fake_pid, raw_status)
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda p: False
+    try:
+        return _kb.detect_crashed_workers(conn)
+    finally:
+        _kb._pid_alive = original_alive
+
+
+def _drive_protocol_violation(conn, tid, fake_pid):
+    """One clean-exit protocol violation reaper pass for ``tid``.
+
+    os.W_EXITCODE(status=0, signal=0) == 0 on POSIX.
+    """
+    return _drive_worker_exit(conn, tid, fake_pid, 0)
+
+
+def _drive_nonzero_crash(conn, tid, fake_pid):
+    """One plain non-zero-exit crash reaper pass for ``tid``.
+
+    W_EXITCODE(1, 0) == 256 — WIFEXITED True, WEXITSTATUS == 1.
+    """
+    return _drive_worker_exit(conn, tid, fake_pid, 256)
+
+
+def test_detect_crashed_workers_protocol_violation_first_occurrence_retries(kanban_home):
+    """A first clean-exit protocol violation gets a retry, not a block.
+
+    A worker that exited rc=0 while its task was still ``running`` skipped
+    the terminal kanban call (model answered conversationally, transient tool
+    wedge). Empirically these overwhelmingly complete on respawn, so the
+    first violation must leave the task ``ready`` with corrective guidance
+    stamped in ``last_failure_error`` — not trip the breaker like the pre-fix
+    behavior did. The violation is accounted against its own violation-only
+    streak, so it must NOT tick the unified ``consecutive_failures`` counter.
+    """
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="quiet", assignee="worker")
-        host_prefix = _kb._claimer_id().split(":", 1)[0]
-        lock = f"{host_prefix}:mock"
-        kb.claim_task(conn, tid, claimer=lock)
-        fake_pid = 999998
-        kb._set_worker_pid(conn, tid, fake_pid)
-
-        # Simulate the reap loop having recorded a clean exit for this pid.
-        # os.W_EXITCODE(status=0, signal=0) == 0 on POSIX.
-        _kb._record_worker_exit(fake_pid, 0)
-        # Force liveness check to say "dead" for the fake pid.
-        original_alive = _kb._pid_alive
-        _kb._pid_alive = lambda p: False
-        try:
-            result_crashed = kb.detect_crashed_workers(conn)
-        finally:
-            _kb._pid_alive = original_alive
-
+        result_crashed = _drive_protocol_violation(conn, tid, 999998)
         assert tid in result_crashed, "should be detected as crashed"
+
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked", (
-            f"protocol violation should auto-block on first occurrence, "
-            f"got status={task.status}"
+        assert task.status == "ready", (
+            f"first protocol violation should retry, got status={task.status}"
+        )
+        assert task.consecutive_failures == 0, (
+            "a below-budget violation must not consume the unified failure "
+            f"budget, got consecutive_failures={task.consecutive_failures}"
         )
         assert "kanban_complete" in (task.last_failure_error or ""), (
             f"expected protocol-violation message, got {task.last_failure_error!r}"
@@ -4155,9 +4478,171 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
         assert "crashed" not in kinds, (
             f"should NOT emit 'crashed' event on clean exit, got {kinds}"
         )
-        assert "gave_up" in kinds, (
-            f"breaker should trip, expected 'gave_up' event, got {kinds}"
+        assert "gave_up" not in kinds, (
+            f"breaker must not trip on the first violation, got {kinds}"
         )
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_protocol_violation_streak_trips_at_limit(kanban_home):
+    """The violation streak trips the terminal path exactly at the bound.
+
+    Genuine repeat offenders (a worker whose CLI keeps returning 0 without a
+    terminal transition) must still surface to a human: the
+    ``_PROTOCOL_VIOLATION_FAILURE_LIMIT``-th consecutive violation blocks the
+    task with a ``gave_up`` event carrying the streak accounting.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet", assignee="worker")
+        limit = _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
+        for i in range(limit - 1):
+            _drive_protocol_violation(conn, tid, 990000 + i)
+            assert kb.get_task(conn, tid).status == "ready", (
+                f"violation {i + 1}/{limit} should still retry"
+            )
+
+        _drive_protocol_violation(conn, tid, 990900)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"violation streak at the bound must block, got {task.status}"
+        )
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert kinds.count("protocol_violation") == limit
+        assert "crashed" not in kinds
+        gave_up = [e for e in events if e.kind == "gave_up"]
+        assert len(gave_up) == 1, f"expected exactly one gave_up, got {kinds}"
+        payload = gave_up[0].payload or {}
+        assert payload.get("protocol_violations") == limit
+        assert payload.get("protocol_violation_limit") == limit
+        # Side channel consumed by dispatch_once — read through the same
+        # (current) module object the reaper ran in, see _drive_worker_exit.
+        assert tid in _kb.detect_crashed_workers._last_auto_blocked
+    finally:
+        conn.close()
+
+
+def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
+    """Mixed failure kinds must not consume the violation retry budget.
+
+    Regression for the #61233 review finding: expressed as a plain
+    ``failure_limit`` over the unified ``consecutive_failures`` counter, the
+    violation budget was consumed by earlier timeouts / nonzero exits. As a
+    violation-only streak, a prior real crash must not eat violation
+    retries, and below-budget violations must leave the unified counter
+    untouched (so the two budgets stay independent).
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="mixed", assignee="worker")
+
+        # One real crash: unified counter ticks to 1 (below
+        # DEFAULT_FAILURE_LIMIT=2 — task stays ready).
+        _drive_nonzero_crash(conn, tid, 991000)
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+
+        # Two violations after it: streak 1 and 2 — both retry, unified
+        # counter untouched. (Pre-fix: the crash consumed the budget and the
+        # violations blocked well before three of them happened.)
+        for i, pid in enumerate((991001, 991002)):
+            _drive_protocol_violation(conn, tid, pid)
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"violation {i + 1} after a crash must still retry, "
+                f"got {task.status}"
+            )
+            assert task.consecutive_failures == 1, (
+                "below-budget violations must not tick the unified counter"
+            )
+
+        # Third consecutive violation: streak hits the bound — blocked.
+        _drive_protocol_violation(conn, tid, 991003)
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
+        assert len(gave_up) == 1
+        assert (gave_up[0].payload or {}).get("protocol_violations") == \
+            _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
+    finally:
+        conn.close()
+
+
+def test_protocol_violation_streak_resets_on_other_failure_kind(kanban_home):
+    """A non-violation failure between violations resets the streak.
+
+    The budget counts CONSECUTIVE clean-exit violations: two violations, a
+    real crash, then two more violations is a streak of 2 — not 4 — so the
+    fourth violation must still retry; only a third consecutive one blocks.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="reset", assignee="worker")
+
+        _drive_protocol_violation(conn, tid, 993000)
+        _drive_protocol_violation(conn, tid, 993001)
+        assert kb.get_task(conn, tid).status == "ready"
+
+        # Real crash breaks the streak (and ticks the unified counter to 1).
+        _drive_nonzero_crash(conn, tid, 993002)
+        assert kb.get_task(conn, tid).status == "ready"
+
+        # Streak restarts at 1, 2 — the pre-crash violations no longer count.
+        _drive_protocol_violation(conn, tid, 993003)
+        assert kb.get_task(conn, tid).status == "ready", (
+            "violation streak must reset after a non-violation failure"
+        )
+        _drive_protocol_violation(conn, tid, 993004)
+        assert kb.get_task(conn, tid).status == "ready"
+
+        # Third consecutive violation since the crash: blocked.
+        _drive_protocol_violation(conn, tid, 993005)
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_protocol_violation_respects_max_retries_precedence(kanban_home):
+    """Per-task ``max_retries`` overrides the violation bound, both ways.
+
+    Same top precedence it has for every other failure kind in
+    ``_record_task_failure``: ``max_retries=1`` blocks on the FIRST violation
+    (zero retries — the pre-fix behavior, now opt-in per task);
+    ``max_retries=5`` keeps retrying past the default bound of 3 and blocks
+    on the 5th consecutive violation.
+    """
+    conn = kb.connect()
+    try:
+        strict = kb.create_task(
+            conn, title="strict", assignee="worker", max_retries=1,
+        )
+        _drive_protocol_violation(conn, strict, 992000)
+        task = kb.get_task(conn, strict)
+        assert task.status == "blocked", (
+            f"max_retries=1 must block on the first violation, got {task.status}"
+        )
+        gave_up = [e for e in kb.list_events(conn, strict) if e.kind == "gave_up"]
+        assert len(gave_up) == 1
+        payload = gave_up[0].payload or {}
+        assert payload.get("protocol_violations") == 1
+        assert payload.get("protocol_violation_limit") == 1
+
+        lenient = kb.create_task(
+            conn, title="lenient", assignee="worker", max_retries=5,
+        )
+        for i in range(4):
+            _drive_protocol_violation(conn, lenient, 992100 + i)
+            assert kb.get_task(conn, lenient).status == "ready", (
+                f"violation {i + 1}/5 should retry under max_retries=5"
+            )
+        _drive_protocol_violation(conn, lenient, 992104)
+        assert kb.get_task(conn, lenient).status == "blocked"
     finally:
         conn.close()
 
@@ -4233,3 +4718,66 @@ def test_reclaim_task_clears_failure_counter(kanban_home):
         assert task.status == "ready"
     finally:
         conn.close()
+
+
+def test_dispatch_once_integrates_stale_detection(kanban_home, monkeypatch):
+    """dispatch_once with stale_timeout_seconds reclaims stale running tasks."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale-dispatch", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, 99999)  # fake PID — avoid killing test
+
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (five_hours_ago, t),
+            )
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda tsk, ws: None,
+            stale_timeout_seconds=14400,
+        )
+        assert t in res.stale, "Stale task should appear in result.stale"
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch):
+    """dispatch_once with stale_timeout_seconds=0 skips stale detection."""
+    # Use os.getpid() so _pid_alive → True, preventing detect_crashed_workers
+    # from reclaiming. Only stale detection (disabled via timeout=0) is tested.
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="skip-stale", assignee="worker")
+        kb.claim_task(conn, t)
+        # Claim sets worker_pid to 0 initially. Set it to os.getpid() so the
+        # crash detector sees a live PID and skips it.
+        kb._set_worker_pid(conn, t, os.getpid())
+
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (five_hours_ago, t),
+            )
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda tsk, ws: None,
+            stale_timeout_seconds=0,
+        )
+        assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
+        assert kb.get_task(conn, t).status == "running"

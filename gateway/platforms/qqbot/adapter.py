@@ -12,9 +12,9 @@ Configuration in config.yaml:
           app_id: "your-app-id"            # or QQ_APP_ID env var
           client_secret: "your-secret"     # or QQ_CLIENT_SECRET env var
           markdown_support: true           # enable QQ markdown (msg_type 2)
-          dm_policy: "open"                # open | allowlist | disabled
+          dm_policy: "pairing"             # open | allowlist | disabled | pairing
           allow_from: ["openid_1"]
-          group_policy: "open"             # open | allowlist | disabled
+          group_policy: "pairing"          # open | allowlist | disabled | pairing
           group_allow_from: ["group_openid_1"]
           stt:                             # Voice-to-text config (optional)
             provider: "zai"                # zai (GLM-ASR), openai (Whisper), etc.
@@ -126,7 +126,6 @@ from gateway.platforms.qqbot.chunked_upload import (
 )
 from gateway.platforms.qqbot.keyboards import (
     ApprovalRequest,
-    ApprovalSender,
     InlineKeyboard,
     InteractionEvent,
     build_approval_keyboard,
@@ -209,11 +208,11 @@ class QQAdapter(BasePlatformAdapter):
         self._markdown_support = bool(extra.get("markdown_support", True))
 
         # Auth/ACL policies
-        self._dm_policy = str(extra.get("dm_policy", "open")).strip().lower()
+        self._dm_policy = str(extra.get("dm_policy", "pairing")).strip().lower()
         self._allow_from = _coerce_list(
             extra.get("allow_from") or extra.get("allowFrom")
         )
-        self._group_policy = str(extra.get("group_policy", "open")).strip().lower()
+        self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(
             extra.get("group_allow_from") or extra.get("groupAllowFrom")
         )
@@ -270,12 +269,25 @@ class QQAdapter(BasePlatformAdapter):
     def name(self) -> str:
         return "QQBot"
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """QQBot gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Authenticate, obtain gateway URL, and open the WebSocket."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """
+        Authenticate, obtain gateway URL, and open the WebSocket.
+
+        Args:
+            is_reconnect: False on a cold first boot; True when the
+                reconnect watcher is re-establishing this platform after
+                an outage. QQBot has no server-side update queue so this
+                flag is accepted for interface conformance only.
+        """
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
             self._set_fatal_error("qq_missing_dependency", message, retryable=True)
@@ -534,9 +546,30 @@ class QQAdapter(BasePlatformAdapter):
                 self._mark_transport_disconnected()
                 self._fail_pending("Connection closed")
 
-                # Stop reconnecting for fatal codes
-                if code in {4914, 4915}:
-                    desc = "offline/sandbox-only" if code == 4914 else "banned"
+                # Stop reconnecting for fatal codes (unrecoverable errors)
+                if code in {
+                        4001,  # Invalid opcode
+                        4002,  # Invalid payload
+                        4010,  # Invalid shard
+                        4011,  # Sharding required
+                        4012,  # Invalid API version
+                        4013,  # Invalid intent
+                        4014,  # Intent not authorized
+                        4914,  # Offline/sandbox-only
+                        4915,  # Banned
+                }:
+                    fatal_descriptions = {
+                        4001: "invalid opcode",
+                        4002: "invalid payload",
+                        4010: "invalid shard",
+                        4011: "sharding required",
+                        4012: "invalid API version",
+                        4013: "invalid intent",
+                        4014: "intent not authorized",
+                        4914: "offline/sandbox-only",
+                        4915: "banned",
+                    }
+                    desc = fatal_descriptions.get(code, f"fatal error (code={code})")
                     logger.error(
                         "[%s] Bot is %s. Check QQ Open Platform.", self._log_tag, desc
                     )
@@ -573,10 +606,11 @@ class QQAdapter(BasePlatformAdapter):
                     self._token_expires_at = 0.0
 
                 # Session invalid → clear session, will re-identify on next Hello
+                # Note: 4009 (connection timeout) is NOT included here — it is
+                # resumable per the QQ protocol and should preserve session state.
                 if code in {
                         4006,
                         4007,
-                        4009,
                         4900,
                         4901,
                         4902,
@@ -655,6 +689,12 @@ class QQAdapter(BasePlatformAdapter):
         """Read WebSocket frames until connection closes."""
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
+        if self._ws.closed:
+            # A closed-but-non-None ws makes the while-condition false on entry,
+            # so this would return normally — which _listen_loop treats as a
+            # clean read and immediately retries with backoff reset to 0,
+            # producing a 100% CPU spin. Raise so the reconnect/backoff path runs.
+            raise RuntimeError("WebSocket closed")
 
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()
@@ -705,9 +745,8 @@ class QQAdapter(BasePlatformAdapter):
                 "token": f"QQBot {token}",
                 "intents": (1 << 25)
                            | (1 << 30)
-                           | (
-                                   1 << 12
-                           ),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE
+                           | (1 << 12)
+                           | (1 << 26),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE + INTERACTION
                 "shard": [0, 1],
                 "properties": {
                     "$os": "macOS",
@@ -824,6 +863,32 @@ class QQAdapter(BasePlatformAdapter):
 
         # op 11 = Heartbeat ACK
         if op == 11:
+            return
+
+        # op 7 = Server Reconnect — server asks client to reconnect (e.g.
+        # load-balancing, maintenance).  Close the WS so _read_events raises
+        # and the outer loop triggers a reconnect with Resume.
+        if op == 7:
+            logger.info("[%s] Server requested reconnect (op 7)", self._log_tag)
+            if self._ws and not self._ws.closed:
+                self._create_task(self._ws.close())
+            return
+
+        # op 9 = Invalid Session — d=True means session is resumable,
+        # d=False means we must re-identify from scratch.
+        if op == 9:
+            resumable = bool(d) if d is not None else False
+            if not resumable:
+                logger.info(
+                    "[%s] Invalid session (op 9, not resumable), clearing session",
+                    self._log_tag,
+                )
+                self._session_id = None
+                self._last_seq = None
+            else:
+                logger.info("[%s] Invalid session (op 9, resumable)", self._log_tag)
+            if self._ws and not self._ws.closed:
+                self._create_task(self._ws.close())
             return
 
         logger.debug("[%s] Unknown op: %s", self._log_tag, op)
@@ -1007,6 +1072,46 @@ class QQAdapter(BasePlatformAdapter):
         "deny": "deny",
     }
 
+    @staticmethod
+    def _parse_gateway_session_key(session_key: str) -> Optional[Dict[str, str]]:
+        """Parse ``agent:main:<platform>:<chat_type>:<chat_id>[:<user_id>]``."""
+        parts = str(session_key or "").split(":")
+        if len(parts) < 5 or parts[0] != "agent" or parts[1] != "main":
+            return None
+        parsed = {
+            "platform": parts[2],
+            "chat_type": parts[3],
+            "chat_id": parts[4],
+        }
+        if len(parts) > 5:
+            parsed["user_id"] = parts[5]
+        return parsed
+
+    def _is_authorized_interaction_for_session(
+            self,
+            event: InteractionEvent,
+            session_key: str,
+    ) -> bool:
+        """Authorize approval/update interactions against session + operator."""
+        parsed = self._parse_gateway_session_key(session_key)
+        operator = str(event.operator_openid or "").strip()
+        if not parsed or parsed.get("platform") != "qqbot" or not operator:
+            return False
+
+        chat_type = parsed.get("chat_type", "")
+        chat_id = parsed.get("chat_id", "")
+        if chat_type == "c2c":
+            return bool(chat_id) and operator == chat_id
+
+        if chat_type in {"group", "guild"}:
+            event_chat = str(event.group_openid or event.guild_id or "").strip()
+            if not event_chat or event_chat != chat_id:
+                return False
+            session_user = str(parsed.get("user_id", "")).strip()
+            return bool(session_user) and operator == session_user
+
+        return False
+
     async def _default_interaction_dispatch(
             self,
             event: InteractionEvent,
@@ -1040,6 +1145,13 @@ class QQAdapter(BasePlatformAdapter):
                     self._log_tag, decision, session_key,
                 )
                 return
+            if not self._is_authorized_interaction_for_session(event, session_key):
+                logger.warning(
+                    "[%s] Rejected unauthorized approval click for session %s "
+                    "(operator=%s)",
+                    self._log_tag, session_key, event.operator_openid,
+                )
+                return
             try:
                 # Import lazily to keep the adapter importable in tests that
                 # don't exercise the approval subsystem.
@@ -1060,6 +1172,13 @@ class QQAdapter(BasePlatformAdapter):
 
         update_answer = parse_update_prompt_button_data(button_data)
         if update_answer is not None:
+            update_session_key = f"agent:main:qqbot:{event.scene}:{event.group_openid or event.guild_id or event.user_openid}"
+            if not self._is_authorized_interaction_for_session(event, update_session_key):
+                logger.warning(
+                    "[%s] Rejected unauthorized update prompt click (operator=%s)",
+                    self._log_tag, event.operator_openid,
+                )
+                return
             self._write_update_response(update_answer, event.operator_openid)
             return
 
@@ -1103,7 +1222,7 @@ class QQAdapter(BasePlatformAdapter):
         user_openid = str(author.get("user_openid", ""))
         if not user_openid:
             return
-        if not self._is_dm_allowed(user_openid):
+        if not self._is_dm_intake_allowed(user_openid):
             return
 
         text = content
@@ -1343,7 +1462,7 @@ class QQAdapter(BasePlatformAdapter):
         # Without this check any member of any guild the bot is in could
         # bypass the configured allowlist via direct messages.
         author_id = str(author.get("id", ""))
-        if not self._is_dm_allowed(author_id):
+        if not self._is_dm_intake_allowed(author_id):
             logger.debug(
                 "[%s] Guild DM blocked by ACL: guild=%s user=%s",
                 self._log_tag, guild_id, author_id,
@@ -1607,7 +1726,7 @@ class QQAdapter(BasePlatformAdapter):
             elif ct.startswith("image/"):
                 # Image: download and cache locally.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, filename)
                     if cached_path and os.path.isfile(cached_path):
                         image_urls.append(cached_path)
                         image_media_types.append(ct or "image/jpeg")
@@ -1620,11 +1739,15 @@ class QQAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache image: %s", self._log_tag, exc)
             else:
-                # Other attachments (video, file, etc.): record as text.
+                # Other attachments (video, file, etc.): download and record with path.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, filename)
                     if cached_path:
-                        other_attachments.append(f"[Attachment: {filename or ct}]")
+                        name = filename or ct
+                        if ct.startswith("video/"):
+                            other_attachments.append(f"[video: {name} ({cached_path})]")
+                        else:
+                            other_attachments.append(f"[file: {name} ({cached_path})]")
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
 
@@ -1636,8 +1759,14 @@ class QQAdapter(BasePlatformAdapter):
             "attachment_info": attachment_info,
         }
 
-    async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
-        """Download a URL and cache it locally."""
+    async def _download_and_cache(
+            self, url: str, content_type: str, original_name: str = "",
+    ) -> Optional[str]:
+        """Download a URL and cache it locally.
+
+        :param original_name: Preferred filename from attachment metadata.
+            Falls back to the URL path basename if empty.
+        """
         from tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
@@ -1668,7 +1797,11 @@ class QQAdapter(BasePlatformAdapter):
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
         else:
-            filename = Path(urlparse(url).path).name or "qq_attachment"
+            filename = (
+                original_name
+                or Path(urlparse(url).path).name
+                or "qq_attachment"
+            )
             return cache_document_from_bytes(data, filename)
 
     @staticmethod
@@ -1881,7 +2014,7 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _guess_ext_from_data(data: bytes) -> str:
         """Guess file extension from magic bytes."""
-        if data[:9] == b"#!SILK_V3" or data[:5] == b"#!SILK":
+        if data[:9] == b"#!SILK_V3" or data[:6] == b"#!SILK":
             return ".silk"
         if data[:2] == b"\x02!":
             return ".silk"
@@ -1901,7 +2034,7 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _looks_like_silk(data: bytes) -> bool:
         """Check if bytes look like a SILK audio file."""
-        return data[:4] == b"#!SILK" or data[:2] == b"\x02!" or data[:9] == b"#!SILK_V3"
+        return data[:6] == b"#!SILK" or data[:2] == b"\x02!" or data[:9] == b"#!SILK_V3"
 
     async def _convert_silk_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
         """Convert audio file to WAV using the pilk library.
@@ -2515,7 +2648,10 @@ class QQAdapter(BasePlatformAdapter):
         return await self.send_with_keyboard(
             chat_id,
             build_approval_text(req),
-            build_approval_keyboard(req.session_key),
+            build_approval_keyboard(
+                req.session_key,
+                allow_permanent=getattr(req, "allow_permanent", True),
+            ),
             reply_to=reply_to,
         )
 
@@ -2535,6 +2671,8 @@ class QQAdapter(BasePlatformAdapter):
             session_key: str,
             description: str = "dangerous command",
             metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
 
@@ -2544,6 +2682,8 @@ class QQAdapter(BasePlatformAdapter):
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
         del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+        if smart_denied:
+            description += " Owner override applies to this one operation only."
 
         # Use the reply-to message for passive-message context when we have one.
         # QQ requires a msg_id on outbound messages to a user we've never
@@ -2552,10 +2692,11 @@ class QQAdapter(BasePlatformAdapter):
 
         req = ApprovalRequest(
             session_key=session_key,
-            title=f"Execute this command?",
+            title="Execute this command?",
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            allow_permanent=allow_permanent and not smart_denied,
         )
         return await self.send_approval_request(
             chat_id, req, reply_to=msg_id,
@@ -3017,19 +3158,44 @@ class QQAdapter(BasePlatformAdapter):
         stripped = re.sub(r"^@\S+\s*", "", content.strip())
         return stripped
 
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return os.getenv("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     def _is_dm_allowed(self, user_id: str) -> bool:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
             return self._entry_matches(self._allow_from, user_id)
-        return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def _is_dm_intake_allowed(self, user_id: str) -> bool:
+        principal = str(user_id or "").strip()
+        if not principal:
+            return False
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return self._entry_matches(self._allow_from, principal)
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def _is_group_allowed(self, group_id: str, user_id: str) -> bool:
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
             return self._entry_matches(self._group_allow_from, group_id)
-        return True
+        if self._group_policy == "pairing":
+            return False
+        if self._group_policy == "open":
+            return True
+        return False
 
     @staticmethod
     def _entry_matches(entries: List[str], target: str) -> bool:

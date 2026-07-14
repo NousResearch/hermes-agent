@@ -41,6 +41,15 @@ import time
 SEVERITY_ORDER = ("warning", "error", "critical")
 
 
+def severity_at_or_above(severity: Optional[str], threshold: Optional[str]) -> bool:
+    """Return True when ``severity`` meets or exceeds ``threshold``."""
+    if threshold is None:
+        return True
+    if severity not in SEVERITY_ORDER or threshold not in SEVERITY_ORDER:
+        return False
+    return SEVERITY_ORDER.index(severity) >= SEVERITY_ORDER.index(threshold)
+
+
 @dataclass
 class DiagnosticAction:
     """A single recovery action attached to a diagnostic.
@@ -182,23 +191,6 @@ def _active_hallucination_events(
         elif k == kind:
             active.append(ev)
     return active
-
-
-def _latest_clean_event_ts(events: Iterable[Any]) -> int:
-    """Timestamp of the most recent clean completion / edit event.
-
-    Kept for general "has this task ever been successfully completed"
-    lookups; hallucination rules use ``_active_hallucination_events``
-    instead because they need strict ordering.
-    """
-    latest = 0
-    for ev in events:
-        if _event_kind(ev) in {"completed", "edited"}:
-            t = _event_ts(ev)
-            latest = max(latest, t)
-    return latest
-
-
 # Standard always-available actions. Every diagnostic can offer these as
 # fallbacks regardless of kind — they're the two baseline recovery
 # primitives the kernel supports.
@@ -363,11 +355,11 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
         severity="error",
         title="Worker claimed cards that don't exist",
         detail=(
-            f"The completing worker declared created_cards that either didn't "
-            f"exist or weren't created by its profile. The completion was "
-            f"blocked and the task stayed in its prior state. "
-            f"Usually means the worker hallucinated ids instead of capturing "
-            f"return values from kanban_create."
+            "The completing worker declared created_cards that either didn't "
+            "exist or weren't created by its profile. The completion was "
+            "blocked and the task stayed in its prior state. "
+            "Usually means the worker hallucinated ids instead of capturing "
+            "return values from kanban_create."
         ),
         actions=actions,
         first_seen_at=first,
@@ -538,7 +530,20 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
 
     Accepts the legacy ``spawn_failure_threshold`` config key for
     back-compat.
+
+    Terminal statuses are exempt: a done/archived card has nothing left
+    to retry, so a lingering failure streak is history, not a signal.
+    (``complete_task`` resets the counter, but a manual done — e.g. a
+    dashboard drag — ends no run and used to leave the flag stuck.)
+
+    A fresh attempt in flight (``running``) is also exempt: retrying a
+    task should clear the stale failure banner until this attempt also
+    resolves. Otherwise a card that's actively trying again still shows
+    "failed Nx", which reads as a current failure. It re-fires if the new
+    run fails too (status leaves ``running`` with a recorded outcome).
     """
+    if _task_field(task, "status") in ("done", "archived", "running"):
+        return []
     threshold = _positive_int(cfg.get(
         "failure_threshold",
         cfg.get("spawn_failure_threshold", 3),
@@ -657,7 +662,20 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     total failures) so the operator gets a crash-specific heads-up
     before the unified rule kicks in. Suppresses itself when the
     unified rule is also about to fire, to avoid double-flagging.
+
+    Terminal statuses are exempt for the same reason as
+    ``repeated_failures`` — with one extra wrinkle: this rule reads run
+    history, and a manual done (dashboard drag) appends no ``completed``
+    run to break the crash streak, so the flag was permanent (#kanban
+    desktop dogfood). Done means done.
+
+    ``running`` is exempt too: a fresh attempt is in flight, and its
+    in-flight run (no outcome yet) doesn't break the trailing crash scan,
+    so a retried card kept showing "crashed Nx" over an active run. The
+    banner re-fires if the new attempt also crashes.
     """
+    if _task_field(task, "status") in ("done", "archived", "running"):
+        return []
     failure_threshold = int(cfg.get(
         "failure_threshold",
         cfg.get("spawn_failure_threshold", 3),
@@ -779,6 +797,83 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
         last_seen_at=last_blocked_ts,
         count=1,
         data={"blocked_at": last_blocked_ts, "age_hours": round(age_hours, 1)},
+    )]
+
+
+def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Task has cycled through blocked → unblocked many times — the
+    ``unblock`` is not fixing the underlying problem and the worker
+    keeps re-blocking for substantially the same reason.
+
+    ``_rule_stuck_in_blocked`` resets its timer on any ``commented`` /
+    ``unblocked`` event, so a task that cycles every few minutes is
+    invisible to it regardless of how many times it cycles (#29747
+    gap 1). This rule complements that one by counting block→unblock
+    cycles in a sliding window.
+
+    Threshold: cfg["block_cycle_threshold"] (default 3) cycles within
+    cfg["block_cycle_window_seconds"] (default 24h).
+    """
+    threshold = _positive_int(cfg.get("block_cycle_threshold"), 3)
+    window_seconds = float(cfg.get("block_cycle_window_seconds", 24 * 3600))
+    cycle_cutoff = now - window_seconds
+
+    # Walk events chronologically (arrival order — callers pre-sort by
+    # id, which is the canonical chronological order; ``created_at``
+    # alone is insufficient because multiple events can share the same
+    # second).  Count "blocked after unblocked" transitions: every time
+    # a blocked event follows at least one unblocked event since the
+    # last cycle was counted, that's a new cycle.
+    cycles = 0
+    seen_unblock_since_last_cycle = False
+    initial_blocked_ts = 0
+    last_cycle_blocked_ts = 0
+    for ev in events:
+        ts = _event_ts(ev)
+        if ts < cycle_cutoff:
+            continue
+        kind = _event_kind(ev)
+        if kind == "blocked":
+            if initial_blocked_ts == 0:
+                initial_blocked_ts = ts
+            if seen_unblock_since_last_cycle:
+                cycles += 1
+                last_cycle_blocked_ts = ts
+                seen_unblock_since_last_cycle = False
+        elif kind == "unblocked":
+            seen_unblock_since_last_cycle = True
+
+    if cycles < threshold:
+        return []
+
+    task_id = _task_field(task, "id")
+    actions: list[DiagnosticAction] = []
+    if task_id:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Check block reasons: hermes kanban events {task_id}",
+            payload={"command": f"hermes kanban events {task_id}"},
+            suggested=True,
+        ))
+    return [Diagnostic(
+        kind="block_unblock_cycling",
+        severity="warning",
+        title=f"Task block→unblock cycled {cycles}x in {int(window_seconds/3600)}h",
+        detail=(
+            f"This task has been blocked {cycles} times after being "
+            "unblocked, suggesting the unblock is not addressing the "
+            "root cause and the worker keeps hitting the same wall. "
+            "Review the block reasons in the event history; a different "
+            "intervention (reassign, change scope, archive) may be needed."
+        ),
+        actions=actions,
+        first_seen_at=int(initial_blocked_ts) if initial_blocked_ts else int(now),
+        last_seen_at=int(last_cycle_blocked_ts) if last_cycle_blocked_ts else int(now),
+        count=cycles,
+        data={
+            "cycles": cycles,
+            "window_seconds": int(window_seconds),
+        },
     )]
 
 
@@ -914,6 +1009,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
+    _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
 ]
 
@@ -927,6 +1023,7 @@ DIAGNOSTIC_KINDS = (
     "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",
+    "block_unblock_cycling",
     "stranded_in_ready",
 )
 
@@ -1034,16 +1131,3 @@ def compute_task_diagnostics(
         )
     )
     return out
-
-
-def severity_of_highest(diagnostics: Iterable[Diagnostic]) -> Optional[str]:
-    """Highest severity present in the list, or None if empty. Useful
-    for card badges that need a single color."""
-    highest_idx = -1
-    highest = None
-    for d in diagnostics:
-        idx = SEVERITY_ORDER.index(d.severity) if d.severity in SEVERITY_ORDER else -1
-        if idx > highest_idx:
-            highest_idx = idx
-            highest = d.severity
-    return highest

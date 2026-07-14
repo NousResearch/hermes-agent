@@ -1,7 +1,8 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
-from pathlib import Path
+import time
+from typing import List, Optional
 from unittest.mock import patch, MagicMock
 
 import httpx
@@ -15,13 +16,15 @@ from tools.skills_hub import (
     UrlSource,
     WellKnownSkillSource,
     OptionalSkillSource,
-    SkillMeta,
+    SkillSource,
     SkillBundle,
+    SkillMeta,
     HubLockFile,
     TapsManager,
     bundle_content_hash,
     check_for_skill_updates,
     create_source_router,
+    parallel_search_sources,
     unified_search,
     append_audit_log,
     _skill_meta_to_dict,
@@ -72,6 +75,143 @@ class TestParseFrontmatterQuick:
 
 
 # ---------------------------------------------------------------------------
+# GitHubSource skills.sh.json grouping sidecar (category support)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsShGroupings:
+    """Parsing + stamping of the skills.sh.json grouping sidecar.
+
+    A tap can ship a repo-root ``skills.sh.json`` declaring category
+    groupings; we flatten it to {skill_name: title} and stamp the title onto
+    each SkillMeta's ``extra["category"]``. This is the generic cross-ecosystem
+    mechanism behind NVIDIA-style categorization — not NVIDIA-specific.
+    """
+
+    def test_parse_basic_groupings(self):
+        content = json.dumps({
+            "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+            "groupings": [
+                {"title": "Inference AI", "skills": ["dynamo-router", "dynamo-recipe"]},
+                {"title": "Decision Optimization", "skills": ["cuopt-developer"]},
+            ],
+        })
+        mapping = GitHubSource._parse_skillsh_groupings(content)
+        assert mapping == {
+            "dynamo-router": "Inference AI",
+            "dynamo-recipe": "Inference AI",
+            "cuopt-developer": "Decision Optimization",
+        }
+
+    def test_parse_invalid_json_returns_none(self):
+        assert GitHubSource._parse_skillsh_groupings("not json{{") is None
+
+    def test_parse_non_dict_returns_none(self):
+        assert GitHubSource._parse_skillsh_groupings("[1, 2, 3]") is None
+
+    def test_parse_missing_groupings_returns_none(self):
+        assert GitHubSource._parse_skillsh_groupings('{"foo": 1}') is None
+
+    def test_parse_empty_groupings_returns_empty_map(self):
+        assert GitHubSource._parse_skillsh_groupings('{"groupings": []}') == {}
+
+    def test_parse_tolerates_malformed_group(self):
+        # A group missing its skills list is skipped; the valid one survives.
+        content = json.dumps({"groupings": [
+            {"title": "X"},                              # no skills -> skipped
+            {"skills": ["a"]},                           # no title -> skipped
+            {"title": "Y", "skills": ["b", 5, None]},    # only valid string members kept
+        ]})
+        assert GitHubSource._parse_skillsh_groupings(content) == {"b": "Y"}
+
+    def test_parse_first_grouping_wins_on_duplicate(self):
+        content = json.dumps({"groupings": [
+            {"title": "First", "skills": ["dup"]},
+            {"title": "Second", "skills": ["dup"]},
+        ]})
+        assert GitHubSource._parse_skillsh_groupings(content) == {"dup": "First"}
+
+    def test_get_groupings_caches_per_repo(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+        content = json.dumps({"groupings": [{"title": "T", "skills": ["s"]}]})
+        with patch.object(src, "_fetch_file_content", return_value=content) as mock_fetch:
+            first = src._get_skillsh_groupings("acme/skills")
+            second = src._get_skillsh_groupings("acme/skills")
+        assert first == {"s": "T"}
+        assert second == {"s": "T"}
+        # Second call must hit the per-repo cache, not GitHub again.
+        mock_fetch.assert_called_once_with("acme/skills", "skills.sh.json")
+
+    def test_get_groupings_no_sidecar_returns_none_and_caches(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+        with patch.object(src, "_fetch_file_content", return_value=None) as mock_fetch:
+            assert src._get_skillsh_groupings("acme/skills") is None
+            assert src._get_skillsh_groupings("acme/skills") is None
+        mock_fetch.assert_called_once()
+
+    def test_list_skills_stamps_category_from_sidecar(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        meta = SkillMeta(
+            name="cuopt-developer", description="d", source="github",
+            identifier="NVIDIA/skills/skills/cuopt-developer", trust_level="trusted",
+        )
+        contents = [{"type": "dir", "name": "cuopt-developer"}]
+        groupings = {"cuopt-developer": "Decision Optimization"}
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = contents
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=groupings), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch("tools.skills_hub.httpx.get", return_value=resp):
+            skills = src._list_skills_in_repo("NVIDIA/skills", "skills/")
+
+        assert len(skills) == 1
+        assert skills[0].extra["category"] == "Decision Optimization"
+
+    def test_list_skills_no_sidecar_leaves_extra_empty(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        meta = SkillMeta(
+            name="foo", description="d", source="github",
+            identifier="acme/skills/skills/foo", trust_level="community",
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"type": "dir", "name": "foo"}]
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch("tools.skills_hub.httpx.get", return_value=resp):
+            skills = src._list_skills_in_repo("acme/skills", "skills/")
+
+        assert len(skills) == 1
+        assert "category" not in skills[0].extra
+
+    def test_meta_to_dict_roundtrip_preserves_extra(self):
+        meta = SkillMeta(
+            name="x", description="d", source="github",
+            identifier="acme/skills/x", trust_level="trusted",
+            extra={"category": "Inference AI"},
+        )
+        d = GitHubSource._meta_to_dict(meta)
+        assert d["extra"] == {"category": "Inference AI"}
+        # Round-trips back through the cache deserialization path.
+        restored = SkillMeta(**d)
+        assert restored.extra == {"category": "Inference AI"}
+
+
+# ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for
 # ---------------------------------------------------------------------------
 
@@ -102,6 +242,36 @@ class TestTrustLevelFor:
         result = src.trust_level_for("owner/repo")
         # No path part — still resolves repo correctly
         assert result in {"trusted", "community"}
+
+    def test_nvidia_skills_tap_is_registered_and_trusted(self):
+        # Invariant: every trusted repo in TRUSTED_REPOS that we want
+        # browseable/searchable through `hermes skills browse` must also
+        # appear as a default tap on GitHubSource. Without the tap, the
+        # repo's skills don't show up in search results or the docs-site
+        # Skills Hub page even though the trust level is correct.
+        from tools.skills_guard import TRUSTED_REPOS
+
+        assert "NVIDIA/skills" in TRUSTED_REPOS
+        tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
+        assert "NVIDIA/skills" in tap_repos
+
+        src = self._source()
+        assert src.trust_level_for("NVIDIA/skills/aiq-deploy") == "trusted"
+
+    def test_browseable_trusted_repos_have_taps(self):
+        # General invariant covering all current and future trusted repos
+        # that publish under a single `skills/`-style path. openai/skills
+        # is the deliberate exception — it has two taps (`.curated/` and
+        # `.system/`) — so we just assert membership not path equality.
+        from tools.skills_guard import TRUSTED_REPOS
+
+        tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
+        for repo in TRUSTED_REPOS:
+            assert repo in tap_repos, (
+                f"Trusted repo {repo!r} is in TRUSTED_REPOS but missing "
+                "from GitHubSource.DEFAULT_TAPS — its skills will not be "
+                "browsable via `hermes skills browse`."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +641,68 @@ class TestSkillsShSource:
         assert result == "owner/repo/product-team/product-designer"
         requested_urls = [call.args[0] for call in mock_get.call_args_list]
         assert root_url not in requested_urls
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_empty_query_walks_sitemap_not_homepage(
+        self, mock_get, _mock_read_cache, _mock_write_cache,
+    ):
+        """Empty query must walk the full sitemap.
+
+        Regression for skills.sh shipping ~858/20000 skills: the previous
+        empty-query path scraped the homepage's featured strip (~200 entries),
+        and build_skills_index.py supplemented it with 28 popular keyword
+        searches to drag the count to ~850. The sitemap walker hits the
+        full ~20k catalog in one pass.
+        """
+        index_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://www.skills.sh/sitemap-misc.xml</loc></sitemap>
+  <sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap>
+  <sitemap><loc>https://www.skills.sh/sitemap-skills-2.xml</loc></sitemap>
+</sitemapindex>"""
+        skills_1_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.skills.sh/anthropics/skills/frontend-design</loc></url>
+  <url><loc>https://www.skills.sh/anthropics/skills/pdf</loc></url>
+  <url><loc>https://www.skills.sh/vercel-labs/agent-skills/react-best-practices</loc></url>
+</urlset>"""
+        skills_2_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.skills.sh/microsoft/azure-skills/azure-ai</loc></url>
+  <url><loc>https://www.skills.sh/anthropics/skills/frontend-design</loc></url>
+</urlset>"""
+
+        def side_effect(url, *args, **kwargs):
+            resp = MagicMock(status_code=200)
+            if url.endswith("/sitemap.xml"):
+                resp.text = index_xml
+            elif "sitemap-skills-1" in url:
+                resp.text = skills_1_xml
+            elif "sitemap-skills-2" in url:
+                resp.text = skills_2_xml
+            else:
+                resp.status_code = 404
+                resp.text = ""
+            return resp
+
+        mock_get.side_effect = side_effect
+
+        results = self._source().search("", limit=0)
+
+        # 4 unique skills (the frontend-design dup across sitemaps collapsed).
+        assert len(results) == 4
+        identifiers = {r.identifier for r in results}
+        assert identifiers == {
+            "skills-sh/anthropics/skills/frontend-design",
+            "skills-sh/anthropics/skills/pdf",
+            "skills-sh/vercel-labs/agent-skills/react-best-practices",
+            "skills-sh/microsoft/azure-skills/azure-ai",
+        }
+        # Homepage was NOT fetched — the sitemap path is taken on empty query.
+        urls_called = [call.args[0] for call in mock_get.call_args_list]
+        assert not any(u == "https://skills.sh" or u == "https://skills.sh/" for u in urls_called)
 
 
 class TestFindSkillInRepoTree:
@@ -1279,10 +1511,11 @@ class TestUnifiedSearchDedup:
         return src
 
     def test_dedup_keeps_first_seen(self):
+        # Same identifier from two sources — only the first (community) is kept when equal trust.
         s1 = SkillMeta(name="skill", description="from A", source="a",
-                        identifier="a/skill", trust_level="community")
+                        identifier="shared/skill", trust_level="community")
         s2 = SkillMeta(name="skill", description="from B", source="b",
-                        identifier="b/skill", trust_level="community")
+                        identifier="shared/skill", trust_level="community")
         src_a = self._make_source("a", [s1])
         src_b = self._make_source("b", [s2])
         results = unified_search("skill", [src_a, src_b])
@@ -1290,10 +1523,11 @@ class TestUnifiedSearchDedup:
         assert results[0].description == "from A"
 
     def test_dedup_prefers_trusted_over_community(self):
+        # Same identifier — trusted wins over community.
         community = SkillMeta(name="skill", description="community", source="a",
-                               identifier="a/skill", trust_level="community")
+                               identifier="shared/skill", trust_level="community")
         trusted = SkillMeta(name="skill", description="trusted", source="b",
-                             identifier="b/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         src_a = self._make_source("a", [community])
         src_b = self._make_source("b", [trusted])
         results = unified_search("skill", [src_a, src_b])
@@ -1303,9 +1537,9 @@ class TestUnifiedSearchDedup:
     def test_dedup_prefers_builtin_over_trusted(self):
         """Regression: builtin must not be overwritten by trusted."""
         builtin = SkillMeta(name="skill", description="builtin", source="a",
-                             identifier="a/skill", trust_level="builtin")
+                             identifier="shared/skill", trust_level="builtin")
         trusted = SkillMeta(name="skill", description="trusted", source="b",
-                             identifier="b/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         src_a = self._make_source("a", [builtin])
         src_b = self._make_source("b", [trusted])
         results = unified_search("skill", [src_a, src_b])
@@ -1314,13 +1548,30 @@ class TestUnifiedSearchDedup:
 
     def test_dedup_trusted_not_overwritten_by_community(self):
         trusted = SkillMeta(name="skill", description="trusted", source="a",
-                             identifier="a/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         community = SkillMeta(name="skill", description="community", source="b",
-                               identifier="b/skill", trust_level="community")
+                               identifier="shared/skill", trust_level="community")
         src_a = self._make_source("a", [trusted])
         src_b = self._make_source("b", [community])
         results = unified_search("skill", [src_a, src_b])
         assert results[0].trust_level == "trusted"
+
+    def test_browse_sh_same_name_different_site_not_deduped(self):
+        # Browse.sh skills from different hostnames share task names (e.g. "search-listings")
+        # but have unique identifiers. They must NOT be collapsed into one result.
+        airbnb = SkillMeta(
+            name="search-listings", description="Airbnb search", source="browse-sh",
+            identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
+        )
+        booking = SkillMeta(
+            name="search-listings", description="Booking.com search", source="browse-sh",
+            identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
+        )
+        src = self._make_source("browse-sh", [airbnb, booking])
+        results = unified_search("search-listings", [src])
+        assert len(results) == 2, (
+            "browse-sh skills with the same name but different sites must not be deduplicated"
+        )
 
     def test_source_filter(self):
         s1 = SkillMeta(name="s1", description="d", source="a",
@@ -1353,6 +1604,158 @@ class TestUnifiedSearchDedup:
         ])
         results = unified_search("query", [failing, ok])
         assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# GitHub tap provider labeling + index search/filter
+# ---------------------------------------------------------------------------
+
+
+class TestGithubProviderLabeling:
+    def test_provider_for_known_taps_case_insensitive(self):
+        from tools.skills_hub import github_provider_for
+        assert github_provider_for("NVIDIA/skills") == "NVIDIA"
+        assert github_provider_for("nvidia/skills") == "NVIDIA"
+        assert github_provider_for("openai/skills") == "OpenAI"
+        assert github_provider_for("garrytan/gstack") == "gstack"
+
+    def test_provider_for_unknown_repo_is_none(self):
+        from tools.skills_hub import github_provider_for
+        assert github_provider_for("someuser/somerepo") is None
+        assert github_provider_for("") is None
+
+    def test_inspect_stamps_provider_in_extra(self):
+        gs = GitHubSource(auth=GitHubAuth())
+        skill_md = (
+            "---\nname: accelerated-computing-cudf\n"
+            "description: NVIDIA cuDF GPU DataFrames.\n---\n# body\n"
+        )
+        gs._fetch_file_content = lambda repo, path: skill_md
+        meta = gs.inspect("NVIDIA/skills/skills/accelerated-computing-cudf")
+        assert meta is not None
+        # source stays "github" (no churn to dedup/floor/skip logic) ...
+        assert meta.source == "github"
+        # ... but the per-tap provider label rides along in extra
+        assert meta.extra.get("provider") == "NVIDIA"
+
+    def test_inspect_no_provider_for_untapped_repo(self):
+        gs = GitHubSource(auth=GitHubAuth())
+        gs._fetch_file_content = lambda repo, path: (
+            "---\nname: foo\ndescription: bar.\n---\n# b\n"
+        )
+        meta = gs.inspect("someuser/somerepo/skills/foo")
+        assert meta is not None
+        assert "provider" not in meta.extra
+
+
+def _make_index_source(skills):
+    """Build a HermesIndexSource pre-loaded with a fixed skill list."""
+    from tools.skills_hub import HermesIndexSource
+    src = HermesIndexSource(auth=GitHubAuth())
+    src._index = {"skills": skills}
+    src._loaded = True
+    return src
+
+
+class TestHermesIndexSearch:
+    def test_search_matches_identifier_and_provider(self):
+        # NVIDIA skill whose name/description does NOT contain "nvidia" — only
+        # the identifier and the provider label do. The old substring-only
+        # search over name/description/tags would miss it entirely.
+        skills = [
+            {
+                "name": "accelerated-computing-cudf",
+                "description": "GPU DataFrames.",
+                "source": "github",
+                "identifier": "NVIDIA/skills/skills/accelerated-computing-cudf",
+                "tags": [],
+                "extra": {"provider": "NVIDIA"},
+            },
+            {
+                "name": "unrelated",
+                "description": "nothing here",
+                "source": "clawhub",
+                "identifier": "clawhub/unrelated",
+                "tags": [],
+            },
+        ]
+        src = _make_index_source(skills)
+        hits = src.search("nvidia", limit=25)
+        ids = [h.identifier for h in hits]
+        assert "NVIDIA/skills/skills/accelerated-computing-cudf" in ids
+        assert "clawhub/unrelated" not in ids
+
+    def test_search_ranks_exact_name_first(self):
+        skills = [
+            {"name": "z-cuda-helper", "description": "uses cuda", "source": "clawhub",
+             "identifier": "clawhub/z-cuda-helper", "tags": []},
+            {"name": "cuda", "description": "the cuda skill", "source": "github",
+             "identifier": "NVIDIA/skills/skills/cuda", "tags": [],
+             "extra": {"provider": "NVIDIA"}},
+        ]
+        src = _make_index_source(skills)
+        hits = src.search("cuda", limit=25)
+        # exact name match must rank ahead of the substring-in-description match
+        assert hits[0].name == "cuda"
+
+    def test_search_does_not_break_at_limit_arbitrarily(self):
+        # 30 substring matches; with limit=25 we must get the 25 best, and a
+        # higher-relevance name match placed late in index order must survive.
+        skills = [
+            {"name": f"thing-{i}", "description": "mentions cuda", "source": "clawhub",
+             "identifier": f"clawhub/thing-{i}", "tags": []}
+            for i in range(30)
+        ]
+        skills.append(
+            {"name": "cuda", "description": "exact", "source": "github",
+             "identifier": "NVIDIA/skills/skills/cuda", "tags": [],
+             "extra": {"provider": "NVIDIA"}}
+        )
+        src = _make_index_source(skills)
+        hits = src.search("cuda", limit=25)
+        assert len(hits) == 25
+        # The exact-name skill (last in index order) must NOT be dropped.
+        assert any(h.name == "cuda" for h in hits)
+        assert hits[0].name == "cuda"
+
+
+class TestProviderFilter:
+    def test_filter_results_by_provider_narrows_exactly(self):
+        from tools.skills_hub import _filter_results_by_provider
+        results = [
+            SkillMeta(name="a", description="", source="github", identifier="NVIDIA/skills/a",
+                      trust_level="trusted", extra={"provider": "NVIDIA"}),
+            SkillMeta(name="b", description="", source="github", identifier="openai/skills/b",
+                      trust_level="trusted", extra={"provider": "OpenAI"}),
+            SkillMeta(name="c", description="", source="official", identifier="official/c",
+                      trust_level="builtin"),
+        ]
+        nv = _filter_results_by_provider(results, "nvidia")
+        assert [r.identifier for r in nv] == ["NVIDIA/skills/a"]
+        oai = _filter_results_by_provider(results, "openai")
+        assert [r.identifier for r in oai] == ["openai/skills/b"]
+
+    def test_provider_filter_values_match_tap_labels(self):
+        from tools.skills_hub import _PROVIDER_FILTER_VALUES, GITHUB_TAP_PROVIDERS
+        assert _PROVIDER_FILTER_VALUES == frozenset(
+            v.lower() for v in GITHUB_TAP_PROVIDERS.values()
+        )
+
+    def test_unified_search_provider_filter_keeps_index_source(self):
+        # A provider filter must NOT be treated as a real source id (which would
+        # exclude every source and return nothing). It selects sources like
+        # "all", then narrows the merged results by provider.
+        nv = SkillMeta(name="cuda", description="gpu", source="github",
+                       identifier="NVIDIA/skills/cuda", trust_level="trusted",
+                       extra={"provider": "NVIDIA"})
+        other = SkillMeta(name="cuda-clone", description="gpu", source="clawhub",
+                          identifier="clawhub/cuda-clone", trust_level="community")
+        src = MagicMock()
+        src.source_id.return_value = "hermes-index"
+        src.is_available = True
+        src.search.return_value = [nv, other]
+        results = unified_search("cuda", [src], source_filter="nvidia", limit=25)
+        assert [r.identifier for r in results] == ["NVIDIA/skills/cuda"]
 
 
 # ---------------------------------------------------------------------------
@@ -1413,6 +1816,26 @@ class TestSkillMetaToDict:
 # ---------------------------------------------------------------------------
 
 
+class TestOptionalSkillSourceMetadata:
+    def test_scan_all_emits_repo_root_relative_metadata(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "finance" / "3-statement-model"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: 3-statement-model\ndescription: test\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        meta = src.inspect("official/finance/3-statement-model")
+
+        assert meta is not None
+        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.path == "optional-skills/finance/3-statement-model"
+
+
 class TestOptionalSkillSourceBinaryAssets:
     def test_fetch_preserves_binary_assets(self, tmp_path):
         optional_root = tmp_path / "optional-skills"
@@ -1442,6 +1865,23 @@ class TestOptionalSkillSourceBinaryAssets:
         assert bundle.files["assets/neutts-cli/samples/jo.wav"] == wav_bytes
         assert bundle.files["assets/neutts-cli/samples/jo.txt"] == b"hello\n"
         assert "assets/neutts-cli/src/neutts_cli/__pycache__/cli.cpython-312.pyc" not in bundle.files
+
+    def test_fetch_rejects_sibling_directory_traversal(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        sibling_skill_dir = tmp_path / "optional-skills-escape" / "pwned"
+        optional_root.mkdir()
+        sibling_skill_dir.mkdir(parents=True)
+        (sibling_skill_dir / "SKILL.md").write_text(
+            "---\nname: pwned\ndescription: traversal\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        bundle = src.fetch("official/../optional-skills-escape/pwned")
+
+        assert bundle is None
 
 
 class TestQuarantineBundleBinaryAssets:
@@ -1674,3 +2114,460 @@ class TestDownloadDirectoryRecursive:
 
         assert "SKILL.md" in files
         assert "scripts/run.py" not in files  # lost due to rate limit
+
+
+# ---------------------------------------------------------------------------
+# Install-path safety (lock-file → uninstall rmtree boundary)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallPathSafety:
+    """Guard the lock-file → ``uninstall_skill`` rmtree path.
+
+    The destructive boundary is ``shutil.rmtree(SKILLS_DIR / install_path)``.
+    Lock-file ``install_path`` values that are absolute, contain ``..``,
+    point at the skills root itself, or are redirected via a symlink/junction
+    inside ``skills/`` must be rejected before they reach rmtree.
+    """
+
+    @pytest.fixture
+    def isolated_skills_dir(self, tmp_path, monkeypatch):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        monkeypatch.setattr("tools.skills_hub.SKILLS_DIR", skills_dir)
+        return skills_dir
+
+    @pytest.fixture
+    def patch_lock_file(self, monkeypatch):
+        """Redirect HubLockFile's default path to a test-controlled file.
+
+        HubLockFile.__init__ captures LOCK_FILE as a default arg at class
+        definition time, so monkeypatching the module-level LOCK_FILE doesn't
+        affect later HubLockFile() calls. Patch __defaults__ instead.
+        """
+        def _apply(lock_path):
+            monkeypatch.setattr(HubLockFile.__init__, "__defaults__", (lock_path,))
+        return _apply
+
+    @pytest.mark.parametrize(
+        "bad_install_path",
+        [
+            "",
+            ".",
+            "..",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "skills/../../tmp",
+            "C:/Windows/System32",
+        ],
+    )
+    def test_record_install_rejects_unsafe_paths(self, tmp_path, bad_install_path):
+        """record_install must reject malformed install_path values at write time."""
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        with pytest.raises(ValueError, match="Unsafe"):
+            lock.record_install(
+                name="evil",
+                source="github",
+                identifier="x",
+                trust_level="trusted",
+                scan_verdict="pass",
+                skill_hash="h1",
+                install_path=bad_install_path,
+                files=["SKILL.md"],
+            )
+
+    def test_record_install_rejects_mismatched_last_component(self, tmp_path):
+        """The final component of install_path MUST equal the skill name."""
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        with pytest.raises(ValueError, match="Unsafe install path"):
+            lock.record_install(
+                name="legit-skill",
+                source="github",
+                identifier="x",
+                trust_level="trusted",
+                scan_verdict="pass",
+                skill_hash="h1",
+                install_path="legit-skill/evil-suffix",
+                files=["SKILL.md"],
+            )
+
+    def test_record_install_accepts_bare_name(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="good", source="github", identifier="x",
+            trust_level="trusted", scan_verdict="pass",
+            skill_hash="h", install_path="good", files=["SKILL.md"],
+        )
+        assert lock.get_installed("good")["install_path"] == "good"
+
+    def test_record_install_accepts_category_and_name(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="good", source="github", identifier="x",
+            trust_level="trusted", scan_verdict="pass",
+            skill_hash="h", install_path="devops/good", files=["SKILL.md"],
+        )
+        assert lock.get_installed("good")["install_path"] == "devops/good"
+
+    def test_record_install_accepts_nested_official_skill_path(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="trl-fine-tuning", source="official",
+            identifier="official/mlops/training/trl-fine-tuning",
+            trust_level="builtin", scan_verdict="pass",
+            skill_hash="h", install_path="mlops/training/trl-fine-tuning",
+            files=["SKILL.md"],
+        )
+        entry = lock.get_installed("trl-fine-tuning")
+        assert entry is not None
+        assert entry["install_path"] == "mlops/training/trl-fine-tuning"
+
+    def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        """Hand-edited lock.json with absolute install_path must not delete anything."""
+        from tools.skills_hub import uninstall_skill
+
+        lock_path = tmp_path / "lock.json"
+        target = tmp_path / "victim"
+        target.mkdir()
+        (target / "file.txt").write_text("important")
+
+        # Bypass record_install's validator to simulate a poisoned lock file.
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "evil": {
+                    "source": "github",
+                    "identifier": "x",
+                    "trust_level": "trusted",
+                    "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": str(target),
+                    "files": [],
+                    "metadata": {},
+                    "installed_at": "now",
+                    "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        ok, msg = uninstall_skill("evil")
+        assert ok is False
+        assert "Unsafe" in msg or "Refusing" in msg
+        assert target.exists()
+        assert (target / "file.txt").read_text() == "important"
+
+    def test_uninstall_rejects_traversal(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        from tools.skills_hub import uninstall_skill
+
+        lock_path = tmp_path / "lock.json"
+        sibling = tmp_path / "sibling"
+        sibling.mkdir()
+        (sibling / "data").write_text("nope")
+
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "evil": {
+                    "source": "github", "identifier": "x",
+                    "trust_level": "trusted", "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": "../sibling",
+                    "files": [], "metadata": {},
+                    "installed_at": "now", "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        ok, msg = uninstall_skill("evil")
+        assert ok is False
+        assert sibling.exists()
+        assert (sibling / "data").read_text() == "nope"
+
+    def test_uninstall_rejects_empty_install_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        """Empty install_path resolves to SKILLS_DIR itself — must be refused."""
+        from tools.skills_hub import uninstall_skill
+
+        # Put a sibling skill alongside to prove rmtree doesn't fire.
+        (isolated_skills_dir / "bystander").mkdir()
+        (isolated_skills_dir / "bystander" / "SKILL.md").write_text("safe")
+
+        lock_path = tmp_path / "lock.json"
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "evil": {
+                    "source": "github", "identifier": "x",
+                    "trust_level": "trusted", "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": "",
+                    "files": [], "metadata": {},
+                    "installed_at": "now", "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        ok, msg = uninstall_skill("evil")
+        assert ok is False
+        assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
+
+    def test_uninstall_rejects_symlink_redirect_inside_skills(
+        self, tmp_path, isolated_skills_dir, patch_lock_file
+    ):
+        """A symlinked skill dir that points outside skills/ must not be followed."""
+        from tools.skills_hub import uninstall_skill
+
+        # Outside-tree victim
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "important").write_text("don't delete me")
+
+        # Symlink in skills/ pointing to the victim
+        link = isolated_skills_dir / "evil"
+        try:
+            link.symlink_to(victim, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation unsupported on this platform")
+
+        lock_path = tmp_path / "lock.json"
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "evil": {
+                    "source": "github", "identifier": "x",
+                    "trust_level": "trusted", "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": "evil",
+                    "files": [], "metadata": {},
+                    "installed_at": "now", "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        ok, msg = uninstall_skill("evil")
+        assert ok is False
+        assert victim.exists()
+        assert (victim / "important").read_text() == "don't delete me"
+
+    def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
+        """Skill install must not follow symlinks that leak file contents
+        from outside the quarantine directory."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: bad-skill\n---\n")
+
+        secret = tmp_path / "secret.txt"
+        secret.write_text("data exfiltration payload\n")
+
+        leak = q_dir / "leak.txt"
+        try:
+            leak.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation unsupported on this platform")
+
+        bundle = hub.SkillBundle(
+            name="bad-skill",
+            files={"SKILL.md": "---\nname: bad-skill\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="bad-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="symlink"):
+                hub.install_from_quarantine(
+                    q_dir, "bad-skill", "", bundle, scan_result,
+                )
+
+        assert not (skills_dir / "bad-skill" / "leak.txt").exists()
+        assert secret.read_text() == "data exfiltration payload\n"
+
+
+# ---------------------------------------------------------------------------
+# parallel_search_sources — overall_timeout must be honoured even when a
+# source blocks for far longer than the budget (regression: the executor used
+# `with ... as pool`, whose __exit__ calls shutdown(wait=True) and blocked the
+# caller on the slow worker, making overall_timeout a no-op).
+# ---------------------------------------------------------------------------
+
+
+class _FakeSource(SkillSource):
+    def __init__(self, sid: str, sleep: float = 0.0, results=None):
+        self._sid = sid
+        self._sleep = sleep
+        self._results = results or []
+
+    def source_id(self) -> str:
+        return self._sid
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        if self._sleep:
+            time.sleep(self._sleep)
+        return list(self._results)
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        return None
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        return None
+
+
+class TestParallelSearchSourcesTimeout:
+    def _meta(self, sid: str) -> SkillMeta:
+        return SkillMeta(
+            name=f"{sid}-skill",
+            description="x",
+            source=sid,
+            identifier=f"{sid}/x",
+            trust_level="community",
+        )
+
+    def test_slow_source_does_not_block_caller(self):
+        """A source sleeping well past overall_timeout must not stall the
+        return. Before the fix the executor's `with` block waited on the slow
+        worker (~5s); now the call returns promptly and reports the source as
+        timed out."""
+        fast = _FakeSource("fast", sleep=0.0, results=[self._meta("fast")])
+        slow = _FakeSource("slow", sleep=5.0, results=[self._meta("slow")])
+
+        start = time.monotonic()
+        all_results, source_counts, timed_out_ids = parallel_search_sources(
+            [fast, slow], query="q", overall_timeout=0.3,
+        )
+        elapsed = time.monotonic() - start
+
+        # Must return long before the slow source's 5s sleep finishes.
+        assert elapsed < 2.0, f"call blocked for {elapsed:.2f}s (timeout not honoured)"
+        assert "slow" in timed_out_ids
+        # Fast source still delivered its result and is not flagged timed out.
+        assert source_counts.get("fast") == 1
+        assert "fast" not in timed_out_ids
+        assert any(r.source == "fast" for r in all_results)
+
+    def test_all_fast_sources_complete_without_timeout(self):
+        """Happy path: when every source finishes within budget, none are
+        flagged and all results are collected."""
+        a = _FakeSource("a", results=[self._meta("a")])
+        b = _FakeSource("b", results=[self._meta("b")])
+
+        all_results, source_counts, timed_out_ids = parallel_search_sources(
+            [a, b], query="q", overall_timeout=5.0,
+        )
+
+        assert timed_out_ids == []
+        assert source_counts.get("a") == 1
+        assert source_counts.get("b") == 1
+        assert len(all_results) == 2
+
+
+# ---------------------------------------------------------------------------
+# _load_hermes_index — centralized index fetch (Browse-hub landing / search)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadHermesIndex:
+    """Regression coverage for the Skills-Hub index fetch.
+
+    The centralized index is a large body served with Content-Encoding: br.
+    httpx's streaming Brotli decoder (brotlicffi 1.2.0.1, pinned for Discord
+    attachment decoding) raises DecodingError on payloads this size, which
+    used to cascade into a silently-empty Skills Hub. The fetch must therefore
+    (a) not ask for Brotli, and (b) survive a DecodingError by retrying
+    uncompressed instead of blanking the hub.
+    """
+
+    @staticmethod
+    def _isolate_cache(monkeypatch, tmp_path):
+        """Point the on-disk cache at an empty tmp dir so no real cache leaks in."""
+        import tools.skills_hub as hub
+
+        cache_file = tmp_path / "hermes-index.json"
+        monkeypatch.setattr(hub, "_hermes_index_cache_file", lambda: cache_file)
+        return cache_file
+
+    def test_fetch_does_not_request_brotli(self, monkeypatch, tmp_path):
+        """The index fetch must not negotiate Brotli (the broken decoder path)."""
+        import tools.skills_hub as hub
+
+        self._isolate_cache(monkeypatch, tmp_path)
+
+        captured = {}
+
+        def fake_get(url, *args, **kwargs):
+            captured["headers"] = kwargs.get("headers", {})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"skills": [{"name": "x"}]}
+            return resp
+
+        monkeypatch.setattr(hub.httpx, "get", fake_get)
+
+        data = hub._load_hermes_index()
+        assert data == {"skills": [{"name": "x"}]}
+
+        accept = captured["headers"].get("Accept-Encoding", "")
+        assert "br" not in [tok.strip() for tok in accept.split(",")], (
+            f"index fetch must not request Brotli, got Accept-Encoding={accept!r}"
+        )
+
+    def test_decoding_error_retries_uncompressed(self, monkeypatch, tmp_path):
+        """A DecodingError on the first attempt retries with identity, not a blank hub."""
+        import tools.skills_hub as hub
+
+        self._isolate_cache(monkeypatch, tmp_path)
+
+        attempts = []
+
+        def fake_get(url, *args, **kwargs):
+            enc = kwargs.get("headers", {}).get("Accept-Encoding", "")
+            attempts.append(enc)
+            if len(attempts) == 1:
+                raise httpx.DecodingError("brotli: decoder process called with data")
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"skills": [{"name": "recovered"}]}
+            return resp
+
+        monkeypatch.setattr(hub.httpx, "get", fake_get)
+
+        data = hub._load_hermes_index()
+        assert data == {"skills": [{"name": "recovered"}]}
+        assert len(attempts) == 2, "should retry once after a DecodingError"
+        # The retry must be uncompressed (identity) so a Brotli-ignoring proxy
+        # can't fail the same way twice.
+        assert attempts[1].strip() == "identity"
+
+    def test_persistent_decoding_error_falls_back_to_stale_cache(
+        self, monkeypatch, tmp_path
+    ):
+        """If every attempt fails to decode, serve the stale cache rather than None."""
+        import tools.skills_hub as hub
+
+        cache_file = self._isolate_cache(monkeypatch, tmp_path)
+        cache_file.write_text(json.dumps({"skills": [{"name": "stale"}]}))
+        # Force the cache to look expired so the network path runs.
+        old = time.time() - (hub.HERMES_INDEX_TTL + 100)
+        import os
+
+        os.utime(cache_file, (old, old))
+
+        def fake_get(url, *args, **kwargs):
+            raise httpx.DecodingError("brotli boom")
+
+        monkeypatch.setattr(hub.httpx, "get", fake_get)
+
+        data = hub._load_hermes_index()
+        assert data == {"skills": [{"name": "stale"}]}

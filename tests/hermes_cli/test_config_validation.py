@@ -1,6 +1,5 @@
 """Tests for config.yaml structure validation (validate_config_structure)."""
 
-import pytest
 
 from hermes_cli.config import validate_config_structure, ConfigIssue
 

@@ -74,7 +74,7 @@ _POLISHED_TOOLS = {
     "kanban_create", "kanban_show", "kanban_comment", "kanban_complete",
     "kanban_block", "kanban_link", "kanban_heartbeat",
     "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
-    "yb_send_dm", "yb_send_sticker", "mixture_of_agents",
+    "yb_send_dm", "yb_send_sticker",
 }
 
 
@@ -110,7 +110,12 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
+            first = urls[0]
+            if isinstance(first, dict):
+                first = first.get("url") or first.get("href") or "?"
+            elif not isinstance(first, str):
+                first = "?"
+            return f"extract: {first}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
         return "web extract"
     if tool_name == "process":
         action = str(args.get("action") or "").strip() or "manage"
@@ -202,6 +207,44 @@ def _json_loads_maybe(value: Optional[str]) -> Any:
         return None
 
 
+def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> bool:
+    """Return True when a structured Hermes tool result clearly failed.
+
+    Keep this deliberately conservative. Plain text can contain words like
+    "error" because tests failed or a command printed diagnostics; Zed should
+    only receive ACP failed status for structured tool-level failures.
+    """
+    # Raised exceptions from the agent's tool executor get wrapped in a
+    # canonical "Error executing tool '<name>': ..." prefix (see
+    # agent/tool_executor.py around the try/except). That prefix is uniquely
+    # produced by the wrapper itself — it cannot legitimately appear in
+    # well-behaved tool output. Catch it so a tool that blew up shows as
+    # failed in Zed instead of misleadingly green.
+    if isinstance(result, str) and result.startswith("Error executing tool '"):
+        return True
+
+    data = _json_loads_maybe(result)
+    if not isinstance(data, dict):
+        return False
+
+    for key in ("success", "ok"):
+        if data.get(key) is False:
+            return True
+
+    exit_code = data.get("exit_code", data.get("returncode"))
+    if isinstance(exit_code, int) and exit_code != 0:
+        return True
+
+    # Hermes core/polished tools commonly report tool-level failures as a
+    # structured {"error": "..."} payload without an explicit success flag.
+    # Keep generic plugin/unknown tool payloads conservative to avoid marking
+    # optional diagnostic messages as failed.
+    if tool_name in _POLISHED_TOOLS and data.get("error") and not data.get("content"):
+        return True
+
+    return False
+
+
 def _truncate_text(text: str, limit: int = 5000) -> str:
     if len(text) <= limit:
         return text
@@ -278,6 +321,26 @@ def _format_search_files_result(result: Optional[str]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
+
+    files = data.get("files")
+    if isinstance(files, list):
+        total = data.get("total_count", len(files))
+        shown = min(len(files), 20)
+        truncated = bool(data.get("truncated")) or len(files) > shown
+        lines = [
+            "File search results",
+            f"Found {total} file{'s' if total != 1 else ''}; showing {shown}.",
+            "",
+        ]
+        for path in files[:shown]:
+            lines.append(f"- {path}")
+        if truncated:
+            lines.extend([
+                "",
+                "Results truncated. Narrow the search, add path/file_glob, or use offset to page.",
+            ])
+        return _truncate_text("\n".join(lines), limit=7000)
+
     matches = data.get("matches")
     if not isinstance(matches, list):
         return None
@@ -559,7 +622,7 @@ def _format_session_search_result(result: Optional[str]) -> Optional[str]:
         return None
     mode = data.get("mode") or "search"
     query = data.get("query")
-    lines = ["Recent sessions" if mode == "recent" else f"Session search results" + (f" for `{query}`" if query else "")]
+    lines = ["Recent sessions" if mode == "recent" else "Session search results" + (f" for `{query}`" if query else "")]
     if not results:
         lines.append(str(data.get("message") or "No matching sessions found."))
         return "\n".join(lines)
@@ -668,14 +731,114 @@ def _format_media_or_cron_result(tool_name: str, result: Optional[str]) -> Optio
     return "\n".join(lines)
 
 
-def _format_generic_structured_result(tool_name: str, result: Optional[str]) -> Optional[str]:
+def _format_structured_value(
+    key: str,
+    value: Any,
+    *,
+    indent: int = 0,
+    max_depth: int = 3,
+    max_items: int = 8,
+) -> List[str]:
+    """Render nested JSON-ish values as compact Markdown bullets, not inline blobs."""
+    prefix = "  " * indent
+    bullet = f"{prefix}- "
+    label = f"**{key}:**" if key else ""
+
+    if value in (None, "", [], {}):
+        return []
+
+    if max_depth <= 0:
+        if isinstance(value, (dict, list)):
+            preview = json.dumps(value, ensure_ascii=False, default=str)
+        else:
+            preview = str(value)
+        return [f"{bullet}{label} {_truncate_text(preview, limit=240)}" if label else f"{bullet}{_truncate_text(preview, limit=240)}"]
+
+    if isinstance(value, dict):
+        lines = [f"{bullet}{label}" if label else f"{bullet}{len(value)} fields"]
+        shown = 0
+        for child_key, child_value in value.items():
+            if child_value in (None, "", [], {}):
+                continue
+            lines.extend(
+                _format_structured_value(
+                    str(child_key),
+                    child_value,
+                    indent=indent + 1,
+                    max_depth=max_depth - 1,
+                    max_items=max_items,
+                )
+            )
+            shown += 1
+            if shown >= max_items:
+                remaining = max(0, len(value) - shown)
+                if remaining:
+                    lines.append(f"{'  ' * (indent + 1)}- ... {remaining} more fields")
+                break
+        return lines
+
+    if isinstance(value, list):
+        lines = [f"{bullet}{label} {len(value)} item{'s' if len(value) != 1 else ''}" if label else f"{bullet}{len(value)} item{'s' if len(value) != 1 else ''}"]
+        for idx, item in enumerate(value[:max_items], 1):
+            if isinstance(item, dict):
+                headline = str(item.get("content") or item.get("message") or item.get("title") or item.get("name") or item.get("id") or "").strip()
+                if headline:
+                    lines.append(f"{'  ' * (indent + 1)}{idx}. {_truncate_text(headline, limit=220)}")
+                    for child_key in ("id", "status", "type", "scope", "quality_score", "score", "path", "url"):
+                        child_value = item.get(child_key)
+                        if child_value not in (None, "", [], {}):
+                            lines.append(f"{'  ' * (indent + 2)}- **{child_key}:** {_truncate_text(str(child_value), limit=180)}")
+                else:
+                    lines.append(f"{'  ' * (indent + 1)}{idx}.")
+                    for child_key, child_value in list(item.items())[:max_items]:
+                        lines.extend(
+                            _format_structured_value(
+                                str(child_key),
+                                child_value,
+                                indent=indent + 2,
+                                max_depth=max_depth - 1,
+                                max_items=max_items,
+                            )
+                        )
+            elif isinstance(item, list):
+                lines.append(f"{'  ' * (indent + 1)}{idx}. {len(item)} items")
+                for nested in item[:max_items]:
+                    lines.extend(
+                        _format_structured_value(
+                            "",
+                            nested,
+                            indent=indent + 2,
+                            max_depth=max_depth - 1,
+                            max_items=max_items,
+                        )
+                    )
+            else:
+                lines.append(f"{'  ' * (indent + 1)}{idx}. {_truncate_text(str(item), limit=240)}")
+        if len(value) > max_items:
+            lines.append(f"{'  ' * (indent + 1)}... {len(value) - max_items} more items")
+        return lines
+
+    return [f"{bullet}{label} {_truncate_text(str(value), limit=500)}" if label else f"{bullet}{_truncate_text(str(value), limit=500)}"]
+
+
+def _format_generic_structured_result(
+    tool_name: str,
+    result: Optional[str],
+    *,
+    fallback_to_text: bool = True,
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, (dict, list)):
-        return result if isinstance(result, str) and result.strip() else None
+        return result if fallback_to_text and isinstance(result, str) and result.strip() else None
     if isinstance(data, list):
         lines = [f"{tool_name}: {len(data)} item{'s' if len(data) != 1 else ''}"]
         for item in data[:12]:
-            lines.append(f"- {_truncate_text(str(item), limit=240)}")
+            if isinstance(item, (dict, list)):
+                lines.extend(_format_structured_value("", item, indent=0, max_depth=2, max_items=6))
+            else:
+                lines.append(f"- {_truncate_text(str(item), limit=240)}")
+        if len(data) > 12:
+            lines.append(f"... {len(data) - 12} more items")
         return _truncate_text("\n".join(lines), limit=5000)
 
     if data.get("success") is False or data.get("error"):
@@ -699,12 +862,9 @@ def _format_generic_structured_result(tool_name: str, result: Optional[str]) -> 
             continue
         if value in (None, "", [], {}):
             continue
-        if isinstance(value, (dict, list)):
-            preview = json.dumps(value, ensure_ascii=False, default=str)
-        else:
-            preview = str(value)
-        lines.append(f"- **{key}:** {_truncate_text(preview, limit=500)}")
-        if len(lines) >= 14:
+        lines.extend(_format_structured_value(str(key), value, indent=0, max_depth=3, max_items=8))
+        if len(lines) >= 40:
+            lines.append("- ... more fields truncated")
             break
 
     content = data.get("content")
@@ -744,77 +904,12 @@ def _build_polished_completion_content(
     if formatter is None and tool_name in _POLISHED_TOOLS:
         formatter = lambda: _format_generic_structured_result(tool_name, result)
     if formatter is None:
-        return None
-    text = formatter()
+        text = _format_generic_structured_result(tool_name, result, fallback_to_text=False)
+    else:
+        text = formatter()
     if not text:
         return None
     return [_text(text)]
-
-
-def _build_patch_mode_content(patch_text: str) -> List[Any]:
-    """Parse V4A patch mode input into ACP diff blocks when possible."""
-    if not patch_text:
-        return [acp.tool_content(acp.text_block(""))]
-
-    try:
-        from tools.patch_parser import OperationType, parse_v4a_patch
-
-        operations, error = parse_v4a_patch(patch_text)
-        if error or not operations:
-            return [acp.tool_content(acp.text_block(patch_text))]
-
-        content: List[Any] = []
-        for op in operations:
-            if op.operation == OperationType.UPDATE:
-                old_chunks: list[str] = []
-                new_chunks: list[str] = []
-                for hunk in op.hunks:
-                    old_lines = [line.content for line in hunk.lines if line.prefix in {" ", "-"}]
-                    new_lines = [line.content for line in hunk.lines if line.prefix in {" ", "+"}]
-                    if old_lines or new_lines:
-                        old_chunks.append("\n".join(old_lines))
-                        new_chunks.append("\n".join(new_lines))
-
-                old_text = "\n...\n".join(chunk for chunk in old_chunks if chunk)
-                new_text = "\n...\n".join(chunk for chunk in new_chunks if chunk)
-                if old_text or new_text:
-                    content.append(
-                        acp.tool_diff_content(
-                            path=op.file_path,
-                            old_text=old_text or None,
-                            new_text=new_text or "",
-                        )
-                    )
-                continue
-
-            if op.operation == OperationType.ADD:
-                added_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == "+"]
-                content.append(
-                    acp.tool_diff_content(
-                        path=op.file_path,
-                        new_text="\n".join(added_lines),
-                    )
-                )
-                continue
-
-            if op.operation == OperationType.DELETE:
-                content.append(
-                    acp.tool_diff_content(
-                        path=op.file_path,
-                        old_text=f"Delete file: {op.file_path}",
-                        new_text="",
-                    )
-                )
-                continue
-
-            if op.operation == OperationType.MOVE:
-                content.append(
-                    acp.tool_content(acp.text_block(f"Move file: {op.file_path} -> {op.new_path}"))
-                )
-
-        return content or [acp.tool_content(acp.text_block(patch_text))]
-    except Exception:
-        return [acp.tool_content(acp.text_block(patch_text))]
 
 
 def _strip_diff_prefix(path: str) -> str:
@@ -1135,6 +1230,11 @@ def build_tool_start(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
+    if not arguments:
+        return acp.start_tool_call(
+            tool_call_id, title, kind=kind, content=None, locations=locations, raw_input=None,
+        )
+
     # Generic fallback
     try:
         args_text = json.dumps(arguments, indent=2, default=str)
@@ -1145,6 +1245,10 @@ def build_tool_start(
         tool_call_id, title, kind=kind, content=content, locations=locations,
         raw_input=None if tool_name in _POLISHED_TOOLS else arguments,
     )
+
+
+def _is_structured_json_result(result: Optional[str]) -> bool:
+    return isinstance(_json_loads_maybe(result), (dict, list))
 
 
 def build_tool_complete(
@@ -1169,9 +1273,9 @@ def build_tool_complete(
     return acp.update_tool_call(
         tool_call_id,
         kind=kind,
-        status="completed",
+        status="failed" if _tool_result_failed(result, tool_name) else "completed",
         content=content,
-        raw_output=None if tool_name in _POLISHED_TOOLS else result,
+        raw_output=None if tool_name in _POLISHED_TOOLS or _is_structured_json_result(result) else result,
     )
 
 

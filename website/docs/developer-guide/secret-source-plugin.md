@@ -12,6 +12,20 @@ Secret sources resolve provider credentials from an external secret manager (a v
 The bundled set is deliberately closed, same policy as [memory providers](/developer-guide/memory-provider-plugin): PRs adding new vault backends under `agent/secret_sources/` are closed with a pointer to this guide. Publish your backend as a standalone plugin repo and share it in the Nous Research Discord (`#plugins-skills-and-skins`).
 :::
 
+## First-process bootstrap timing
+
+`load_hermes_dotenv()` often runs at import time **before** plugins register.
+Hermes then re-pulls secrets after plugin discovery when any **enabled**
+plugin secret source is configured (`secrets.<name>.enabled: true`). That
+closes the "replace Bitwarden with my vault" first-process gap (#64177).
+
+- Re-pull is idempotent and fail-open (never blocks startup).
+- Sources only supply env vars through the orchestrator; there is **no**
+  plugin API to dump other plugins' or the user's entire secret store beyond
+  what your source's own config allows.
+- Reading `os.environ` after load is possible for any in-process code — the
+  trust boundary remains "enabled plugins run with agent privilege".
+
 ## What the framework owns vs. what you own
 
 The orchestrator (`agent.secret_sources.registry.apply_all`) owns everything security- and precedence-sensitive, so a backend cannot get it wrong:

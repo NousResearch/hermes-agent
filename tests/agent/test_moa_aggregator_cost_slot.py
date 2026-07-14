@@ -98,3 +98,39 @@ def test_client_exposes_last_aggregator_slot(moa_config, monkeypatch):
     assert slot is not None
     assert slot["model"] == "anthropic/claude-opus-4.8"
     assert slot["provider"] == "openrouter"
+
+
+def test_reference_pricing_calls_preserve_each_advisor_route(moa_config, monkeypatch):
+    """Blackbox can retrieve physical advisor usage without repricing it as MoA."""
+    from agent.moa_loop import MoAClient
+
+    def fake_call_llm(**kwargs):
+        response = _response(
+            "acted" if kwargs.get("task") != "moa_reference" else "advice"
+        )
+        response.usage = SimpleNamespace(
+            prompt_tokens=1000,
+            completion_tokens=100,
+            total_tokens=1100,
+        )
+        return response
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    client = MoAClient("closed")
+    client.chat.completions.create(
+        model="closed",
+        messages=[{"role": "user", "content": "clean the db"}],
+    )
+
+    calls = client.consume_reference_pricing_calls()
+    assert [c["model"] for c in calls] == [
+        "anthropic/claude-opus-4.8",
+        "openai/gpt-5.5",
+    ]
+    assert [c["provider"] for c in calls] == ["openrouter", "openrouter"]
+    assert [c["input_tokens"] for c in calls] == [1000, 1000]
+    assert [c["output_tokens"] for c in calls] == [100, 100]
+
+    # Consume-once matches consume_reference_usage: cached tool iterations do
+    # not multiply advisor billing rows.
+    assert client.consume_reference_pricing_calls() == []

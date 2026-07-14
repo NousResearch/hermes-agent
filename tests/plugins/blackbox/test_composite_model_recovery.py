@@ -133,6 +133,26 @@ def test_build_record_writes_the_split_pair():
     assert rec.provider == "claude-api-proxy-f6"
 
 
+def test_build_record_names_virtual_moa_preset_explicitly():
+    """Spend-by-model must not show the ambiguous bare model name ``default``."""
+    rec = bb._build_record(
+        session_id="moa-session",
+        interrupted=False,
+        model="default",
+        platform="cli",
+        provider="moa",
+        user_message="ping",
+        final_response="pong",
+        turn_usage={"api_calls": 1, "input_tokens": 0, "output_tokens": 0,
+                    "calls": []},
+        cfg={"store_text": False},
+        kwargs={},
+    )
+    assert rec is not None
+    assert rec.model == "moa/default"
+    assert rec.provider == "moa"
+
+
 if __name__ == "__main__":  # pragma: no cover
     import pytest
 

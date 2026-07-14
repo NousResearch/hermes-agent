@@ -274,6 +274,12 @@ def _build_record(
     # perturb live inference/prompt-caching; also feeds the corrected provider to
     # cost pricing below so the row prices on the right route.
     provider, model = _recover_provider_from_model(model, provider)
+    # MoA's model is a virtual PRESET name, not an unnamed physical model. Keep
+    # the raw provider column and make that identity explicit in Spend-by-model.
+    if str(provider or "").strip().lower() == "moa" and model:
+        model_text = str(model).strip()
+        if model_text and not model_text.lower().startswith("moa/"):
+            model = f"moa/{model_text}"
 
     now = time.time()
     state = _session_state(session_id)

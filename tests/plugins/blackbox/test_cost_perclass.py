@@ -83,6 +83,85 @@ def test_partial_turn_withholds_split(monkeypatch):
     assert all(perclass[k] is None for k in _PERCLASS_KEYS)
 
 
+def test_nested_moa_pricing_calls_use_each_physical_model_route(monkeypatch):
+    """A logical MoA iteration is billed as its advisor + aggregator calls.
+
+    The outer model/provider are the virtual preset (``moa/default``), which is
+    intentionally unpriceable. Blackbox must descend into ``pricing_calls``
+    and price every physical call at that call's own route instead.
+    """
+    seen = []
+
+    def fake_estimate(model, usage, *, provider=None, base_url=None):
+        seen.append((model, provider, base_url, usage.input_tokens, usage.output_tokens))
+        amount = Decimal("0.01") if model == "advisor-model" else Decimal("0.02")
+        return CostResult(
+            amount_usd=amount,
+            status="estimated",
+            source="official_docs_snapshot",
+            label=f"~${amount}",
+            cost_input_usd=amount,
+            cost_output_usd=Decimal("0"),
+            cost_cache_read_usd=Decimal("0"),
+            cost_cache_write_usd=Decimal("0"),
+        )
+
+    monkeypatch.setattr(cost_mod, "estimate_usage_cost", fake_estimate)
+    calls = [{
+        "input_tokens": 130,
+        "output_tokens": 30,
+        "pricing_calls": [
+            {
+                "model": "advisor-model", "provider": "advisor-provider",
+                "base_url": "https://advisor.invalid", "input_tokens": 100,
+                "output_tokens": 10,
+            },
+            {
+                "model": "aggregator-model", "provider": "aggregator-provider",
+                "base_url": "https://aggregator.invalid", "input_tokens": 30,
+                "output_tokens": 20,
+            },
+        ],
+    }]
+
+    total, status, perclass = compute_turn_cost("default", "moa", None, calls)
+
+    assert total == 0.03
+    assert status == "estimated"
+    assert sum(value for value in perclass.values() if value is not None) == 0.03
+    assert seen == [
+        ("advisor-model", "advisor-provider", "https://advisor.invalid", 100, 10),
+        ("aggregator-model", "aggregator-provider", "https://aggregator.invalid", 30, 20),
+    ]
+
+
+def test_zero_token_failed_advisor_does_not_make_moa_turn_partial(monkeypatch):
+    """A failed advisor emitted no billable usage, so its unknown route costs $0."""
+    def fake_estimate(model, usage, *, provider=None, base_url=None):
+        if model == "failed-advisor":
+            return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
+        return CostResult(
+            amount_usd=Decimal("0.02"), status="estimated",
+            source="official_docs_snapshot", label="~$0.02",
+            cost_input_usd=Decimal("0.02"), cost_output_usd=Decimal("0"),
+            cost_cache_read_usd=Decimal("0"), cost_cache_write_usd=Decimal("0"),
+        )
+
+    monkeypatch.setattr(cost_mod, "estimate_usage_cost", fake_estimate)
+    calls = [{"pricing_calls": [
+        {"model": "failed-advisor", "provider": "mystery",
+         "input_tokens": 0, "output_tokens": 0},
+        {"model": "aggregator-model", "provider": "aggregator-provider",
+         "input_tokens": 100, "output_tokens": 10},
+    ]}]
+
+    total, status, perclass = compute_turn_cost("default", "moa", None, calls)
+
+    assert total == 0.02
+    assert status == "estimated"
+    assert sum(value for value in perclass.values() if value is not None) == 0.02
+
+
 def test_empty_calls_returns_included_with_none_split():
     total, status, perclass = compute_turn_cost("m", "p", None, [])
     assert (total, status) == (0.0, "included")

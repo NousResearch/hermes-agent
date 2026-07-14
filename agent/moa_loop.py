@@ -54,6 +54,7 @@ class _RefAccounting:
         "output",
         "model",
         "provider",
+        "base_url",
         "temperature",
     )
 
@@ -68,6 +69,7 @@ class _RefAccounting:
         output: str | None = None,
         model: str | None = None,
         provider: str | None = None,
+        base_url: str | None = None,
         temperature: Any = None,
     ):
         self.usage = usage
@@ -78,6 +80,7 @@ class _RefAccounting:
         self.output = output
         self.model = model
         self.provider = provider
+        self.base_url = base_url
         self.temperature = temperature
 
 # Per-tool-result character budget for the advisory reference view. Tool
@@ -318,6 +321,7 @@ def _run_reference(
             output=_output_text,
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
+            base_url=runtime.get("base_url"),
             temperature=temperature,
         )
         return label, _output_text, acct
@@ -329,6 +333,7 @@ def _run_reference(
             output=f"[failed: {exc}]",
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
+            base_url=runtime.get("base_url"),
             temperature=temperature,
         )
 
@@ -715,6 +720,7 @@ class MoAChatCompletions:
 
         self._pending_reference_usage: Any = CanonicalUsage()
         self._pending_reference_cost: Any = None
+        self._pending_reference_pricing_calls: list[dict[str, Any]] = []
         # Resolved aggregator slot ({provider, model, ...}) from the most recent
         # create(); read by session cost accounting to price the aggregator's
         # acting turn at its real model instead of the virtual preset name.
@@ -740,6 +746,12 @@ class MoAChatCompletions:
         self._pending_reference_usage = CanonicalUsage()
         self._pending_reference_cost = None
         return usage, cost
+
+    def consume_reference_pricing_calls(self) -> list[dict[str, Any]]:
+        """Pop physical advisor calls for mixed-model Blackbox pricing."""
+        calls = list(self._pending_reference_pricing_calls)
+        self._pending_reference_pricing_calls = []
+        return calls
 
     def consume_and_save_trace(
         self, session_id: Any = None, aggregator_output_fallback: Any = None
@@ -892,6 +904,7 @@ class MoAChatCompletions:
             # advisor spend by the tool-iteration count, so pending is zero.
             self._pending_reference_usage = CanonicalUsage()
             self._pending_reference_cost = None
+            self._pending_reference_pricing_calls = []
             # Likewise no trace on a cache HIT — the full turn was already
             # traced on the MISS that ran the references. A repeat iteration is
             # not a new MoA turn.
@@ -915,14 +928,27 @@ class MoAChatCompletions:
             # NOT be repriced at the aggregator's rate.
             _ref_usage = CanonicalUsage()
             _ref_cost: Any = None
+            _ref_pricing_calls: list[dict[str, Any]] = []
             for _lbl, _txt, _acct in reference_outputs:
                 if isinstance(_acct, _RefAccounting):
                     if isinstance(_acct.usage, CanonicalUsage):
                         _ref_usage = _ref_usage + _acct.usage
+                        if _acct.model:
+                            _ref_pricing_calls.append({
+                                "model": _acct.model,
+                                "provider": _acct.provider,
+                                "base_url": _acct.base_url,
+                                "input_tokens": _acct.usage.input_tokens,
+                                "output_tokens": _acct.usage.output_tokens,
+                                "cache_read_tokens": _acct.usage.cache_read_tokens,
+                                "cache_write_tokens": _acct.usage.cache_write_tokens,
+                                "reasoning_tokens": _acct.usage.reasoning_tokens,
+                            })
                     if _acct.cost_usd is not None:
                         _ref_cost = (_ref_cost or 0) + _acct.cost_usd
             self._pending_reference_usage = _ref_usage
             self._pending_reference_cost = _ref_cost
+            self._pending_reference_pricing_calls = _ref_pricing_calls
             # Stash the full reference fan-out for trace persistence. The
             # aggregator input/label are filled in below once agg_messages is
             # built; the aggregator OUTPUT is stitched in by the caller
@@ -1050,6 +1076,10 @@ class MoAClient:
         usage without reaching into ``.chat.completions`` internals.
         """
         return self.chat.completions.consume_reference_usage()
+
+    def consume_reference_pricing_calls(self) -> list[dict[str, Any]]:
+        """Pop physical advisor calls for Blackbox mixed-model pricing."""
+        return self.chat.completions.consume_reference_pricing_calls()
 
     @property
     def last_aggregator_slot(self) -> Any:

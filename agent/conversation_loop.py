@@ -81,6 +81,29 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _build_moa_pricing_calls(
+    advisor_calls: list[dict[str, Any]],
+    aggregator_usage: Any,
+    *,
+    aggregator_model: str,
+    aggregator_provider: str | None,
+    aggregator_base_url: str | None,
+) -> list[dict[str, Any]]:
+    """Return physical advisor + aggregator calls for Blackbox pricing."""
+    calls = [dict(call) for call in advisor_calls if isinstance(call, dict)]
+    calls.append({
+        "model": aggregator_model,
+        "provider": aggregator_provider,
+        "base_url": aggregator_base_url,
+        "input_tokens": aggregator_usage.input_tokens,
+        "output_tokens": aggregator_usage.output_tokens,
+        "cache_read_tokens": aggregator_usage.cache_read_tokens,
+        "cache_write_tokens": aggregator_usage.cache_write_tokens,
+        "reasoning_tokens": aggregator_usage.reasoning_tokens,
+    })
+    return calls
+
+
 def _is_auth_resolution_error(api_error: Exception) -> bool:
     """True for the Anthropic SDK's keyless-client ``TypeError``.
 
@@ -2276,6 +2299,7 @@ def run_conversation(
                     # usage, so without this the entire advisor spend — usually
                     # the bulk of a MoA turn — is invisible in token counts.
                     _moa_ref_cost = None
+                    _moa_ref_pricing_calls: list[dict[str, Any]] = []
                     _moa_client = getattr(agent, "client", None)
                     if _moa_client is not None and hasattr(_moa_client, "consume_reference_usage"):
                         try:
@@ -2284,6 +2308,18 @@ def run_conversation(
                                 canonical_usage = canonical_usage + _ref_usage
                         except Exception as _moa_acct_exc:  # pragma: no cover - defensive
                             logger.debug("MoA reference usage accounting failed: %s", _moa_acct_exc)
+                    if _moa_client is not None and hasattr(
+                        _moa_client, "consume_reference_pricing_calls"
+                    ):
+                        try:
+                            _moa_ref_pricing_calls = (
+                                _moa_client.consume_reference_pricing_calls() or []
+                            )
+                        except Exception as _moa_pricing_exc:  # pragma: no cover - defensive
+                            logger.debug(
+                                "MoA reference pricing-call accounting failed: %s",
+                                _moa_pricing_exc,
+                            )
                     # Flush the full-turn MoA trace (references + aggregator I/O)
                     # to disk when moa.save_traces is on. No-op otherwise and
                     # for non-MoA clients. Uses the live session_id so traces
@@ -2366,6 +2402,7 @@ def run_conversation(
                     # run_conversation), never an agent attribute, so concurrent
                     # subagents running their own run_conversation frame cannot
                     # stomp each other's accumulator.
+                    _turn_call = None
                     try:
                         _turn_calls.append({
                             "input_tokens": canonical_usage.input_tokens,
@@ -2379,6 +2416,7 @@ def run_conversation(
                             "latency_s": api_duration,
                             "composition": _call_composition,
                         })
+                        _turn_call = _turn_calls[-1]
                     except Exception:
                         pass  # telemetry must never break the conversation loop
 
@@ -2420,6 +2458,17 @@ def run_conversation(
                         _agg_cost_model = _agg_slot["model"]
                         _agg_cost_provider = _agg_slot.get("provider") or agent.provider
                         _agg_cost_base_url = _agg_slot.get("base_url") or agent.base_url
+                        try:
+                            if _turn_call is not None:
+                                _turn_call["pricing_calls"] = _build_moa_pricing_calls(
+                                    _moa_ref_pricing_calls,
+                                    aggregator_usage,
+                                    aggregator_model=_agg_cost_model,
+                                    aggregator_provider=_agg_cost_provider,
+                                    aggregator_base_url=_agg_cost_base_url,
+                                )
+                        except Exception:
+                            pass  # telemetry must never break the conversation loop
                     cost_result = estimate_usage_cost(
                         _agg_cost_model,
                         aggregator_usage,

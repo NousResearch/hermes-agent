@@ -47,6 +47,24 @@ def compute_turn_cost(
     if not calls:
         return 0.0, "included", dict(_PERCLASS_NONE)
 
+    # A logical MoA iteration contains several physical provider calls: one per
+    # advisor plus the acting aggregator. The outer turn still carries the
+    # virtual preset identity (provider="moa", model="default"), so price nested
+    # calls at their own routes when the conversation loop supplies them.
+    pricing_calls: list[dict] = []
+    for call in calls:
+        nested = call.get("pricing_calls") if isinstance(call, dict) else None
+        # An explicitly empty list intentionally falls through to the outer
+        # call: nonzero usage with missing physical attribution must remain
+        # unknown, never be silently reclassified as included/$0.
+        if isinstance(nested, list) and nested:
+            pricing_calls.extend(item for item in nested if isinstance(item, dict))
+        elif isinstance(call, dict):
+            pricing_calls.append(call)
+
+    if not pricing_calls:
+        return 0.0, "included", dict(_PERCLASS_NONE)
+
     # M3 (SPEC §5D / INV-7): a turn whose every billed token class is zero is
     # costless, not unpriced. Return a concrete $0 split so the dashboard treats
     # it as priced; ANY nonzero class falls through to normal pricing.
@@ -58,13 +76,18 @@ def compute_turn_cost(
             + _int_value(call.get("cache_write_tokens"))
         )
 
-    if all(_billed_tokens(call) == 0 for call in calls):
+    if all(_billed_tokens(call) == 0 for call in pricing_calls):
         return 0.0, "priced_zero", {
             "uncached": 0.0,
             "cache_read": 0.0,
             "cache_write": 0.0,
             "output": 0.0,
         }
+
+    # A zero-token physical call is concretely $0 even if its route has no
+    # pricing entry (for example a failed MoA advisor). It must not make an
+    # otherwise fully-priced mixed-model turn look partial.
+    pricing_calls = [call for call in pricing_calls if _billed_tokens(call) > 0]
 
     known_total = Decimal("0")
     known_count = 0
@@ -76,7 +99,7 @@ def compute_turn_cost(
     acc_cache_read = Decimal("0")
     acc_cache_write = Decimal("0")
 
-    for call in calls:
+    for call in pricing_calls:
         try:
             usage = CanonicalUsage(
                 input_tokens=_int_value(call.get("input_tokens")),
@@ -86,10 +109,10 @@ def compute_turn_cost(
                 reasoning_tokens=_int_value(call.get("reasoning_tokens")),
             )
             result = estimate_usage_cost(
-                model,
+                call.get("model") or model,
                 usage,
-                provider=provider,
-                base_url=base_url,
+                provider=call.get("provider") or provider,
+                base_url=call.get("base_url") or base_url,
             )
         except Exception:
             unknown_count += 1

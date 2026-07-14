@@ -14187,6 +14187,90 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         """, (cutoff,))
         by_model = [dict(r) for r in cur2.fetchall()]
 
+        # Route-level rows preserve provider attribution across mid-session model
+        # switches. Reconcile any legacy/absolute-update residual from the
+        # aggregate session row so older usage is not dropped or double-counted.
+        cur_provider = db._conn.execute("""
+            WITH route_usage AS (
+                SELECT u.session_id,
+                       COALESCE(NULLIF(u.billing_provider, ''), 'unknown') as provider,
+                       SUM(u.input_tokens) as input_tokens,
+                       SUM(u.output_tokens) as output_tokens,
+                       SUM(u.cache_read_tokens) as cache_read_tokens,
+                       SUM(u.cache_write_tokens) as cache_write_tokens,
+                       SUM(u.reasoning_tokens) as reasoning_tokens,
+                       COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
+                       COALESCE(SUM(u.actual_cost_usd), 0) as actual_cost,
+                       SUM(COALESCE(u.api_call_count, 0)) as api_calls
+                FROM session_model_usage u
+                JOIN sessions s ON s.id = u.session_id
+                WHERE s.started_at > ?
+                GROUP BY u.session_id, provider
+            ),
+            route_totals AS (
+                SELECT session_id,
+                       SUM(input_tokens) as input_tokens,
+                       SUM(output_tokens) as output_tokens,
+                       SUM(cache_read_tokens) as cache_read_tokens,
+                       SUM(cache_write_tokens) as cache_write_tokens,
+                       SUM(reasoning_tokens) as reasoning_tokens,
+                       SUM(estimated_cost) as estimated_cost,
+                       SUM(actual_cost) as actual_cost,
+                       SUM(api_calls) as api_calls
+                FROM route_usage
+                GROUP BY session_id
+            ),
+            residual_usage AS (
+                SELECT s.id as session_id,
+                       COALESCE(NULLIF(s.billing_provider, ''), 'unknown') as provider,
+                       MAX(0, COALESCE(s.input_tokens, 0)
+                           - COALESCE(t.input_tokens, 0)) as input_tokens,
+                       MAX(0, COALESCE(s.output_tokens, 0)
+                           - COALESCE(t.output_tokens, 0)) as output_tokens,
+                       MAX(0, COALESCE(s.cache_read_tokens, 0)
+                           - COALESCE(t.cache_read_tokens, 0)) as cache_read_tokens,
+                       MAX(0, COALESCE(s.cache_write_tokens, 0)
+                           - COALESCE(t.cache_write_tokens, 0)) as cache_write_tokens,
+                       MAX(0, COALESCE(s.reasoning_tokens, 0)
+                           - COALESCE(t.reasoning_tokens, 0)) as reasoning_tokens,
+                       MAX(0.0, COALESCE(s.estimated_cost_usd, 0)
+                           - COALESCE(t.estimated_cost, 0)) as estimated_cost,
+                       MAX(0.0, COALESCE(s.actual_cost_usd, 0)
+                           - COALESCE(t.actual_cost, 0)) as actual_cost,
+                       MAX(0, COALESCE(s.api_call_count, 0)
+                           - COALESCE(t.api_calls, 0)) as api_calls
+                FROM sessions s
+                LEFT JOIN route_totals t ON t.session_id = s.id
+                WHERE s.started_at > ?
+            ),
+            combined_usage AS (
+                SELECT * FROM route_usage
+                UNION ALL
+                SELECT * FROM residual_usage
+                WHERE input_tokens > 0 OR output_tokens > 0
+                   OR cache_read_tokens > 0 OR cache_write_tokens > 0
+                   OR reasoning_tokens > 0 OR estimated_cost > 0
+                   OR actual_cost > 0 OR api_calls > 0
+            )
+            SELECT provider,
+                   SUM(input_tokens) as input_tokens,
+                   SUM(output_tokens) as output_tokens,
+                   SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+                   COALESCE(SUM(actual_cost), 0) as actual_cost,
+                   COUNT(DISTINCT session_id) as sessions,
+                   SUM(api_calls) as api_calls
+            FROM combined_usage
+            GROUP BY provider
+            ORDER BY CASE
+                         WHEN SUM(actual_cost) > 0 THEN SUM(actual_cost)
+                         ELSE SUM(estimated_cost)
+                     END DESC,
+                     SUM(input_tokens) + SUM(output_tokens) DESC
+        """, (cutoff, cutoff))
+        by_provider = [dict(r) for r in cur_provider.fetchall()]
+
         cur3 = db._conn.execute("""
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
@@ -14213,6 +14297,7 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         return {
             "daily": daily,
             "by_model": by_model,
+            "by_provider": by_provider,
             "totals": totals,
             "period_days": days,
             "skills": skills,

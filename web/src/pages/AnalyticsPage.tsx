@@ -14,6 +14,7 @@ import type {
   AnalyticsResponse,
   AnalyticsDailyEntry,
   AnalyticsModelEntry,
+  AnalyticsProviderEntry,
   AnalyticsSkillEntry,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
@@ -348,6 +349,75 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   );
 }
 
+function ProviderTable({ providers }: { providers: AnalyticsProviderEntry[] }) {
+  const { t } = useI18n();
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(providers, "actual_cost", "desc");
+
+  if (providers.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start gap-2">
+          <Cpu className="h-5 w-5 text-muted-foreground mt-0.5" />
+          <div>
+            <CardTitle className="text-base">Provider usage</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Local debug estimates gated by dashboard.show_token_analytics;
+              not authoritative provider billing.
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground text-xs">
+                <SortHeader label="Provider" col="provider" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
+                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label="Estimated cost (local)" col="estimated_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label="Logged cost (local)" col="actual_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((provider) => (
+                <tr
+                  key={provider.provider}
+                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
+                >
+                  <td className="py-2 pr-4">
+                    <span className="font-mono-ui text-xs">{provider.provider}</span>
+                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">
+                    {provider.sessions}
+                  </td>
+                  <td className="text-right py-2 px-4">
+                    <span className="text-[#ffe6cb]">
+                      {formatTokens(provider.input_tokens)}
+                    </span>
+                    {" / "}
+                    <span className="text-emerald-400">
+                      {formatTokens(provider.output_tokens)}
+                    </span>
+                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">
+                    ${provider.estimated_cost.toFixed(4)}
+                  </td>
+                  <td className="text-right py-2 pl-4">
+                    ${provider.actual_cost.toFixed(4)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
   const { t } = useI18n();
   const { sorted, sortKey, sortDir, toggle } = useTableSort(skills, "total_count", "desc");
@@ -577,6 +647,7 @@ export default function AnalyticsPage() {
           </div>
 
           <DailyTable daily={data.daily} />
+          <ProviderTable providers={data.by_provider} />
           <ModelTable models={data.by_model} />
           <SkillTable skills={data.skills.top_skills} />
         </>
@@ -585,6 +656,7 @@ export default function AnalyticsPage() {
       {data &&
         data.daily.length === 0 &&
         data.by_model.length === 0 &&
+        data.by_provider.length === 0 &&
         data.skills.top_skills.length === 0 && (
           <Card>
             <CardContent className="py-12">

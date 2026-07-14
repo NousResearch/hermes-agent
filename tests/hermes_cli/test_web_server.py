@@ -4890,6 +4890,7 @@ class TestNewEndpoints:
         data = resp.json()
         assert "daily" in data
         assert "by_model" in data
+        assert "by_provider" in data
         assert "totals" in data
         assert "skills" in data
         assert isinstance(data["daily"], list)
@@ -4954,6 +4955,132 @@ class TestNewEndpoints:
         assert row["output_tokens"] == 7_100
         assert row["api_calls"] == 9
         assert row["avg_tokens_per_session"] == 13_550
+
+    def test_analytics_usage_groups_by_billing_provider(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="provider-analytics-openrouter",
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "provider-analytics-openrouter",
+                input_tokens=40,
+                output_tokens=20,
+                estimated_cost_usd=0.05,
+                actual_cost_usd=0.04,
+                billing_provider="openrouter",
+                api_call_count=1,
+            )
+            db.update_token_counts(
+                "provider-analytics-openrouter",
+                input_tokens=100,
+                output_tokens=50,
+                estimated_cost_usd=0.12,
+                actual_cost_usd=0.10,
+                billing_provider="openrouter",
+                api_call_count=2,
+                # Absolute updates have no route-level attribution row, so the
+                # unrecorded delta exercises partial residual reconciliation.
+                absolute=True,
+            )
+            db.create_session(
+                session_id="provider-analytics-anthropic",
+                source="cli",
+                model="claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "provider-analytics-anthropic",
+                input_tokens=25,
+                output_tokens=10,
+                estimated_cost_usd=0.05,
+                actual_cost_usd=0.04,
+                billing_provider="anthropic",
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        by_provider = resp.json()["by_provider"]
+
+        openrouter = next(row for row in by_provider if row["provider"] == "openrouter")
+        assert openrouter["input_tokens"] == 100
+        assert openrouter["output_tokens"] == 50
+        assert openrouter["estimated_cost"] == 0.12
+        assert openrouter["actual_cost"] == 0.10
+        assert openrouter["sessions"] == 1
+
+    def test_analytics_usage_splits_a_session_across_billing_providers(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session_id = "provider-analytics-mixed-session"
+            db.create_session(
+                session_id=session_id,
+                source="cli",
+                model="deepseek/deepseek-v4-pro",
+            )
+            db.update_token_counts(
+                session_id,
+                input_tokens=100,
+                output_tokens=25,
+                cache_read_tokens=10,
+                reasoning_tokens=3,
+                estimated_cost_usd=0.12,
+                actual_cost_usd=0.10,
+                model="deepseek/deepseek-v4-pro",
+                billing_provider="openrouter",
+                api_call_count=2,
+            )
+            db.update_session_model(session_id, "anthropic/claude-opus-4.8")
+            db.update_token_counts(
+                session_id,
+                input_tokens=30,
+                output_tokens=20,
+                cache_read_tokens=4,
+                reasoning_tokens=2,
+                estimated_cost_usd=0.08,
+                actual_cost_usd=0.07,
+                model="anthropic/claude-opus-4.8",
+                billing_provider="anthropic",
+                api_call_count=1,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        by_provider = {
+            row["provider"]: row for row in resp.json()["by_provider"]
+        }
+
+        assert by_provider["openrouter"] == {
+            "provider": "openrouter",
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "cache_read_tokens": 10,
+            "reasoning_tokens": 3,
+            "estimated_cost": 0.12,
+            "actual_cost": 0.10,
+            "sessions": 1,
+            "api_calls": 2,
+        }
+        assert by_provider["anthropic"] == {
+            "provider": "anthropic",
+            "input_tokens": 30,
+            "output_tokens": 20,
+            "cache_read_tokens": 4,
+            "reasoning_tokens": 2,
+            "estimated_cost": 0.08,
+            "actual_cost": 0.07,
+            "sessions": 1,
+            "api_calls": 1,
+        }
 
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB

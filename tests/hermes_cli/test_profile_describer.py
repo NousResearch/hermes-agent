@@ -166,3 +166,48 @@ def test_describer_returns_false_when_profile_missing(profile_env, monkeypatch):
     outcome = describer.describe_profile("ghost")
     assert outcome.ok is False
     assert "not found" in outcome.reason
+
+
+def test_describer_default_profile_resolves_canonical_root(tmp_path, monkeypatch):
+    """Auto-describing "default" must write to the canonical ~/.hermes root,
+    not to the active named-profile HERMES_HOME.
+
+    Regression: describe_profile() used get_hermes_home() for the "default"
+    profile, which returns the process-local HERMES_HOME.  When the dashboard
+    runs under a named profile (e.g. ~/.hermes/profiles/worker), the auto-
+    generated description was written to the worker profile directory instead
+    of the canonical ~/.hermes root.
+    """
+    home_root = tmp_path / ".hermes"
+    home_root.mkdir()
+    (home_root / "profiles").mkdir()
+    worker_dir = home_root / "profiles" / "worker"
+    worker_dir.mkdir()
+
+    # Simulate dashboard running under the worker named profile.
+    monkeypatch.setenv("HERMES_HOME", str(worker_dir))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Use the REAL get_profile_dir (no mock) to verify resolution.
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: True)
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+
+    payload = jsonlib.dumps({"description": "orchestrator profile"})
+    with _patch_aux_client(payload), patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("default")
+
+    assert outcome.ok, outcome.reason
+
+    # profile.yaml must exist in the canonical default root, not the worker dir.
+    default_yaml = home_root / "profile.yaml"
+    assert default_yaml.exists(), (
+        "auto-describe wrote to the wrong directory — "
+        "profile.yaml not found in canonical ~/.hermes root"
+    )
+
+    worker_yaml = worker_dir / "profile.yaml"
+    assert not worker_yaml.exists(), (
+        "auto-describe incorrectly wrote to the named profile directory"
+    )

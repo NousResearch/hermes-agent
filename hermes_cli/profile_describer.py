@@ -178,11 +178,9 @@ def describe_profile(
         return DescribeOutcome(canon, False, "profile not found")
 
     try:
-        if canon == "default":
-            from hermes_constants import get_hermes_home  # type: ignore
-            profile_dir = Path(get_hermes_home())
-        else:
-            profile_dir = profiles_mod.get_profile_dir(canon)
+        # get_profile_dir resolves "default" to the canonical ~/.hermes root
+        # independent of which profile the dashboard process is running under.
+        profile_dir = profiles_mod.get_profile_dir(canon)
     except Exception as exc:
         return DescribeOutcome(canon, False, f"cannot resolve profile dir: {exc}")
 

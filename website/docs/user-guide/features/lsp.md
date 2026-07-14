@@ -165,7 +165,8 @@ lsp:
 
   # How to handle missing server binaries.
   #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin
-  #   manual  — only use binaries already on PATH
+  #   manual  — only use binaries already on PATH or in
+  #             <HERMES_HOME>/lsp/bin
   install_strategy: manual
 
   # Per-server overrides (all optional).
@@ -289,6 +290,6 @@ the next edit re-spawns.
 
 **Editing a file outside any git repo**
 
-By design, LSP only runs inside a git repository. If the project isn't
-yet initialized, run `git init` to enable LSP diagnostics. Otherwise the
-in-process syntax-only fallback applies.
+By design, LSP only runs when enabled and inside a git repository. Set
+`lsp.enabled: true`; if the project isn't initialized, also run `git init`.
+Otherwise the in-process syntax-only fallback applies.

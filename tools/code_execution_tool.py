@@ -142,6 +142,8 @@ _WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
     "COMPUTERNAME",
 })
 
+_PROJECT_MODE_SESSION_ENV_KEYS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PATH")
+
 
 def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     """Produce the scrubbed child-process env for execute_code.
@@ -1287,7 +1289,17 @@ def execute_code(
         # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
-        child_env = _scrub_child_env(os.environ)
+        # In project mode, inherit the live terminal session's activated venv
+        # markers/PATH before scrubbing so child subprocess lookups mirror the
+        # user's current shell more closely.
+        _mode = _get_execution_mode()
+        _session_env, _ = _get_live_project_mode_session_state(task_id)
+        _child_source_env = dict(os.environ)
+        if _mode == "project":
+            for _key, _value in _session_env.items():
+                if _value:
+                    _child_source_env[_key] = _value
+        child_env = _scrub_child_env(_child_source_env)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["HERMES_RPC_TOKEN"] = rpc_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -1337,9 +1349,8 @@ def execute_code(
         #   - project: user's venv python + session's working directory, so
         #              project deps like pandas and user files resolve.
         # Env scrubbing and tool whitelist apply identically in both modes.
-        _mode = _get_execution_mode()
-        _child_python = _resolve_child_python(_mode)
-        _child_cwd = _resolve_child_cwd(_mode, tmpdir)
+        _child_python = _resolve_child_python(_mode, task_id=task_id)
+        _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id)
         _script_path = os.path.join(tmpdir, "script.py")
 
         proc = subprocess.Popen(
@@ -1702,19 +1713,84 @@ def _is_usable_python(python_path: str) -> bool:
         return False
 
 
-def _resolve_child_python(mode: str) -> str:
+def _read_session_snapshot_env(snapshot_path: str,
+                               keys: tuple[str, ...] = _PROJECT_MODE_SESSION_ENV_KEYS) -> Dict[str, str]:
+    """Read selected exported vars from a local terminal snapshot file.
+
+    ``BaseEnvironment.init_session()`` writes ``export -p`` output to a shell
+    snapshot on the host filesystem.  For local project-mode execute_code we
+    consult that live snapshot first so a prior ``source .venv/bin/activate``
+    or ``conda activate`` in the terminal session carries over here too.
+    """
+    if not snapshot_path:
+        return {}
+
+    wanted = set(keys)
+    found: Dict[str, str] = {}
+    try:
+        with open(snapshot_path, encoding="utf-8", errors="replace") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line.startswith("declare -x "):
+                    continue
+                try:
+                    parts = shlex.split(line, posix=True)
+                except ValueError:
+                    continue
+                if len(parts) < 3 or parts[0] != "declare" or parts[1] != "-x":
+                    continue
+                assignment = parts[2]
+                if "=" in assignment:
+                    name, value = assignment.split("=", 1)
+                else:
+                    name, value = assignment, ""
+                if name in wanted:
+                    found[name] = value
+                    if len(found) == len(wanted):
+                        break
+    except OSError:
+        return {}
+    return found
+
+
+def _get_live_project_mode_session_state(task_id: Optional[str]) -> tuple[Dict[str, str], Optional[str]]:
+    """Return live session env vars + cwd for a local terminal task if present."""
+    try:
+        from tools.terminal_tool import get_active_env
+    except Exception:
+        return {}, None
+
+    env = get_active_env(task_id or "default")
+    if env is None:
+        return {}, None
+
+    snapshot_path = getattr(env, "_snapshot_path", "")
+    session_env = _read_session_snapshot_env(snapshot_path)
+
+    session_cwd = getattr(env, "cwd", None)
+    if not isinstance(session_cwd, str) or not session_cwd.strip():
+        session_cwd = None
+
+    return session_env, session_cwd
+
+
+def _resolve_child_python(mode: str, task_id: Optional[str] = None) -> str:
     """Pick the Python interpreter for the execute_code subprocess.
 
     In ``strict`` mode, always ``sys.executable`` — guaranteed to work and
     keeps behavior fully reproducible across sessions.
 
-    In ``project`` mode, prefer the user's active virtualenv/conda env's
-    python so ``import pandas`` etc. work. Falls back to ``sys.executable``
-    if no venv is detected, the candidate binary is missing/not executable,
-    or it fails a Python 3.8+ version check.
+    In ``project`` mode, prefer the live terminal session's active
+    virtualenv/conda env first, then fall back to the parent process env.
+    This keeps ``execute_code`` aligned with the terminal tool after a user
+    activates a venv inside the session. Falls back to ``sys.executable`` if
+    no venv is detected, the candidate binary is missing/not executable, or
+    it fails a Python 3.8+ version check.
     """
     if mode != "project":
         return sys.executable
+
+    session_env, _ = _get_live_project_mode_session_state(task_id)
 
     if _IS_WINDOWS:
         exe_names = ("python.exe", "python3.exe")
@@ -1723,8 +1799,18 @@ def _resolve_child_python(mode: str) -> str:
         exe_names = ("python", "python3")
         subdirs = ("bin",)
 
-    for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
-        root = os.environ.get(var, "").strip()
+    roots_to_try: list[tuple[str, str]] = []
+    seen_roots: set[tuple[str, str]] = set()
+    for source_env in (session_env, os.environ):
+        for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
+            root = source_env.get(var, "").strip()
+            key = (var, root)
+            if not root or key in seen_roots:
+                continue
+            seen_roots.add(key)
+            roots_to_try.append(key)
+
+    for var, root in roots_to_try:
         if not root:
             continue
         for subdir in subdirs:
@@ -1745,17 +1831,22 @@ def _resolve_child_python(mode: str) -> str:
     return sys.executable
 
 
-def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
+def _resolve_child_cwd(mode: str, staging_dir: str, task_id: Optional[str] = None) -> str:
     """Resolve the working directory for the execute_code subprocess.
 
     - ``strict``: the staging tmpdir (today's behavior).
-    - ``project``: the session's TERMINAL_CWD (same as the terminal tool), or
-      ``os.getcwd()`` if TERMINAL_CWD is unset or doesn't point at a real dir.
-      Falls back to the staging tmpdir as a last resort so we never invoke
-      Popen with a nonexistent cwd.
+    - ``project``: the live terminal session cwd when available, otherwise
+      ``TERMINAL_CWD`` (same as the terminal tool config), or ``os.getcwd()``
+      if neither points at a real dir. Falls back to the staging tmpdir as a
+      last resort so we never invoke Popen with a nonexistent cwd.
     """
     if mode != "project":
         return staging_dir
+    _, session_cwd = _get_live_project_mode_session_state(task_id)
+    if session_cwd:
+        expanded = os.path.expanduser(session_cwd)
+        if os.path.isdir(expanded):
+            return expanded
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)

@@ -17,6 +17,7 @@ import os
 import sys
 import unittest
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -181,6 +182,33 @@ class TestResolveChildPython(unittest.TestCase):
                 result = _resolve_child_python("project")
                 self.assertEqual(result, str(ve / "bin" / "python"))
 
+    def test_project_prefers_live_session_virtualenv_over_parent_env(self):
+        """Project mode should consult the live terminal session before os.environ."""
+        if sys.platform == "win32":
+            pytest.skip(
+                "Creates symlinks and assumes POSIX venv layout (bin/python). "
+                "Windows venvs use Scripts/python.exe and symlink creation "
+                "requires elevated privileges (WinError 1314)."
+            )
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as snap_td:
+            fake_venv = pathlib.Path(td)
+            (fake_venv / "bin").mkdir()
+            (fake_venv / "bin" / "python").symlink_to(sys.executable)
+            snapshot = pathlib.Path(snap_td) / "hermes-snap.sh"
+            snapshot.write_text(
+                f'declare -x VIRTUAL_ENV="{fake_venv}"\n',
+                encoding="utf-8",
+            )
+            fake_env = SimpleNamespace(_snapshot_path=str(snapshot), cwd=os.getcwd())
+            with patch("tools.terminal_tool.get_active_env", return_value=fake_env):
+                with patch.dict(os.environ, {"VIRTUAL_ENV": "/broken/parent/venv"}):
+                    _is_usable_python.cache_clear()
+                    result = _resolve_child_python("project", task_id="task-live")
+                    self.assertEqual(result, str(fake_venv / "bin" / "python"))
+
     def test_is_usable_python_rejects_nonexistent(self):
         _is_usable_python.cache_clear()
         self.assertFalse(_is_usable_python("/does/not/exist/python"))
@@ -219,6 +247,18 @@ class TestResolveChildCwd(unittest.TestCase):
         home = str(pathlib.Path.home())
         with patch.dict(os.environ, {"TERMINAL_CWD": "~"}):
             self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), home)
+
+    def test_project_prefers_live_session_cwd_over_terminal_env(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as session_td, tempfile.TemporaryDirectory() as terminal_td:
+            fake_env = SimpleNamespace(_snapshot_path="", cwd=session_td)
+            with patch("tools.terminal_tool.get_active_env", return_value=fake_env):
+                with patch.dict(os.environ, {"TERMINAL_CWD": terminal_td}):
+                    self.assertEqual(
+                        _resolve_child_cwd("project", "/tmp/staging", task_id="task-live"),
+                        session_td,
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +390,53 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
             result = self._run(code, mode="project", extra_env={"TERMINAL_CWD": td})
             self.assertEqual(result["status"], "success")
             self.assertIn("mock", result["output"])
+
+    def test_project_mode_prefers_live_session_state_over_parent_env(self):
+        """Project mode should inherit the active terminal session's venv and cwd."""
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as venv_td, tempfile.TemporaryDirectory() as session_td, tempfile.TemporaryDirectory() as snap_td, tempfile.TemporaryDirectory() as terminal_td:
+            fake_venv = pathlib.Path(venv_td)
+            (fake_venv / "bin").mkdir()
+            child_python = fake_venv / "bin" / "python"
+            child_python.symlink_to(sys.executable)
+
+            snapshot = pathlib.Path(snap_td) / "hermes-snap.sh"
+            snapshot.write_text(
+                (
+                    f'declare -x VIRTUAL_ENV="{fake_venv}"\n'
+                    f'declare -x PATH="{fake_venv / "bin"}:/usr/bin"\n'
+                ),
+                encoding="utf-8",
+            )
+            fake_env = SimpleNamespace(_snapshot_path=str(snapshot), cwd=session_td)
+            code = (
+                "import os, shutil, sys\n"
+                "print(sys.executable)\n"
+                "print(os.getcwd())\n"
+                "print(os.environ.get('VIRTUAL_ENV', ''))\n"
+                "print(shutil.which('python') or '')\n"
+            )
+
+            with patch("tools.terminal_tool.get_active_env", return_value=fake_env):
+                result = self._run(
+                    code,
+                    mode="project",
+                    extra_env={
+                        "TERMINAL_CWD": terminal_td,
+                        "VIRTUAL_ENV": "",
+                        "CONDA_PREFIX": "",
+                    },
+                )
+
+            self.assertEqual(result["status"], "success")
+            lines = [line.strip() for line in result["output"].splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, result["output"])
+            self.assertEqual(os.path.realpath(lines[0]), os.path.realpath(str(child_python)))
+            self.assertEqual(os.path.realpath(lines[1]), os.path.realpath(session_td))
+            self.assertEqual(os.path.realpath(lines[2]), os.path.realpath(str(fake_venv)))
+            self.assertEqual(os.path.realpath(lines[3]), os.path.realpath(str(child_python)))
 
     def test_strict_mode_can_still_import_hermes_tools(self):
         """Regression: strict mode's tmpdir CWD still works for imports."""

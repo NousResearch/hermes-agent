@@ -13,6 +13,22 @@ import pytest
 from hermes_cli import main as cli_main
 
 
+@pytest.fixture(autouse=True)
+def _stable_keychain_detection(monkeypatch):
+    """Pin Linux keychain detection to the fast GNOME env path.
+
+    On Linux, ``cmd_gui`` falls back to a D-Bus ping via ``subprocess.run``
+    when no keychain env var is present. Tests here mock ``subprocess.run``
+    with strict ``side_effect`` lists, so an unpinned probe would silently
+    consume an item meant for the build/launch calls. Detection-specific
+    tests clear these vars again via ``_clear_keychain_env``.
+    """
+    monkeypatch.delenv("KDE_SESSION_VERSION", raising=False)
+    monkeypatch.delenv("KDE_FULL_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_PASSWORD_STORE", raising=False)
+    monkeypatch.setenv("GNOME_KEYRING_CONTROL", "/run/user/1000/keyring")
+
+
 def _ns(**kw):
     defaults = dict(
         skip_build=False,
@@ -1013,15 +1029,16 @@ def test_force_adhoc_signing_respects_explicit_caller_flag(monkeypatch):
 
 def test_desktop_launch_options_defaults_when_no_config():
     with patch("hermes_cli.config.load_config", return_value={}):
-        flags, gpu = cli_main._desktop_launch_options()
+        flags, gpu, store = cli_main._desktop_launch_options()
     assert flags == []
     assert gpu == "auto"
+    assert store == "auto"
 
 
 def test_desktop_launch_options_reads_flags_list():
     cfg = {"desktop": {"electron_flags": ["--ozone-platform=x11", "--disable-gpu"]}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        flags, gpu = cli_main._desktop_launch_options()
+        flags, gpu, _ = cli_main._desktop_launch_options()
     assert flags == ["--ozone-platform=x11", "--disable-gpu"]
     assert gpu == "auto"
 
@@ -1029,7 +1046,7 @@ def test_desktop_launch_options_reads_flags_list():
 def test_desktop_launch_options_splits_flag_string():
     cfg = {"desktop": {"electron_flags": "--ozone-platform=x11 --disable-gpu"}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        flags, _ = cli_main._desktop_launch_options()
+        flags, _, _ = cli_main._desktop_launch_options()
     assert flags == ["--ozone-platform=x11", "--disable-gpu"]
 
 
@@ -1047,12 +1064,211 @@ def test_desktop_launch_options_splits_flag_string():
 def test_desktop_launch_options_normalizes_disable_gpu(raw, expected):
     cfg = {"desktop": {"disable_gpu": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, gpu = cli_main._desktop_launch_options()
+        _, gpu, _ = cli_main._desktop_launch_options()
     assert gpu == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("gnome-libsecret", "gnome-libsecret"),
+        ("KWallet6", "kwallet6"),
+        ("basic", "basic"),
+        ("auto", "auto"),
+        ("keychain-of-wonders", "auto"),
+        (True, "auto"),
+    ],
+)
+def test_desktop_launch_options_normalizes_password_store(raw, expected):
+    cfg = {"desktop": {"password_store": raw}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        _, _, store = cli_main._desktop_launch_options()
+    assert store == expected
 
 
 def test_desktop_launch_options_survives_config_error():
     with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
-        flags, gpu = cli_main._desktop_launch_options()
+        flags, gpu, store = cli_main._desktop_launch_options()
     assert flags == []
     assert gpu == "auto"
+    assert store == "auto"
+
+
+# --- desktop.password_store detection & bridging (linux) ------------------
+
+
+def _clear_keychain_env(monkeypatch):
+    for var in (
+        "KDE_SESSION_VERSION",
+        "KDE_FULL_SESSION",
+        "GNOME_KEYRING_CONTROL",
+        "HERMES_DESKTOP_PASSWORD_STORE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.mark.parametrize(
+    "kde_version,expected",
+    [
+        ("6", "kwallet6"),
+        ("5", "kwallet5"),
+        ("4", "kwallet"),
+    ],
+)
+def test_detect_linux_password_store_prefers_kde_session(monkeypatch, kde_version, expected):
+    _clear_keychain_env(monkeypatch)
+    monkeypatch.setenv("KDE_SESSION_VERSION", kde_version)
+    assert cli_main._detect_linux_password_store() == expected
+
+
+def test_detect_linux_password_store_kde_full_session(monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    monkeypatch.setenv("KDE_FULL_SESSION", "true")
+    assert cli_main._detect_linux_password_store() == "kwallet"
+
+
+def test_detect_linux_password_store_gnome_keyring(monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    monkeypatch.setenv("GNOME_KEYRING_CONTROL", "/run/user/1000/keyring")
+    assert cli_main._detect_linux_password_store() == "gnome-libsecret"
+
+
+def test_detect_linux_password_store_via_dbus_secret_service(monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    ping_ok = subprocess.CompletedProcess(["dbus-send"], 0)
+    with patch("hermes_cli.main.subprocess.run", return_value=ping_ok) as mock_run:
+        assert cli_main._detect_linux_password_store() == "gnome-libsecret"
+    assert "--dest=org.freedesktop.secrets" in mock_run.call_args.args[0]
+
+
+def test_detect_linux_password_store_none_when_no_keychain(monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    ping_fail = subprocess.CompletedProcess(["dbus-send"], 1)
+    with patch("hermes_cli.main.subprocess.run", return_value=ping_fail):
+        assert cli_main._detect_linux_password_store() is None
+    with patch("hermes_cli.main.subprocess.run", side_effect=FileNotFoundError):
+        assert cli_main._detect_linux_password_store() is None
+
+
+def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.main._detect_linux_password_store", return_value="gnome-libsecret"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns())
+
+    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "gnome-libsecret"
+
+
+def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.main._detect_linux_password_store", return_value="kwallet6"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(source=True))
+
+    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "exec", "--", "electron", "."]
+    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
+
+
+def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    ok = subprocess.CompletedProcess([], 0)
+    cfg = {"desktop": {"password_store": "kwallet6"}}
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns())
+
+    mock_detect.assert_not_called()
+    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
+
+
+def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path, monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    monkeypatch.setenv("HERMES_DESKTOP_PASSWORD_STORE", "basic")
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    ok = subprocess.CompletedProcess([], 0)
+    cfg = {"desktop": {"password_store": "kwallet6"}}
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns())
+
+    mock_detect.assert_not_called()
+    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "basic"
+
+
+def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
+    _clear_keychain_env(monkeypatch)
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns())
+
+    mock_detect.assert_not_called()
+    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    assert "HERMES_DESKTOP_PASSWORD_STORE" not in launch_env

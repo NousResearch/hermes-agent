@@ -4457,6 +4457,264 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
         conn.close()
 
 
+def test_protocol_violation_restores_task_with_prior_completed_run(kanban_home):
+    """Accidental re-entry after a prior completed run restores to done.
+
+    Models #60802: a completed task is put back to ready *without* an
+    explicit re-queue audit event (status/promoted/unblocked/reclaimed),
+    then a duplicate worker clean-exits. History still proves the work
+    shipped, so restore rather than trip the breaker.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="already shipped", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+
+        kb.claim_task(conn, tid, claimer=lock)
+        assert kb.complete_task(
+            conn,
+            tid,
+            result="shipped",
+            summary="implemented and verified",
+        )
+
+        # Preserve a separate historical crash row to prove the recovery only
+        # annotates the current protocol-violation run.
+        old_started = int(time.time()) - 120
+        old_ended = old_started + 5
+        old_crash_id = conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at, error) "
+            "VALUES (?, 'crashed', 'crashed', ?, ?, 'old crash')",
+            (tid, old_started, old_ended),
+        ).lastrowid
+
+        # Accidental flap: status flipped ready with no re-queue audit event.
+        # (A deliberate dashboard done→ready would emit kind='status'.)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', completed_at = NULL WHERE id = ?",
+                (tid,),
+            )
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999997
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            result_crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in result_crashed
+        task = kb.get_task(conn, tid)
+        assert task.status == "done"
+        assert task.completed_at is not None
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert task.current_run_id is None
+
+        old_crash = conn.execute(
+            "SELECT status, outcome, error FROM task_runs WHERE id = ?",
+            (old_crash_id,),
+        ).fetchone()
+        assert dict(old_crash) == {
+            "status": "crashed",
+            "outcome": "crashed",
+            "error": "old crash",
+        }
+
+        runs = kb.list_runs(conn, tid)
+        assert [(r.status, r.outcome) for r in runs].count(("done", "completed")) == 1
+        assert any(
+            r.status == "blocked"
+            and r.outcome == "crashed"
+            and r.error == "Worker restored — task already completed in prior run"
+            for r in runs
+        )
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds
+        assert "gave_up" not in kinds
+    finally:
+        conn.close()
+
+
+def test_protocol_violation_blocks_after_explicit_requeue(kanban_home):
+    """Explicit done→ready is deliberate new work; protocol violation blocks.
+
+    A dashboard (or CLI) re-queue after completion emits a ``status`` event
+    after the completed run. That attempt must not be restored from the
+    earlier success — clean-exit without kanban_complete still trips the
+    breaker on the first occurrence.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="rerun me", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+
+        kb.claim_task(conn, tid, claimer=lock)
+        assert kb.complete_task(
+            conn,
+            tid,
+            result="v1 shipped",
+            summary="first pass done",
+        )
+
+        now = int(time.time())
+        # Operator re-queue: audit event after the completion (same signal
+        # check_respawn_guard uses to bypass recent_success).
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, created_at) "
+                "VALUES (?, 'status', ?)",
+                (tid, now),
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', completed_at = NULL WHERE id = ?",
+                (tid,),
+            )
+
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999996
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            result_crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in result_crashed
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"explicit requeue protocol violation must auto-block, "
+            f"got status={task.status}"
+        )
+        assert "kanban_complete" in (task.last_failure_error or "")
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds
+        assert "gave_up" in kinds
+        # Prior completed run must remain intact (not rewritten as blocked).
+        runs = kb.list_runs(conn, tid)
+        assert any(r.status == "done" and r.outcome == "completed" for r in runs)
+        assert not any(
+            r.error == "Worker restored — task already completed in prior run"
+            for r in runs
+        )
+    finally:
+        conn.close()
+
+
+def test_protocol_violation_restore_cas_skips_concurrent_claim(kanban_home):
+    """Restore CAS must not overwrite a task already claimed again.
+
+    After the crash path releases running→ready, another claimer can race
+    in before the outer restore txn. A failed status/run-id guard must
+    leave that attempt alone (no silent done overwrite, no failure stamp
+    on the concurrent claimer's task).
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="race restore", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+
+        kb.claim_task(conn, tid, claimer=lock)
+        assert kb.complete_task(
+            conn,
+            tid,
+            result="shipped",
+            summary="done once",
+        )
+
+        # Accidental ready flap (no re-queue event) + second running claim
+        # with a clean-exit dead pid — same shape as the restore path.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', completed_at = NULL WHERE id = ?",
+                (tid,),
+            )
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999995
+        kb._set_worker_pid(conn, tid, fake_pid)
+        _kb._record_worker_exit(fake_pid, 0)
+
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        # After release, steal the ready task before the outer restore
+        # txn runs by wrapping write_txn so the second (restore) txn sees
+        # a concurrent claimer.
+        real_write_txn = _kb.write_txn
+        call_count = {"n": 0}
+
+        class _TxnCM:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __enter__(self):
+                return self._inner.__enter__()
+
+            def __exit__(self, *a):
+                return self._inner.__exit__(*a)
+
+        def _racing_write_txn(c):
+            cm = real_write_txn(c)
+            call_count["n"] += 1
+            # First write_txn is the crash release; subsequent ones include
+            # the restore attempt. After the release commits, claim again
+            # so restore's CAS (status=ready AND claim_lock IS NULL) fails.
+            class _Racing:
+                def __enter__(self_inner):
+                    return cm.__enter__()
+
+                def __exit__(self_inner, *a):
+                    result = cm.__exit__(*a)
+                    if call_count["n"] == 1:
+                        # Crash release just committed — concurrent claimer.
+                        kb.claim_task(conn, tid, claimer=f"{host_prefix}:racer")
+                    return result
+
+            return _Racing()
+
+        try:
+            _kb.write_txn = _racing_write_txn
+            result_crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+            _kb.write_txn = real_write_txn
+
+        assert tid in result_crashed
+        task = kb.get_task(conn, tid)
+        # Concurrent claimer still owns the task — not restored to done,
+        # not auto-blocked by the restore path's failure counter.
+        assert task.status == "running", (
+            f"CAS miss must leave concurrent claimer in place, got {task.status}"
+        )
+        assert task.claim_lock == f"{host_prefix}:racer"
+        assert task.current_run_id is not None
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds
+        assert "gave_up" not in kinds
+    finally:
+        conn.close()
+
+
 def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
     """A worker that exited non-zero (real error / crash) uses the
     normal counter path — one failure doesn't trip the breaker.

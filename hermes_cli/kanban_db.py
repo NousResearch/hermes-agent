@@ -6602,8 +6602,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # write_txn so can't nest). ``protocol_violation`` flags the
     # clean-exit-but-still-running case so we can trip the breaker
     # immediately instead of incrementing by 1.
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    crash_details: list[tuple[str, int, str, bool, str, Optional[int]]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text, run_id)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
@@ -6717,7 +6717,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text, run_id)
                     )
     # Outside the main txn: increment the unified failure counter for
     # each crashed task. If the breaker trips, the task transitions
@@ -6733,15 +6733,71 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _ in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for tid, pid, claimer, protocol_violation, error_text, run_id in crash_details:
             fp = _error_fingerprint(error_text)
             is_systemic = (
                 not protocol_violation
                 and _fp_counts.get(fp, 0) >= 3
             )
+            if protocol_violation:
+                # A prior completed run is only evidence of *accidental*
+                # re-entry when nobody deliberately re-queued the task after
+                # that success. Explicit re-queues (dashboard drag done→ready
+                # emits ``status``; promote/unblock/reclaim emit their own
+                # kinds) are new work — if that attempt clean-exits without
+                # kanban_complete, still trip the breaker. Matches the
+                # re-queue bypass in ``check_respawn_guard`` (status /
+                # promoted / unblocked / reclaimed after completion).
+                prior_done = conn.execute(
+                    "SELECT ended_at FROM task_runs "
+                    "WHERE task_id = ? AND status = 'done' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (tid,),
+                ).fetchone()
+                if prior_done:
+                    completed_at = int(prior_done["ended_at"] or 0)
+                    requeued_after = conn.execute(
+                        "SELECT 1 FROM task_events "
+                        "WHERE task_id = ? AND created_at >= ? "
+                        "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+                        "LIMIT 1",
+                        (tid, completed_at),
+                    ).fetchone()
+                    if not requeued_after:
+                        restore_at = prior_done["ended_at"] or int(time.time())
+                        with write_txn(conn):
+                            # CAS: only restore while this is still the
+                            # released crashed attempt. The crash path
+                            # already flipped running→ready and cleared
+                            # claim/run; if another claimer raced in,
+                            # leave their attempt alone.
+                            cur = conn.execute(
+                                "UPDATE tasks SET status = 'done', "
+                                "completed_at = COALESCE(completed_at, ?), "
+                                "consecutive_failures = 0, "
+                                "last_failure_error = NULL, "
+                                "block_kind = NULL, "
+                                "block_recurrences = 0 "
+                                "WHERE id = ? AND status = 'ready' "
+                                "AND claim_lock IS NULL "
+                                "AND current_run_id IS NULL",
+                                (restore_at, tid),
+                            )
+                            if cur.rowcount == 1 and run_id is not None:
+                                conn.execute(
+                                    "UPDATE task_runs SET status = 'blocked', "
+                                    "error = 'Worker restored — task already "
+                                    "completed in prior run' "
+                                    "WHERE id = ?",
+                                    (run_id,),
+                                )
+                        # Restore hit or CAS miss: do not record a failure.
+                        # On hit the completed history owns the task; on miss
+                        # a concurrent claimer already owns it.
+                        continue
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,

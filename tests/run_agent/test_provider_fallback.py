@@ -182,6 +182,42 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_custom_fallback_loads_named_custom_credential_pool(self):
+        """Custom fallback endpoints must attach the matching custom:<name> pool."""
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "fallback-model",
+                "base_url": "https://fallback.example/v1",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent._credential_pool = None
+        fallback_pool = MagicMock()
+        fallback_pool.has_credentials.return_value = True
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(
+                        base_url="https://fallback.example/v1",
+                        api_key="fallback-key",
+                    ),
+                    "fallback-model",
+                ),
+            ),
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                return_value="custom:fallback",
+            ),
+            patch("agent.credential_pool.load_pool", return_value=fallback_pool) as load_pool,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        load_pool.assert_called_once_with("custom:fallback")
+        assert agent._credential_pool is fallback_pool
+
     def test_anthropic_host_custom_provider_uses_anthropic_messages(self):
         """A custom provider on the native api.anthropic.com host (no
         "/anthropic" path suffix, name != "anthropic") must resolve to the

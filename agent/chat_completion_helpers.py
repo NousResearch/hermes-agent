@@ -1521,10 +1521,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # entries with different routing) the pool is preserved.  When the
         # providers differ, load the fallback provider's own pool if one exists
         # so provider-specific rotation continues to work after the switch.
+        fallback_pool_provider = fb_provider
+        if fb_provider == "custom":
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+
+                fallback_pool_provider = (
+                    get_custom_provider_pool_key(fb_base_url, provider_name=str(fb.get("provider") or ""))
+                    or fb_provider
+                )
+            except Exception:
+                fallback_pool_provider = fb_provider
         _existing_pool = getattr(agent, "_credential_pool", None)
         if _existing_pool is not None:
             _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
-            if _pool_provider and _pool_provider != fb_provider:
+            if _pool_provider and _pool_provider != fallback_pool_provider:
                 logger.info(
                     "Fallback to %s/%s: clearing primary credential pool "
                     "(pool_provider=%s) to prevent cross-provider contamination",
@@ -1535,7 +1546,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             try:
                 from agent.credential_pool import load_pool
 
-                fallback_pool = load_pool(fb_provider)
+                fallback_pool = load_pool(fallback_pool_provider)
                 if fallback_pool and fallback_pool.has_credentials():
                     agent._credential_pool = fallback_pool
                     logger.info(

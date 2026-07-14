@@ -84,6 +84,20 @@ def test_session_source_uses_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_SOURCE") == ""
 
 
+def test_cron_marker_is_task_local_and_suppresses_stale_process_state(monkeypatch):
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    interactive_tokens = set_session_vars(platform="telegram")
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+    clear_session_vars(interactive_tokens)
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+    cron_tokens = set_session_vars(cron_session=True)
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
+    clear_session_vars(cron_tokens)
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)

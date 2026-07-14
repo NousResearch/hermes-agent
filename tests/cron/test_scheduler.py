@@ -958,13 +958,26 @@ class TestDeliverResultErrorReturns:
 
 
 class TestRunJobSessionPersistence:
-    def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
+    def test_run_job_passes_session_db_and_cron_platform(self, tmp_path, monkeypatch):
+        from gateway.session_context import get_session_env
+
         job = {
             "id": "test-job",
             "name": "test",
             "prompt": "hello",
         }
         fake_db = MagicMock()
+        cron_contexts = []
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+        def run_conversation(*_args, **_kwargs):
+            cron_contexts.append(
+                (
+                    get_session_env("HERMES_CRON_SESSION"),
+                    os.environ.get("HERMES_CRON_SESSION"),
+                )
+            )
+            return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -982,11 +995,14 @@ class TestRunJobSessionPersistence:
              ), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent.run_conversation.side_effect = run_conversation
             mock_agent_cls.return_value = mock_agent
 
             success, output, final_response, error = run_job(job)
 
+        assert cron_contexts == [("1", None)]
+        assert "HERMES_CRON_SESSION" not in os.environ
+        assert get_session_env("HERMES_CRON_SESSION") == ""
         assert success is True
         assert error is None
         assert final_response == "ok"

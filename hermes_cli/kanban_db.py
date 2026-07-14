@@ -1888,6 +1888,17 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
+        # Skipping the cross-process init lock does NOT mean skipping the health
+        # check. Health is a separate concern from "already initialized": a DB
+        # that was healthy at first-open can be torn later (e.g. an interrupted
+        # checkpoint), and a long-lived writer that only ever took this fast
+        # path would keep opening and checkpointing the damaged file forever —
+        # the amplification loop the TTL guard exists to stop. The guard is
+        # read-only and takes no cross-process lock, so it does not reintroduce
+        # the #36644 stall this fast path exists to avoid; on a TTL cache hit it
+        # is a dict lookup. Run it before the r/w open so a confirmed-damage
+        # verdict quarantines and raises with no connection to unwind.
+        _guard_existing_db_is_healthy(path)
         conn = _sqlite_connect(path)
         try:
             conn.row_factory = sqlite3.Row
@@ -1895,7 +1906,12 @@ def connect(
                 from hermes_state import apply_wal_with_fallback
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
                 conn.execute("PRAGMA synchronous=FULL")
-                conn.execute("PRAGMA wal_autocheckpoint=100")
+                # 1000 (SQLite default; was 100) on this path too: steady-state
+                # connects are the common case for a long-lived writer, so the
+                # checkpoint cadence here matters as much as on the init path.
+                # See the matching note in the init path below for the full
+                # torn-write / contention-window rationale.
+                conn.execute("PRAGMA wal_autocheckpoint=1000")
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA secure_delete=ON")
                 conn.execute("PRAGMA cell_size_check=ON")

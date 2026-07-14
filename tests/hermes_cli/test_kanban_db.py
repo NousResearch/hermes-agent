@@ -4966,6 +4966,92 @@ def test_connect_sets_wal_autocheckpoint_1000(tmp_path):
     conn.close()
 
 
+def test_connect_sets_wal_autocheckpoint_1000_on_both_paths(tmp_path):
+    """wal_autocheckpoint must be 1000 on BOTH connect() paths.
+
+    Regression: the ``_INITIALIZED_PATHS`` fast path (the steady-state connect
+    a long-lived writer takes on every tick after first-open) used to leave the
+    setting at 100 while only the first-open init path was raised to 1000. That
+    silently reintroduced ~10x more checkpoint churn on the common path — the
+    exact torn-write / probe-contention window the raise to 1000 was meant to
+    shrink. Assert both the init connect and a subsequent fast-path connect.
+    """
+    db = tmp_path / "kanban.db"
+    resolved = str(db.resolve())
+    kb._INITIALIZED_PATHS.discard(resolved)
+
+    # First connect: slow/init path. Populates _INITIALIZED_PATHS.
+    conn = kb.connect(db_path=db)
+    assert resolved in kb._INITIALIZED_PATHS  # next connect takes the fast path
+    assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
+    conn.close()
+
+    # Second connect: fast path (already initialized).
+    conn = kb.connect(db_path=db)
+    assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
+    conn.close()
+
+
+def test_connect_fast_path_reprobes_health_after_ttl(tmp_path, monkeypatch):
+    """A post-init connect() re-probes health on the TTL — end to end.
+
+    Regression for the fast-path blind spot: connect() returns early for a path
+    already in ``_INITIALIZED_PATHS`` (the #36644 no-cross-process-lock
+    optimization). If that early return skips the health guard entirely, a
+    long-lived writer that first connected while healthy would keep opening and
+    checkpointing a later-torn DB *forever* — the amplification loop the TTL
+    guard exists to stop, reintroduced on the hot path. This drives the whole
+    thing through ``connect()`` (not the guard in isolation) and asserts: within
+    the TTL the fast path does not re-probe (bounded cost), past the TTL it does
+    re-probe exactly once, and a persistent-damage verdict fails the connect
+    closed instead of opening + checkpointing the file.
+    """
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    fake_now = [1000.0]
+    monkeypatch.setattr(kb.time, "monotonic", lambda: fake_now[0])
+    monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
+
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._LAST_HEALTH_OK.pop(resolved, None)
+
+    # Init, then a second (fast-path) connect while healthy stamps the TTL
+    # cache from the fast path's own guard call.
+    kb.connect(db_path=db_path).close()
+    assert resolved in kb._INITIALIZED_PATHS
+    kb.connect(db_path=db_path).close()  # fast path, healthy → stamps "ok"
+    assert kb._LAST_HEALTH_OK.get(resolved) == 1000.0
+
+    # Spy on the probe to prove the fast path actually consults it rather than
+    # skipping health for the whole process lifetime.
+    calls = []
+    real_probe = kb._readonly_probe
+    monkeypatch.setattr(
+        kb, "_readonly_probe", lambda p: (calls.append(p), real_probe(p))[1]
+    )
+
+    # Within the TTL: cache hit, no re-probe.
+    fake_now[0] = 1000.0 + kb._HEALTH_CHECK_TTL_SECONDS - 1
+    kb.connect(db_path=db_path).close()
+    assert calls == []
+
+    # Past the TTL: the fast path re-probes (exactly once for this connect).
+    fake_now[0] = 1000.0 + kb._HEALTH_CHECK_TTL_SECONDS + 1
+    kb.connect(db_path=db_path).close()
+    assert len(calls) == 1
+
+    # And when that re-probe reports persistent damage, the fast path fails
+    # closed rather than opening + checkpointing the file.
+    fake_now[0] = 1000.0 + 2 * kb._HEALTH_CHECK_TTL_SECONDS + 2
+    monkeypatch.setattr(
+        kb, "_readonly_probe",
+        lambda _p: (kb._RO_DAMAGE, "integrity_check returned 'malformed'"),
+    )
+    with pytest.raises(kb.KanbanDbCorruptError):
+        kb.connect(db_path=db_path)
+    assert resolved not in kb._LAST_HEALTH_OK
+
+
 def test_write_txn_check_reads_correct_header_fields(tmp_path):
     """Synthetic DB file with mismatched header page_count triggers the check."""
     import struct

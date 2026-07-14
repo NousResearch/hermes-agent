@@ -1813,17 +1813,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
 
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
+    An existing credential pool is authoritative. If it has no selectable
+    runtime entry (including a broker Keychain resolution failure), fail closed
+    instead of falling back to the legacy singleton OAuth token.
     """
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
+        return _pool_runtime_api_key(entry) or None
 
     try:
         from hermes_cli.auth import _read_codex_tokens
@@ -2503,13 +2499,12 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-        else:
-            codex_token = _read_codex_access_token()
-            if not codex_token:
-                return None, None
-            base_url = _CODEX_AUX_BASE_URL
+        if not codex_token:
+            return None, None
+        base_url = (
+            _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL)
+            or _CODEX_AUX_BASE_URL
+        )
     else:
         codex_token = _read_codex_access_token()
         if not codex_token:
@@ -3364,13 +3359,18 @@ def _recoverable_pool_provider(
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
+def _recover_provider_pool(
+    provider: str,
+    exc: Exception,
+    *,
+    failed_api_key: str = "",
+    failed_base_url: str = "",
+) -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
-    ``failed_api_key`` is the API key that was actually used for the failing
-    request.  Passing it lets mark_exhausted_and_rotate identify the correct
-    pool entry even when another process has already rotated the pool (which
-    would leave current() as None, causing the wrong entry to be marked).
+    ``failed_api_key`` and ``failed_base_url`` identify the exact runtime
+    credential. The route disambiguates broker entries that intentionally
+    share one local client key but target different account aliases.
     """
     normalized = _normalize_aux_provider(provider)
     try:
@@ -3384,6 +3384,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     status_code = getattr(exc, "status_code", None)
     error_context = _pool_error_context(exc)
     hint = failed_api_key or None
+    route_hint = failed_base_url or None
 
     if _is_auth_error(exc):
         refreshed = pool.try_refresh_current()
@@ -3394,6 +3395,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
             api_key_hint=hint,
+            base_url_hint=route_hint,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -3406,6 +3408,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context,
             api_key_hint=hint,
+            base_url_hint=route_hint,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -3429,6 +3432,7 @@ def _retry_same_provider_sync(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    failure_hints: Optional[Dict[str, str]] = None,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -3453,6 +3457,15 @@ def _retry_same_provider_sync(
         )
 
     retry_base = str(getattr(retry_client, "base_url", "") or "")
+    if failure_hints is not None:
+        failure_hints.update(
+            {
+                "failed_api_key": str(
+                    getattr(retry_client, "api_key", "") or ""
+                ),
+                "failed_base_url": retry_base,
+            }
+        )
     retry_kwargs = _build_call_kwargs(
         resolved_provider,
         retry_model or final_model,
@@ -3486,6 +3499,7 @@ async def _retry_same_provider_async(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    failure_hints: Optional[Dict[str, str]] = None,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -3510,6 +3524,15 @@ async def _retry_same_provider_async(
         )
 
     retry_base = str(getattr(retry_client, "base_url", "") or "")
+    if failure_hints is not None:
+        failure_hints.update(
+            {
+                "failed_api_key": str(
+                    getattr(retry_client, "api_key", "") or ""
+                ),
+                "failed_base_url": retry_base,
+            }
+        )
     retry_kwargs = _build_call_kwargs(
         resolved_provider,
         retry_model or final_model,
@@ -5523,7 +5546,7 @@ def resolve_vision_provider_client(
 
 def get_auxiliary_extra_body() -> dict:
     """Return extra_body kwargs for auxiliary API calls.
-    
+
     Includes Nous Portal product tags when the auxiliary client is backed
     by Nous Portal. Returns empty dict otherwise.
     """
@@ -6863,11 +6886,19 @@ def call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+            if _recover_provider_pool(
+                pool_provider,
+                recovery_err,
+                failed_api_key=_client_api_key,
+                failed_base_url=str(
+                    getattr(client, "base_url", "") or resolved_base_url or ""
+                ),
+            ):
                 logger.info(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
+                retry_failure_hints: Dict[str, str] = {}
                 try:
                     return _retry_same_provider_sync(
                         task=task,
@@ -6884,6 +6915,7 @@ def call_llm(
                         tools=tools,
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        failure_hints=retry_failure_hints,
                     )
                 except Exception as retry2_err:
                     # The rotated key also hit a quota/auth wall.  Mark it
@@ -6893,7 +6925,11 @@ def call_llm(
                     # alternative providers can still serve the request.
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
-                        _recover_provider_pool(pool_provider, retry2_err)
+                        _recover_provider_pool(
+                            pool_provider,
+                            retry2_err,
+                            **retry_failure_hints,
+                        )
                         first_err = retry2_err
                     else:
                         raise
@@ -7406,11 +7442,19 @@ async def async_call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+            if _recover_provider_pool(
+                pool_provider,
+                recovery_err,
+                failed_api_key=_client_api_key,
+                failed_base_url=str(
+                    getattr(client, "base_url", "") or resolved_base_url or ""
+                ),
+            ):
                 logger.info(
                     "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
+                retry_failure_hints: Dict[str, str] = {}
                 try:
                     return await _retry_same_provider_async(
                         task=task,
@@ -7426,11 +7470,16 @@ async def async_call_llm(
                         tools=tools,
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        failure_hints=retry_failure_hints,
                     )
                 except Exception as retry2_err:
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
-                        _recover_provider_pool(pool_provider, retry2_err)
+                        _recover_provider_pool(
+                            pool_provider,
+                            retry2_err,
+                            **retry_failure_hints,
+                        )
                         first_err = retry2_err
                     else:
                         raise

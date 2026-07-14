@@ -283,6 +283,7 @@ from typing import Optional
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
+from hermes_cli.subcommands.oauth_broker import build_oauth_broker_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
@@ -2465,6 +2466,15 @@ def cmd_gateway(args):
     from hermes_cli.gateway import gateway_command
 
     gateway_command(args)
+
+
+def cmd_oauth_broker(args):
+    """Loopback OAuth broker for Codex accounts (A/B/C)."""
+    from hermes_cli.oauth_broker import cmd_oauth_broker as _impl
+
+    rc = _impl(args)
+    if isinstance(rc, int) and rc != 0:
+        raise SystemExit(rc)
 
 
 def cmd_proxy(args):
@@ -12997,6 +13007,11 @@ def main():
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
+
+    # =========================================================================
+    # oauth-broker command  (parser built in hermes_cli/subcommands/oauth_broker.py)
+    # =========================================================================
+    build_oauth_broker_parser(subparsers, cmd_oauth_broker=cmd_oauth_broker)
 
     # =========================================================================
     # lsp command

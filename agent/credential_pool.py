@@ -94,6 +94,29 @@ AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
 SOURCE_MANUAL_DEVICE_CODE = f"{SOURCE_MANUAL}:device_code"
+# Borrowed reference entries whose secret lives in the macOS Keychain and is
+# resolved only at access time (e.g. the OAuth broker local client key).
+# Persisted rows keep the keychain:// URI and a fingerprint, never the value.
+SOURCE_KEYCHAIN_REFERENCE = "keychain_reference"
+
+
+class KeychainReferenceUnresolved(RuntimeError):
+    """Fail-closed resolution failure for a ``keychain_reference`` entry.
+
+    Raised instead of returning any fallback value: resolution never falls
+    back to environment variables or another profile's secret scope. The
+    message carries entry identifiers and a category only — never secrets.
+    """
+
+    def __init__(self, *, provider: str, entry_id: str, category: str) -> None:
+        self.provider = provider
+        self.entry_id = entry_id
+        self.category = category
+        super().__init__(
+            "credential pool: keychain reference unresolved for "
+            f"provider {provider} ({category})"
+        )
+
 
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
@@ -125,6 +148,9 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    # Archived-by-migration marker (OAuth broker rollout): a truthy value
+    # removes the entry from rotation entirely until rollback re-enables it.
+    "disabled",
 })
 
 
@@ -219,6 +245,8 @@ class PooledCredential:
 
     @property
     def runtime_api_key(self) -> str:
+        if self.source == SOURCE_KEYCHAIN_REFERENCE:
+            return self._resolve_keychain_reference()
         if self.provider == "nous":
             # Nous stores the runtime inference credential in agent_key for
             # compatibility. It must be a NAS invoke JWT.
@@ -238,6 +266,39 @@ class PooledCredential:
                     return token.strip()
             return ""
         return str(self.access_token or "")
+
+    def _resolve_keychain_reference(self) -> str:
+        """Resolve the entry's ``keychain://`` reference at access time.
+
+        The value is returned to the caller and never cached on the entry or
+        written anywhere. Every failure raises ``KeychainReferenceUnresolved``
+        — there is no environment or cross-profile fallback.
+        """
+        import agent.keychain_secret as keychain_secret_mod
+
+        ref_uri = self.extra.get("secret_source")
+        if not isinstance(ref_uri, str) or not ref_uri:
+            raise KeychainReferenceUnresolved(
+                provider=self.provider,
+                entry_id=self.id,
+                category="missing_secret_source",
+            )
+        try:
+            ref = keychain_secret_mod.parse_keychain_uri(ref_uri)
+        except ValueError as exc:
+            raise KeychainReferenceUnresolved(
+                provider=self.provider,
+                entry_id=self.id,
+                category="invalid_secret_source",
+            ) from exc
+        try:
+            return keychain_secret_mod.read_keychain_secret(ref)
+        except keychain_secret_mod.KeychainError as exc:
+            raise KeychainReferenceUnresolved(
+                provider=self.provider,
+                entry_id=self.id,
+                category=exc.category,
+            ) from exc
 
     @property
     def runtime_base_url(self) -> Optional[str]:
@@ -1432,11 +1493,28 @@ class CredentialPool:
         entries_to_prune: List[str] = []
         available: List[PooledCredential] = []
         for entry in self._entries:
+            # Archived by the OAuth broker migration: excluded from selection,
+            # sync, refresh, cooldown-clearing, and pruning until a rollback
+            # re-enables the entry (docs/design/oauth-broker.md §七).
+            if entry.extra.get("disabled") is True:
+                continue
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load.  A stale duplicate row
             # can remain unhydrated; never lease or select it as an empty key.
-            if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
-                continue
+            if entry.auth_type == AUTH_TYPE_API_KEY:
+                try:
+                    if not entry.runtime_api_key:
+                        continue
+                except KeychainReferenceUnresolved as exc:
+                    # Fail closed per entry: an unresolvable Keychain
+                    # reference must not sink the pool's other entries.
+                    logger.warning(
+                        "credential pool: skipping unresolved %s Keychain "
+                        "reference (%s)",
+                        entry.provider,
+                        exc.category,
+                    )
+                    continue
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
@@ -1586,19 +1664,75 @@ class CredentialPool:
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
+        base_url_hint: Optional[str] = None,
+        entry_id_hint: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = None
-            if api_key_hint:
-                # Prefer the specific entry whose API key matches the one that
-                # actually failed.  When this pool was freshly loaded from disk
-                # (another process already rotated), current() is None and
-                # _select_unlocked() would return the NEXT key — the wrong one.
+            explicit_hint = bool(entry_id_hint or api_key_hint or base_url_hint)
+
+            if entry_id_hint:
                 entry = next(
-                    (e for e in self._entries if e.runtime_api_key == api_key_hint),
+                    (candidate for candidate in self._entries if candidate.id == entry_id_hint),
                     None,
                 )
-            if entry is None:
+                if entry is None:
+                    logger.warning(
+                        "credential pool: entry id hint did not match; "
+                        "refusing to mark another entry",
+                    )
+                    return None
+
+            if entry is None and api_key_hint:
+                key_matches: List[PooledCredential] = []
+                for candidate in self._entries:
+                    try:
+                        if candidate.runtime_api_key == api_key_hint:
+                            key_matches.append(candidate)
+                    except KeychainReferenceUnresolved:
+                        continue
+
+                if base_url_hint:
+                    normalized_base = str(base_url_hint).strip().rstrip("/")
+                    key_matches = [
+                        candidate
+                        for candidate in key_matches
+                        if str(candidate.runtime_base_url or "").strip().rstrip("/")
+                        == normalized_base
+                    ]
+
+                if len(key_matches) == 1:
+                    entry = key_matches[0]
+                elif len(key_matches) > 1:
+                    logger.warning(
+                        "credential pool: ambiguous credential hint matched %d entries; refusing to guess",
+                        len(key_matches),
+                    )
+                    return None
+                else:
+                    logger.warning(
+                        "credential pool: credential hint matched no entries; refusing to mark another entry"
+                    )
+                    return None
+
+            if entry is None and base_url_hint:
+                normalized_base = str(base_url_hint).strip().rstrip("/")
+                base_matches = [
+                    candidate
+                    for candidate in self._entries
+                    if str(candidate.runtime_base_url or "").strip().rstrip("/")
+                    == normalized_base
+                ]
+                if len(base_matches) == 1:
+                    entry = base_matches[0]
+                else:
+                    logger.warning(
+                        "credential pool: base URL hint matched %d entries; refusing to guess",
+                        len(base_matches),
+                    )
+                    return None
+
+            if entry is None and not explicit_hint:
                 entry = self.current() or self._select_unlocked()
             if entry is None:
                 return None

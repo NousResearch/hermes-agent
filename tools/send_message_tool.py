@@ -1599,7 +1599,9 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
     except ImportError:
         return _error("QQBot adapter module not available.")
 
-    adapter = get_active_adapter()
+    extra = pconfig.extra or {}
+    profile_name = str(extra.get("profile_name") or "default").strip()
+    adapter = get_active_adapter(profile_name)
     if adapter is None:
         return _error(
             "QQBot adapter is not running. "

@@ -3270,6 +3270,6 @@ class QQAdapter(BasePlatformAdapter):
         return False
 
 
-def get_active_adapter() -> Optional["QQAdapter"]:
+def get_active_adapter(profile_name: Optional[str] = None) -> Optional["QQAdapter"]:
     """Return the currently connected QQAdapter singleton, or None."""
-    return QQAdapter.get_active()
+    return QQAdapter.get_active(profile_name)

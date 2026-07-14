@@ -1578,6 +1578,84 @@ class TestEnsureClientReloadsEnv:
             "viking://user/peers/hermes/memories/"
         )
 
+    def test_handle_tool_call_after_reload_to_local_endpoint_starts_runtime_recovery(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from hermes_cli import config as hermes_config
+
+        for key in (
+            "OPENVIKING_ENDPOINT",
+            "OPENVIKING_API_KEY",
+            "OPENVIKING_ACCOUNT",
+            "OPENVIKING_USER",
+            "OPENVIKING_AGENT",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        env_path = hermes_home / ".env"
+        env_path.write_text(
+            "OPENVIKING_ENDPOINT=https://openviking.example\n"
+            "OPENVIKING_API_KEY=sk-old\n",
+            encoding="utf-8",
+        )
+        assert hermes_config.reload_env() >= 1
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+                self.api_key = api_key
+                self.posts = []
+
+            def health(self):
+                return self.endpoint == "https://openviking.example"
+
+            def post(self, path, payload=None, **kwargs):
+                self.posts.append((path, payload or {}))
+                return {"result": {"written_bytes": 11}}
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        provider = OpenVikingMemoryProvider()
+        provider.initialize("session-1")
+
+        assert provider._client is not None
+        assert provider._client.endpoint == "https://openviking.example"
+
+        env_path.write_text(
+            "OPENVIKING_ENDPOINT=http://127.0.0.1:31933\n"
+            "OPENVIKING_API_KEY=\n",
+            encoding="utf-8",
+        )
+        assert hermes_config.reload_env() >= 1
+
+        start_calls = []
+        waiter_calls = []
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_start_local_openviking_server",
+            lambda endpoint: start_calls.append(endpoint) or (True, "started"),
+        )
+        monkeypatch.setattr(
+            provider,
+            "_start_runtime_openviking_waiter",
+            lambda **kwargs: waiter_calls.append(kwargs),
+            raising=False,
+        )
+
+        out = json.loads(provider.handle_tool_call(
+            "viking_remember",
+            {"content": "stable fact"},
+        ))
+
+        assert "not connected" in out["error"]
+        assert provider._client is None
+        assert start_calls == ["http://127.0.0.1:31933"]
+        assert len(waiter_calls) == 1
+
     def test_handle_tool_call_uses_ensure_client(self, monkeypatch):
         provider = OpenVikingMemoryProvider()
         provider._env_refresh_enabled = True

@@ -2280,7 +2280,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if health_state == "responded":
             logger.warning("%s OpenViking memory disabled until config changes.", health_message)
         else:  # unreachable
-            logger.warning("OpenViking server at %s is not reachable", endpoint)
+            self._handle_runtime_openviking_unreachable()
         self._client = None
         return None
 

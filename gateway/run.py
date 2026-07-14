@@ -16608,7 +16608,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if agent is None:
             return
         try:
-            if hasattr(agent, "release_clients") and hasattr(agent, "shutdown_memory_provider"):
+            if hasattr(agent, "shutdown_memory_provider"):
                 # Soft cache eviction must not hard-close terminal/browser/bg
                 # process state, but memory providers are tied to this Python
                 # AIAgent instance. Providers such as MemOS own keepalive

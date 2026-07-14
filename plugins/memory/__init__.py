@@ -98,7 +98,12 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
 
     # 1. Bundled providers (plugins/memory/<name>/)
     if _MEMORY_PLUGINS_DIR.is_dir():
-        for child in sorted(_MEMORY_PLUGINS_DIR.iterdir()):
+        try:
+            bundled_children = sorted(_MEMORY_PLUGINS_DIR.iterdir())
+        except OSError as exc:
+            logger.debug("Skipping inaccessible bundled memory provider dir %s: %s", _MEMORY_PLUGINS_DIR, exc)
+            bundled_children = []
+        for child in bundled_children:
             if child.name.startswith(("_", ".")):
                 continue
             try:
@@ -115,7 +120,12 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     # 2. User-installed providers ($HERMES_HOME/plugins/<name>/)
     user_dir = _get_user_plugins_dir()
     if user_dir:
-        for child in sorted(user_dir.iterdir()):
+        try:
+            user_children = sorted(user_dir.iterdir())
+        except OSError as exc:
+            logger.debug("Skipping inaccessible user memory provider dir %s: %s", user_dir, exc)
+            user_children = []
+        for child in user_children:
             if child.name.startswith(("_", ".")):
                 continue
             try:

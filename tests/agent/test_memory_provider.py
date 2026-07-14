@@ -537,6 +537,32 @@ class TestUserInstalledProviderDiscovery:
         names = [n for n, _, _ in providers]
         assert "notmemory" not in names
 
+    def test_discover_survives_inaccessible_user_plugins_dir(self, monkeypatch):
+        """discover_memory_providers() must not crash if the user plugins dir
+        itself becomes inaccessible mid-scan (permission change, race
+        deletion, or a symlink to a now-missing target).
+
+        Regression: _iter_provider_dirs() called user_dir.iterdir() unguarded;
+        an OSError from the directory itself (not a child) aborted discovery
+        entirely instead of just skipping the user-installed providers.
+        """
+        from plugins.memory import discover_memory_providers
+
+        class _BrokenDir:
+            def __bool__(self):
+                return True
+
+            def iterdir(self):
+                raise OSError("simulated: directory disappeared mid-scan")
+
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: _BrokenDir(),
+        )
+        providers = discover_memory_providers()
+        names = [n for n, _, _ in providers]
+        assert "holographic" in names  # bundled providers still discovered
+
     def test_load_user_plugin_with_relative_import(self, tmp_path, monkeypatch):
         """User plugins may import sibling modules with relative imports.
 

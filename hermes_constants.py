@@ -13,7 +13,7 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 
 
-_profile_fallback_warned: bool = False
+_cached_home: Path | None = None
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
@@ -76,38 +76,33 @@ def get_hermes_home() -> Path:
     if val:
         return Path(val)
 
-    # Guard: if a non-default profile is sticky-active, warn once that
-    # the fallback to the default profile is almost certainly wrong.
-    global _profile_fallback_warned
-    if not _profile_fallback_warned:
-        try:
-            fallback_home = _get_platform_default_hermes_home()
-            active_path = fallback_home / "active_profile"
-            active = active_path.read_text().strip() if active_path.exists() else ""
-        except (UnicodeDecodeError, OSError):
-            active = ""
-        if active and active != "default":
-            _profile_fallback_warned = True
-            # Write directly to stderr.  We intentionally do NOT route this
-            # through ``logging`` because (a) this function is called at
-            # module-import time from 30+ sites, often before logging is
-            # configured, and (b) root-logger propagation would double-emit
-            # on consoles where a StreamHandler is already attached.
-            msg = (
-                f"[HERMES_HOME fallback] HERMES_HOME is unset but active "
-                f"profile is {active!r}. Falling back to {fallback_home}, which "
-                f"is the DEFAULT profile — not {active!r}. Any data this "
-                f"process writes will land in the wrong profile. The "
-                f"subprocess spawner should pass HERMES_HOME explicitly "
-                f"(see issue #18594)."
-            )
-            try:
-                sys.stderr.write(msg + "\n")
-                sys.stderr.flush()
-            except Exception:
-                pass
+    # Return cached home so long-running processes that read the
+    # active_profile at first call stay pinned to one profile.
+    global _cached_home
+    if _cached_home is not None:
+        return _cached_home
 
-    return _get_platform_default_hermes_home()
+    # No ContextVar override and no HERMES_HOME env var — read the
+    # sticky active_profile file.  This makes profile selection
+    # self-contained so subprocesses that do NOT inherit HERMES_HOME
+    # still land in the correct profile directory instead of silently
+    # falling back to the default.  See issue #18594.
+    fallback_home = _get_platform_default_hermes_home()
+    try:
+        active_path = fallback_home / "active_profile"
+        active = active_path.read_text().strip() if active_path.exists() else ""
+    except (UnicodeDecodeError, OSError):
+        active = ""
+
+    if active and active != "default":
+        try:
+            from hermes_cli.profiles import resolve_profile_env
+            _cached_home = Path(resolve_profile_env(active))
+            return _cached_home
+        except Exception:
+            pass  # Profile dir missing — fall through to default.
+
+    return fallback_home
 
 
 def get_default_hermes_root() -> Path:

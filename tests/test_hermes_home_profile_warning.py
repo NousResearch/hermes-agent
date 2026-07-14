@@ -49,29 +49,29 @@ class TestGetHermesHomeProfileWarning:
         assert result == tmp_path / ".hermes"
         assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
-    def test_named_profile_unset_home_warns_once(
+    def test_named_profile_unset_home_resolves_profile(
         self, fresh_constants, tmp_path, capsys
     ):
-        """active_profile=coder + HERMES_HOME unset → warn loudly, still return fallback."""
+        """active_profile=coder + HERMES_HOME unset → resolve profile path, no warning."""
         hermes_dir = tmp_path / ".hermes"
         hermes_dir.mkdir()
         (hermes_dir / "active_profile").write_text("coder\n")
+        profile_dir = hermes_dir / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
 
         result = fresh_constants.get_hermes_home()
 
-        # 1. Still returns the fallback — no import-time crash
-        assert result == tmp_path / ".hermes"
-        # 2. Stderr got the warning exactly once
-        err = capsys.readouterr().err
-        assert err.count("HERMES_HOME fallback") == 1
-        assert "'coder'" in err
-        assert "#18594" in err
+        # 1. Returns the resolved profile path — no falling back to default
+        assert result == profile_dir, (
+            f"Expected {profile_dir}, got {result}"
+        )
+        # 2. No warning — resolution is now silent
+        assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
-        # 3. One-shot: second and third calls don't re-warn
+        # 3. Cached: second call returns same value, no re-read
         fresh_constants.get_hermes_home()
         fresh_constants.get_hermes_home()
-        err2 = capsys.readouterr().err
-        assert "HERMES_HOME fallback" not in err2
+        assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
     def test_hermes_home_set_suppresses_warning(
         self, fresh_constants, tmp_path, capsys, monkeypatch

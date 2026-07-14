@@ -1912,6 +1912,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # Build API messages, stripping internal-only fields
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
         _needs_sanitize = agent._should_sanitize_tool_calls()
+        from agent.transports.chat_completions import _base_url_consumes_reasoning_details
+        _strip_reasoning_details = not _base_url_consumes_reasoning_details(agent.base_url)
         api_messages = []
         for msg in messages:
             api_msg = msg.copy()
@@ -1927,6 +1929,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers,
             # timestamp (preserved on gateway user replay entries for the
             # stale-confirmation expiry check — #47868 rejection class),
+            # reasoning_details (kept only for endpoints that consume the
+            # replay — OpenRouter/Nous; strict providers reject it),
             # and every Hermes-internal underscore-prefixed scaffolding key.
             for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
                 api_msg.pop(schema_foreign, None)
@@ -1939,6 +1943,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # sidecar-carrying message and re-prefilling the whole transcript
             # at exactly the moment the context is largest.
             substitute_api_content(api_msg)
+            if _strip_reasoning_details:
+                api_msg.pop("reasoning_details", None)
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:

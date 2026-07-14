@@ -3976,6 +3976,70 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_summary_strips_reasoning_details_for_strict_provider(self, agent):
+        """Regression: the max-iterations summary request hand-builds its
+        messages and calls chat.completions.create() directly, bypassing
+        ChatCompletionsTransport.convert_messages() — so it must mirror the
+        reasoning-replay strip: reasoning_details is OpenRouter's replay
+        format and strict providers (Fireworks, Mistral) reject it with
+        'Extra inputs are not permitted'; trajectory-only reasoning must
+        never reach the wire at all."""
+        agent.base_url = "https://api.fireworks.ai/inference/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "fireworks"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning": "trajectory reasoning text",
+                "reasoning_details": [{"type": "thinking", "signature": "sig_1"}],
+            },
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
+        for m in sent_msgs:
+            assert "reasoning" not in m, m
+            assert "reasoning_details" not in m, m
+        # Internal history is untouched — the path copies each message.
+        assert messages[1]["reasoning"] == "trajectory reasoning text"
+        assert messages[1]["reasoning_details"] == [{"type": "thinking", "signature": "sig_1"}]
+
+    def test_summary_keeps_reasoning_details_for_openrouter(self, agent):
+        """OpenRouter consumes replayed reasoning_details for multi-turn
+        reasoning continuity — the summary path must keep the field for it,
+        while still dropping trajectory-only reasoning."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openrouter"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning": "trajectory reasoning text",
+                "reasoning_details": [{"type": "thinking", "signature": "sig_1"}],
+            },
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
+        assistant_sent = [m for m in sent_msgs if m.get("role") == "assistant"]
+        assert assistant_sent, sent_msgs
+        assert assistant_sent[0]["reasoning_details"] == [
+            {"type": "thinking", "signature": "sig_1"}
+        ]
+        assert "reasoning" not in assistant_sent[0]
+
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
         agent._base_url_lower = agent.base_url.lower()

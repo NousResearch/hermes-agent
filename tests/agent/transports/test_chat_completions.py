@@ -114,6 +114,59 @@ class TestChatCompletionsBasic:
                 "google": {"thought_signature": "SIG_123"}
             }, model
 
+    def _msg_with_reasoning_fields(self):
+        return [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "ok",
+             "reasoning": "trajectory reasoning text",
+             "reasoning_details": [
+                 {"type": "thinking", "thinking": "deep", "signature": "sig_1"}
+             ]},
+        ]
+
+    def test_convert_messages_strips_reasoning_fields_for_strict_provider(self, transport):
+        """`reasoning` / `reasoning_details` are OpenRouter reasoning-replay
+        fields, not part of the OpenAI Chat Completions message schema. Strict
+        providers (Fireworks, Mistral) reject payloads containing them with
+        HTTP 400 'Extra inputs are not permitted' — including stale fields
+        inherited from an OpenRouter turn in a mixed-provider session.
+        """
+        msgs = self._msg_with_reasoning_fields()
+        result = transport.convert_messages(
+            msgs, base_url="https://api.fireworks.ai/inference/v1"
+        )
+        assert "reasoning" not in result[1]
+        assert "reasoning_details" not in result[1]
+        assert result[1]["content"] == "ok"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[1]["reasoning"] == "trajectory reasoning text"
+        assert msgs[1]["reasoning_details"][0]["signature"] == "sig_1"
+
+    def test_convert_messages_strips_reasoning_fields_when_base_url_unknown(self, transport):
+        """Default (no base_url supplied) is to strip — safe for strict providers."""
+        msgs = self._msg_with_reasoning_fields()
+        result = transport.convert_messages(msgs)
+        assert "reasoning" not in result[1]
+        assert "reasoning_details" not in result[1]
+
+    def test_convert_messages_keeps_reasoning_details_for_openrouter(self, transport):
+        """OpenRouter (and the OpenRouter-compatible Nous portal) consume
+        replayed `reasoning_details` for multi-turn reasoning continuity —
+        e.g. signed Anthropic thinking blocks on tool-call turns. Keep that
+        field on the wire for those endpoints; trajectory-only `reasoning`
+        is still stripped everywhere, mirroring the main-loop replay build.
+        """
+        for base_url in (
+            "https://openrouter.ai/api/v1",
+            "https://inference-api.nousresearch.com/v1",
+        ):
+            msgs = self._msg_with_reasoning_fields()
+            result = transport.convert_messages(msgs, base_url=base_url)
+            assert result[1]["reasoning_details"][0]["signature"] == "sig_1", base_url
+            assert "reasoning" not in result[1], base_url
+            # Original list untouched (copy-on-write)
+            assert msgs[1]["reasoning"] == "trajectory reasoning text", base_url
+
     def test_convert_messages_strips_tool_name(self, transport):
         """Internal `tool_name` (used for FTS indexing in the SQLite store) is
         not part of the OpenAI Chat Completions schema. Strict providers like

@@ -149,6 +149,55 @@ def test_per_provider_shadowing_is_independent(profile_env):
     assert [e["id"] for e in ant_entries] == ["glob-ant"]
 
 
+def test_profile_optout_does_not_merge_global_pool(profile_env, monkeypatch):
+    """An isolated profile never invokes the root credential-pool loader."""
+    import hermes_cli.auth as auth
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openrouter": [{
+            "id": "glob-1",
+            "label": "global-key",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "sk-or-global",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}))
+    (profile_env["profile"] / "config.yaml").write_text(
+        "credential_pool:\n  global_fallback: false\n"
+    )
+
+    def _root_read_forbidden():
+        raise AssertionError("profile opt-out must not load root auth.json")
+
+    monkeypatch.setattr(auth, "_load_global_auth_store", _root_read_forbidden)
+    assert auth.read_credential_pool("openrouter") == []
+    assert auth.read_credential_pool(None) == {}
+
+
+def test_profile_optout_keeps_local_pool_and_explicit_true_keeps_global(profile_env):
+    """Opt-out is profile-local; explicit true preserves the upstream merge."""
+    from hermes_cli.auth import read_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openrouter": [{"id": "glob-1"}],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openrouter": [{"id": "prof-1"}],
+    }))
+    (profile_env["profile"] / "config.yaml").write_text(
+        "credential_pool:\n  global_fallback: false\n"
+    )
+    assert [entry["id"] for entry in read_credential_pool("openrouter")] == ["prof-1"]
+
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}))
+    (profile_env["profile"] / "config.yaml").write_text(
+        "credential_pool:\n  global_fallback: true\n"
+    )
+    assert [entry["id"] for entry in read_credential_pool("openrouter")] == ["glob-1"]
+
+
 def test_missing_global_auth_file_is_safe(profile_env):
     """Profile processes that never had a global auth.json still work."""
     from hermes_cli.auth import read_credential_pool

@@ -9317,6 +9317,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
+            if event.get_command() == "ping":
+                return await self._handle_ping_command(event)
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
@@ -9338,6 +9340,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _denied = self._check_slash_access(source, _cmd_def_inner.name)
                 if _denied is not None:
                     return _denied
+
+            if _cmd_def_inner and _cmd_def_inner.name == "health":
+                return await self._handle_health_command(event)
 
             # Telegram sends /start for bot launches/deep-links. Treat it as a
             # platform ping, not a user command: no help dump, no agent
@@ -9840,8 +9845,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 
+        if canonical == "ping":
+            return await self._handle_ping_command(event)
+
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "health":
+            return await self._handle_health_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)

@@ -23,6 +23,9 @@ mcp_servers:
 
     # OR
     url: "..."          # HTTP servers
+    # For MCP 2026-07-28+ stateless HTTP servers:
+    # stateless: true
+    # protocol_version: "2026-07-28"
     headers: {}
 
     # Optional HTTP/SSE TLS settings:
@@ -49,6 +52,8 @@ mcp_servers:
 | `args` | list | stdio | Arguments for the subprocess |
 | `env` | mapping | stdio | Environment passed to the subprocess |
 | `url` | string | HTTP | Remote MCP endpoint |
+| `stateless` | bool | HTTP | Use modern/stateless MCP HTTP (2026-07-28+) instead of legacy `initialize` sessions |
+| `protocol_version` | string | HTTP | Protocol version for stateless requests; defaults to `2026-07-28` when stateless mode is enabled |
 | `headers` | mapping | HTTP | Headers for remote server requests |
 | `ssl_verify` | bool or string | HTTP | TLS verification. `true` (default) uses system CAs, `false` disables verification (insecure), or a string path to a custom CA bundle (PEM) |
 | `client_cert` | string or list | HTTP | mTLS client certificate. String = path to a PEM file containing cert + key. List `[cert, key]` = separate files. List `[cert, key, password]` = encrypted key |
@@ -199,6 +204,21 @@ mcp_servers:
       resources: true
       prompts: false
 ```
+
+### Stateless HTTP server (MCP 2026-07-28+)
+
+```yaml
+mcp_servers:
+  modern_api:
+    url: "https://mcp.example.com/mcp"
+    stateless: true
+    protocol_version: "2026-07-28"
+```
+
+Stateless servers skip the legacy `initialize` handshake. Hermes sends every
+request with `_meta.io.modelcontextprotocol/protocolVersion` in the JSON body
+and the required HTTP metadata headers (`MCP-Protocol-Version`, `Mcp-Method`,
+`Mcp-Name` for named operations).
 
 ### TLS client certificate (mTLS)
 

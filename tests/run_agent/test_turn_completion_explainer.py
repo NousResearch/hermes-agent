@@ -81,7 +81,9 @@ def test_explanation_quiet_for_empty_reason():
 def test_explanation_for_empty_response_exhausted():
     out = AIAgent._format_turn_completion_explanation("empty_response_exhausted")
     assert out  # non-empty
-    assert "empty content" in out
+    assert "Model issue:" in out
+    assert "empty content" not in out
+    assert "tool output above" not in out
     assert "continue" in out.lower()
 
 
@@ -159,7 +161,8 @@ def test_run_conversation_empty_exhausted_surfaces_explanation():
     # The user must NOT be left with a bare sentinel; the explanation wins.
     assert result["final_response"] != "(empty)"
     assert result["final_response"].strip() != ""
-    assert "No reply:" in result["final_response"]
+    assert "Model issue:" in result["final_response"]
+    assert "empty content" not in result["final_response"]
 
 
 def test_run_conversation_partial_stream_recovery_surfaces_explanation():
@@ -189,7 +192,7 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
 
     assert result["turn_exit_reason"] == "partial_stream_recovery"
     assert result["final_response"].startswith(recovered)
-    assert "No reply:" in result["final_response"]
+    assert "Model issue:" in result["final_response"]
     assert result["response_previewed"] is False
 
 
@@ -209,4 +212,4 @@ def test_run_conversation_normal_reply_stays_quiet():
 
     assert result["turn_exit_reason"].startswith("text_response")
     assert result["final_response"] == "Done."
-    assert "No reply:" not in result["final_response"]
+    assert "Model issue:" not in result["final_response"]

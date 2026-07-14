@@ -41,6 +41,17 @@ def _make_telegram_bot_source(bot_id: str = "999888777"):
     )
 
 
+def _make_telegram_group_bot_source(bot_id: str = "999888777"):
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100123",
+        chat_type="group",
+        user_id=bot_id,
+        user_name="OtherProfileBot",
+        is_bot=True,
+    )
+
+
 def _make_telegram_human_source(user_id: str = "100200300"):
     return SessionSource(
         platform=Platform.TELEGRAM,
@@ -81,6 +92,22 @@ def test_telegram_bot_not_authorized_when_allow_bots_none(monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "100200300")
 
     assert runner._is_user_authorized(_make_telegram_bot_source("999888777")) is False
+
+
+def test_telegram_group_chat_allowlist_does_not_bypass_allow_bots_none(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "none")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100123")
+
+    assert runner._is_user_authorized(_make_telegram_group_bot_source()) is False
+
+
+def test_telegram_group_bot_allowed_when_allow_bots_enabled(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100123")
+
+    assert runner._is_user_authorized(_make_telegram_group_bot_source()) is True
 
 
 def test_telegram_human_still_checked_against_allowlist_when_bot_policy_set(monkeypatch):

@@ -194,20 +194,41 @@ Use stdio servers when:
 
 ### HTTP servers
 
-HTTP MCP servers are remote endpoints Hermes connects to directly.
+HTTP MCP servers are remote endpoints Hermes connects to directly. By default,
+Hermes uses the legacy MCP SDK path (`initialize` + sessionful Streamable HTTP)
+for compatibility with existing servers.
 
 ```yaml
 mcp_servers:
   remote_api:
     url: "https://mcp.example.com/mcp"
     headers:
-      Authorization: "Bearer ***"
+      Authorization: "<bearer-token>"
 ```
 
 Use HTTP servers when:
 - the MCP server is hosted elsewhere
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
+
+### Stateless HTTP servers (MCP 2026-07-28+)
+
+Modern MCP servers can run without protocol-level sessions or `initialize`.
+Opt in per server with `stateless: true`, `transport: stateless-http`, or
+`protocol_version: "2026-07-28"`:
+
+```yaml
+mcp_servers:
+  modern_api:
+    url: "https://mcp.example.com/mcp"
+    stateless: true
+    protocol_version: "2026-07-28"
+```
+
+In stateless mode Hermes sends each MCP request as a fresh HTTP POST with
+`MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` headers where required,
+and mirrors tool parameters annotated with `x-mcp-header` into
+`Mcp-Param-*` headers. Legacy HTTP servers should leave `stateless` unset.
 
 ### OAuth-authenticated HTTP servers
 
@@ -292,6 +313,8 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `args` | list | Arguments for the stdio server |
 | `env` | mapping | Environment variables passed to the stdio server |
 | `url` | string | HTTP MCP endpoint |
+| `stateless` | bool | Use MCP 2026-07-28+ stateless HTTP (`server/discover`, no `initialize`) |
+| `protocol_version` | string | Protocol version for stateless HTTP, usually `2026-07-28` |
 | `headers` | mapping | HTTP headers for remote servers |
 | `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
 | `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
@@ -336,7 +359,7 @@ mcp_servers:
   company_api:
     url: "https://mcp.internal.example.com"
     headers:
-      Authorization: "Bearer ***"
+      Authorization: "<bearer-token>"
 ```
 
 ## Built-in presets
@@ -490,7 +513,7 @@ mcp_servers:
   stripe:
     url: "https://mcp.stripe.com"
     headers:
-      Authorization: "Bearer ***"
+      Authorization: "<bearer-token>"
     tools:
       exclude: [delete_customer]
       resources: false
@@ -585,7 +608,7 @@ mcp_servers:
   stripe:
     url: "https://mcp.stripe.com"
     headers:
-      Authorization: "Bearer ***"
+      Authorization: "<bearer-token>"
     tools:
       exclude: [delete_customer, refund_payment]
 ```

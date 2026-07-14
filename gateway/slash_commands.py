@@ -493,6 +493,94 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    @staticmethod
+    def _format_short_duration(seconds: float) -> str:
+        seconds = max(0, int(seconds or 0))
+        days, rem = divmod(seconds, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, secs = divmod(rem, 60)
+        if days:
+            return f"{days}d {hours}h"
+        if hours:
+            return f"{hours}h {minutes}m"
+        if minutes:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
+
+    async def _handle_ping_command(self, event: MessageEvent) -> str:
+        """Handle /ping — fast liveness check with no model call."""
+        source = event.source
+        uptime = self._format_short_duration(
+            time.time() - float(getattr(self, "_startup_time", time.time()))
+        )
+        active_agents = self._running_agent_count() if hasattr(self, "_running_agent_count") else len(getattr(self, "_running_agents", {}) or {})
+        platform = source.platform.value if source and source.platform else "unknown"
+        return (
+            "pong ✅\n"
+            f"Gateway: online · uptime {uptime}\n"
+            f"Platform: {platform}\n"
+            f"Active agents: {active_agents}"
+        )
+
+    async def _handle_health_command(self, event: MessageEvent) -> str:
+        """Handle /health — admin-only, redacted gateway health summary."""
+        from gateway.run import _load_gateway_config, _resolve_gateway_model, _hermes_home
+        from gateway.slash_access import policy_for_source
+
+        source = event.source
+        policy = policy_for_source(self.config, source)
+        if policy.enabled and not policy.is_admin(getattr(source, "user_id", None)):
+            return "⛔ /health is admin-only here. Use /ping or /status."
+
+        active_agents = self._running_agent_count() if hasattr(self, "_running_agent_count") else len(getattr(self, "_running_agents", {}) or {})
+        connected = sorted(p.value for p in getattr(self, "adapters", {}).keys())
+        failed = getattr(self, "_failed_platforms", {}) or {}
+        failed_count = len(failed)
+        queue_depth = 0
+        try:
+            session_key = self._session_key_for_source(source)
+            adapter = self.adapters.get(source.platform) if source else None
+            queue_depth = self._queue_depth(session_key, adapter=adapter)
+        except Exception:
+            queue_depth = 0
+
+        model_name = "unknown"
+        provider_name = "unknown"
+        try:
+            user_config = _load_gateway_config()
+            model_name = _resolve_gateway_model(user_config) or model_name
+            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+            if isinstance(model_cfg, dict):
+                provider_name = str(model_cfg.get("provider") or provider_name)
+        except Exception:
+            pass
+
+        disk_line = "Disk: unknown"
+        try:
+            import shutil
+            total, used, free = shutil.disk_usage(_hermes_home())
+            used_pct = round((used / total) * 100) if total else 0
+            disk_line = f"Disk: {used_pct}% used · {free // (1024 ** 3)}GB free"
+        except Exception:
+            pass
+
+        uptime = self._format_short_duration(
+            time.time() - float(getattr(self, "_startup_time", time.time()))
+        )
+        failure_line = "none" if failed_count == 0 else ", ".join(
+            p.value if hasattr(p, "value") else str(p) for p in failed.keys()
+        )
+        return "\n".join([
+            "**Hermes health**",
+            f"Gateway: ✅ online · uptime {uptime}",
+            f"Platforms: {', '.join(connected) if connected else 'none'}",
+            f"Failed/paused platforms: {failure_line}",
+            f"Model route: {provider_name} / {model_name}",
+            f"Active agents: {active_agents} · queued: {queue_depth}",
+            disk_line,
+            "Debug report: /debug (admin)",
+        ])
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model

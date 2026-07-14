@@ -4327,7 +4327,7 @@ class TestRunConversation:
         # #34452: the bare "(empty)" sentinel is now replaced by a
         # user-visible end-of-turn explanation so the failure isn't silent.
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert "Model issue:" in result["final_response"]
         assert result["turn_exit_reason"] == "empty_response_exhausted"
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
@@ -4350,7 +4350,7 @@ class TestRunConversation:
         assert result["completed"] is True
         # #34452: explanation replaces the bare "(empty)" sentinel.
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert "Model issue:" in result["final_response"]
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
@@ -4399,7 +4399,7 @@ class TestRunConversation:
         assert result["completed"] is True
         # #34452: explanation replaces the bare "(empty)" sentinel.
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert "Model issue:" in result["final_response"]
         assert result["api_calls"] == 4  # 1 original + 3 retries
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
@@ -4497,7 +4497,7 @@ class TestRunConversation:
         assert result["completed"] is True
         # #34452: explanation replaces the bare "(empty)" sentinel.
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert "Model issue:" in result["final_response"]
 
     def test_empty_response_emits_status_for_gateway(self, agent):
         """_emit_status is called during empty retries so gateway users see feedback."""
@@ -4526,7 +4526,7 @@ class TestRunConversation:
         # #34452: explanation replaces the bare "(empty)" sentinel, but the
         # status emissions during retries are unchanged.
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert "Model issue:" in result["final_response"]
         # Should have emitted retry statuses (3 retries) + final failure
         retry_msgs = [m for m in status_messages if "retrying" in m.lower()]
         assert len(retry_msgs) == 3, f"Expected 3 retry status messages, got {len(retry_msgs)}: {status_messages}"
@@ -4583,7 +4583,7 @@ class TestRunConversation:
         # Should recover partial streamed content, not fall through to (empty)
         assert result["completed"] is True
         assert result["final_response"].startswith("The answer to your question is that")
-        assert "No reply:" in result["final_response"]
+        assert "Model issue:" in result["final_response"]
         assert result["response_previewed"] is False
         assert result["api_calls"] == 1  # No wasted retries
         # Should emit the stream-interrupted status, NOT the empty-retry status
@@ -4615,7 +4615,7 @@ class TestRunConversation:
             result = agent.run_conversation("question")
         # Should use the streamed content, not the old prior-turn fallback
         assert result["final_response"].startswith("Fresh partial content from this turn")
-        assert "No reply:" in result["final_response"]
+        assert "Model issue:" in result["final_response"]
         assert result["response_previewed"] is False
         assert result["api_calls"] == 1
 

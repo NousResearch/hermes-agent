@@ -87,6 +87,34 @@ class TestFilterMCPChildren:
         assert mcp_tool._filter_mcp_children({101, 102, 103}) == {103}
 
 
+class _FakeHTTPResponse:
+    def __init__(self, payload, *, status_code=200, content_type="application/json"):
+        self._payload = payload
+        self.status_code = status_code
+        self.headers = {"content-type": content_type}
+        self.text = json.dumps(payload)
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class _FakeHTTPClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    async def post(self, url, *, json=None, headers=None):
+        self.calls.append({"url": url, "json": json, "headers": dict(headers or {})})
+        response = self.responses.pop(0)
+        if isinstance(response, _FakeHTTPResponse):
+            return response
+        return _FakeHTTPResponse(response)
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -120,6 +148,83 @@ class TestLoadMCPConfig:
             from tools.mcp_tool import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
+
+
+class TestStatelessMCPHTTP:
+    def test_stateless_config_detection(self):
+        from tools.mcp_tool import _is_stateless_http_config
+
+        assert _is_stateless_http_config({"url": "https://example.com/mcp", "stateless": True})
+        assert _is_stateless_http_config({"url": "https://example.com/mcp", "transport": "stateless-http"})
+        assert _is_stateless_http_config({"url": "https://example.com/mcp", "protocol_version": "2026-07-28"})
+        assert not _is_stateless_http_config({"url": "https://example.com/mcp", "stateless": False, "protocol_version": "2026-07-28"})
+        assert not _is_stateless_http_config({"url": "https://example.com/mcp"})
+        assert not _is_stateless_http_config({"command": "npx"})
+
+    def test_header_value_base64_encoding_for_non_ascii(self):
+        from tools.mcp_tool import _encode_mcp_http_header_value
+
+        assert _encode_mcp_http_header_value("us-west1") == "us-west1"
+        assert _encode_mcp_http_header_value("Hello, 世界") == "=?base64?SGVsbG8sIOS4lueVjA==?="
+
+    @pytest.mark.asyncio
+    async def test_stateless_session_stamps_metadata_and_tool_headers(self):
+        from tools.mcp_tool import StatelessMCPHTTPSession
+
+        client = _FakeHTTPClient([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "tools": [
+                        {
+                            "name": "execute_sql",
+                            "description": "Run SQL",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "region": {"type": "string", "x-mcp-header": "Region"},
+                                    "query": {"type": "string"},
+                                },
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "content": [{"type": "text", "text": "ok"}],
+                    "structuredContent": {"rows": 1},
+                },
+            },
+        ])
+        session = StatelessMCPHTTPSession(
+            server_name="db",
+            url="https://mcp.example.com/mcp",
+            http_client=client,
+        )
+
+        listed = await session.list_tools()
+        assert [tool.name for tool in listed.tools] == ["execute_sql"]
+
+        result = await session.call_tool(
+            "execute_sql",
+            {"region": "us-west1", "query": "select 1"},
+        )
+
+        list_call, tool_call = client.calls
+        assert list_call["headers"]["MCP-Protocol-Version"] == "2026-07-28"
+        assert list_call["headers"]["Mcp-Method"] == "tools/list"
+        assert list_call["json"]["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] == "2026-07-28"
+
+        assert tool_call["headers"]["Mcp-Method"] == "tools/call"
+        assert tool_call["headers"]["Mcp-Name"] == "execute_sql"
+        assert tool_call["headers"]["Mcp-Param-Region"] == "us-west1"
+        assert tool_call["json"]["params"]["name"] == "execute_sql"
+        assert result.content[0].text == "ok"
+        assert result.structuredContent == {"rows": 1}
 
 
 class TestMCPStatus:

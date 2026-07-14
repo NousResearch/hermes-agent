@@ -1191,15 +1191,28 @@ class CLICommandsMixin:
                     normalized.append(text)
             return normalized
 
+        def _cron_reasoning_display(job):
+            raw = job.get("reasoning_effort")
+            if raw is None or (raw is not False and not str(raw).strip()):
+                return None
+            status = job.get("reasoning_effort_status")
+            if status == "invalid_inherits_global":
+                return f"{raw} (invalid; inherits global)"
+            if status == "not_applicable" or job.get("no_agent"):
+                return f"{raw} (inactive in no-agent mode)"
+            return str(raw)
+
         def _parse_flags(tokens):
             opts = {
                 "name": None,
                 "deliver": None,
                 "repeat": None,
+                "reasoning_effort": None,
                 "skills": [],
                 "add_skills": [],
                 "remove_skills": [],
                 "clear_skills": False,
+                "clear_reasoning_effort": False,
                 "all": False,
                 "prompt": None,
                 "schedule": None,
@@ -1221,6 +1234,9 @@ class CLICommandsMixin:
                         print("(._.) --repeat must be an integer")
                         return None
                     i += 2
+                elif token == "--reasoning-effort" and i + 1 < len(tokens):
+                    opts["reasoning_effort"] = tokens[i + 1]
+                    i += 2
                 elif token == "--skill" and i + 1 < len(tokens):
                     opts["skills"].append(tokens[i + 1])
                     i += 2
@@ -1232,6 +1248,9 @@ class CLICommandsMixin:
                     i += 2
                 elif token == "--clear-skills":
                     opts["clear_skills"] = True
+                    i += 1
+                elif token in {"--clear-reasoning-effort", "--clear-reasoning"}:
+                    opts["clear_reasoning_effort"] = True
                     i += 1
                 elif token == "--all":
                     opts["all"] = True
@@ -1262,6 +1281,8 @@ class CLICommandsMixin:
             print("    /cron edit <job_id> --skill blogwatcher --skill maps")
             print("    /cron edit <job_id> --remove-skill blogwatcher")
             print("    /cron edit <job_id> --clear-skills")
+            print("    /cron edit <job_id> --reasoning-effort high")
+            print("    /cron edit <job_id> --clear-reasoning-effort")
             print("    /cron pause <job_id>")
             print("    /cron resume <job_id>")
             print("    /cron run <job_id>")
@@ -1277,6 +1298,9 @@ class CLICommandsMixin:
                     print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {repeat_str:<8}")
                     if job.get("skills"):
                         print(f"      Skills: {', '.join(job['skills'])}")
+                    reasoning = _cron_reasoning_display(job)
+                    if reasoning:
+                        print(f"      Reasoning: {reasoning}")
                     print(f"      {job.get('prompt_preview', '')}")
                     if job.get("next_run_at"):
                         print(f"      Next: {job['next_run_at']}")
@@ -1309,6 +1333,9 @@ class CLICommandsMixin:
                 print(f"  Next run: {job.get('next_run_at', 'N/A')}")
                 if job.get("skills"):
                     print(f"  Skills: {', '.join(job['skills'])}")
+                reasoning = _cron_reasoning_display(job)
+                if reasoning:
+                    print(f"  Reasoning: {reasoning}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
                     print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
@@ -1333,6 +1360,7 @@ class CLICommandsMixin:
                 name=opts["name"],
                 deliver=opts["deliver"],
                 repeat=opts["repeat"],
+                reasoning_effort=opts["reasoning_effort"],
                 skills=skills or None,
             )
             if result.get("success"):
@@ -1340,6 +1368,9 @@ class CLICommandsMixin:
                 print(f"  Schedule: {result['schedule']}")
                 if result.get("skills"):
                     print(f"  Skills: {', '.join(result['skills'])}")
+                reasoning = _cron_reasoning_display(result.get("job", {}))
+                if reasoning:
+                    print(f"  Reasoning: {reasoning}")
                 print(f"  Next run: {result['next_run_at']}")
             else:
                 print(f"(x_x) Failed to create job: {result.get('error')}")
@@ -1371,6 +1402,10 @@ class CLICommandsMixin:
                     if skill not in final_skills:
                         final_skills.append(skill)
 
+            reasoning_effort = (
+                "" if opts["clear_reasoning_effort"] else opts["reasoning_effort"]
+            )
+
             result = _cron_api(
                 action="update",
                 job_id=job_id,
@@ -1379,6 +1414,7 @@ class CLICommandsMixin:
                 name=opts["name"],
                 deliver=opts["deliver"],
                 repeat=opts["repeat"],
+                reasoning_effort=reasoning_effort,
                 skills=final_skills,
             )
             if result.get("success"):
@@ -1389,6 +1425,9 @@ class CLICommandsMixin:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 else:
                     print("  Skills: none")
+                reasoning = _cron_reasoning_display(job)
+                if reasoning:
+                    print(f"  Reasoning: {reasoning}")
             else:
                 print(f"(x_x) Failed to update job: {result.get('error')}")
             return

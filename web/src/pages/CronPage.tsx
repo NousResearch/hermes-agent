@@ -20,6 +20,7 @@ import {
   cronJobFormFromJob,
   type CronJobFormState,
 } from "@/lib/cron-job";
+import { EFFORT_OPTIONS } from "@/lib/reasoning-effort";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
   DEFAULT_SCHEDULE_STATE,
@@ -138,6 +139,7 @@ function emptyCronJobForm(): CronJobEditorState {
     provider: "",
     model: "",
     base_url: "",
+    reasoning_effort: "",
     script: "",
     no_agent: false,
     context_from: "",
@@ -244,6 +246,24 @@ function CronAdvancedFields({
               )}
             </Select>
           </div>
+        </div>
+
+        <div className="grid gap-1">
+          <Label htmlFor={`${idPrefix}-reasoning-effort`}>Reasoning effort</Label>
+          <Select
+            id={`${idPrefix}-reasoning-effort`}
+            value={form.reasoning_effort}
+            onValueChange={(v) => update("reasoning_effort", v)}
+            disabled={form.no_agent}
+          >
+            <SelectOption value="">Inherit global</SelectOption>
+            {selectOptions(form.reasoning_effort, [...EFFORT_OPTIONS])}
+          </Select>
+          {form.no_agent && form.reasoning_effort && (
+            <p className="text-xs text-muted-foreground">
+              Preserved but inactive while no_agent is enabled.
+            </p>
+          )}
         </div>
 
         <div className="grid gap-1">
@@ -480,6 +500,20 @@ function getModelDisplay(job: CronJob): string {
   const model = asText(job.model);
   if (provider && model) return `${provider}/${model}`;
   return model || provider;
+}
+
+function getReasoningDisplay(job: CronJob): string {
+  const effort = asText(job.reasoning_effort);
+  if (!effort) return "";
+  const optionLabel =
+    EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? effort;
+  if (job.reasoning_effort_status === "invalid_inherits_global") {
+    return `${effort} (invalid; inherits global)`;
+  }
+  if (job.no_agent || job.reasoning_effort_status === "not_applicable") {
+    return `${optionLabel} (inactive)`;
+  }
+  return optionLabel;
 }
 
 function getJobProfile(job: CronJob): string {
@@ -994,6 +1028,7 @@ export default function CronPage() {
           const jobKey = getJobKey(job);
           const mode = getJobMode(job);
           const modelDisplay = getModelDisplay(job);
+          const reasoningDisplay = getReasoningDisplay(job);
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];
@@ -1026,6 +1061,11 @@ export default function CronPage() {
                     {modelDisplay && (
                       <Badge tone="outline" title={modelDisplay}>
                         model
+                      </Badge>
+                    )}
+                    {reasoningDisplay && (
+                      <Badge tone="outline" title={reasoningDisplay}>
+                        reasoning
                       </Badge>
                     )}
                     {toolsets.length > 0 && (

@@ -170,6 +170,50 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
 
     @pytest.mark.asyncio
+    async def test_create_job_forwards_reasoning_effort(self, adapter):
+        """POST /api/jobs forwards the top-level reasoning_effort override."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value={**SAMPLE_JOB, "reasoning_effort": "ultra"})
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post(
+                    "/api/jobs",
+                    json={
+                        "name": "test-job",
+                        "schedule": "*/5 * * * *",
+                        "prompt": "do something",
+                        "reasoning_effort": "ultra",
+                    },
+                )
+
+                assert resp.status == 200
+                assert mock_create.call_args.kwargs["reasoning_effort"] == "ultra"
+
+    @pytest.mark.asyncio
+    async def test_create_job_invalid_reasoning_effort_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_create",
+                side_effect=ValueError("Invalid cron reasoning_effort 'turbo'"),
+            ):
+                resp = await cli.post(
+                    "/api/jobs",
+                    json={
+                        "name": "test-job",
+                        "schedule": "*/5 * * * *",
+                        "prompt": "do something",
+                        "reasoning_effort": "turbo",
+                    },
+                )
+
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Invalid cron reasoning_effort" in data["error"]
+
+    @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
         """POST /api/jobs without name returns 400."""
         app = _create_app(adapter)
@@ -342,6 +386,41 @@ class TestUpdateJob:
                 sanitized = call_args[0][1]
                 assert "name" in sanitized
                 assert "schedule" in sanitized
+
+    @pytest.mark.asyncio
+    async def test_update_job_allows_reasoning_effort(self, adapter):
+        app = _create_app(adapter)
+        updated_job = {**SAMPLE_JOB, "reasoning_effort": None}
+        mock_update = MagicMock(return_value=updated_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"reasoning_effort": None},
+                )
+
+                assert resp.status == 200
+                sanitized = mock_update.call_args.args[1]
+                assert sanitized == {"reasoning_effort": None}
+
+    @pytest.mark.asyncio
+    async def test_update_job_invalid_reasoning_effort_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_update",
+                side_effect=ValueError("Invalid cron reasoning_effort 'turbo'"),
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"reasoning_effort": "turbo"},
+                )
+
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Invalid cron reasoning_effort" in data["error"]
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):

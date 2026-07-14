@@ -278,6 +278,24 @@ async def test_create_cron_job_normalizes_representative_core_fields(
 
 
 @pytest.mark.asyncio
+async def test_create_cron_job_forwards_reasoning_effort(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            prompt="reason deeply",
+            schedule="every 1h",
+            name="reasoning-dashboard",
+            reasoning_effort="ultra",
+        ),
+        profile="worker_alpha",
+    )
+
+    assert job["profile"] == "worker_alpha"
+    assert job["reasoning_effort"] == "ultra"
+
+
+@pytest.mark.asyncio
 async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_profiles):
     from hermes_cli import web_server
 
@@ -388,6 +406,62 @@ async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profile
     assert updated["script"] == "collect.py"
     assert updated["context_from"] is None
     assert updated["no_agent"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_clears_reasoning_effort(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="dashboard-clear-reasoning",
+        reasoning_effort="max",
+    )
+
+    updated = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(updates={"reasoning_effort": None}),
+        profile="worker_alpha",
+    )
+
+    assert updated["reasoning_effort"] is None
+
+
+@pytest.mark.asyncio
+async def test_dashboard_cron_rejects_invalid_reasoning_effort(isolated_profiles):
+    from hermes_cli import web_server
+
+    with pytest.raises(HTTPException) as create_exc:
+        await web_server.create_cron_job(
+            web_server.CronJobCreate(
+                prompt="bad reasoning",
+                schedule="every 1h",
+                reasoning_effort="turbo",
+            ),
+            profile="worker_alpha",
+        )
+    assert create_exc.value.status_code == 400
+    assert "Invalid cron reasoning_effort" in create_exc.value.detail
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="dashboard-invalid-reasoning",
+    )
+
+    with pytest.raises(HTTPException) as update_exc:
+        await web_server.update_cron_job(
+            job["id"],
+            web_server.CronJobUpdate(updates={"reasoning_effort": "turbo"}),
+            profile="worker_alpha",
+        )
+    assert update_exc.value.status_code == 400
+    assert "Invalid cron reasoning_effort" in update_exc.value.detail
 
 
 @pytest.mark.asyncio
@@ -735,3 +809,16 @@ async def test_cron_profile_validation_errors(isolated_profiles):
     with pytest.raises(HTTPException) as missing:
         await web_server.list_cron_jobs(profile="missing_profile")
     assert missing.value.status_code == 404
+
+
+def test_annotate_cron_job_marks_malformed_reasoning_as_inheriting(tmp_path):
+    from hermes_cli import web_server
+
+    annotated = web_server._annotate_cron_job(
+        {"id": "legacy", "reasoning_effort": "turbo"},
+        "default",
+        tmp_path,
+    )
+
+    assert annotated["reasoning_effort"] == "turbo"
+    assert annotated["reasoning_effort_status"] == "invalid_inherits_global"

@@ -17,6 +17,7 @@ Cron jobs can:
 - attach zero, one, or multiple skills to a job
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
+- override reasoning effort per job, or explicitly turn reasoning off for that job
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
@@ -24,6 +25,41 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 :::tip
 At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
+
+## Per-job reasoning effort
+
+Agent-backed cron jobs normally inherit `agent.reasoning_effort` from the
+active profile's `config.yaml`. You can override that per job:
+
+```bash
+hermes cron create "every 1d at 09:00" \
+  "Run a deep analysis of overnight incidents" \
+  --reasoning-effort high
+
+hermes cron edit <job_id> --reasoning-effort none
+hermes cron edit <job_id> --clear-reasoning-effort
+```
+
+```python
+cronjob(
+    action="create",
+    schedule="every 1d at 09:00",
+    prompt="Run a deep analysis of overnight incidents.",
+    reasoning_effort="ultra",
+)
+
+cronjob(action="update", job_id="...", reasoning_effort="")
+```
+
+Precedence is: valid explicit job override → profile/global
+`agent.reasoning_effort` → provider/model default. Empty, `null`, or omitted
+means "inherit global". Explicit `none` disables reasoning for that job.
+Current supported explicit values are `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`, and `ultra`.
+
+For `no_agent=True` jobs, `reasoning_effort` is preserved on the job but is
+inactive because no agent or model is instantiated. This lets you switch a job
+back to agent mode later without losing the intended setting.
 
 :::warning
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
@@ -141,6 +177,8 @@ The `<job_id>` placeholder below (and in [Lifecycle actions](#lifecycle-actions)
 /cron edit <job_id> --skill blogwatcher --skill maps
 /cron edit <job_id> --remove-skill blogwatcher
 /cron edit <job_id> --clear-skills
+/cron edit <job_id> --reasoning-effort high
+/cron edit <job_id> --clear-reasoning-effort
 ```
 
 ### Standalone CLI
@@ -152,6 +190,8 @@ hermes cron edit <job_id> --skill blogwatcher --skill maps
 hermes cron edit <job_id> --add-skill maps
 hermes cron edit <job_id> --remove-skill blogwatcher
 hermes cron edit <job_id> --clear-skills
+hermes cron edit <job_id> --reasoning-effort none
+hermes cron edit <job_id> --clear-reasoning-effort
 ```
 
 Notes:
@@ -432,6 +472,7 @@ Semantics:
 - Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
+- Any stored `reasoning_effort` override is preserved but inactive while `no_agent=True`.
 
 `.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate).
 

@@ -121,6 +121,78 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
+    def test_create_edit_clear_and_list_reasoning_effort(
+        self, tmp_cron_dir, capsys
+    ):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Deep work",
+                name="Reasoning job",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                reasoning_effort="max",
+                no_agent=False,
+            )
+        )
+        job = list_jobs()[0]
+        assert job["reasoning_effort"] == "max"
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                add_skills=None,
+                remove_skills=None,
+                script=None,
+                workdir=None,
+                reasoning_effort="none",
+                clear_reasoning_effort=False,
+                no_agent=None,
+            )
+        )
+        assert get_job(job["id"])["reasoning_effort"] == "none"
+
+        cron_command(Namespace(cron_command="list", all=True))
+        out = capsys.readouterr().out
+        assert "Reasoning: none" in out
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                add_skills=None,
+                remove_skills=None,
+                script=None,
+                workdir=None,
+                reasoning_effort=None,
+                clear_reasoning_effort=True,
+                no_agent=None,
+            )
+        )
+        assert get_job(job["id"])["reasoning_effort"] is None
+
     def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
         """A one-shot job can be persisted with ``"repeat": null``. `cron
         list` must render it as ∞ rather than crashing on .get(...)\\.get."""

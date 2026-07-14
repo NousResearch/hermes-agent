@@ -2106,6 +2106,7 @@ export interface CronJobMutation {
   provider?: string | null;
   model?: string | null;
   base_url?: string | null;
+  reasoning_effort?: string | null | boolean;
   script?: string | null;
   no_agent?: boolean;
   context_from?: string[] | null;
@@ -2132,6 +2133,8 @@ export interface CronJob {
   model?: string | null;
   provider?: string | null;
   base_url?: string | null;
+  reasoning_effort?: string | null;
+  reasoning_effort_status?: string | null;
   no_agent?: boolean | null;
   context_from?: string[] | string | null;
   enabled_toolsets?: string[] | null;

@@ -9,6 +9,7 @@ export interface CronJobFormState {
   provider: string;
   model: string;
   base_url: string;
+  reasoning_effort: string;
   script: string;
   no_agent: boolean;
   context_from: string;
@@ -58,6 +59,7 @@ export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
     provider: optionalText(form.provider),
     model: optionalText(form.model),
     base_url: optionalText(form.base_url, true),
+    reasoning_effort: optionalText(form.reasoning_effort),
     script: optionalText(form.script),
     no_agent: Boolean(form.no_agent),
     context_from: contextFrom.length > 0 ? contextFrom : null,
@@ -86,6 +88,10 @@ export function cronJobFormFromJob(job: CronJob): CronJobFormState {
     provider: asString(job.provider),
     model: asString(job.model),
     base_url: asString(job.base_url),
+    reasoning_effort:
+      job.reasoning_effort_status === "invalid_inherits_global"
+        ? ""
+        : asString(job.reasoning_effort),
     script: asString(job.script),
     no_agent: Boolean(job.no_agent),
     context_from: listToText(job.context_from),

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
+import {
+  CRON_REASONING_INHERIT,
+  cronEditorUpdates,
+  cronReasoningEffortForPayload,
+  jobIsScriptOnly,
+  validateCronEditor
+} from './cron-job-model'
 
 describe('jobIsScriptOnly', () => {
   it('is true when no_agent is set and a script is present', () => {
@@ -35,12 +41,19 @@ describe('cronEditorUpdates', () => {
   it('omits prompt when saving a script-only job with an empty prompt', () => {
     expect(
       cronEditorUpdates(
-        { deliver: 'local', name: 'Weekly', prompt: '', schedule: '0 9 * * 1' },
+        {
+          deliver: 'local',
+          name: 'Weekly',
+          prompt: '',
+          reasoningEffort: CRON_REASONING_INHERIT,
+          schedule: '0 9 * * 1'
+        },
         { scriptOnlyJob: true }
       )
     ).toEqual({
       deliver: 'local',
       name: 'Weekly',
+      reasoning_effort: null,
       schedule: '0 9 * * 1'
     })
   })
@@ -48,9 +61,22 @@ describe('cronEditorUpdates', () => {
   it('includes prompt when the user typed one on a script-only job', () => {
     expect(
       cronEditorUpdates(
-        { deliver: 'email', name: 'Weekly', prompt: 'note', schedule: '0 9 * * 1' },
+        {
+          deliver: 'email',
+          name: 'Weekly',
+          prompt: 'note',
+          reasoningEffort: 'ultra',
+          schedule: '0 9 * * 1'
+        },
         { scriptOnlyJob: true }
       ).prompt
     ).toBe('note')
+  })
+
+  it('normalizes reasoning effort overrides for update payloads', () => {
+    expect(cronReasoningEffortForPayload(CRON_REASONING_INHERIT)).toBeNull()
+    expect(cronReasoningEffortForPayload('')).toBeNull()
+    expect(cronReasoningEffortForPayload('none')).toBe('none')
+    expect(cronReasoningEffortForPayload('ultra')).toBe('ultra')
   })
 })

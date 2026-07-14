@@ -30,6 +30,7 @@ import {
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
+import { REASONING_EFFORT_VALUES, reasoningEffortLabel } from '@/lib/model-status-label'
 import { asText } from '@/lib/text'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
@@ -54,12 +55,19 @@ import {
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import {
+  CRON_REASONING_INHERIT,
+  cronEditorUpdates,
+  cronReasoningEffortForPayload,
+  jobIsScriptOnly,
+  validateCronEditor
+} from './cron-job-model'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
-import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
 
 const DEFAULT_DELIVER = 'local'
 
 const DELIVERY_VALUES: readonly string[] = ['local', 'telegram', 'discord', 'slack', 'email']
+
 
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   { expr: '0 9 * * *', value: 'daily' },
@@ -101,6 +109,33 @@ function jobScheduleExpr(job: CronJob): string {
 
 function jobDeliver(job: CronJob): string {
   return asText(job.deliver) || DEFAULT_DELIVER
+}
+
+function jobReasoningEffort(job: CronJob): string {
+  if (job.reasoning_effort_status === 'invalid_inherits_global') {
+    return CRON_REASONING_INHERIT
+  }
+
+  return asText(job.reasoning_effort).trim() || CRON_REASONING_INHERIT
+}
+
+function jobReasoningDisplay(job: CronJob, c: Translations['cron']): string {
+  const effort = jobReasoningEffort(job)
+
+  if (job.reasoning_effort_status === 'invalid_inherits_global') {
+    return c.reasoningInvalid(effort)
+  }
+
+  if (job.no_agent && effort === CRON_REASONING_INHERIT) {
+    return c.reasoningInactive
+  }
+
+  const label =
+    effort === CRON_REASONING_INHERIT
+      ? c.reasoningInherit
+      : (c.reasoningOptions[effort] ?? reasoningEffortLabel(effort)) || effort
+
+  return job.no_agent || job.reasoning_effort_status === 'not_applicable' ? c.reasoningInactiveWithValue(label) : label
 }
 
 function cronParts(expr: string): null | string[] {
@@ -391,7 +426,8 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         prompt: values.prompt,
         schedule: values.schedule,
         name: values.name || undefined,
-        deliver: values.deliver || DEFAULT_DELIVER
+        deliver: values.deliver || DEFAULT_DELIVER,
+        reasoning_effort: cronReasoningEffortForPayload(values.reasoningEffort)
       })
 
       updateCronJobs(rows => [...rows, created])
@@ -576,7 +612,8 @@ function CronJobDetail({
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
             { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
-            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver }
+            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
+            { label: c.reasoningLabel, value: jobReasoningDisplay(job, c) }
           ]}
         />
 
@@ -719,6 +756,7 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
+  const [reasoningEffort, setReasoningEffort] = useState(CRON_REASONING_INHERIT)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -732,6 +770,7 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
+    setReasoningEffort(initial ? jobReasoningEffort(initial) : CRON_REASONING_INHERIT)
     setError(null)
     setSaving(false)
   }, [initial, open])
@@ -782,6 +821,7 @@ function CronEditorDialog({
         deliver,
         name: name.trim(),
         prompt: prompt.trim(),
+        reasoningEffort,
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -863,6 +903,23 @@ function CronEditorDialog({
             </Field>
           </div>
 
+          <Field htmlFor="cron-reasoning" label={c.reasoningLabel}>
+            <Select disabled={scriptOnlyJob} onValueChange={setReasoningEffort} value={reasoningEffort}>
+              <SelectTrigger className="h-9 rounded-md" id="cron-reasoning">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={CRON_REASONING_INHERIT}>{c.reasoningInherit}</SelectItem>
+                {REASONING_EFFORT_VALUES.map(value => (
+                  <SelectItem key={value} value={value}>
+                    {c.reasoningOptions[value] ?? reasoningEffortLabel(value)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {scriptOnlyJob ? <FieldHint>{c.reasoningInactiveHint}</FieldHint> : null}
+          </Field>
+
           {schedulePreset === 'custom' ? (
             <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
               <Input
@@ -938,6 +995,7 @@ interface EditorValues {
   deliver: string
   name: string
   prompt: string
+  reasoningEffort: string
   schedule: string
 }
 

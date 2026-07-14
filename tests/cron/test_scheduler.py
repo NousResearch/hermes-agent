@@ -1253,6 +1253,94 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
 
+    def test_run_job_reasoning_effort_overrides_global_config(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  reasoning_effort: low\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "reasoning-job",
+            "name": "test",
+            "prompt": "hello",
+            "reasoning_effort": "high",
+        }
+
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        assert mock_agent_cls.call_args.kwargs["reasoning_config"] == {
+            "enabled": True,
+            "effort": "high",
+        }
+
+    def test_run_job_reasoning_effort_none_disables_global_config(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  reasoning_effort: ultra\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "reasoning-none-job",
+            "name": "test",
+            "prompt": "hello",
+            "reasoning_effort": "none",
+        }
+
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        assert mock_agent_cls.call_args.kwargs["reasoning_config"] == {
+            "enabled": False,
+        }
+
+    def test_run_job_absent_reasoning_effort_falls_back_to_global_config(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  reasoning_effort: max\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "reasoning-global-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        assert mock_agent_cls.call_args.kwargs["reasoning_config"] == {
+            "enabled": True,
+            "effort": "max",
+        }
+
+    def test_run_job_malformed_stored_reasoning_effort_falls_back(
+        self, caplog, tmp_path
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  reasoning_effort: ultra\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "reasoning-bad-job",
+            "name": "test",
+            "prompt": "hello",
+            "reasoning_effort": "turbo",
+        }
+
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        assert mock_agent_cls.call_args.kwargs["reasoning_config"] == {
+            "enabled": True,
+            "effort": "ultra",
+        }
+        assert any(
+            "invalid stored reasoning_effort" in record.message
+            for record in caplog.records
+        )
+
     def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.
 

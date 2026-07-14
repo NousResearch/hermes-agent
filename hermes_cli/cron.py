@@ -48,6 +48,21 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
+def _reasoning_effort_display(job) -> Optional[str]:
+    raw = job.get("reasoning_effort")
+    if raw is None or (raw is not False and not str(raw).strip()):
+        return None
+    try:
+        from cron.jobs import normalize_cron_reasoning_effort
+
+        effort = normalize_cron_reasoning_effort(raw)
+    except ValueError:
+        return f"{raw} (invalid; inherits global)"
+    if job.get("no_agent"):
+        return f"{effort} (inactive in no-agent mode)"
+    return str(effort)
+
+
 def _active_cron_provider_name() -> str:
     """Name of the resolved cron scheduler provider ('builtin', 'chronos', …).
 
@@ -163,6 +178,9 @@ def cron_list(show_all: bool = False):
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
+        reasoning = _reasoning_effort_display(job)
+        if reasoning:
+            print(f"    Reasoning: {reasoning}")
 
         # Execution history
         last_status = job.get("last_status")
@@ -309,6 +327,7 @@ def cron_create(args):
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
         no_agent=getattr(args, "no_agent", False) or None,
     )
     if not result.get("success"):
@@ -326,6 +345,9 @@ def cron_create(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
+    reasoning = _reasoning_effort_display(job_data)
+    if reasoning:
+        print(f"  Reasoning: {reasoning}")
     print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
@@ -361,6 +383,12 @@ def cron_edit(args):
             if skill not in final_skills:
                 final_skills.append(skill)
 
+    reasoning_effort = (
+        ""
+        if getattr(args, "clear_reasoning_effort", False)
+        else getattr(args, "reasoning_effort", None)
+    )
+
     result = _cron_api(
         action="update",
         job_id=args.job_id,
@@ -372,6 +400,7 @@ def cron_edit(args):
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        reasoning_effort=reasoning_effort,
         no_agent=getattr(args, "no_agent", None),
     )
     if not result.get("success"):
@@ -392,6 +421,9 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
+    reasoning = _reasoning_effort_display(updated)
+    if reasoning:
+        print(f"  Reasoning: {reasoning}")
     return 0
 
 

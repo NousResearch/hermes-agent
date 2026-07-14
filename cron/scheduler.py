@@ -2922,12 +2922,44 @@ def run_job(
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (raw value — a YAML boolean False
-        # means thinking disabled, see parse_reasoning_effort)
+        # Reasoning config precedence:
+        #   valid explicit per-job override > profile/global config.yaml
+        #   agent.reasoning_effort > provider/model default.
+        #
+        # Job storage canonicalizes new writes, but hand-edited or legacy
+        # jobs.json records may contain garbage. Treat malformed persisted job
+        # values as absent with a warning so they do not suppress the global
+        # fallback.
         from hermes_constants import parse_reasoning_effort
-        reasoning_config = parse_reasoning_effort(
-            _cfg.get("agent", {}).get("reasoning_effort", "")
-        )
+        from cron.jobs import normalize_cron_reasoning_effort
+
+        job_reasoning_effort = None
+        raw_job_reasoning_effort = job.get("reasoning_effort")
+        if raw_job_reasoning_effort is not None and (
+            raw_job_reasoning_effort is False
+            or str(raw_job_reasoning_effort).strip()
+        ):
+            try:
+                job_reasoning_effort = normalize_cron_reasoning_effort(
+                    raw_job_reasoning_effort
+                )
+            except ValueError:
+                logger.warning(
+                    "Job '%s': invalid stored reasoning_effort %r; falling "
+                    "back to profile/global agent.reasoning_effort",
+                    job_id,
+                    raw_job_reasoning_effort,
+                )
+
+        if job_reasoning_effort is not None:
+            reasoning_config = parse_reasoning_effort(job_reasoning_effort)
+        else:
+            agent_cfg_for_reasoning = (
+                _cfg.get("agent", {}) if isinstance(_cfg.get("agent"), dict) else {}
+            )
+            reasoning_config = parse_reasoning_effort(
+                agent_cfg_for_reasoning.get("reasoning_effort", "")
+            )
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is

@@ -45,6 +45,7 @@ from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_fla
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import uuid
 
 import yaml
 
@@ -13193,7 +13194,8 @@ async def execute_workflow(name: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
 
-    action_name = f"workflow-{name}"
+    run_id = uuid.uuid4().hex[:12]
+    action_name = f"workflow-{name}-{run_id}"
     log_file_name = f"action-{action_name}.log"
     _ACTION_LOG_FILES[action_name] = log_file_name
 
@@ -13206,31 +13208,48 @@ async def execute_workflow(name: str):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read workflow: {exc}")
 
+    _WORKFLOW_RUNS.setdefault(name, [])
+    _WORKFLOW_RUNS[name].append({
+        "run_id": run_id,
+        "action_name": action_name,
+        "started_at": time.time(),
+        "finished_at": None,
+        "exit_code": None,
+        "status": "running",
+    })
+    if len(_WORKFLOW_RUNS[name]) > 100:
+        _WORKFLOW_RUNS[name] = _WORKFLOW_RUNS[name][-100:]
+
     def run_workflow_sync():
         with open(log_path, "wb", buffering=0) as log_file:
             log_file.write(
-                f"\n=== Workflow {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+                f"\n=== Workflow {name} (run {run_id}) started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
             )
-            
+
             def log_callback(msg: str):
                 log_file.write(f"{msg}\n".encode("utf-8", errors="replace"))
 
             exit_code = 0
             try:
                 from tools.workflow_exec import execute_workflow_graph
-                ok = execute_workflow_graph(graph, log_callback=log_callback)
+                ok = execute_workflow_graph(graph, log_callback=log_callback, run_id=run_id)
                 if not ok:
                     exit_code = 1
             except Exception as e:
                 log_callback(f"[Error] Execution crashed: {e}")
                 exit_code = 1
-                
+
             log_file.write(
-                f"\n=== Workflow {name} completed {time.strftime('%Y-%m-%d %H:%M:%S')} (exit={exit_code}) ===\n".encode()
+                f"\n=== Workflow {name} (run {run_id}) completed {time.strftime('%Y-%m-%d %H:%M:%S')} (exit={exit_code}) ===\n".encode()
             )
-        
+
         _ACTION_RESULTS[action_name] = {"exit_code": exit_code, "pid": None}
-        _ACTION_PROCS.pop(action_name, None)
+        for entry in _WORKFLOW_RUNS.get(name, []):
+            if entry["run_id"] == run_id:
+                entry["finished_at"] = time.time()
+                entry["exit_code"] = exit_code
+                entry["status"] = "completed" if exit_code == 0 else "failed"
+                break
 
     t = threading.Thread(target=run_workflow_sync, daemon=True)
     t.start()
@@ -13238,10 +13257,33 @@ async def execute_workflow(name: str):
     shim = WorkflowThreadShim(t, action_name)
     _ACTION_PROCS[action_name] = shim
 
-    return {"name": action_name, "ok": True}
+    return {"name": action_name, "run_id": run_id, "ok": True}
 
 
-# ---------------------------------------------------------------------------
+_WORKFLOW_RUNS: Dict[str, list] = {}
+
+
+@app.get("/api/workflows/{name}/runs")
+async def list_workflow_runs(name: str):
+    return {"name": name, "runs": list(reversed(_WORKFLOW_RUNS.get(name, [])))}
+
+
+@app.post("/api/workflows/{name}/runs/{run_id}/gate")
+async def resolve_workflow_gate(name: str, run_id: str, body: dict):
+    from tools.workflow_exec import get_run
+    node_id = body.get("node_id")
+    decision = body.get("decision", "denied")
+    if decision not in ("approved", "denied"):
+        raise HTTPException(status_code=400, detail="decision must be 'approved' or 'denied'")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id is required")
+    executor = get_run(run_id)
+    if executor is None:
+        raise HTTPException(status_code=404, detail=f"No running workflow with run_id={run_id}")
+    resolved = executor.resolve_gate(node_id, decision)
+    if not resolved:
+        raise HTTPException(status_code=409, detail=f"Gate '{node_id}' is not pending")
+    return {"ok": True, "node_id": node_id, "decision": decision}# ---------------------------------------------------------------------------
 # Skills & Tools endpoints
 #
 # Every read/write below accepts an optional ``profile`` query param so the

@@ -45,6 +45,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "qlskssk@gmail.com": "Soju06",  # agent turn-latency perf PRs
     "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approvals.timeout in gateway waits)

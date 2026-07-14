@@ -579,6 +579,8 @@ def run_conversation(
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    _grace_call_completed = False
+    agent._grace_call_active = False
 
     # Per-turn file-mutation verifier state.  Keyed by resolved path;
     # each failed ``write_file`` / ``patch`` call records the error
@@ -662,6 +664,13 @@ def run_conversation(
         # this iteration regardless of outcome.
         if agent._budget_grace_call:
             agent._budget_grace_call = False
+            agent._grace_call_active = True
+            summary_request = (
+                "You've reached the maximum number of tool-calling iterations allowed. "
+                "Please provide a final response summarizing what you've found and accomplished so far, "
+                "without calling any more tools."
+            )
+            messages.append({"role": "user", "content": summary_request})
         elif not agent.iteration_budget.consume():
             # Budget exhausted.  Rather than breaking immediately, set the
             # grace-call flag and let the loop make one final toolless API
@@ -946,8 +955,9 @@ def run_conversation(
         # Calculate approximate request size for logging
         total_chars = sum(len(str(msg)) for msg in api_messages)
         approx_tokens = estimate_messages_tokens_rough(api_messages)
+        _tools_param = None if getattr(agent, "_grace_call_active", False) else (agent.tools or None)
         approx_request_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
+            api_messages, tools=_tools_param
         )
 
         _runtime_context_error = _ollama_context_limit_error(
@@ -1067,7 +1077,9 @@ def run_conversation(
 
             try:
                 agent._reset_stream_delivery_tracking()
+                _was_grace = getattr(agent, "_grace_call_active", False)
                 api_kwargs = agent._build_api_kwargs(api_messages)
+                agent._grace_call_active = False
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -1162,6 +1174,8 @@ def run_conversation(
                     response = agent._interruptible_api_call(api_kwargs)
                 
                 api_duration = time.time() - api_start_time
+                if _was_grace:
+                    _grace_call_completed = True
                 
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
@@ -3906,7 +3920,7 @@ def run_conversation(
     if final_response is None and (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
-    ) and not agent._budget_grace_call:
+    ) and not _grace_call_completed:
         # Budget exhausted and the grace-call loop path did not produce a
         # final response (e.g. the loop was exited before the grace call ran,
         # or the grace call itself returned no content).  Fall back to the

@@ -247,7 +247,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
-    tools_for_api = agent.tools
+    tools_for_api = None if getattr(agent, "_grace_call_active", False) else agent.tools
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()

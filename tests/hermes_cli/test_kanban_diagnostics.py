@@ -272,6 +272,27 @@ def test_repeated_crashes_escalates_on_many_crashes():
     assert diags[0].severity == "critical"
 
 
+def test_failure_rules_exempt_terminal_statuses():
+    # A manual done (dashboard drag) ends no run, so the trailing crash
+    # streak survives in run history — but done means done: neither
+    # failure rule may keep flagging a terminal card.
+    runs = [_run(outcome="crashed", run_id=1), _run(outcome="crashed", run_id=2)]
+    for status in ("done", "archived"):
+        task = _task(status=status, assignee="crashy", consecutive_failures=3)
+        assert kd.compute_task_diagnostics(task, [], runs) == []
+
+
+def test_failure_rules_exempt_running_retry():
+    # Retrying a task (→ running) puts a fresh attempt in flight; its
+    # in-flight run (no outcome) doesn't break the trailing crash scan,
+    # so the past streak used to keep flagging over an active retry.
+    # A running card must clear the failure/crash banner until this
+    # attempt itself resolves.
+    runs = [_run(outcome="crashed", run_id=1), _run(outcome="crashed", run_id=2)]
+    task = _task(status="running", assignee="crashy", consecutive_failures=3)
+    assert kd.compute_task_diagnostics(task, [], runs) == []
+
+
 def test_stuck_in_blocked_fires_past_threshold():
     now = int(time.time())
     task = _task(status="blocked")
@@ -368,15 +389,19 @@ def test_repeated_crashes_truncates_huge_tracebacks():
 
 def test_diagnostics_sorted_critical_first():
     """A task with both a critical (many spawn failures) and a warning
-    (prose phantoms) diagnostic should list the critical one first."""
-    task = _task(status="done", consecutive_failures=10,
+    (prose phantoms) diagnostic should list the critical one first.
+
+    Status must be non-terminal: done/archived are exempt from the
+    failure rules (done means done). ``now=300`` keeps the synthetic
+    timestamps from tripping stranded_in_ready — same dodge as above."""
+    task = _task(status="ready", consecutive_failures=10,
                  last_failure_error="nope")
     events = [
         _event("completed", ts=100, summary="referenced t_missing"),
         _event("suspected_hallucinated_references", ts=101,
                phantom_refs=["t_missing11"]),
     ]
-    diags = kd.compute_task_diagnostics(task, events, [])
+    diags = kd.compute_task_diagnostics(task, events, [], now=300)
     kinds = [d.kind for d in diags]
     assert kinds[0] == "repeated_failures"  # critical
     assert "prose_phantom_refs" in kinds

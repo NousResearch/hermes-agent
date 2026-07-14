@@ -1,4 +1,9 @@
-import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
+import {
+  type ReasoningMessagePartComponent,
+  type ToolCallMessagePartProps,
+  useAuiState,
+  useMessagePartReasoning
+} from '@assistant-ui/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
@@ -174,17 +179,19 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   )
 }
 
-const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ text, status }) => {
-  const displayText = text.trimStart()
+// Read the part from context, same contract as MarkdownText's
+// useMessagePartText — the reasoning-only smoothing wrapper (removed) stalled
+// the char-reveal at empty, blanking the widget.
+const ReasoningTextPart: ReasoningMessagePartComponent = () => {
+  const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
-  const isRunning = status?.type === 'running' || messageRunning
 
   return (
     <MarkdownTextContent
       containerClassName="text-xs leading-snug text-muted-foreground/85"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
-      isRunning={isRunning}
-      text={displayText}
+      isRunning={status.type === 'running' || messageRunning}
+      text={text.trimStart()}
     />
   )
 }

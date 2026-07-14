@@ -125,6 +125,39 @@ When `workdir` is set:
 Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
 :::
 
+## Per-job reasoning effort
+
+Different jobs need different thinking depth: an hourly inbox scan doesn't need the reasoning budget of a morning briefing that synthesizes calendar, email, and weather. Set a per-job effort with `--reasoning-effort` (CLI) or `reasoning_effort=` (tool call):
+
+```bash
+# A lightweight classifier job — no deep thinking needed
+hermes cron create "every 1h" "Scan the inbox and flag urgent items" \
+  --reasoning-effort low
+
+# A deep-synthesis job on the same model
+hermes cron create "every 1d at 07:00" "Compile my morning briefing" \
+  --reasoning-effort xhigh
+```
+
+```python
+cronjob(
+    action="create",
+    schedule="every 1h",
+    prompt="Scan the inbox and flag urgent items",
+    reasoning_effort="low",
+)
+```
+
+Valid levels: `none` (disable thinking), `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Invalid values are rejected at create/update time.
+
+Resolution priority for a job's reasoning effort:
+
+1. The job's own `reasoning_effort` (this section)
+2. A matching per-model entry in `agent.reasoning_overrides` for the job's effective model
+3. The global `agent.reasoning_effort`
+
+Pass `--reasoning-effort ""` (or `reasoning_effort=""` via the tool) on edit to clear the override and revert to per-model/global resolution. The field is ignored for `no_agent` jobs, which never touch the inference layer.
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.

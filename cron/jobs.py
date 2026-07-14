@@ -1036,6 +1036,34 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def _normalize_job_reasoning_effort(value: Any) -> Optional[str]:
+    """Normalize/validate a per-job reasoning_effort value.
+
+    Accepts the same levels as ``agent.reasoning_effort`` ("none", "minimal",
+    "low", "medium", "high", "xhigh", "max", "ultra" — plus disable aliases).
+    Returns the normalized lowercase string, or None when the value is
+    empty/absent (meaning: no per-job override).
+
+    Raises ValueError for a non-empty value that isn't a recognized level, so
+    bad configs surface at create/update time instead of silently running at
+    the global effort.
+    """
+    if value is None or value is True:
+        return None
+    if value is False:
+        return "none"
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    from hermes_constants import parse_reasoning_effort
+    if parse_reasoning_effort(text) is None:
+        raise ValueError(
+            f"Invalid reasoning_effort {value!r} — valid levels: "
+            "none, minimal, low, medium, high, xhigh, max, ultra"
+        )
+    return text
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1048,6 +1076,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
@@ -1071,6 +1100,10 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        reasoning_effort: Optional per-job reasoning effort ("none", "minimal",
+                "low", "medium", "high", "xhigh", "max", "ultra"). Wins over
+                agent.reasoning_overrides and agent.reasoning_effort for this
+                job. Ignored when ``no_agent=True``.
         script: Optional path to a script whose stdout feeds the job. With
                 ``no_agent=True`` the script IS the job — its stdout is
                 delivered verbatim. Without ``no_agent``, its stdout is
@@ -1123,6 +1156,7 @@ def create_job(
     normalized_model = _normalize_job_optional_text(model)
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_base_url = _normalize_job_optional_text(base_url, strip_trailing_slash=True)
+    normalized_reasoning = _normalize_job_reasoning_effort(reasoning_effort)
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
@@ -1195,6 +1229,7 @@ def create_job(
         "provider_snapshot": provider_snapshot,
         "model_snapshot": model_snapshot,
         "base_url": normalized_base_url,
+        "reasoning_effort": normalized_reasoning,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
         "context_from": context_from,
@@ -1314,6 +1349,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            # Validate / normalize per-job reasoning_effort. Empty string or
+            # None clears the override (job reverts to per-model/global).
+            if "reasoning_effort" in updates:
+                updates["reasoning_effort"] = _normalize_job_reasoning_effort(
+                    updates["reasoning_effort"]
+                )
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

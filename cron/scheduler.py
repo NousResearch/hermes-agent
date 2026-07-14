@@ -2988,13 +2988,17 @@ def run_job(
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (per-model override > global) —
-        # resolved through the shared chokepoint against the job's effective
-        # model (per-job override > HERMES_MODEL env > config.yaml default).
-        from hermes_constants import resolve_reasoning_config
-        reasoning_config = resolve_reasoning_config(
-            _cfg if isinstance(_cfg, dict) else {}, str(model)
-        )
+        # Reasoning config: per-job override > per-model override > global.
+        # The job field is a plain effort level ("high", "none", ...) validated
+        # at create/update time; per-model/global resolve through the shared
+        # chokepoint against the job's effective model.
+        from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+        _job_effort = str(job.get("reasoning_effort") or "").strip()
+        reasoning_config = parse_reasoning_effort(_job_effort) if _job_effort else None
+        if reasoning_config is None:
+            reasoning_config = resolve_reasoning_config(
+                _cfg if isinstance(_cfg, dict) else {}, str(model)
+            )
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is

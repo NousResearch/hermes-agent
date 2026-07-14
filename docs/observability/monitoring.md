@@ -1,0 +1,101 @@
+# Gateway Monitoring
+
+Service health monitoring plus redacted operational diagnostics for the
+Hermes gateway daemon, exported over OTLP/HTTP to an operator-configured
+endpoint (OpenTelemetry Collector, DataDog, or any OTLP receiver).
+
+This plane is content-free by construction. It exports gateway lifecycle
+state, platform connector health, and redacted warning/error diagnostics.
+It never exports prompts, messages, tool arguments or results, session
+history, usage analytics, audit logs, or execution traces. Run/model/tool
+trajectory capture is a separate plane served by the NeMo Relay integration
+(`plugins/observability/nemo_relay/`) and its Hermes-owned subscribers.
+
+## What gets exported
+
+| Signal | OTLP route | Content |
+| --- | --- | --- |
+| Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
+| Health/lifecycle events | `/v1/traces` | `gateway.lifecycle` state transitions (`starting -> running -> draining -> stopped`, `startup_failed`, exit), `gateway.health_snapshot`, platform state changes |
+| Diagnostics | `/v1/logs` | Warning/error gateway log events with secrets AND PII scrubbed in-process before egress (`[redacted]` / `[email]`), bounded error classes |
+
+Every signal carries resource attributes (`service.name`, profile, version,
+install id, supervision mode) so an operator can tell instances apart.
+
+## Enabling
+
+```yaml
+# config.yaml
+monitoring:
+  gateway_health_export:
+    enabled: true
+  export:
+    otlp:
+      enabled: true
+      endpoint: http://collector-host:4318/v1/traces   # metrics/logs derive
+      headers_env: {}   # header name -> ENV VAR NAME (values never stored)
+```
+
+Check the posture any time:
+
+```bash
+hermes monitoring status
+```
+
+The OpenTelemetry SDK is an optional extra (`pip install 'hermes-agent[otlp]'`),
+lazy-installed on first use. When the SDK is missing or the endpoint is down,
+the gateway runs unaffected: every export path is fail-open and off the hot
+path (events flow through a fire-and-forget in-process emitter; a slow or
+failing exporter can never block gateway code).
+
+Works identically under systemd/launchd/s6 supervision, containers, tmux, or
+a plain `hermes gateway run` — the exporter lives in the gateway process, so
+no sidecar, agent, or collector is required on the host.
+
+## Collecting into DataDog
+
+Run a customer-owned OpenTelemetry Collector and forward:
+
+```yaml
+# otel-collector config
+receivers:
+  otlp:
+    protocols:
+      http:
+exporters:
+  datadog:
+    api:
+      key: ${env:DD_API_KEY}
+service:
+  pipelines:
+    metrics:   {receivers: [otlp], exporters: [datadog]}
+    traces:    {receivers: [otlp], exporters: [datadog]}
+    logs:      {receivers: [otlp], exporters: [datadog]}
+```
+
+Point `monitoring.export.otlp.endpoint` at the collector. Alerts belong on
+`hermes.gateway.up`, `hermes.platform.up`, and `hermes.platform.degraded`.
+
+## Local smoke test (no Docker)
+
+```bash
+# terminal 1: capture collector on :4318
+python scripts/observability/otel_capture_collector.py \
+  --host 127.0.0.1 --port 4318 --log /tmp/hermes_otel_capture.jsonl
+
+# terminal 2: drive the real exporter through lifecycle transitions,
+# a fatal platform, and a redacted warning log, then flush
+python scripts/observability/gateway_health_export_probe.py \
+  --endpoint http://127.0.0.1:4318/v1/traces \
+  --log /tmp/hermes_otel_capture.jsonl --wait 8
+# exit 0 prints: {"requests": 6, "paths": ["/v1/logs", "/v1/metrics", "/v1/traces"]}
+```
+
+## Boundaries and roadmap
+
+The `hermes monitoring` CLI intentionally exposes `status` only. Shared
+client usage metrics and enterprise trace telemetry are being designed on
+the NeMo Relay integration with their own consent, policy, and export
+boundaries; this monitoring plane stays narrow so an operator can enable it
+without touching any content-bearing signal. The telemetry surface may be
+reorganized as that lands.

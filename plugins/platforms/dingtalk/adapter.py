@@ -1702,6 +1702,7 @@ def register(ctx) -> None:
         allow_all_env="DINGTALK_ALLOW_ALL_USERS",
         cron_deliver_env_var="DINGTALK_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
+        media_capabilities=frozenset({"image_file", "document"}),
         emoji="🐳",
         allow_update_command=True,
     )

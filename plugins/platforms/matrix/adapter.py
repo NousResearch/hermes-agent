@@ -4617,6 +4617,7 @@ def register(ctx) -> None:
         cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send,
         max_message_length=4000,
+        media_capabilities=frozenset({"image_file", "document", "voice", "video"}),
         emoji="🔐",
         allow_update_command=True,
     )

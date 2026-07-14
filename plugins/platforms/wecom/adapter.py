@@ -1867,6 +1867,7 @@ def register(ctx) -> None:
         cron_deliver_env_var="WECOM_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
         max_message_length=4000,
+        media_capabilities=frozenset({"image_file", "document", "voice", "video"}),
         emoji="💼",
         allow_update_command=True,
     )

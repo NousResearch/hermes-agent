@@ -97,6 +97,14 @@ class PlatformEntry:
     # If True, session descriptions redact PII (phone numbers, etc.)
     pii_safe: bool = False
 
+    # ── Media ──
+    # Declares which of {"voice", "video", "document", "image_file",
+    # "animation"} this adapter natively overrides (i.e. implements its own
+    # send_voice/send_video/send_document/send_image_file/send_animation),
+    # as opposed to falling back to BasePlatformAdapter's generic text-notice
+    # fallback for that media kind.
+    media_capabilities: frozenset[str] = frozenset()
+
     # ── Display ──
     # Emoji for CLI/gateway display (e.g. "💬")
     emoji: str = "🔌"

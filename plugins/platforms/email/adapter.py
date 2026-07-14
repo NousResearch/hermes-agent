@@ -1267,6 +1267,7 @@ def register(ctx) -> None:
         cron_deliver_env_var="EMAIL_HOME_ADDRESS",
         standalone_sender_fn=_standalone_send,
         max_message_length=50_000,
+        media_capabilities=frozenset({"document"}),
         pii_safe=True,
         emoji="📧",
         allow_update_command=True,

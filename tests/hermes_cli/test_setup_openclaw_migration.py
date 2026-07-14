@@ -260,6 +260,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_agent_settings"),
             patch.object(setup_mod, "setup_gateway"),
             patch.object(setup_mod, "setup_tools"),
+            patch.object(setup_mod, "_setup_context_compression"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
         ):
@@ -291,6 +292,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_agent_settings"),
             patch.object(setup_mod, "setup_gateway"),
             patch.object(setup_mod, "setup_tools"),
+            patch.object(setup_mod, "_setup_context_compression"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
         ):
@@ -323,6 +325,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_agent_settings"),
             patch.object(setup_mod, "setup_gateway"),
             patch.object(setup_mod, "setup_tools"),
+            patch.object(setup_mod, "_setup_context_compression"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
         ):
@@ -664,6 +667,7 @@ class TestSetupWizardSkipsConfiguredSections:
             patch.object(setup_mod, "setup_agent_settings") as mock_agent,
             patch.object(setup_mod, "setup_gateway") as mock_gateway,
             patch.object(setup_mod, "setup_tools") as mock_tools,
+            patch.object(setup_mod, "_setup_context_compression"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
         ):

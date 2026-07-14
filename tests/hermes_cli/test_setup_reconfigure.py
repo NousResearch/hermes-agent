@@ -114,6 +114,7 @@ class TestExistingInstallDefault:
                 agent="hermes_cli.setup.setup_agent_settings",
                 gateway="hermes_cli.setup.setup_gateway",
                 tools="hermes_cli.setup.setup_tools",
+                compresr="hermes_cli.setup._setup_context_compression",
             )
             from hermes_cli.setup import run_setup_wizard
             run_setup_wizard(args)
@@ -143,6 +144,7 @@ class TestExistingInstallDefault:
                 agent="hermes_cli.setup.setup_agent_settings",
                 gateway="hermes_cli.setup.setup_gateway",
                 tools="hermes_cli.setup.setup_tools",
+                compresr="hermes_cli.setup._setup_context_compression",
             )
             from hermes_cli.setup import run_setup_wizard
             run_setup_wizard(args)

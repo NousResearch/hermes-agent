@@ -1,0 +1,17 @@
+name: tool_output_compresr
+version: "0.1.0"
+description: >-
+  Compresr (YC W26) per-turn tool-output compression. Compresses large tool
+  outputs (verbose grep/read_file/execute_code dumps) on the
+  transform_tool_result hook — before they bloat the context window — using
+  Compresr's query-specific tool-output API (toc_latte_v2), with the tool's
+  intent as the query. The compressed text is passed through unchanged and a
+  footer points the agent at the full verbatim original under Hermes's managed
+  cache (cache/compresr/tool-output/<id>), recoverable with a plain
+  read_file/search_files. Lossy-summary + recoverable-source, fail-open, and
+  enabled by default when the plugin is loaded. Complements the compaction-time
+  context_engine/compresr plugin.
+author: "Compresr (YC W26)"
+homepage: https://compresr.ai
+hooks:
+  - transform_tool_result

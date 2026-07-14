@@ -435,6 +435,19 @@ class TestCacheDirectoryMounts:
 
         assert get_cache_directory_mounts() == []
 
+    def test_tool_output_compresr_cache_dir_is_mounted(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        cache_dir = hermes_home / "cache" / "compresr" / "tool-output"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "abc123").write_text("payload", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_cache_directory_mounts()
+        assert any(m["host_path"] == str(cache_dir) for m in mounts)
+        assert "/root/.hermes/cache/compresr/tool-output" in {
+            m["container_path"] for m in mounts
+        }
+
 
 class TestMapCachePathToContainer:
     """Tests for map_cache_path_to_container() — the backend-agnostic mapper."""
@@ -476,6 +489,18 @@ class TestMapCachePathToContainer:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert map_cache_path_to_container(str(hermes_home / "cache" / "images" / "x.png")) is None
+
+    def test_maps_tool_output_cache_path(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        cache_file = hermes_home / "cache" / "compresr" / "tool-output" / "x.txt"
+        cache_file.parent.mkdir(parents=True)
+        cache_file.write_text("payload", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert (
+            map_cache_path_to_container(str(cache_file))
+            == "/root/.hermes/cache/compresr/tool-output/x.txt"
+        )
 
 
 class TestIterCacheFiles:
@@ -530,3 +555,16 @@ class TestIterCacheFiles:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert iter_cache_files() == []
+
+    def test_tool_output_cache_files_are_enumerated(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        cache_dir = hermes_home / "cache" / "compresr" / "tool-output"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "x.txt").write_text("payload", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        entries = iter_cache_files()
+        assert any(
+            entry["container_path"] == "/root/.hermes/cache/compresr/tool-output/x.txt"
+            for entry in entries
+        )

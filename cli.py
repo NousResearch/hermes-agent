@@ -9670,6 +9670,58 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print("  ❌ Timed out talking to the Codex backend — try again shortly.")
                 return
         print(f"  {result.message}")
+    def _compresr_usage_lines(self):
+        """Compresr ROI lines for /usage; empty when the integration is inactive.
+
+        Reads compaction-engine counters off the live ``context_compressor`` and
+        per-turn counters off the registered ``transform_tool_result`` hook
+        instance. Fully defensive — /usage must never break if a plugin's shape
+        changes or the plugins aren't loaded.
+        """
+        rows = []  # (label, calls, tokens_in, tokens_saved, errors)
+        try:
+            eng = getattr(self.agent, "context_compressor", None)
+            calls = getattr(eng, "compresr_calls", 0) or 0
+            if calls:
+                rows.append((
+                    "compaction", calls,
+                    getattr(eng, "compresr_tokens_in", 0) or 0,
+                    getattr(eng, "compresr_tokens_saved", 0) or 0,
+                    getattr(eng, "compresr_errors", 0) or 0,
+                ))
+        except Exception:
+            pass
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            for cb in get_plugin_manager()._hooks.get("transform_tool_result", []):
+                inst = getattr(cb, "__self__", None)
+                st = inst.get_status() if hasattr(inst, "get_status") else None
+                if st and st.get("plugin") == "tool_output_compresr" and st.get("calls"):
+                    rows.append((
+                        "tool output", st["calls"],
+                        st.get("tokens_in", 0) or 0,
+                        st.get("tokens_saved", 0) or 0,
+                        st.get("errors", 0) or 0,
+                    ))
+        except Exception:
+            pass
+        if not rows:
+            return []
+
+        def _pct(saved, total):
+            return f" (~{round(100 * saved / total)}% of {total:,})" if total else ""
+
+        lines, tot_saved, tot_in = [], 0, 0
+        for label, calls, tokens_in, saved, errs in rows:
+            tot_saved += saved
+            tot_in += tokens_in
+            suffix = f" · {errs} err" if errs else ""
+            lines.append(
+                f"  Compresr ({label}): {calls} calls · "
+                f"{saved:,} tok saved{_pct(saved, tokens_in)}{suffix}")
+        if len(rows) > 1:
+            lines.append(f"  Compresr total saved:  {tot_saved:,} tokens{_pct(tot_saved, tot_in)}")
+        return lines
 
     def _show_usage(self):
         """Rate limits + session token usage (when a live agent exists) + Nous credits.
@@ -9733,6 +9785,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
+        for _line in self._compresr_usage_lines():
+            print(_line)
 
         # Account limits -- fetched off-thread with a hard timeout so slow
         # provider APIs don't hang the prompt.

@@ -2694,6 +2694,105 @@ def _run_portal_one_shot(config: dict) -> None:
     print_info("  Run `hermes` to start chatting.")
 
 
+def _setup_context_compression(config: dict):
+    """Context compression engine — Default (built-in) or Compresr (YC W26).
+
+    A single choice. Picking Compresr turns on both in-repo plugins together:
+      * compaction-time   — context.engine: compresr replaces the built-in
+        abstractive summarizer with Compresr's query-specific compression.
+      * per-turn          — the tool_output_compresr plugin compresses large
+        tool outputs as they arrive, leaving a recoverable reference under
+        cache/compresr/tool-output the agent can Read/Grep back (a lossy
+        summary with the full original recoverable on demand).
+
+    If the Compresr API is unreachable, compaction preserves the current
+    transcript instead of dropping turns with a placeholder summary; per-turn
+    tool-output compression leaves the original tool output unchanged.
+    """
+    print()
+    print_header("Context Compression — Compresr (optional)")
+
+    ctx = config.get("context", {}) or {}
+    current_engine = ctx.get("engine", "compressor")
+    compresr_block = config.get("compresr", {}) or {}
+    tool_output_on = bool(compresr_block.get("tool_output_enabled"))
+
+    currently_on = current_engine == "compresr" or tool_output_on
+    if currently_on:
+        print_info(f"Current: Compresr (engine={current_engine})")
+
+    choices = [
+        "Default — Hermes's built-in compressor",
+        "Compresr — query-specific compression (compaction + tool-output)",
+    ]
+    idx = prompt_choice("Compression engine:", choices, 1 if currently_on else 0)
+    if idx == 0:
+        config.setdefault("context", {})["engine"] = "compressor"
+        config.setdefault("compresr", {})["tool_output_enabled"] = False
+        _set_plugin_enabled(config, "tool_output_compresr", False)
+        print_info("Using the built-in compressor.")
+        if get_env_value("COMPRESR_API_KEY"):
+            print_info(
+                "To fully remove Compresr: delete COMPRESR_API_KEY from ~/.hermes/.env "
+                "and rm -rf ~/.hermes/cache/compresr/ to clear cached tool outputs."
+            )
+        return
+
+    print_warning(
+        "Compresr is a third-party API. When enabled, Hermes sends "
+        "conversation text for compaction and large tool outputs for "
+        "per-turn compression, including file contents and command output "
+        "the agent has read or run."
+    )
+
+    # Compresr needs an API key.
+    existing = get_env_value("COMPRESR_API_KEY")
+    if not existing:
+        print()
+        print_info("Get a key at https://compresr.ai/dashboard/tokens")
+        api_key = prompt("Compresr API key (cmp_...)", password=True)
+        if not api_key:
+            print_warning("No API key provided. Leaving the built-in compressor in place.")
+            return
+        if not api_key.startswith("cmp_"):
+            print_error("Invalid format: Compresr API keys start with 'cmp_'.")
+            return
+        save_env_value("COMPRESR_API_KEY", api_key)
+        print_success("Compresr API key saved")
+
+    config.setdefault("context", {})["engine"] = "compresr"
+    config.setdefault("compresr", {})["tool_output_enabled"] = True
+    # The per-turn plugin is a *standalone* plugin: it only loads if its name is
+    # in plugins.enabled. Setting tool_output_enabled alone is not enough — the
+    # hook would never register. Enable the plugin so the hook actually fires.
+    _set_plugin_enabled(config, "tool_output_compresr", True)
+    print_success(
+        "Compresr enabled (compaction-time + per-turn tool-output compression)"
+    )
+
+
+SETUP_SECTIONS.append(
+    ("compression", "Context Compression", _setup_context_compression)
+)
+
+
+def _set_plugin_enabled(config: dict, name: str, enabled: bool):
+    """Add/remove a plugin name in the ``plugins.enabled`` list in config.yaml.
+
+    Standalone plugins (like ``tool_output_compresr``) only load when listed
+    here; the loader accepts the bare manifest name.
+    """
+    plugins = config.setdefault("plugins", {})
+    lst = plugins.get("enabled")
+    if not isinstance(lst, list):
+        lst = [] if lst is None else list(lst)
+    if enabled and name not in lst:
+        lst.append(name)
+    elif not enabled and name in lst:
+        lst = [p for p in lst if p != name]
+    plugins["enabled"] = lst
+
+
 def run_setup_wizard(args):
     """Run the interactive setup wizard.
 
@@ -2919,6 +3018,10 @@ def run_setup_wizard(args):
     # Section 5: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
+
+    # Section 6: Context Compression (Compresr) — optional, opt-in
+    if not (migration_ran and _skip_configured_section(config, "compresr", "Context Compression")):
+        _setup_context_compression(config)
 
     # Save and show summary
     save_config(config)

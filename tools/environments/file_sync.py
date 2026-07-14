@@ -159,7 +159,7 @@ class FileSyncManager:
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
 
-    def sync(self, *, force: bool = False) -> None:
+    def sync(self, *, force: bool = False, raise_on_error: bool = False) -> None:
         """Run a sync cycle: upload changed files, delete removed files.
 
         Rate-limited to once per ``sync_interval`` unless *force* is True
@@ -167,6 +167,12 @@ class FileSyncManager:
 
         Transactional: state only committed if ALL operations succeed.
         On failure, state rolls back so the next cycle retries everything.
+
+        By default a transport failure is logged and swallowed (best-effort
+        background sync). Pass ``raise_on_error=True`` when a caller must know
+        the sync actually landed (e.g. a cache write that hands the model a
+        recovery path pointing at the just-uploaded file); the transport error
+        is then re-raised after rollback instead of being swallowed.
         """
         if not force and not os.environ.get(_FORCE_SYNC_ENV):
             now = time.monotonic()
@@ -234,6 +240,8 @@ class FileSyncManager:
             self._pushed_hashes = prev_hashes
             self._last_sync_time = time.monotonic()
             logger.warning("file_sync: sync failed, rolled back state: %s", exc)
+            if raise_on_error:
+                raise
 
     # ------------------------------------------------------------------
     # Sync-back: pull remote changes to host on teardown

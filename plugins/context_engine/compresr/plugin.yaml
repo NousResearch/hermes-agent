@@ -1,0 +1,10 @@
+name: compresr
+description: >-
+  Compresr (YC W26) query-specific context engine. Replaces Hermes's default
+  abstractive summarization of mid-conversation turns with Compresr's
+  query-specific span extraction (latte_v1/latte_v2) via https://api.compresr.ai.
+  Reuses the built-in compressor's head/tail protection and tool-pair
+  sanitization, so only the core compaction strategy differs.
+version: "0.1.0"
+author: "Compresr (YC W26)"
+homepage: https://compresr.ai

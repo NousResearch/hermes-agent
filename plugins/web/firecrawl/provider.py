@@ -292,7 +292,14 @@ def _to_plain_object(value: Any) -> Any:
 
     if hasattr(value, "model_dump"):
         try:
-            return value.model_dump()
+            data = value.model_dump()
+            # Recursively convert nested objects (e.g. SearchResultWeb inside SearchData.web)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    data[k] = _to_plain_object(v)
+            elif isinstance(data, list):
+                data = [_to_plain_object(item) for item in data]
+            return data
         except Exception:  # noqa: BLE001
             pass
 

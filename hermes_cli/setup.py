@@ -2245,6 +2245,27 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
+def _gateway_setup_marker_path() -> Path:
+    """Path of the marker the wizard drops after it installs the gateway.
+
+    The shell installers (scripts/install.sh, scripts/install.ps1) check for
+    this file and skip their own post-setup gateway step so the gateway is not
+    installed twice (issue #35200). Keep the filename in sync across all three.
+    """
+    home = os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
+    return Path(home) / ".gateway_setup_done"
+
+
+def _write_gateway_setup_marker() -> None:
+    """Record an installer-requested gateway setup result, best-effort."""
+    if os.environ.get("HERMES_INSTALLER_GATEWAY_MARKER") != "1":
+        return
+    try:
+        _gateway_setup_marker_path().write_text("")
+    except OSError:
+        logger.warning("Failed to write gateway setup marker.", exc_info=True)
+
+
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
     from hermes_cli.gateway import _all_platforms, _platform_status, _configure_platform
@@ -2440,6 +2461,10 @@ def setup_gateway(config: dict):
                         gateway_windows.install(force=False)
                         did_install = True
                         started_inline = True
+                    if did_install:
+                        # Tell the shell installers not to install the gateway
+                        # again in their own post-setup step (issue #35200).
+                        _write_gateway_setup_marker()
                     print()
                     if did_install and not started_inline and prompt_yes_no("  Start the service now?", True):
                         try:

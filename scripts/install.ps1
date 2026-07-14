@@ -1851,18 +1851,32 @@ function Invoke-SetupWizard {
     Write-Host ""
 
     Push-Location $InstallDir
+    Remove-Item (Join-Path $HermesHome ".gateway_setup_done") -Force -ErrorAction SilentlyContinue
+    $env:HERMES_INSTALLER_GATEWAY_MARKER = "1"
 
     # Run hermes setup using the venv Python directly (no activation needed)
-    if (-not $NoVenv) {
-        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
-    } else {
-        python -m hermes_cli.main setup
+    try {
+        if (-not $NoVenv) {
+            & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
+        } else {
+            python -m hermes_cli.main setup
+        }
+    } finally {
+        Remove-Item Env:HERMES_INSTALLER_GATEWAY_MARKER -ErrorAction SilentlyContinue
+        Pop-Location
     }
-
-    Pop-Location
 }
 
 function Start-GatewayIfConfigured {
+    # The setup wizard (hermes setup) installs the gateway itself when a
+    # messaging platform is configured, and writes this marker when it does.
+    # Skip the prompt/install here so the gateway is not set up twice (#35200).
+    if (Test-Path (Join-Path $HermesHome ".gateway_setup_done")) {
+        Remove-Item (Join-Path $HermesHome ".gateway_setup_done") -Force -ErrorAction SilentlyContinue
+        Write-Info "Gateway already configured during setup."
+        return
+    }
+
     $envPath = "$HermesHome\.env"
     if (-not (Test-Path $envPath)) { return }
 

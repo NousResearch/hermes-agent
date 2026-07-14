@@ -1772,16 +1772,30 @@ run_setup_wizard() {
 
     cd "$INSTALL_DIR"
 
+    # This marker is only meaningful for the setup run immediately below.
+    # Discard a stale result from an earlier installer invocation first.
+    rm -f "$HERMES_HOME/.gateway_setup_done"
+
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
+        HERMES_HOME="$HERMES_HOME" HERMES_INSTALLER_GATEWAY_MARKER=1 \
+            "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
     else
-        python -m hermes_cli.main setup < /dev/tty
+        HERMES_HOME="$HERMES_HOME" HERMES_INSTALLER_GATEWAY_MARKER=1 \
+            python -m hermes_cli.main setup < /dev/tty
     fi
 }
 
 maybe_start_gateway() {
+    # The setup wizard (hermes setup) installs the gateway itself when a
+    # messaging platform is configured, and writes this marker when it does.
+    # Skip the prompt/install here so the gateway is not set up twice (#35200).
+    if [ -f "$HERMES_HOME/.gateway_setup_done" ]; then
+        rm -f "$HERMES_HOME/.gateway_setup_done"
+        return 0
+    fi
+
     # Check if any messaging platform tokens were configured
     ENV_FILE="$HERMES_HOME/.env"
     if [ ! -f "$ENV_FILE" ]; then

@@ -13,6 +13,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from utils import base_url_host_matches
 from agent.auxiliary_client import call_llm
 from agent.transports import get_transport
 
@@ -171,6 +172,66 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
     return out
+
+
+def _resolve_slot_reasoning_effort(
+    provider: str,
+    model: str,
+    base_url: str,
+    requested_effort: str | None = None,
+) -> str | None:
+    """Resolve a safe ``reasoning_effort`` for one MoA slot.
+
+    Uses the SAME provider/base_url/model branches as ``AIAAgent`` so the
+    acting aggregator inherits the main loop's configured effort on backends
+    that support it, instead of silently falling back to the provider default.
+    """
+    base_url_lower = (base_url or "").lower()
+    model_lower = (model or "").lower()
+    requested = (requested_effort or "medium").strip().lower()
+
+    if base_url_host_matches(base_url_lower, "nousresearch.com"):
+        return requested
+    if base_url_host_matches(base_url_lower, "models.github.ai") or base_url_host_matches(base_url_lower, "githubcopilot.com"):
+        try:
+            from hermes_cli.models import github_model_reasoning_efforts
+
+            supported = github_model_reasoning_efforts(model) or []
+            if supported:
+                if requested == "xhigh" and "high" in supported:
+                    return "high"
+                if requested not in supported:
+                    if requested == "minimal" and "low" in supported:
+                        return "low"
+                    return "medium" if "medium" in supported else supported[0]
+        except Exception:
+            pass
+        return requested if requested in {
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        } else None
+    if (provider or "").strip().lower() == "lmstudio":
+        return requested
+    if "openrouter" not in base_url_lower:
+        return None
+    if "api.mistral.ai" in base_url_lower:
+        return None
+    prefixes = (
+        "deepseek/",
+        "anthropic/",
+        "openai/",
+        "x-ai/",
+        "google/gemini-2",
+        "google/gemma-4",
+        "qwen/qwen3",
+        "tencent/hy3",
+        "xiaomi/",
+    )
+    return requested if any(model_lower.startswith(prefix) for prefix in prefixes) else None
 
 
 def _maybe_apply_moa_cache_control(
@@ -1010,13 +1071,28 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
+        agg_extra_body = dict(agg_kwargs.get("extra_body") or {})
+        agg_reasoning_effort = agg_extra_body.get("reasoning_effort") or getattr(self, "reasoning_config", {}).get("effort")
+        if not agg_extra_body.get("reasoning") and not agg_extra_body.get("reasoning_effort"):
+            try:
+                agg_rt = _slot_runtime(aggregator)
+                _agg_effort = _resolve_slot_reasoning_effort(
+                    provider=aggregator.get("provider") or "",
+                    model=aggregator.get("model") or "",
+                    base_url=agg_rt.get("base_url") or "",
+                    requested_effort=agg_reasoning_effort,
+                )
+                if _agg_effort:
+                    agg_extra_body["reasoning"] = {"effort": _agg_effort}
+            except Exception:
+                pass
         _agg_response = call_llm(
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
+            extra_body=agg_extra_body or None,
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )

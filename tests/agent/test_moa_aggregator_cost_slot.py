@@ -98,3 +98,30 @@ def test_client_exposes_last_aggregator_slot(moa_config, monkeypatch):
     assert slot is not None
     assert slot["model"] == "anthropic/claude-opus-4.8"
     assert slot["provider"] == "openrouter"
+
+
+def test_create_propagates_reasoning_effort_to_aggregator(moa_config, monkeypatch):
+    """#64187: `agent.reasoning_effort` must follow the configured effort into
+    the aggregator call. Previously the aggregator received an empty extra_body
+    because the reasoning gates resolved against the virtual `moa://local`
+    identity."""
+    from agent.moa_loop import MoAChatCompletions
+
+    captured: dict = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    facade = MoAChatCompletions("closed")
+    facade.reasoning_config = {"enabled": True, "effort": "high"}
+    facade.create(
+        model="closed",
+        messages=[{"role": "user", "content": "clean the db"}],
+    )
+
+    extra_body = captured.get("extra_body") or {}
+    reasoning = extra_body.get("reasoning") or {}
+    assert reasoning.get("effort") == "high", extra_body

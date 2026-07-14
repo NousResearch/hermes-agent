@@ -8,6 +8,7 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- POST /v1/commands/{name}         — execute an advertised plugin slash command
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
@@ -1484,6 +1485,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/v1/capabilities", self._handle_capabilities),
+            ("POST", "/v1/commands/{name}", self._handle_plugin_command),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
@@ -2069,6 +2071,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "plugin_command": {"method": "POST", "path": "/v1/commands/{name}"},
             },
         }
         try:
@@ -2080,6 +2083,34 @@ class APIServerAdapter(BasePlatformAdapter):
             payload["commands"] = []
 
         return web.json_response(payload)
+
+    async def _handle_plugin_command(self, request: "web.Request") -> "web.Response":
+        """Execute a plugin command advertised by /v1/capabilities."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        name = str(request.match_info.get("name") or "").lower().lstrip("/")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        raw_args = body.get("args", "") if isinstance(body, dict) else ""
+        if not isinstance(raw_args, str):
+            return web.json_response(_openai_error("args must be a string", code="invalid_request"), status=400)
+        from hermes_cli.plugins import get_plugin_commands
+
+        entry = (get_plugin_commands() or {}).get(name)
+        handler = entry.get("handler") if isinstance(entry, dict) else None
+        if not callable(handler):
+            return web.json_response(_openai_error(f"Command not found: /{name}", code="command_not_found"), status=404)
+        try:
+            result = handler(raw_args)
+            if asyncio.iscoroutine(result):
+                result = await result
+        except Exception as exc:
+            logger.warning("[%s] Plugin command /%s failed: %s", self.name, name, exc)
+            return web.json_response(_openai_error("Plugin command failed", code="command_failed"), status=500)
+        return web.json_response({"command": f"/{name}", "result": result})
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.

@@ -787,7 +787,12 @@ def register(ctx):
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", category: str = "Plugin")`
+
+`category` is optional display metadata for API/mobile command pickers. Enabled
+plugin commands are advertised by `GET /v1/capabilities` and can be executed
+with an authenticated `POST /v1/commands/{name}` request whose JSON body is
+`{"args": "raw command arguments"}`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

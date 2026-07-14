@@ -513,10 +513,9 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
 def gateway_command_registry() -> list[dict[str, Any]]:
     """Return serializable/API-client-safe command metadata from the live registry.
 
-    The payload mirrors the command source Discord/Slack/Telegram use: built-in
-    gateway-available commands plus plugin slash commands. Handlers and other
-    callable/plugin internals are intentionally omitted so API clients can
-    discover slash commands without hardcoding command catalogs.
+    Only plugin commands are returned because these have a matching authenticated
+    API-server dispatch route. Gateway-only built-ins are intentionally omitted.
+    Handlers and other callable/plugin internals are never serialized.
     """
     overrides = _resolve_config_gates()
     registry: list[dict[str, Any]] = []
@@ -558,21 +557,6 @@ def gateway_command_registry() -> list[dict[str, Any]]:
         if plugin:
             record["plugin"] = plugin
         registry.append(record)
-
-    for cmd in COMMAND_REGISTRY:
-        if not _is_gateway_available(cmd, overrides):
-            continue
-        _add(
-            {
-                "name": cmd.name,
-                "description": cmd.description,
-                "category": cmd.category,
-                "argsHint": cmd.args_hint,
-                "aliases": cmd.aliases,
-                "subcommands": cmd.subcommands,
-                "source": "builtin",
-            }
-        )
 
     try:
         from hermes_cli.plugins import get_plugin_commands

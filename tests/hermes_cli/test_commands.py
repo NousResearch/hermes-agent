@@ -2192,7 +2192,7 @@ class TestPluginCommandEnumeration:
         assert is_gateway_known_command("metricas") is True
         assert is_gateway_known_command("definitely-not-registered") is False
 
-    def test_gateway_command_registry_exposes_api_client_safe_builtins_and_plugins(self, monkeypatch):
+    def test_gateway_command_registry_exposes_api_executable_plugins(self, monkeypatch):
         """API clients discover slash commands without executable internals."""
         from hermes_cli.commands import is_gateway_known_command
 
@@ -2215,14 +2215,6 @@ class TestPluginCommandEnumeration:
         registry = gateway_command_registry()
         by_name = {entry["name"]: entry for entry in registry}
 
-        assert by_name["help"] == {
-            "name": "help",
-            "command": "/help",
-            "summary": "Show available commands",
-            "description": "Show available commands",
-            "category": "Info",
-            "source": "builtin",
-        }
         assert by_name["joke"] == {
             "name": "joke",
             "command": "/joke",
@@ -2234,7 +2226,7 @@ class TestPluginCommandEnumeration:
             "source": "plugin",
             "plugin": "jokes-plugin",
         }
-        assert by_name["status"]["source"] == "builtin"
+        assert by_name["status"]["source"] == "plugin"
         assert "handler" not in by_name["joke"]
         assert is_gateway_known_command("definitely-not-registered") is False
 

@@ -17203,6 +17203,14 @@ def start_server(
         # after the socket is live (ephemeral port discovery).
         if not config.loaded:
             config.load()
+        # Bridge terminal.* config into the process environment so the
+        # terminal tool respects the user's sandbox/backend settings
+        # (TERMINAL_ENV, docker_volumes, etc.) in the serve process.
+        try:
+            from hermes_cli.config import apply_terminal_config_to_env
+            apply_terminal_config_to_env()
+        except Exception:
+            _log.debug("Failed to apply terminal config bridge for serve", exc_info=True)
         server.lifespan = config.lifespan_class(config)
         with server.capture_signals():
             await server.startup()

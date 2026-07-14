@@ -39,6 +39,19 @@ def _drain_one(timeout=5.0):
     return None
 
 
+def _drain_until_status(status, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    seen = []
+    while time.monotonic() < deadline:
+        evt = _drain_one(timeout=0.2)
+        if evt is None:
+            continue
+        seen.append(evt)
+        if evt.get("status") == status:
+            return evt
+    raise AssertionError(f"did not see {status!r} completion event; saw {seen!r}")
+
+
 def test_dispatch_returns_immediately_without_blocking():
     gate = threading.Event()
 
@@ -176,9 +189,7 @@ def test_crashed_runner_produces_error_completion():
         session_key="", runner=boom, max_async_children=3,
     )
     assert r["status"] == "dispatched"
-    evt = _drain_one()
-    assert evt is not None
-    assert evt["status"] == "error"
+    evt = _drain_until_status("error")
     text = format_process_notification(evt)
     assert text is not None
     assert "did not complete successfully" in text

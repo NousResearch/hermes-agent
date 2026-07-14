@@ -39,7 +39,8 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
   })
 
-  it('surfaces /tools, /save, and /personality on the desktop', () => {
+  it('surfaces /model, /tools, /save, and /personality on the desktop', () => {
+    expect(isDesktopSlashSuggestion('/model')).toBe(true)
     expect(isDesktopSlashSuggestion('/tools')).toBe(true)
     expect(isDesktopSlashSuggestion('/save')).toBe(true)
     expect(isDesktopSlashSuggestion('/personality')).toBe(true)
@@ -193,7 +194,7 @@ describe('desktop slash command curation', () => {
     expect(isPickerCommand('/resume', 'session')).toBe(true)
     expect(isPickerCommand('/sessions', 'session')).toBe(true)
     expect(isPickerCommand('/switch', 'session')).toBe(true)
-    // Unlike /model, /resume shows in the popover; its aliases stay hidden.
+    // Like /model, /resume shows in the popover; its aliases stay hidden.
     expect(isDesktopSlashSuggestion('/resume')).toBe(true)
     expect(isDesktopSlashSuggestion('/sessions')).toBe(false)
     expect(isDesktopSlashCommand('/switch')).toBe(true)

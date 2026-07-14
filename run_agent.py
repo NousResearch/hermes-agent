@@ -113,6 +113,7 @@ from agent.process_bootstrap import (
     _SafeWriter,  # noqa: F401  # re-exported for tests that `from run_agent import _SafeWriter`
     _get_proxy_for_base_url,
 )
+from agent import turn_trace
 from agent.iteration_budget import IterationBudget
 
 
@@ -4157,30 +4158,33 @@ class AIAgent:
     def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
         from unittest.mock import Mock
 
-        primary_client = self._ensure_primary_openai_client(reason=reason)
-        if self.provider == "moa":
-            return primary_client
-        if isinstance(primary_client, Mock):
-            return primary_client
-        with self._openai_client_lock():
-            request_kwargs = dict(self._client_kwargs)
-        # Per-request OpenAI-wire clients (used by both the non-streaming
-        # chat-completions path and the streaming chat-completions path
-        # in `_interruptible_api_call`) should not run the SDK's built-in
-        # retry loop: the agent's outer loop owns retries with credential
-        # rotation, provider fallback, and backoff that the SDK can't
-        # see. Leaving SDK retries on (default 2) compounds with our outer
-        # retries and lets a single hung provider request stretch to ~3x
-        # the per-call timeout before our stale detector reports it.
-        # Shared/primary clients and Anthropic / Bedrock paths are
-        # unaffected (they don't go through here).
-        request_kwargs["max_retries"] = 0
-        if (
-            base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
-            and self._api_kwargs_have_image_parts(api_kwargs or {})
-        ):
-            request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
-        return self._create_openai_client(request_kwargs, reason=reason, shared=False)
+        # obj=self: this can run on a per-LLM-call worker thread, where the
+        # thread-local trace is not adopted — resolve via the bound agent.
+        with turn_trace.span("llm.client_create", obj=self):
+            primary_client = self._ensure_primary_openai_client(reason=reason)
+            if self.provider == "moa":
+                return primary_client
+            if isinstance(primary_client, Mock):
+                return primary_client
+            with self._openai_client_lock():
+                request_kwargs = dict(self._client_kwargs)
+            # Per-request OpenAI-wire clients (used by both the non-streaming
+            # chat-completions path and the streaming chat-completions path
+            # in `_interruptible_api_call`) should not run the SDK's built-in
+            # retry loop: the agent's outer loop owns retries with credential
+            # rotation, provider fallback, and backoff that the SDK can't
+            # see. Leaving SDK retries on (default 2) compounds with our outer
+            # retries and lets a single hung provider request stretch to ~3x
+            # the per-call timeout before our stale detector reports it.
+            # Shared/primary clients and Anthropic / Bedrock paths are
+            # unaffected (they don't go through here).
+            request_kwargs["max_retries"] = 0
+            if (
+                base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
+                and self._api_kwargs_have_image_parts(api_kwargs or {})
+            ):
+                request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
+            return self._create_openai_client(request_kwargs, reason=reason, shared=False)
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
@@ -5724,32 +5728,45 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
+        # Per-turn trace: running tool_calls total lives in the trace tags so
+        # the run_conversation wrapper can copy it onto the root `turn` span.
+        _tt = turn_trace.get_bound(self)
+        if _tt is not None:
+            try:
+                _tt.tag(tool_calls=_tt.tags.get("tool_calls", 0) + len(tool_calls))
+            except Exception:
+                pass
+
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
             if len(tool_calls) <= 1:
-                return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
-                )
+                with turn_trace.span("tools.batch", trace=_tt, count=len(tool_calls), mode="sequential"):
+                    return self._execute_tool_calls_sequential(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
 
             from agent.tool_dispatch_helpers import _plan_tool_batch_segments
             segments = _plan_tool_batch_segments(tool_calls)
 
             if len(segments) == 1:
                 kind = segments[0][0]
-                if kind == "parallel":
-                    return self._execute_tool_calls_concurrent(
+                _mode = "parallel" if kind == "parallel" else "sequential"
+                with turn_trace.span("tools.batch", trace=_tt, count=len(tool_calls), mode=_mode):
+                    if kind == "parallel":
+                        return self._execute_tool_calls_concurrent(
+                            assistant_message, messages, effective_task_id, api_call_count
+                        )
+                    return self._execute_tool_calls_sequential(
                         assistant_message, messages, effective_task_id, api_call_count
                     )
-                return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
-                )
 
             from agent.tool_executor import execute_tool_calls_segmented
-            return execute_tool_calls_segmented(
-                self, assistant_message, messages, effective_task_id, api_call_count,
-                segments=segments,
-            )
+            with turn_trace.span("tools.batch", trace=_tt, count=len(tool_calls), mode="segmented"):
+                return execute_tool_calls_segmented(
+                    self, assistant_message, messages, effective_task_id, api_call_count,
+                    segments=segments,
+                )
         finally:
             self._executing_tools = False
 

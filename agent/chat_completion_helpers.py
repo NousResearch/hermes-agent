@@ -2264,6 +2264,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # ``request_client_holder["diag"]`` for closure access.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
+        # Also stamped on the agent so the turn-trace retrofit in
+        # conversation_loop can tag ttft_ms on the llm.call span (the
+        # conversation loop clears this per attempt).
+        agent._last_stream_diag = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
 
         # Some OpenAI-compatible adapters (for example copilot-acp, and the MoA
@@ -2628,6 +2632,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Per-attempt diagnostic dict for the retry block to consume.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
+        # Also stamped on the agent so the turn-trace retrofit in
+        # conversation_loop can tag ttft_ms on the llm.call span (the
+        # conversation loop clears this per attempt).
+        agent._last_stream_diag = _diag
         # Defensive: strip Responses-only kwargs (instructions, input, ...)
         # that can leak in under an api_mode-flip race. The Anthropic SDK
         # raises a non-retryable TypeError on them, killing the turn. See

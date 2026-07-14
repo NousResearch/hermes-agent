@@ -1832,6 +1832,24 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_provider_profile_forwards_provider_name(self, agent, monkeypatch):
+        captured = {}
+
+        class CapturingTransport:
+            @staticmethod
+            def build_kwargs(**kwargs):
+                captured.update(kwargs)
+                return kwargs
+
+        agent.provider = "zai"
+        agent.base_url = ""
+        agent._base_url_lower = ""
+        monkeypatch.setattr(agent, "_get_transport", lambda: CapturingTransport())
+
+        agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert captured["provider_name"] == "zai"
+
     def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
         """Kimi models should NOT have client-side temperature overrides.
 

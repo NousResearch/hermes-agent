@@ -333,6 +333,18 @@ class ChatCompletionsTransport(ProviderTransport):
         # Gemini targets and stripped for strict non-Gemini providers.
         sanitized = self.convert_messages(messages, model=model)
 
+        # Direct Z.AI endpoints reject some branded system-prompt variants as
+        # provider-side 429/code-1305 failures. Rewrite only the outbound copy;
+        # cached prompts and conversation history remain byte-for-byte intact.
+        from agent.zai_prompt_policy import apply_zai_prompt_policy
+
+        sanitized = apply_zai_prompt_policy(
+            sanitized,
+            provider=params.get("provider_name", ""),
+            model=model,
+            base_url=params.get("base_url", ""),
+        )
+
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")
         if _profile:

@@ -871,38 +871,51 @@ class ContextCompressor(ContextEngine):
             self._fallback_compression_streak = 0
         self._persist_fallback_compression_streak()
 
-    def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
+    def get_active_compression_failure_cooldown(
+        self,
+        *,
+        refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
         now_mono = time.monotonic()
+        local_state = None
         if self._summary_failure_cooldown_until > now_mono:
-            return {
+            local_state = {
                 "cooldown_until": time.time() + (
                     self._summary_failure_cooldown_until - now_mono
                 ),
                 "remaining_seconds": self._summary_failure_cooldown_until - now_mono,
                 "error": self._last_summary_error,
             }
+            if not refresh:
+                return local_state
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
-            return None
+            return local_state
 
         getter = getattr(session_db, "get_compression_failure_cooldown", None)
         if getter is None:
-            return None
+            return local_state
         try:
             state = getter(session_id)
         except sqlite3.Error as exc:
             logger.debug("compression failure cooldown lookup failed: %s", exc)
-            return None
+            return local_state
         except Exception:
-            return None
+            return local_state
         if not state:
+            if refresh:
+                self._summary_failure_cooldown_until = 0.0
+                self._last_summary_error = None
             return None
 
         remaining_seconds = float(state.get("remaining_seconds") or 0.0)
         if remaining_seconds <= 0:
+            if refresh:
+                self._summary_failure_cooldown_until = 0.0
+                self._last_summary_error = None
             return None
 
         self._summary_failure_cooldown_until = now_mono + remaining_seconds

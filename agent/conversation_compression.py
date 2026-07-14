@@ -76,6 +76,35 @@ def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
         return False
 
 
+def _refresh_persisted_compression_guards(compressor: Any) -> None:
+    """Refresh durable automatic-compression guards on a built-in compressor."""
+    method_calls = (
+        ("get_active_compression_failure_cooldown", {"refresh": True}),
+        ("_load_fallback_compression_streak", {}),
+    )
+    for method_name, kwargs in method_calls:
+        method = getattr(type(compressor), method_name, None)
+        if not callable(method):
+            continue
+        try:
+            method(compressor, **kwargs)
+        except Exception as exc:
+            logger.debug("compression guard refresh failed (%s): %s", method_name, exc)
+
+
+def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> bool:
+    """Return whether another path already rotated this compression parent."""
+    getter = getattr(type(session_db), "get_session", None)
+    if not callable(getter):
+        return False
+    session = getter(session_db, session_id)
+    return bool(
+        session
+        and session.get("ended_at") is not None
+        and session.get("end_reason") == "compression"
+    )
+
+
 def _compression_lock_holder(agent: Any) -> str:
     """Build a unique holder id for the lock: pid:tid:agent-instance:uuid.
 
@@ -508,6 +537,7 @@ def compress_context(
     # breaker state. Gateway hygiene constructs a fresh AIAgent, so the
     # persisted fallback streak is loaded by bind_session_state() before this.
     if not force:
+        _refresh_persisted_compression_guards(agent.context_compressor)
         blocked = getattr(
             type(agent.context_compressor),
             "_automatic_compression_blocked",
@@ -709,6 +739,58 @@ def compress_context(
                 _lock_db.release_compression_lock(_lock_sid, _lock_holder)
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
+
+    # A delayed contender can acquire the parent lock after the winning path
+    # has released it and completed rotation. The lock serializes work but does
+    # not by itself prove that this stale agent still owns a live parent.
+    if _lock_db is not None and _lock_sid:
+        try:
+            _parent_already_rotated = _session_was_rotated_by_compression(
+                _lock_db, _lock_sid
+            )
+        except Exception as _session_err:
+            logger.warning(
+                "compression session ownership lookup failed for session=%s "
+                "(%s: %s) - skipping compression this cycle",
+                _lock_sid,
+                type(_session_err).__name__,
+                _session_err,
+            )
+            _release_lock()
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+        if _parent_already_rotated:
+            logger.info(
+                "compression skipped: session=%s was already rotated by "
+                "another compression path",
+                _lock_sid,
+            )
+            _release_lock()
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+
+    # The agent may have been constructed before another path completed an
+    # in-place compaction on the same session. Re-read durable breaker state
+    # after acquiring the session lock so this final gate cannot act on the
+    # stale snapshot loaded by bind_session_state().
+    if not force:
+        compressor = agent.context_compressor
+        _refresh_persisted_compression_guards(compressor)
+        blocked = getattr(
+            type(compressor),
+            "_automatic_compression_blocked",
+            None,
+        )
+        if callable(blocked) and blocked(compressor):
+            _release_lock()
+            existing_prompt = getattr(agent, "_cached_system_prompt", None)
+            if not existing_prompt:
+                existing_prompt = agent._build_system_prompt(system_message)
+            return messages, existing_prompt
 
     # Notify external memory provider before compression discards context
     if agent._memory_manager:

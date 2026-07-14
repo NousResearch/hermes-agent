@@ -28,6 +28,20 @@ from agent.skill_utils import is_excluded_skill_path
 _console = Console()
 
 
+def _display_source(r) -> str:
+    """Human-facing source label for a result row.
+
+    GitHub-tap skills are stored under source="github"; surface their per-tap
+    provider label (NVIDIA / OpenAI / ...) when present so the table reflects
+    the real origin instead of the generic "github".
+    """
+    if r.source == "github":
+        provider = (getattr(r, "extra", None) or {}).get("provider")
+        if provider:
+            return provider
+    return r.source
+
+
 # ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
@@ -303,7 +317,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         table.add_row(
             r.name,
             r.description[:60] + ("..." if len(r.description) > 60 else ""),
-            r.source,
+            _display_source(r),
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
@@ -380,6 +394,16 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
 
+    # Provider filter (nvidia/openai/...) narrows GitHub-tap skills by their
+    # per-tap ``extra.provider`` label (the runtime index stores them all under
+    # source="github"). Real source ids were already filtered upstream.
+    from tools.skills_hub import _PROVIDER_FILTER_VALUES, _filter_results_by_provider
+    if source.strip().lower() in _PROVIDER_FILTER_VALUES:
+        all_results = _filter_results_by_provider(all_results, source)
+        if not all_results:
+            c.print(f"[dim]No skills found for provider '{source}'.[/]\n")
+            return
+
     # Deduplicate by identifier, preferring higher trust.
     # identifier is always unique per skill; name is not (browse-sh skills from different
     # sites can share the same task name, e.g. "search-listings" on Airbnb and Booking.com).
@@ -444,7 +468,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
             str(i),
             r.name,
             desc,
-            r.source,
+            _display_source(r),
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
@@ -492,7 +516,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
     )
-    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    from tools.skills_guard import scan_skill_cached, should_allow_install, format_scan_report
 
     c = console or _console
     ensure_hub_dirs()
@@ -624,8 +648,24 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             or getattr(meta, "identifier", "")
             or identifier
         )
-    result = scan_skill(q_path, source=scan_source)
+    from tools.skills_hub import HUB_DIR, source_url_for_bundle
+    result, scan_provenance = scan_skill_cached(
+        q_path,
+        source=scan_source,
+        source_url=source_url_for_bundle(bundle),
+        cache_dir=HUB_DIR / "scan-cache",
+    )
     c.print(format_scan_report(result))
+    freshness = "fresh" if scan_provenance["fresh"] else "cached"
+    c.print(
+        f"[dim]Scan provenance: {freshness}; scanner "
+        f"{scan_provenance['scanner_version']}; hash {scan_provenance['bundle_hash']}[/]"
+    )
+    rules = ", ".join(scan_provenance["rules"]) or "none"
+    c.print(
+        f"[dim]Source: {scan_provenance['source_url']}; scanned "
+        f"{scan_provenance['scanned_at']}; rules: {rules}[/]"
+    )
 
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)
@@ -1797,10 +1837,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N] [--json]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|github|official|nvidia|openai|anthropic|huggingface] [--limit N] [--json]\n")
             return
         source = "all"
-        limit = 10
+        limit = 25
         as_json = False
         query_parts = []
         i = 0

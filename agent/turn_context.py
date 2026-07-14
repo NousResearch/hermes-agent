@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.conversation_compression import conversation_history_after_compression
 from agent.iteration_budget import IterationBudget
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -117,12 +118,12 @@ class TurnContext:
 
 def build_turn_context(
     agent,
-    user_message: str,
+    user_message: Any,
     system_message: Optional[str],
     conversation_history: Optional[List[Dict[str, Any]]],
     task_id: Optional[str],
     stream_callback,
-    persist_user_message: Optional[str],
+    persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
     *,
     restore_or_build_system_prompt,
@@ -184,9 +185,19 @@ def build_turn_context(
     # name and leaves the snapshot untouched on no-change).
     try:
         if not getattr(agent, "_skip_mcp_refresh", False):
-            from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
-            if has_registered_mcp_tools():
-                refresh_agent_mcp_tools(agent, quiet_mode=True)
+            # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp``
+            # package (~0.4s measured) even when the user has zero MCP servers
+            # configured.  MCP tools can only be registered by code that has
+            # already imported ``tools.mcp_tool`` (discovery, /reload-mcp,
+            # late-binding refresh) — so if it isn't in sys.modules yet, there
+            # is nothing to refresh and the import can be skipped outright.
+            # This keeps the no-MCP first turn off the heavy import path
+            # without changing behavior for MCP users.
+            import sys as _sys
+            if "tools.mcp_tool" in _sys.modules:
+                from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
+                if has_registered_mcp_tools():
+                    refresh_agent_mcp_tools(agent, quiet_mode=True)
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 
@@ -222,6 +233,9 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
+    if callable(_reset_consol):
+        _reset_consol()
     agent._vision_supported = True
 
     # Pre-turn connection health check: clean up dead TCP connections.
@@ -257,6 +271,29 @@ def build_turn_context(
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
 
+    # The CLI may already have staged this input outside the history passed to
+    # ``run_conversation``. Reuse it only when its clean transcript text matches
+    # this turn; a stale handoff from a failed prior turn must not replace a
+    # later, different user input. Voice turns compare against their explicit
+    # clean persistence override rather than the API-only prefixed payload.
+    pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
+    expected_persist_content = (
+        persist_user_message if persist_user_message is not None else user_message
+    )
+    if (
+        isinstance(pending_cli_message, dict)
+        and pending_cli_message.get("content") == expected_persist_content
+    ):
+        user_msg = pending_cli_message
+        # The CLI-staged value is the clean transcript text. Restore the
+        # API-facing variant (for example, a voice-mode prefix) while retaining
+        # the same dict and any close-path durable marker.
+        user_msg["content"] = user_message
+    else:
+        user_msg = {"role": "user", "content": user_message}
+        if isinstance(pending_cli_message, dict):
+            agent._pending_cli_user_message = None
+
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():
         agent._hydrate_todo_store(conversation_history)
@@ -271,8 +308,18 @@ def build_turn_context(
             if agent._memory_nudge_interval > 0 and agent._turns_since_memory == 0:
                 agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
 
+    # Add the current user message after the prompt/session setup has made
+    # close persistence safe. The handoff above preserves any marker already
+    # stamped by an earlier close flush.
+    messages.append(user_msg)
+    current_turn_user_idx = len(messages) - 1
+    agent._persist_user_message_idx = current_turn_user_idx
+
     # Track user turns for memory flush and periodic nudge logic.
     agent._user_turn_count += 1
+    # Copilot x-initiator: the first API call of this user turn is
+    # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
+    agent._is_user_initiated_turn = True
 
     # Reset the streaming context scrubber at the top of each turn.
     scrubber = getattr(agent, "_stream_context_scrubber", None)
@@ -296,11 +343,19 @@ def build_turn_context(
             should_review_memory = True
             agent._turns_since_memory = 0
 
-    # Add user message.
-    user_msg = {"role": "user", "content": user_message}
-    messages.append(user_msg)
-    current_turn_user_idx = len(messages) - 1
-    agent._persist_user_message_idx = current_turn_user_idx
+    # Cosmetic side-signal: detect an affection "reaction" (ily / <3 / good bot)
+    # and notify the host so it can play hearts. Token-free, never touches the
+    # conversation, and never fatal — a purely optional UI beat.
+    reaction_callback = getattr(agent, "reaction_callback", None)
+    if reaction_callback is not None:
+        try:
+            from agent.reactions import detect_reaction
+
+            kind = detect_reaction(original_user_message)
+            if kind:
+                reaction_callback(kind)
+        except Exception:
+            pass
 
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
@@ -317,18 +372,33 @@ def build_turn_context(
 
     # Create the DB session row now that _cached_system_prompt is populated, so
     # the persisted snapshot is written non-NULL on the first turn (Issue
-    # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.
-    agent._ensure_db_session()
+    # #45499). Keep row creation and the marker-based append in the same
+    # per-agent critical section as CLI close persistence.
+    persist_lock = getattr(agent, "_session_persist_lock", None)
+
+    def _ensure_and_persist() -> None:
+        agent._ensure_db_session()
+        agent._persist_session(messages, conversation_history)
 
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
     try:
-        agent._persist_session(messages, conversation_history)
+        if persist_lock is None:
+            _ensure_and_persist()
+        else:
+            with persist_lock:
+                _ensure_and_persist()
     except Exception:
         logger.warning(
             "Early turn-start session persistence failed for session=%s",
             agent.session_id or "none",
             exc_info=True,
         )
+    finally:
+        # Keep an unmarked staged input available to a later close retry if the
+        # normal persistence attempt failed. Once the marker is present, the
+        # close path must no longer treat it as a pre-worker UI input.
+        if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
+            agent._pending_cli_user_message = None
 
     # ── Preflight context compression ──
     # Gate the (expensive) full token estimate behind a cheap pre-check.
@@ -352,12 +422,32 @@ def build_turn_context(
             lambda _tokens: False,
         )
         _preflight_deferred = _defer_preflight(_preflight_tokens)
+        # Codex app-server threads are compacted by the codex agent itself;
+        # Hermes only initiates compaction in "hermes" mode (#36801).
+        _codex_native_auto = (
+            getattr(agent, "api_mode", None) == "codex_app_server"
+            and str(
+                getattr(
+                    agent,
+                    "codex_app_server_auto_compaction",
+                    "native",
+                )
+                or "native"
+            ).lower()
+            in {"native", "off"}
+        )
 
         if not _preflight_deferred:
             _last = _compressor.last_prompt_tokens
             # Do NOT overwrite the -1 sentinel (#36718).
             if _last >= 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
+
+        _compression_cooldown = getattr(
+            _compressor,
+            "get_active_compression_failure_cooldown",
+            lambda: None,
+        )()
 
         if _preflight_deferred:
             logger.info(
@@ -366,6 +456,19 @@ def build_turn_context(
                 f"{_preflight_tokens:,}",
                 f"{_compressor.threshold_tokens:,}",
                 f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compression_cooldown:
+            logger.info(
+                "Skipping preflight compression: same-session cooldown active "
+                "(~%s seconds remaining, session %s)",
+                int(_compression_cooldown.get("remaining_seconds", 0.0)),
+                agent.session_id or "none",
+            )
+        elif _codex_native_auto:
+            logger.info(
+                "Skipping Hermes preflight compression for codex app-server "
+                "(mode=%s); Hermes will not start thread compaction here.",
+                getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
         elif _compressor.should_compress(_preflight_tokens):
             logger.info(
@@ -400,7 +503,9 @@ def build_turn_context(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
                     break  # Cannot compress further: neither rows nor tokens moved
-                conversation_history = None
+                conversation_history = conversation_history_after_compression(
+                    agent, messages
+                )
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
                 agent._last_content_with_tools = None
@@ -426,11 +531,37 @@ def build_turn_context(
             sender_id=getattr(agent, "_user_id", None) or "",
         )
         _ctx_parts: list[str] = []
+        # Spill oversized per-hook context to disk so a runaway plugin
+        # can't inflate every subsequent turn's prompt. Ported from
+        # openai/codex PR #21069 ("Spill large hook outputs from context").
+        try:
+            from tools.hook_output_spill import (
+                get_spill_config as _spill_cfg,
+                spill_if_oversized as _spill_if_oversized,
+            )
+            _spill_config_cached = _spill_cfg()
+        except Exception:
+            _spill_if_oversized = None  # type: ignore[assignment]
+            _spill_config_cached = None
         for r in _pre_results:
+            _piece: str = ""
             if isinstance(r, dict) and r.get("context"):
-                _ctx_parts.append(str(r["context"]))
+                _piece = str(r["context"])
             elif isinstance(r, str) and r.strip():
-                _ctx_parts.append(r)
+                _piece = r
+            else:
+                continue
+            if _spill_if_oversized is not None:
+                try:
+                    _piece = _spill_if_oversized(
+                        _piece,
+                        session_id=agent.session_id,
+                        source="plugin hook",
+                        config=_spill_config_cached,
+                    )
+                except Exception as _spill_exc:
+                    logger.warning("hook context spill failed: %s", _spill_exc)
+            _ctx_parts.append(_piece)
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:
@@ -440,6 +571,7 @@ def build_turn_context(
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
+    agent._pre_verify_nudges = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.

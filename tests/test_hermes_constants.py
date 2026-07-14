@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from hermes_constants import (
     find_node_executable,
     find_node_executable_on_path,
     get_default_hermes_root,
+    get_hermes_dir,
     get_hermes_home,
     heal_hermes_managed_node,
     hermes_managed_node_tree_present,
@@ -434,6 +436,18 @@ class TestParseReasoningEffort:
         """The literal "none" disables reasoning explicitly."""
         assert parse_reasoning_effort("none") == {"enabled": False}
 
+    @pytest.mark.parametrize("value", [False, "false", "FALSE", "disabled", " Disabled "])
+    def test_false_aliases_disable_reasoning(self, value):
+        """YAML `reasoning_effort: false`/`off`/`no` reaches loaders as a
+        boolean; users also hand-write "false"/"disabled". All must mean
+        disabled — not "unset, fall back to the default and keep thinking"."""
+        assert parse_reasoning_effort(value) == {"enabled": False}
+
+    @pytest.mark.parametrize("value", [None, True])
+    def test_non_string_non_false_returns_none(self, value):
+        """None and boolean True fall back to the caller default."""
+        assert parse_reasoning_effort(value) is None
+
     @pytest.mark.parametrize("level", list(VALID_REASONING_EFFORTS))
     def test_each_valid_level(self, level):
         """Every level listed in VALID_REASONING_EFFORTS is accepted as-is."""
@@ -459,7 +473,7 @@ class TestParseReasoningEffort:
 
     @pytest.mark.parametrize(
         "value",
-        ["bogus", "very-high", "max", "0", "off", "true", "default"],
+        ["bogus", "very-high", "0", "off", "true", "default"],
     )
     def test_unknown_levels_return_none(self, value):
         """Unrecognized strings fall back to the caller default (None)."""
@@ -468,11 +482,11 @@ class TestParseReasoningEffort:
     def test_known_supported_levels_are_documented(self):
         """Guard against silently dropping a documented level.
 
-        The docstring promises "minimal", "low", "medium", "high", "xhigh".
-        If someone removes one from VALID_REASONING_EFFORTS without updating
-        the docstring, this test will fail and force the call out.
+        The docstring promises "minimal", "low", "medium", "high", "xhigh",
+        "max", "ultra". If someone removes one from VALID_REASONING_EFFORTS without
+        updating the docstring, this test will fail and force the call out.
         """
-        documented = {"minimal", "low", "medium", "high", "xhigh"}
+        documented = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 
@@ -609,3 +623,249 @@ class TestAgentBrowserRunnable:
         # the package at run time, so the validator trusts it without stat.
         assert agent_browser_runnable("npx agent-browser") is True
         assert agent_browser_runnable("/usr/local/bin/npx agent-browser") is True
+
+    def test_version_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
+        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho hi\n")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        import hermes_cli._subprocess_compat as subprocess_compat
+        import subprocess as subprocess_mod
+
+        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(subprocess_mod, "run", fake_run)
+
+        assert agent_browser_runnable(str(good)) is True
+        assert captured[0][0] == [str(good), "--version"]
+        assert captured[0][1]["creationflags"] == 0x08000000
+
+
+    def test_node_tool_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
+        good = self._stub(tmp_path, "node", "#!/bin/sh\necho v22\n")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        import hermes_cli._subprocess_compat as subprocess_compat
+        import subprocess as subprocess_mod
+
+        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(subprocess_mod, "run", fake_run)
+
+        assert node_tool_runnable(str(good)) is True
+        assert captured[0][0] == [str(good), "--version"]
+        assert captured[0][1]["creationflags"] == 0x08000000
+
+
+class TestGetHermesDir:
+    """Tests for ``get_hermes_dir(new_subpath, old_name)``.
+
+    Contract: prefer the legacy ``<old_name>/`` location, but only when
+    it has content. An empty legacy stub must fall through to the new
+    layout so dormant install scaffolds don't orphan populated data at
+    ``<new_subpath>/``. Regression guard for #27602.
+    """
+
+    def _set_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def test_neither_exists_returns_new(self, tmp_path, monkeypatch):
+        self._set_home(tmp_path, monkeypatch)
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == tmp_path / "platforms/pairing"
+
+    def test_legacy_populated_returns_legacy(self, tmp_path, monkeypatch):
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "image_cache"
+        legacy.mkdir()
+        (legacy / "cached.png").write_bytes(b"x")
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == legacy
+
+    def test_legacy_populated_with_subdir_returns_legacy(self, tmp_path, monkeypatch):
+        """Sub-directories count as content (e.g. nested cache layout)."""
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "matrix" / "store"
+        legacy.mkdir(parents=True)
+        (legacy / "session").mkdir()  # subdir, not a file
+        result = get_hermes_dir("platforms/matrix/store", "matrix/store")
+        assert result == legacy
+
+    def test_legacy_empty_returns_new(self, tmp_path, monkeypatch):
+        """The #27602 regression: empty legacy dir orphans populated new dir.
+
+        Without the fix, the resolver returned the empty legacy path
+        unconditionally, causing the pairing store to forget every
+        previously-approved user when an empty ``pairing/`` stub had
+        been pre-created at install time.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "pairing"
+        legacy.mkdir()
+        # Populated new layout — this is the data that must not be orphaned.
+        new = tmp_path / "platforms" / "pairing"
+        new.mkdir(parents=True)
+        (new / "telegram-approved.json").write_text("[]")
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == new
+
+    def test_legacy_empty_and_new_missing_returns_new(self, tmp_path, monkeypatch):
+        """Empty legacy + no new yet — return the new path (will be created lazily).
+
+        Slight behaviour change vs the old resolver (which would return the
+        empty legacy dir): the new path is what every consumer mkdirs into
+        when it doesn't exist, so the next write lands in the canonical
+        location instead of perpetuating the empty stub.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "audio_cache"
+        legacy.mkdir()
+        result = get_hermes_dir("cache/audio", "audio_cache")
+        assert result == tmp_path / "cache/audio"
+
+    def test_legacy_is_file_treated_as_content(self, tmp_path, monkeypatch):
+        """A non-directory file at the legacy path counts as occupied.
+
+        Defensive against odd installs where the caller previously wrote a
+        single file instead of a directory. We honour whatever's there.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "image_cache"
+        legacy.write_bytes(b"sentinel")
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == legacy
+
+    def test_unreadable_legacy_dir_kept(self, tmp_path, monkeypatch):
+        """If we can't enumerate the legacy dir, assume occupied — never
+        accidentally orphan legacy data on a transient permission error.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "whatsapp" / "session"
+        legacy.mkdir(parents=True)
+        # Populate the new path too. The point is to verify that an
+        # OSError on iterdir does NOT fall through to the new layout.
+        new = tmp_path / "platforms" / "whatsapp" / "session"
+        new.mkdir(parents=True)
+        (new / "creds.json").write_text("{}")
+
+        real_iterdir = Path.iterdir
+
+        def boom(self):
+            if self == legacy:
+                raise PermissionError("simulated")
+            return real_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", boom)
+        result = get_hermes_dir(
+            "platforms/whatsapp/session", "whatsapp/session"
+        )
+        assert result == legacy
+
+    def test_unstatable_legacy_dir_kept(self, tmp_path, monkeypatch):
+        """A ``PermissionError`` raised by the existence check itself (e.g.
+        an unreadable parent) must NOT be read as "absent".
+
+        The old ``Path.exists()``/``Path.is_dir()`` gate swallowed
+        ``PermissionError`` and returned ``False``, so an unreadable legacy
+        dir fell through to the new layout and orphaned legacy data —
+        contradicting the docstring's "assume occupied on errors" intent.
+        With the ``lstat()``-based gate this raises and is caught as
+        occupied. Regression guard for the #27602 follow-up.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "pairing"
+        legacy.mkdir()
+        # Populate the new path; it must NOT be selected.
+        new = tmp_path / "platforms" / "pairing"
+        new.mkdir(parents=True)
+        (new / "telegram-approved.json").write_text("[]")
+
+        real_lstat = Path.lstat
+
+        def boom(self):
+            if self == legacy:
+                raise PermissionError("simulated unreadable parent")
+            return real_lstat(self)
+
+        monkeypatch.setattr(Path, "lstat", boom)
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == legacy
+
+    def test_dangling_legacy_symlink_returns_new(self, tmp_path, monkeypatch):
+        """A dangling legacy symlink must NOT shadow populated new-layout data.
+
+        ``lstat()`` reports the link itself (not its missing target), so the
+        helper must resolve the link and treat a broken target as absent —
+        matching the old ``exists()`` gate, which followed the link and
+        returned False for a dangling one. Otherwise a stale broken symlink
+        would orphan real data (a stricter variant of the #27602 bug).
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "pairing"
+        legacy.symlink_to(tmp_path / "does-not-exist")
+        new = tmp_path / "platforms" / "pairing"
+        new.mkdir(parents=True)
+        (new / "discord-approved.json").write_text("[]")
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == new
+
+    def test_symlink_to_populated_dir_returns_legacy(self, tmp_path, monkeypatch):
+        """A legacy symlink pointing at a populated directory is honoured."""
+        self._set_home(tmp_path, monkeypatch)
+        real = tmp_path / "real_store"
+        real.mkdir()
+        (real / "cached.png").write_bytes(b"x")
+        legacy = tmp_path / "image_cache"
+        legacy.symlink_to(real)
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == legacy
+
+    def test_symlink_to_empty_dir_returns_new(self, tmp_path, monkeypatch):
+        """A legacy symlink pointing at an EMPTY directory falls through."""
+        self._set_home(tmp_path, monkeypatch)
+        empty = tmp_path / "empty_real"
+        empty.mkdir()
+        legacy = tmp_path / "audio_cache"
+        legacy.symlink_to(empty)
+        result = get_hermes_dir("cache/audio", "audio_cache")
+        assert result == tmp_path / "cache/audio"
+
+
+class TestWslPathTranslation:
+    """Cross-boundary path translation for a Windows-host UI + WSL backend."""
+
+    def test_windows_drive_to_wsl_mount(self):
+        assert hermes_constants.windows_path_to_wsl(r"C:\Users\alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.windows_path_to_wsl("C:/Users/alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.windows_path_to_wsl("D:\\") == "/mnt/d/"
+
+    def test_windows_drive_ignores_non_drive_paths(self):
+        assert hermes_constants.windows_path_to_wsl("/home/alex") is None
+        assert hermes_constants.windows_path_to_wsl("relative\\dir") is None
+
+    def test_wsl_unc_to_posix_both_spellings(self):
+        assert hermes_constants.wsl_unc_path_to_posix(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
+        assert hermes_constants.wsl_unc_path_to_posix(r"\\wsl$\Ubuntu\home\alex") == "/home/alex"
+        # Forward-slash spelling and distro root.
+        assert hermes_constants.wsl_unc_path_to_posix("//wsl.localhost/Debian/srv/app") == "/srv/app"
+        assert hermes_constants.wsl_unc_path_to_posix("\\\\wsl.localhost\\Ubuntu\\") == "/"
+
+    def test_wsl_unc_ignores_non_unc_paths(self):
+        assert hermes_constants.wsl_unc_path_to_posix(r"C:\Users\alex") is None
+        assert hermes_constants.wsl_unc_path_to_posix("/home/alex") is None
+
+    def test_translate_is_noop_off_wsl(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: False)
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"C:\Users\alex") == r"C:\Users\alex"
+
+    def test_translate_maps_windows_and_unc_on_wsl(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"C:\Users\alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
+        # Already-POSIX paths pass through untouched.
+        assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"

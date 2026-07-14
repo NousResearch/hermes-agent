@@ -18,7 +18,22 @@ QQBOT_VERSION = "1.1.0"
 # or test environments.  Default: q.qq.com (production).
 PORTAL_HOST = os.getenv("QQ_PORTAL_HOST", "q.qq.com")
 
-API_BASE = "https://api.sgroup.qq.com"
+
+def get_api_base() -> str:
+    """Return the QQ Bot API base URL.
+
+    Respects the ``QQ_SANDBOX`` environment variable at **call time** so
+    that ``.env`` (loaded after module import) is honoured.  When
+    ``QQ_SANDBOX`` is ``true``/``1``/``yes``, the sandbox endpoint
+    (``sandbox.api.sgroup.qq.com``) is returned instead of production.
+    """
+    sandbox = os.getenv("QQ_SANDBOX", "false").lower() in ("true", "1", "yes")
+    return "https://sandbox.api.sgroup.qq.com" if sandbox else "https://api.sgroup.qq.com"
+
+
+# Backwards-compatible module-level constant (evaluated once at import).
+API_BASE = get_api_base()
+
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 GATEWAY_URL_PATH = "/gateway"
 

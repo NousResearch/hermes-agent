@@ -93,6 +93,7 @@ class QQCloseError(Exception):
 
 from gateway.platforms.qqbot.constants import (
     API_BASE,
+    get_api_base,
     TOKEN_URL,
     GATEWAY_URL_PATH,
     DEFAULT_API_TIMEOUT,
@@ -432,7 +433,7 @@ class QQAdapter(BasePlatformAdapter):
         token = await self._ensure_token()
         try:
             resp = await self._http_client.get(
-                f"{API_BASE}{GATEWAY_URL_PATH}",
+                f"{get_api_base()}{GATEWAY_URL_PATH}",
                 headers={
                     "Authorization": f"QQBot {token}",
                     "User-Agent": build_user_agent(),
@@ -1050,7 +1051,7 @@ class QQAdapter(BasePlatformAdapter):
             "User-Agent": build_user_agent(),
         }
         resp = await self._http_client.put(
-            f"{API_BASE}/interactions/{interaction_id}",
+            f"{get_api_base()}/interactions/{interaction_id}",
             headers=headers,
             json={"code": code},
             timeout=DEFAULT_API_TIMEOUT,
@@ -2347,7 +2348,7 @@ class QQAdapter(BasePlatformAdapter):
         try:
             resp = await self._http_client.request(
                 method,
-                f"{API_BASE}{path}",
+                f"{get_api_base()}{path}",
                 headers=headers,
                 json=body,
                 timeout=timeout,

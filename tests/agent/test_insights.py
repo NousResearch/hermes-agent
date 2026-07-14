@@ -512,6 +512,13 @@ class TestInsightsPopulated:
         focused = engine.get_skill_breakdown(days=30)
         assert focused == full["skills"]
 
+    def test_get_usage_breakdown_matches_full_generate(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        full = engine.generate(days=30)
+        focused = engine.get_usage_breakdown(days=30)
+        assert focused["skills"] == full["skills"]
+        assert focused["tools"] == full["tools"]
+
     def test_get_skill_breakdown_respects_source_filter(self, populated_db):
         engine = InsightsEngine(populated_db)
         # Only s1 (cli) has skill_view "github-pr-workflow"

@@ -4949,11 +4949,34 @@ class TestNewEndpoints:
         """get_usage_analytics must call get_skill_breakdown, not generate()."""
         from unittest.mock import patch
         from agent.insights import InsightsEngine
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="usage-tools-test",
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "usage-tools-test",
+                input_tokens=10,
+                output_tokens=5,
+            )
+            db.append_message(
+                "usage-tools-test",
+                role="tool",
+                content="read output",
+                tool_name="read_file",
+            )
+        finally:
+            db.close()
 
         with patch.object(InsightsEngine, "generate") as mock_generate:
             resp = self.client.get("/api/analytics/usage?days=7")
         assert resp.status_code == 200
         mock_generate.assert_not_called()
+        assert any(tool["tool"] == "read_file" for tool in resp.json()["tools"])
 
 
 # ---------------------------------------------------------------------------

@@ -7,34 +7,85 @@ hide_table_of_contents: true
 displayed_sidebar: docs
 ---
 
-import Link from '@docusaurus/Link';
+import Link from "@docusaurus/Link";
 
 # Hermes Agent
 
 The self-improving AI agent built by [Nous Research](https://nousresearch.com). The only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, and builds a deepening model of who you are across sessions.
 
-<div style={{display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap'}}>
-  <Link to="/getting-started/installation" style={{display: 'inline-block', padding: '0.6rem 1.2rem', backgroundColor: '#FFD700', color: '#07070d', borderRadius: '8px', fontWeight: 600, textDecoration: 'none'}}>Get Started →</Link>
-  <a href="https://github.com/NousResearch/hermes-agent" style={{display: 'inline-block', padding: '0.6rem 1.2rem', border: '1px solid rgba(255,215,0,0.2)', borderRadius: '8px', textDecoration: 'none'}}>View on GitHub</a>
+<div
+  style={{
+    display: "flex",
+    gap: "1rem",
+    marginBottom: "2rem",
+    flexWrap: "wrap",
+  }}
+>
+  <Link
+    to="/getting-started/installation"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      backgroundColor: "#FFD700",
+      color: "#07070d",
+      borderRadius: "8px",
+      fontWeight: 600,
+      textDecoration: "none",
+    }}
+  >
+    Get Started →
+  </Link>
+  <a
+    href="https://hermes-agent.nousresearch.com/"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    Download Desktop
+  </a>
+  <a
+    href="https://github.com/NousResearch/hermes-agent"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    View on GitHub
+  </a>
 </div>
 
 ## Install
 
-**Linux / macOS / WSL2**
+### Windows or macOS
+
+To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) from our website and run it.
+
+### Without Hermes Desktop:
+
+For a command-line only install without Hermes Desktop, run:
+
+#### Linux / macOS / WSL2 / Android (Termux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-**Windows (native, PowerShell)** — *early beta, [details →](/user-guide/windows-native)*
+#### Windows (native)
+
+Run in powershell:
 
 ```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-**Android (Termux)** — same curl one-liner as Linux; the installer auto-detects Termux.
-
-See the full **[Installation Guide](/getting-started/installation)** for what the installer does, the per-user vs root layout, and Windows-specific notes.
+See the full **[Installation Guide](/getting-started/installation)** for what the installer does, the per-user vs root layout, and Windows-specific notes. For the complete platform support matrix, see **[Platform Support](/getting-started/platform-support)**.
 
 :::tip Fastest path to a working agent
 After installing, run `hermes setup --portal` — one OAuth covers a model plus all four Tool Gateway tools (web search, image generation, TTS, browser). See [Nous Portal](/integrations/nous-portal).
@@ -46,26 +97,26 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 
 ## Quick Links
 
-| | |
-|---|---|
-| 🚀 **[Installation](/getting-started/installation)** | Install in 60 seconds on Linux, macOS, WSL2, or native Windows (early beta) |
-| 📖 **[Quickstart Tutorial](/getting-started/quickstart)** | Your first conversation and key features to try |
-| 🗺️ **[Learning Path](/getting-started/learning-path)** | Find the right docs for your experience level |
-| ⚙️ **[Configuration](/user-guide/configuration)** | Config file, providers, models, and options |
-| 💬 **[Messaging Gateway](/user-guide/messaging)** | Set up Telegram, Discord, Slack, WhatsApp, Teams, or more |
-| 🔧 **[Tools & Toolsets](/user-guide/features/tools)** | 60+ built-in tools and how to configure them |
-| 🧠 **[Memory System](/user-guide/features/memory)** | Persistent memory that grows across sessions |
-| 📚 **[Skills System](/user-guide/features/skills)** | Procedural memory the agent creates and reuses |
-| 🔌 **[MCP Integration](/user-guide/features/mcp)** | Connect to MCP servers, filter their tools, and extend Hermes safely |
-| 🧭 **[Use MCP with Hermes](/guides/use-mcp-with-hermes)** | Practical MCP setup patterns, examples, and tutorials |
-| 🎙️ **[Voice Mode](/user-guide/features/voice-mode)** | Real-time voice interaction in CLI, Telegram, Discord, and Discord VC |
-| 🗣️ **[Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)** | Hands-on setup and usage patterns for Hermes voice workflows |
-| 🎭 **[Personality & SOUL.md](/user-guide/features/personality)** | Define Hermes' default voice with a global SOUL.md |
-| 📄 **[Context Files](/user-guide/features/context-files)** | Project context files that shape every conversation |
-| 🔒 **[Security](/user-guide/security)** | Command approval, authorization, container isolation |
-| 💡 **[Tips & Best Practices](/guides/tips)** | Quick wins to get the most out of Hermes |
-| 🏗️ **[Architecture](/developer-guide/architecture)** | How it works under the hood |
-| ❓ **[FAQ & Troubleshooting](/reference/faq)** | Common questions and solutions |
+|                                                                         |                                                                       |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 🚀 **[Installation](/getting-started/installation)**                    | Install in 60 seconds on Linux, macOS, WSL2, native Windows, or Android        |
+| 📖 **[Quickstart Tutorial](/getting-started/quickstart)**               | Your first conversation and key features to try                       |
+| 🗺️ **[Learning Path](/getting-started/learning-path)**                  | Find the right docs for your experience level                         |
+| ⚙️ **[Configuration](/user-guide/configuration)**                       | Config file, providers, models, and options                           |
+| 💬 **[Messaging Gateway](/user-guide/messaging)**                       | Set up Telegram, Discord, Slack, WhatsApp, Teams, or more             |
+| 🔧 **[Tools & Toolsets](/user-guide/features/tools)**                   | 60+ built-in tools and how to configure them                          |
+| 🧠 **[Memory System](/user-guide/features/memory)**                     | Persistent memory that grows across sessions                          |
+| 📚 **[Skills System](/user-guide/features/skills)**                     | Procedural memory the agent creates and reuses                        |
+| 🔌 **[MCP Integration](/user-guide/features/mcp)**                      | Connect to MCP servers, filter their tools, and extend Hermes safely  |
+| 🧭 **[Use MCP with Hermes](/guides/use-mcp-with-hermes)**               | Practical MCP setup patterns, examples, and tutorials                 |
+| 🎙️ **[Voice Mode](/user-guide/features/voice-mode)**                    | Real-time voice interaction in CLI, Telegram, Discord, and Discord VC |
+| 🗣️ **[Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)** | Hands-on setup and usage patterns for Hermes voice workflows          |
+| 🎭 **[Personality & SOUL.md](/user-guide/features/personality)**        | Define Hermes' default voice with a global SOUL.md                    |
+| 📄 **[Context Files](/user-guide/features/context-files)**              | Project context files that shape every conversation                   |
+| 🔒 **[Security](/user-guide/security)**                                 | Command approval, authorization, container isolation                  |
+| 💡 **[Tips & Best Practices](/guides/tips)**                            | Quick wins to get the most out of Hermes                              |
+| 🏗️ **[Architecture](/developer-guide/architecture)**                    | How it works under the hood                                           |
+| ❓ **[FAQ & Troubleshooting](/reference/faq)**                          | Common questions and solutions                                        |
 
 ## Key Features
 

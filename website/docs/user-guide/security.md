@@ -30,7 +30,7 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 
 ```yaml
 approvals:
-  mode: manual                    # manual | smart | off
+  mode: smart                     # smart | manual | off
   timeout: 60                     # seconds to wait for user response (default: 60)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
@@ -41,7 +41,7 @@ The full set of keys:
 
 | Key | Default | What it controls |
 |---|---|---|
-| `mode` | `manual` | Approval policy for dangerous shell commands — see the table below. |
+| `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
 | `timeout` | `60` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
@@ -49,8 +49,8 @@ The full set of keys:
 
 | Mode | Behavior |
 |------|----------|
-| **manual** (default) | Always prompt the user for approval on dangerous commands |
-| **smart** | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **manual** | Always prompt the user for approval on dangerous commands. |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
 
 :::warning
@@ -109,6 +109,32 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
+
+### User-Defined Deny Rules (`approvals.deny`)
+
+The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
+
+```yaml
+approvals:
+  deny:
+    - "git push --force*"
+    - "*curl*|*sh*"
+    - "dd if=* of=/dev/*"
+```
+
+Details:
+
+- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
+- Matching runs over the same normalized/deobfuscated command variants the dangerous-pattern detector uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a rule.
+- **YAML quoting:** always quote patterns. A bare leading `*` is a YAML alias and fails to parse; `{`, `!`, and `: ` have their own YAML meanings. Single quotes are safest for shell-ish content.
+- Deny rules apply to host-reaching backends (local, SSH, host-mounted Docker). Isolated container backends skip the guard stack entirely, as they always have — nothing they run can touch the host.
+- A denied command returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
+
+Like the rest of the approval config, changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
+
+:::note Threat model
+Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
+:::
 
 ### Approval Timeout
 
@@ -272,8 +298,9 @@ whatsapp:
   unauthorized_dm_behavior: ignore
 ```
 
-- `pair` is the default. Unauthorized DMs get a pairing code reply.
+- `pair` is the default for chat-style DM platforms. Unauthorized DMs get a pairing code reply.
 - `ignore` silently drops unauthorized DMs.
+- Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
 
 **Security features** (based on OWASP + NIST SP 800-63-4 guidance):
@@ -305,6 +332,24 @@ hermes pairing revoke telegram 123456789
 hermes pairing clear-pending
 ```
 
+:::tip Docker users: run pairing commands as the `hermes` user
+The official Docker image runs the gateway as the unprivileged `hermes` user
+(uid 10000) via `gosu`, but `docker exec` defaults to root. Approval files
+created by root are written with mode `0600 root:root` and the gateway
+cannot read them — the approval is silently ignored ([#10270][i10270]).
+
+Always pass `-u hermes`:
+
+```bash
+docker exec -u hermes hermes-agent hermes pairing approve telegram ABC12DEF
+```
+
+If you already ran the command as root and the user is still unauthorized,
+restart the container — the entrypoint will fix ownership on the next start.
+
+[i10270]: https://github.com/NousResearch/hermes-agent/issues/10270
+:::
+
 **Storage:** Pairing data is stored in `~/.hermes/pairing/` with per-platform JSON files:
 - `{platform}-pending.json` — pending pairing requests
 - `{platform}-approved.json` — approved users
@@ -319,7 +364,7 @@ When using the `docker` terminal backend, Hermes applies strict security hardeni
 Every container runs with these flags (defined in `tools/environments/docker.py`):
 
 ```python
-_SECURITY_ARGS = [
+_BASE_SECURITY_ARGS = [
     "--cap-drop", "ALL",                          # Drop ALL Linux capabilities
     "--cap-add", "DAC_OVERRIDE",                  # Root can write to bind-mounted dirs
     "--cap-add", "CHOWN",                         # Package managers need file ownership
@@ -328,9 +373,10 @@ _SECURITY_ARGS = [
     "--pids-limit", "256",                         # Limit process count
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # Size-limited /tmp
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",  # No-exec /var/tmp
-    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",   # No-exec /run
 ]
 ```
+
+`SETUID`/`SETGID` are **not** in the base list — they're added conditionally when the container starts as root and an init/entrypoint must drop privileges (the s6 privilege-drop path). They're skipped when the container already runs as a non-root `--user`. The `/run` tmpfs is also split out from the base list and mounted per-image (hardened `noexec` by default, `exec` only for s6-overlay images that exec from `/run`).
 
 ### Resource Limits
 

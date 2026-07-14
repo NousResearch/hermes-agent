@@ -7,6 +7,7 @@ sibling platform-plugin tests on the same xdist worker.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -204,6 +205,13 @@ def test_corr_id_pending_set_self_trims():
 
 @pytest.mark.asyncio
 async def test_send_dm():
+    """DMs use the bare ``@<id> text`` chat-command form.
+
+    The bracketed form ``@[<id>] text`` is what the daemon's man page
+    documents, but in practice both addressing styles route through
+    the same chat-command parser; bare ``@<id>`` matches what every
+    Hermes deployment has been using in production for months.
+    """
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
@@ -214,13 +222,21 @@ async def test_send_dm():
     result = await adapter.send("contact-42", "Hello, SimpleX!")
     mock_ws.send.assert_called_once()
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "@[contact-42] Hello, SimpleX!"
+    assert payload["cmd"] == "@contact-42 Hello, SimpleX!"
     assert payload["corrId"].startswith(_CORR_PREFIX)
     assert result.success is True
 
 
 @pytest.mark.asyncio
 async def test_send_group():
+    """Groups use the structured ``/_send #<id> json [...]`` form.
+
+    The bracket chat-command form ``#[<id>] text`` *looks* like an exact
+    ID match in the daemon docs but is parsed as a display-name lookup
+    — so messages to groups whose display name isn't literally the ID
+    silently drop. The structured ``/_send`` form addresses by numeric
+    ID and survives newlines/quoting through ``json.dumps``.
+    """
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
@@ -230,7 +246,11 @@ async def test_send_group():
 
     result = await adapter.send("group:grp-99", "Hello, group!")
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "#[grp-99] Hello, group!"
+    assert payload["cmd"].startswith("/_send #grp-99 json ")
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+        "msgContent"
+    ]
+    assert msg_content == {"type": "text", "text": "Hello, group!"}
     assert result.success is True
 
 
@@ -301,23 +321,55 @@ async def test_standalone_send_missing_websockets(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_standalone_send_missing_url(monkeypatch):
+async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
     monkeypatch.delenv("SIMPLEX_WS_URL", raising=False)
     pconfig = MagicMock()
     pconfig.extra = {}
-    # We expect the URL fallback (extra+env both empty) to be empty string,
-    # producing an error. We also need websockets to be importable for the
-    # url-check branch to be reached, so skip when it's not.
-    try:
-        import websockets.client  # noqa: F401
-    except ImportError:
-        pytest.skip("websockets not installed")
+
+    sent_payloads = []
+
+    class DummyWs:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def send(self, payload):
+            sent_payloads.append(json.loads(payload))
+
+    def fake_connect(url, **kwargs):
+        assert url == "ws://127.0.0.1:5225"
+        assert kwargs["open_timeout"] == 10
+        assert kwargs["close_timeout"] == 5
+        return DummyWs()
+
+    import websockets
+    monkeypatch.setattr(websockets, "connect", fake_connect)
 
     result = await _standalone_send(pconfig, "contact-42", "hi")
-    assert isinstance(result, dict)
-    # Either error about URL or a connection attempt failure — both are valid
-    # signals that the standalone path requires configuration.
-    assert "error" in result
+    assert result == {"success": True, "platform": "simplex", "chat_id": "contact-42"}
+    assert sent_payloads[0]["cmd"] == "@contact-42 hi"
+
+
+@pytest.mark.asyncio
+async def test_health_monitor_does_not_reconnect_quiet_healthy_ws(monkeypatch):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._running = True
+    adapter._last_ws_activity = 0
+    adapter._ws = AsyncMock()
+
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_INTERVAL", 0.01)
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_STALE_THRESHOLD", 0.01)
+
+    task = asyncio.create_task(adapter._health_monitor())
+    await asyncio.sleep(0.03)
+    adapter._running = False
+    await asyncio.wait_for(task, timeout=1)
+
+    adapter._ws.close.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -344,3 +396,74 @@ def test_register_calls_register_platform():
     assert callable(kwargs["setup_fn"])
     # SimpleX uses opaque IDs only — no PII to redact.
     assert kwargs["pii_safe"] is True
+
+
+# ---------------------------------------------------------------------------
+# Inbound attachment message type classification
+# ---------------------------------------------------------------------------
+
+def _make_file_chat_item(file_path: str, file_name: str) -> dict:
+    """Minimal direct-chat rcvMsgContent item carrying a completed file."""
+    return {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 42, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemTs": "2026-01-01T00:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "file", "text": "here you go"},
+            },
+            "file": {
+                "fileId": 7,
+                "fileName": file_name,
+                "fileSource": {"filePath": file_path},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_document_file_sets_document_type():
+    """A non-image/non-audio file must classify as DOCUMENT, not TEXT,
+    so run.py's document-context injection surfaces the path to the agent."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("/tmp/report.pdf", "report.pdf"))
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].message_type == MessageType.DOCUMENT
+    assert dispatched[0].media_urls == ["/tmp/report.pdf"]
+    assert dispatched[0].media_types == ["application/octet-stream"]
+
+
+@pytest.mark.asyncio
+async def test_image_file_still_sets_photo_type():
+    """Regression guard: image files keep classifying as PHOTO after the
+    document catch-all was added."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("/tmp/pic.jpg", "pic.jpg"))
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].message_type == MessageType.PHOTO

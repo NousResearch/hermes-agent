@@ -6,6 +6,7 @@ import {
   KeyRound,
   MessageSquare,
   Pencil,
+  Plus,
   Save,
   Settings,
   Trash2,
@@ -483,6 +484,124 @@ function ProviderGroupCard({
 }
 
 /* ------------------------------------------------------------------ */
+/*  CustomKeysCard — user-added arbitrary env vars + add-key form      */
+/* ------------------------------------------------------------------ */
+
+// Mirror of the backend env-name guard (hermes_cli/config.py _ENV_VAR_NAME_RE).
+const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function CustomKeysCard({
+  entries,
+  edits,
+  setEdits,
+  revealed,
+  saving,
+  onSave,
+  onClear,
+  onReveal,
+  onCancelEdit,
+  onAddKey,
+  clearDialogOpen = false,
+}: {
+  entries: [string, EnvVarInfo][];
+  edits: Record<string, string>;
+  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  revealed: Record<string, string>;
+  saving: string | null;
+  onSave: (key: string) => void;
+  onClear: (key: string) => void;
+  onReveal: (key: string) => void;
+  onCancelEdit: (key: string) => void;
+  onAddKey: (key: string) => void;
+  clearDialogOpen?: boolean;
+}) {
+  const { t } = useI18n();
+  const [newKey, setNewKey] = useState("");
+  const trimmed = newKey.trim().toUpperCase();
+  const alreadyEditing = edits[trimmed] !== undefined;
+  const nameValid = ENV_VAR_NAME_RE.test(trimmed);
+  const showInvalid = trimmed.length > 0 && !nameValid;
+
+  const rowProps = {
+    edits,
+    setEdits,
+    revealed,
+    saving,
+    onSave,
+    onClear,
+    onReveal,
+    onCancelEdit,
+    clearDialogOpen,
+  };
+
+  const handleAdd = () => {
+    if (!nameValid || alreadyEditing) return;
+    onAddKey(trimmed);
+    setNewKey("");
+  };
+
+  return (
+    <Card id="section-custom">
+      <CardHeader className="border-b border-border bg-card">
+        <div className="flex items-center gap-2">
+          <KeyRound className="h-5 w-5 text-muted-foreground" />
+          <CardTitle className="text-base">{t.env.customTitle}</CardTitle>
+        </div>
+        <CardDescription>
+          {t.env.customConfigured
+            .replace("{count}", String(entries.length))
+            .replace("{s}", entries.length !== 1 ? "s" : "")}
+        </CardDescription>
+        <CardDescription className="text-text-tertiary">
+          {t.env.customHint}
+        </CardDescription>
+      </CardHeader>
+
+      <CardContent className="grid gap-3 overflow-hidden pt-4">
+        {entries.map(([key, info]) => (
+          <EnvVarRow key={key} varKey={key} info={info} {...rowProps} />
+        ))}
+
+        {/* Add-key form */}
+        <div className="grid gap-2 border border-dashed border-border p-4">
+          <Label className="text-xs font-semibold tracking-wide">
+            {t.env.addCustomKey}
+          </Label>
+          <div className="flex items-start gap-2">
+            <div className="flex-1">
+              <Input
+                type="text"
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAdd();
+                }}
+                placeholder={t.env.customKeyNamePlaceholder}
+                aria-label={t.env.customKeyName}
+                className="w-full font-mono-ui text-xs"
+              />
+              {showInvalid && (
+                <p className="mt-1 text-xs text-destructive">
+                  {t.env.invalidKeyName}
+                </p>
+              )}
+            </div>
+            <Button
+              size="sm"
+              prefix={<Plus />}
+              onClick={handleAdd}
+              disabled={!nameValid || alreadyEditing}
+            >
+              {t.env.add}
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main page                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -513,20 +632,22 @@ export default function EnvPage() {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
         tool: "Tools",
-        messaging: "Messaging",
+        messaging: t.common.gateway ?? "Gateway",
         setting: "Settings",
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
-          (info) => info.category === cat,
+          (info) => info.category === cat && !info.channel_managed,
         );
         if (hasEntries) {
           items.push({ id: `section-${cat}`, label: CATEGORY_LABELS[cat] ?? cat });
         }
       }
+      // Custom keys section is always present (it carries the add-key form).
+      items.push({ id: "section-custom", label: t.env.customTitle });
     }
     return items;
-  }, [vars]);
+  }, [vars, t]);
 
   useLayoutEffect(() => {
     if (!vars) {
@@ -655,9 +776,40 @@ export default function EnvPage() {
     });
   };
 
+  // Add a custom key: register an unset row in local state and open it for
+  // editing. The value isn't persisted until the user types one and saves
+  // (reusing the normal handleSave → PUT /api/env path); on save the backend
+  // surfaces it back as a custom row, so the new entry is durable.
+  const handleAddKey = (key: string) => {
+    setVars((prev) =>
+      prev && prev[key]
+        ? prev
+        : {
+            ...(prev ?? {}),
+            [key]: {
+              is_set: false,
+              redacted_value: null,
+              description: "",
+              url: null,
+              category: "custom",
+              is_password: true,
+              tools: [],
+              advanced: false,
+              custom: true,
+            },
+          },
+    );
+    setEdits((prev) => ({ ...prev, [key]: "" }));
+  };
+
   /* ---- Build provider groups ---- */
-  const { providerGroups, nonProviderGrouped } = useMemo(() => {
-    if (!vars) return { providerGroups: [], nonProviderGrouped: [] };
+  const { providerGroups, nonProviderGrouped, customEntries } = useMemo(() => {
+    if (!vars)
+      return {
+        providerGroups: [],
+        nonProviderGrouped: [],
+        customEntries: [] as [string, EnvVarInfo][],
+      };
 
     const providerEntries = Object.entries(vars).filter(
       ([, info]) =>
@@ -681,21 +833,33 @@ export default function EnvPage() {
       }))
       .sort((a, b) => a.priority - b.priority);
 
-    // Non-provider categories — use translated labels
+    // Non-provider categories — use translated labels. Platform credentials
+    // (channel_managed) are configured on the Channels page, so the messaging
+    // category here is trimmed down to cross-cutting gateway / API / proxy
+    // settings and relabelled accordingly.
     const CATEGORY_META_LABELS: Record<string, string> = {
       tool: t.app.nav.keys,
-      messaging: t.common.messaging,
+      messaging: t.common.gateway ?? "Gateway",
       setting: t.app.nav.config,
+    };
+    const CATEGORY_META_HINTS: Record<string, string | undefined> = {
+      messaging:
+        t.common.gatewayHint ??
+        "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
     };
     const otherCategories = ["tool", "messaging", "setting"];
     const nonProvider = otherCategories.map((cat) => {
       const entries = Object.entries(vars).filter(
-        ([, info]) => info.category === cat && (showAdvanced || !info.advanced),
+        ([, info]) =>
+          info.category === cat &&
+          !info.channel_managed &&
+          (showAdvanced || !info.advanced),
       );
       const setEntries = entries.filter(([, info]) => info.is_set);
       const unsetEntries = entries.filter(([, info]) => !info.is_set);
       return {
         label: CATEGORY_META_LABELS[cat] ?? cat,
+        hint: CATEGORY_META_HINTS[cat],
         icon: CATEGORY_META_ICONS[cat] ?? KeyRound,
         category: cat,
         setEntries,
@@ -704,7 +868,18 @@ export default function EnvPage() {
       };
     });
 
-    return { providerGroups: groups, nonProviderGrouped: nonProvider };
+    // Custom keys: user-added vars the backend flagged as not in any catalog.
+    // Sorted alphabetically; an in-flight (just-added, unsaved) row carries the
+    // custom category locally so it shows here immediately.
+    const customEntries = Object.entries(vars)
+      .filter(([, info]) => info.category === "custom" && !info.channel_managed)
+      .sort(([a], [b]) => a.localeCompare(b));
+
+    return {
+      providerGroups: groups,
+      nonProviderGrouped: nonProvider,
+      customEntries,
+    };
   }, [vars, showAdvanced, t]);
 
   if (!vars) {
@@ -816,6 +991,19 @@ export default function EnvPage() {
           />
         );
       })}
+      <CustomKeysCard
+        entries={customEntries}
+        edits={edits}
+        setEdits={setEdits}
+        revealed={revealed}
+        saving={saving}
+        onSave={handleSave}
+        onClear={keyClear.requestDelete}
+        onReveal={handleReveal}
+        onCancelEdit={cancelEdit}
+        onAddKey={handleAddKey}
+        clearDialogOpen={keyClear.isOpen}
+      />
       <PluginSlot name="env:bottom" />
     </div>
   );
@@ -839,6 +1027,7 @@ function EnvCategoryCard({
 }: {
   section: {
     category: string;
+    hint?: string;
     icon: React.ComponentType<{ className?: string }>;
     label: string;
     setEntries: [string, EnvVarInfo][];
@@ -899,6 +1088,12 @@ function EnvCategoryCard({
           {section.setEntries.length} {t.common.of} {section.totalEntries}{" "}
           {t.common.configured}
         </CardDescription>
+
+        {section.hint && (
+          <CardDescription className="text-text-tertiary">
+            {section.hint}
+          </CardDescription>
+        )}
       </CardHeader>
 
       {hasContent && (

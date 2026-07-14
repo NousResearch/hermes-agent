@@ -6,10 +6,10 @@ describe('applyPrintableInsert', () => {
   it('applies non-bracketed multi-character bursts immediately', () => {
     const burst = applyPrintableInsert('abc', 3, 'xxxxx')
 
-    const repeated = [...'xxxxx'].reduce(
-      (state, ch) => applyPrintableInsert(state.value, state.cursor, ch)!,
-      { cursor: 3, value: 'abc' }
-    )
+    const repeated = [...'xxxxx'].reduce((state, ch) => applyPrintableInsert(state.value, state.cursor, ch)!, {
+      cursor: 3,
+      value: 'abc'
+    })
 
     expect(burst).toEqual({ cursor: 8, value: 'abcxxxxx' })
     expect(burst).toEqual(repeated)

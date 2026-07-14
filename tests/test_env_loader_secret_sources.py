@@ -63,11 +63,21 @@ def test_format_secret_source_suffix_generic_label_for_future_sources():
     )
 
 
+def test_format_secret_source_suffix_onepassword_uses_proper_name():
+    env_loader._SECRET_SOURCES["OPENAI_API_KEY"] = "onepassword"
+    assert (
+        env_loader.format_secret_source_suffix("OPENAI_API_KEY")
+        == " (from 1Password)"
+    )
+
+
 def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkeypatch):
-    """End-to-end: when ``apply_bitwarden_secrets`` returns applied keys,
-    they end up in ``_SECRET_SOURCES`` so the UI can label them."""
+    """End-to-end: when the Bitwarden source fetches keys, applied vars
+    end up in ``_SECRET_SOURCES`` so the UI can label them."""
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "secrets:\n"
@@ -78,22 +88,19 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
         encoding="utf-8",
     )
 
-    # Stub apply_bitwarden_secrets to return a synthetic FetchResult.
-    from agent.secret_sources.bitwarden import FetchResult
-
-    fake_result = FetchResult(
-        secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
-        applied=["ANTHROPIC_API_KEY"],
-    )
-
-    def _fake_apply(**_kwargs):
-        return fake_result
-
-    # The import inside _apply_external_secret_sources is lazy, so we
-    # patch the *module attribute* it will pull in.
+    # Stub the fetch layer under the SecretSource adapter.
     import agent.secret_sources.bitwarden as bw_module
 
-    monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module,
+        "fetch_bitwarden_secrets",
+        lambda **_kw: ({"ANTHROPIC_API_KEY": "sk-ant-test"}, []),
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
 
     env_loader._apply_external_secret_sources(tmp_path)
 
@@ -131,6 +138,8 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     """
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "secrets:\n"
@@ -141,19 +150,19 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
         encoding="utf-8",
     )
 
-    from agent.secret_sources.bitwarden import FetchResult
-
     call_count = {"n": 0}
 
-    def _fake_apply(**_kwargs):
+    def _fake_fetch(**_kwargs):
         call_count["n"] += 1
-        return FetchResult(
-            secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
-            applied=["ANTHROPIC_API_KEY"],
-        )
+        return {"ANTHROPIC_API_KEY": "sk-ant-test"}, []
 
     import agent.secret_sources.bitwarden as bw_module
-    monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _fake_fetch)
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
 
     # Five calls in a row, simulating module-import-time invocations from
     # cli.py, hermes_cli/main.py, run_agent.py, trajectory_compressor.py,
@@ -173,3 +182,95 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     env_loader.reset_secret_source_cache()
     env_loader._apply_external_secret_sources(tmp_path)
     assert call_count["n"] == 2
+
+
+def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monkeypatch):
+    """When the 1Password source resolves refs, applied vars end up in
+    ``_SECRET_SOURCES`` labeled ``onepassword``."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      ANTHROPIC_API_KEY: 'op://Private/Anthropic/credential'\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.onepassword as op_module
+
+    monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+    monkeypatch.setattr(
+        op_module,
+        "fetch_onepassword_secrets",
+        lambda **_kw: ({"ANTHROPIC_API_KEY": "sk-ant-test"}, []),
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "onepassword"
+    assert (
+        env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
+        == " (from 1Password)"
+    )
+
+
+def test_apply_external_secret_sources_survives_non_dict_section(tmp_path, monkeypatch):
+    """A malformed `secrets:` section must not abort startup (fail-open).
+
+    Both `onepassword: true` (non-dict) and a bad bitwarden section must be
+    coerced to empty config instead of raising AttributeError up through
+    load_hermes_dotenv().
+    """
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden: true\n"
+        "  onepassword: true\n",
+        encoding="utf-8",
+    )
+
+    # Must not raise and must not record anything.
+    env_loader._apply_external_secret_sources(tmp_path)
+    assert env_loader.get_secret_source("ANYTHING") is None
+
+
+def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypatch):
+    """A non-numeric cache_ttl_seconds must be coerced, not crash startup."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    cache_ttl_seconds: not-a-number\n"
+        "    env:\n"
+        "      K: 'op://V/I/F'\n",
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def _fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return {}, []
+
+    import agent.secret_sources.onepassword as op_module
+    monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+    monkeypatch.setattr(op_module, "fetch_onepassword_secrets", _fake_fetch)
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    # Coerced to the 300s default rather than raising ValueError.
+    assert captured["cache_ttl_seconds"] == 300

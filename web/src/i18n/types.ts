@@ -60,6 +60,10 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
+    // Optional: non-English locales fall back to the English literal in the
+    // component until translated, matching the enriched-profiles keys.
+    gateway?: string;
+    gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
   };
@@ -106,6 +110,10 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    /** Optional — fall back to English literals until translated. */
+    managingProfile?: string;
+    currentProfileOption?: string;
+    managingProfileBanner?: string;
   };
 
   // ── Status page ──
@@ -116,6 +124,7 @@ export interface Translations {
     agent: string;
     connected: string;
     connectedPlatforms: string;
+    disabled?: string;
     disconnected: string;
     error: string;
     failed: string;
@@ -130,6 +139,8 @@ export interface Translations {
     activeSessions: string;
     recentSessions: string;
     restartGateway: string;
+    restartGatewayConfirmMessage?: string;
+    restartGatewayConfirmTitle?: string;
     restartingGateway: string;
     running: string;
     runningRemote: string;
@@ -138,6 +149,9 @@ export interface Translations {
     startedInBackground: string;
     stopped: string;
     updateHermes: string;
+    updateHermesConfirmMessage?: string;
+    updateHermesConfirmNow?: string;
+    updateHermesConfirmTitle?: string;
     updatingHermes: string;
     waitingForOutput: string;
   };
@@ -158,7 +172,22 @@ export interface Translations {
     confirmDeleteMessage: string;
     sessionDeleted: string;
     failedToDelete: string;
+    deleteEmpty: string;
+    deleteEmptyConfirmTitle: string;
+    deleteEmptyConfirmMessage: string;
+    emptySessionsDeleted: string;
+    failedToDeleteEmpty: string;
+    selectSession: string;
+    selectAllOnPage: string;
+    clearSelection: string;
+    selectedCount: string;
+    deleteSelected: string;
+    deleteSelectedConfirmTitle: string;
+    deleteSelectedConfirmMessage: string;
+    selectedSessionsDeleted: string;
+    failedToDeleteSelected: string;
     resumeInChat: string;
+    newChat: string;
     previousPage: string;
     nextPage: string;
     roles: {
@@ -231,6 +260,40 @@ export interface Translations {
     promptPlaceholder: string;
     schedule: string;
     schedulePlaceholder: string;
+    scheduleMode: string;
+    scheduleModes: {
+      interval: string;
+      daily: string;
+      weekly: string;
+      monthly: string;
+      once: string;
+      custom: string;
+      intervalEvery: string;
+      intervalUnit: string;
+      unitMinutes: string;
+      unitHours: string;
+      unitDays: string;
+      timeOfDay: string;
+      weekdays: string;
+      weekdaysShort: [string, string, string, string, string, string, string];
+      dayOfMonth: string;
+      onceAt: string;
+      customLabel: string;
+      customPlaceholder: string;
+      customHint: string;
+      preview: string;
+      previewEmpty: string;
+    };
+    scheduleDescribe: {
+      none: string;
+      everyMinutes: string;
+      everyHours: string;
+      everyDays: string;
+      dailyAt: string;
+      weeklyAt: string;
+      monthlyAt: string;
+      onceAt: string;
+    };
     deliverTo: string;
     scheduledJobs: string;
     noJobs: string;
@@ -245,6 +308,8 @@ export interface Translations {
       discord: string;
       slack: string;
       email: string;
+      needsHomeChannel?: string;
+      noneConfigured?: string;
     };
   };
 
@@ -296,7 +361,8 @@ export interface Translations {
     nameRequired: string;
     nameRule: string;
     invalidName: string;
-    cloneFromDefault: string;
+    cloneFrom: string;
+    cloneFromNone: string;
     allProfiles: string;
     noProfiles: string;
     defaultBadge: string;
@@ -317,6 +383,41 @@ export interface Translations {
     created: string;
     deleted: string;
     renamed: string;
+    // Optional keys added for the enriched profiles experience. Non-English
+    // locales fall back to the English literal in the component until
+    // translated, so these are optional to avoid churning every locale file.
+    activeProfile?: string;
+    activeBadge?: string;
+    setActive?: string;
+    activeSet?: string;
+    gatewayRunning?: string;
+    gatewayStopped?: string;
+    gatewayRunningWarning?: string;
+    aliasBadge?: string;
+    description?: string;
+    descriptionPlaceholder?: string;
+    noDescription?: string;
+    editDescription?: string;
+    descriptionSaved?: string;
+    reviewBadge?: string;
+    autoGenerate?: string;
+    generating?: string;
+    describeFailed?: string;
+    distribution?: string;
+    advancedOptions?: string;
+    cloneAll?: string;
+    noSkillsOption?: string;
+    descriptionOptional?: string;
+    modelOptional?: string;
+    modelInherit?: string;
+    modelLoading?: string;
+    modelNone?: string;
+    editModel?: string;
+    modelSaved?: string;
+    modelSelect?: string;
+    actions?: string;
+    manageSkills?: string;
+    activeSetHint?: string;
   };
 
   // ── Skills page ──
@@ -338,6 +439,10 @@ export interface Translations {
     setupNeeded: string;
     disabledForCli: string;
     more: string;
+    /** Optional — fall back to English literals until translated. */
+    profileSelector?: string;
+    currentProfile?: string;
+    managingProfile?: string;
   };
 
   // ── Config page ──
@@ -401,6 +506,14 @@ export interface Translations {
     showLess: string;
     showMore: string;
     showValue: string;
+    customTitle: string;
+    customHint: string;
+    customConfigured: string;
+    addCustomKey: string;
+    customKeyName: string;
+    customKeyNamePlaceholder: string;
+    add: string;
+    invalidKeyName: string;
   };
 
   // ── OAuth ──
@@ -417,6 +530,8 @@ export interface Translations {
     disconnect: string;
     managedExternally: string;
     copied: string;
+    copyCode: string;
+    copyFailed: string;
     cli: string;
     copyCliCommand: string;
     connect: string;
@@ -452,6 +567,13 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+    /** Font-override section (optional — locales fall back to English). */
+    fontTitle?: string;
+    fontDefault?: string;
+    fontDefaultHint?: string;
+    fontSans?: string;
+    fontSerif?: string;
+    fontMono?: string;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

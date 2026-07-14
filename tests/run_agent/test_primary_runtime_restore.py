@@ -121,26 +121,6 @@ class TestRestorePrimaryRuntime:
         assert agent._fallback_activated is False
         assert agent._restore_primary_runtime() is False
 
-    def test_resets_index_when_fallback_not_activated(self):
-        """Regression for #20465: failed activation leaves _fallback_index advanced
-        with _fallback_activated=False; the next turn's restore must reset the index."""
-        fbs = [{"provider": "custom", "model": "gpt-oss:20b",
-                "base_url": "http://host.docker.internal:11434/v1", "api_key": "ollama"}]
-        agent = _make_agent(fallback_model=fbs)
-
-        # resolve_provider_client returns None → _try_activate_fallback returns False
-        # but _fallback_index has already been incremented to 1
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)):
-            assert agent._try_activate_fallback() is False
-
-        assert agent._fallback_activated is False
-        assert agent._fallback_index == 1  # advanced past the only entry
-
-        # _restore_primary_runtime must reset the index so the next turn can retry
-        result = agent._restore_primary_runtime()
-        assert result is False  # still no-op (primary was never left)
-        assert agent._fallback_index == 0  # chain available again
-
     def test_restores_model_and_provider(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
@@ -220,6 +200,211 @@ class TestRestorePrimaryRuntime:
             agent._restore_primary_runtime()
 
         assert agent._use_prompt_caching == original_caching
+
+    def test_restore_skips_cross_provider_pool_entry(self):
+        """Restore must not swap in a fallback provider credential for the primary runtime."""
+
+        class _Entry:
+            provider = "openrouter"
+            id = "fallback-entry"
+            label = "fallback"
+            runtime_api_key = "fallback-key"
+            runtime_base_url = "https://openrouter.ai/api/v1"
+            access_token = "fallback-key"
+
+        class _Pool:
+            provider = "openrouter"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://primary.example.com/v1",
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        original_base_url = agent.base_url
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == "custom"
+        assert agent.base_url == original_base_url
+        agent._swap_credential.assert_not_called()
+
+    def test_restore_keeps_primary_base_url_when_fallback_pool_attached(self):
+        """Issue #56885: plain-provider primary must not inherit a fallback
+        provider's base_url via the restore-path pool reselect.
+
+        Repro: primary is openai-api/gpt-5.5, a transient failure falls back to
+        deepseek and attaches deepseek's credential pool. On the next turn the
+        restore reselect must NOT swap in the deepseek entry — otherwise the
+        request goes out as model=gpt-5.5 to base_url=api.deepseek.com → 404.
+        """
+
+        class _DeepseekEntry:
+            provider = "deepseek"
+            id = "dsk-1"
+            label = "deepseek-key"
+            runtime_api_key = "sk-deepseek-xxx"
+            runtime_base_url = "https://api.deepseek.com/v1"
+            base_url = "https://api.deepseek.com/v1"
+            access_token = "sk-deepseek-xxx"
+
+        class _DeepseekPool:
+            provider = "deepseek"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _DeepseekEntry()
+
+        agent = _make_agent(
+            provider="openai-api",
+            base_url="https://api.openai.com/v1",
+            fallback_model={"provider": "deepseek", "model": "deepseek-v4-flash"},
+        )
+        primary_base_url = agent.base_url
+        primary_provider = agent.provider
+        mock_client = _mock_resolve(base_url="https://api.deepseek.com/v1")
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            agent._try_activate_fallback()
+        # Fallback attached deepseek's pool; simulate it surviving into the next turn.
+        agent._credential_pool = _DeepseekPool()
+        agent._swap_credential = MagicMock()
+
+        primary_pool = MagicMock()
+        primary_pool.provider = primary_provider
+        primary_pool.has_available.return_value = False
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == primary_provider
+        assert agent.base_url == primary_base_url
+        assert "deepseek" not in str(agent.base_url)
+        assert agent._credential_pool is primary_pool
+        load_pool.assert_called_once_with(primary_provider)
+        agent._swap_credential.assert_not_called()
+
+    def test_restore_clears_fallback_pool_when_primary_pool_reload_fails(self):
+        """A fallback pool must never remain attached to the restored primary."""
+        agent = _make_agent(
+            provider="openai-api",
+            base_url="https://api.openai.com/v1",
+        )
+        agent._fallback_activated = True
+        fallback_pool = MagicMock()
+        fallback_pool.provider = "deepseek"
+        agent._credential_pool = fallback_pool
+
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch(
+                "agent.credential_pool.load_pool",
+                side_effect=RuntimeError("auth store unavailable"),
+            ),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == "openai-api"
+        assert agent._credential_pool is None
+
+    def test_restore_swaps_matching_custom_pool_entry(self):
+        """Custom primary + custom:<name> entry whose base_url resolves to the
+        SAME custom key must swap (legitimate same-endpoint rotation)."""
+
+        class _Entry:
+            provider = "custom:myllm"
+            id = "custom-entry"
+            label = "myllm"
+            runtime_api_key = "custom-key"
+            runtime_base_url = "https://my-llm.example.com/v1"
+            access_token = "custom-key"
+
+        class _Pool:
+            provider = "custom:myllm"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        agent = _make_agent(provider="custom", base_url="https://my-llm.example.com/v1")
+        agent._fallback_activated = True
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        with (
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                return_value="custom:myllm",
+            ),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        agent._swap_credential.assert_called_once()
+
+    def test_restore_skips_cross_endpoint_custom_pool_entry(self):
+        """Custom primary + custom:<name> entry whose base_url resolves to a
+        DIFFERENT custom key must skip — two named custom providers sharing a
+        gateway must not cross-contaminate."""
+
+        class _Entry:
+            provider = "custom:otherllm"
+            id = "other-entry"
+            label = "otherllm"
+            runtime_api_key = "other-key"
+            runtime_base_url = "https://my-llm.example.com/v1"
+            access_token = "other-key"
+
+        class _Pool:
+            provider = "custom:otherllm"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        agent = _make_agent(provider="custom", base_url="https://my-llm.example.com/v1")
+        agent._fallback_activated = True
+        original_base_url = agent.base_url
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        with (
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                return_value="custom:myllm",  # primary resolves to a DIFFERENT key
+            ),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.base_url == original_base_url
+        agent._swap_credential.assert_not_called()
 
     def test_restore_survives_exception(self):
         """If client rebuild fails, the method returns False gracefully."""

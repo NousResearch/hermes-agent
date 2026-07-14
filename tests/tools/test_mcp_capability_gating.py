@@ -378,3 +378,61 @@ class TestKeepaliveProbeFallback:
         assert task._ping_unsupported is False
 
 
+@pytest.mark.asyncio
+class TestStalledListToolsTimeout:
+    """Discovery / refresh must time out when list_tools() never returns."""
+
+    async def _make_tool_capable_task(self):
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        return task
+
+    async def test_discover_tools_times_out_on_stalled_rpc(self):
+        """_discover_tools raises TimeoutError when list_tools hangs."""
+        task = await self._make_tool_capable_task()
+        # Use a short timeout so the test doesn't hang
+        task._config = {"connect_timeout": 0.1}
+
+        async def _hang():
+            await asyncio.sleep(10)
+
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(side_effect=_hang)
+        )
+
+        with pytest.raises(asyncio.TimeoutError):
+            await task._discover_tools()
+
+    async def test_refresh_tools_times_out_on_stalled_rpc(self):
+        """_refresh_tools raises TimeoutError when list_tools hangs."""
+        task = await self._make_tool_capable_task()
+        task._config = {"connect_timeout": 0.1}
+        # Must populate _registered_tool_names so refresh doesn't short-circuit
+        task._registered_tool_names = set()
+
+        async def _hang():
+            await asyncio.sleep(10)
+
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(side_effect=_hang)
+        )
+
+        with pytest.raises(asyncio.TimeoutError):
+            await task._refresh_tools()
+
+    async def test_discover_tools_honors_configured_timeout(self):
+        """A longer configured timeout is used instead of the default."""
+        task = await self._make_tool_capable_task()
+        task._config = {"connect_timeout": 30.0}
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(
+                return_value=SimpleNamespace(tools=[])
+            )
+        )
+
+        await task._discover_tools()
+
+        task.session.list_tools.assert_awaited_once()
+        assert task._tools == []
+
+

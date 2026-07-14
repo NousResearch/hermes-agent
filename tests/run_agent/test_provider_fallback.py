@@ -5,6 +5,7 @@ the new list-based ``fallback_providers`` config format and chain
 advancement through multiple providers.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
@@ -334,3 +335,46 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+
+class TestFallbackBaseUrlEnvExpansion:
+    """${VAR} expansion in fallback-chain base_url — runtime, init-time, and
+    gateway auth paths must all expand env vars identically."""
+
+    def test_expand_fallback_base_url_helper(self):
+        from utils import expand_fallback_base_url
+        # No env var → passthrough
+        assert expand_fallback_base_url("http://localhost:11434/v1") == "http://localhost:11434/v1"
+        # Env var expanded
+        with patch.dict(os.environ, {"OLLAMA_HOST": "http://192.168.1.10:11434"}):
+            assert expand_fallback_base_url("${OLLAMA_HOST}/v1") == "http://192.168.1.10:11434/v1"
+        # None / empty → None
+        assert expand_fallback_base_url(None) is None
+        assert expand_fallback_base_url("") is None
+        assert expand_fallback_base_url("  ") is None
+
+    def test_runtime_fallback_expands_env_vars(self):
+        """try_activate_fallback expands ${VAR} in fallback base_url."""
+        import os
+        fb = [{"provider": "custom", "model": "test-model",
+               "base_url": "${OLLAMA_HOST}/v1", "api_key": "no-key"}]
+        agent = _make_agent(fallback_model=fb)
+        agent.provider = "openrouter"
+        agent.model = "test-model"
+        agent.base_url = "https://openrouter.ai/api/v1"
+
+        mock_client = _mock_client(base_url="http://192.168.1.10:11434/v1")
+        with (
+            patch.dict(os.environ, {"OLLAMA_HOST": "http://192.168.1.10:11434"}),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(mock_client, "test-model")) as mock_resolve,
+        ):
+            ok = agent._try_activate_fallback()
+
+        assert ok is True
+        call_kwargs = mock_resolve.call_args
+        passed_url = call_kwargs.kwargs.get("explicit_base_url")
+        assert passed_url == "http://192.168.1.10:11434/v1", (
+            f"Expected expanded URL, got {passed_url!r}"
+        )

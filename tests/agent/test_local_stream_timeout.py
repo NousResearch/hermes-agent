@@ -138,3 +138,99 @@ class TestIsLocalEndpoint:
     def test_near_but_not_cgnat_is_remote(self, url):
         """Hosts adjacent to but outside 100.64.0.0/10 must not match."""
         assert is_local_endpoint(url) is False
+
+
+class TestIsKnownLocalInferenceEndpoint:
+    """Unit tests for the scoped local-inference detector.
+
+    Port 8080 alone must NOT be treated as inference because it is a
+    common cloud-proxy / relay port.  Provider identity (lmstudio, local)
+    and unique ports (11434, 1234) are reliable signals.
+    """
+
+    def _call(self, base_url, provider=None):
+        from agent.chat_completion_helpers import _is_known_local_inference_endpoint
+        return _is_known_local_inference_endpoint(base_url, provider)
+
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1:11434/v1",
+        "http://localhost:11434/v1",
+    ])
+    def test_ollama_port_detected(self, url):
+        assert self._call(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1:1234/v1",
+        "http://localhost:1234/v1",
+    ])
+    def test_lm_studio_port_detected(self, url):
+        assert self._call(url) is True
+
+    def test_omlx_in_url_detected(self):
+        assert self._call("http://127.0.0.1:8080/omlx/v1") is True
+
+    @pytest.mark.parametrize("provider", ["lmstudio", "local"])
+    def test_provider_identity_detected(self, provider):
+        """Provider lmstudio/local on any local endpoint → True."""
+        assert self._call("http://127.0.0.1:8080/v1", provider=provider) is True
+
+    def test_cloud_proxy_on_8080_not_detected(self):
+        """Port 8080 without a known provider → NOT inference.
+
+        This is the cloud-proxy regression: a Tailscale relay or HTTP
+        CONNECT proxy on :8080 must keep stale detection enabled.
+        """
+        assert self._call("http://127.0.0.1:8080/v1") is False
+
+    def test_cloud_proxy_on_8080_with_custom_provider_not_detected(self):
+        """Provider 'custom' on :8080 → still not inference (could be cloud)."""
+        assert self._call("http://127.0.0.1:8080/v1", provider="custom") is False
+
+    def test_remote_endpoint_not_detected(self):
+        assert self._call("https://api.openai.com/v1") is False
+
+    def test_empty_base_url_not_detected(self):
+        assert self._call(None) is False
+        assert self._call("") is False
+
+
+class TestComputeStreamStaleTimeout:
+    """Verify _compute_stream_stale_timeout integrates the scoped detector."""
+
+    def _agent(self, base_url="", provider="custom", model="test-model"):
+        from unittest.mock import MagicMock
+        a = MagicMock()
+        a.base_url = base_url
+        a.provider = provider
+        a.model = model
+        return a
+
+    def test_cloud_proxy_on_8080_keeps_default_timeout(self, monkeypatch):
+        """Cloud proxy on :8080 should NOT disable stale detection."""
+        monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+        from agent.chat_completion_helpers import _compute_stream_stale_timeout
+        agent = self._agent(base_url="http://127.0.0.1:8080/v1", provider="custom")
+        result = _compute_stream_stale_timeout(agent, {"model": "test"})
+        assert result != float("inf")
+        assert result == 180.0  # default
+
+    def test_ollama_disables_stale(self, monkeypatch):
+        monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+        from agent.chat_completion_helpers import _compute_stream_stale_timeout
+        agent = self._agent(base_url="http://127.0.0.1:11434/v1", provider="custom")
+        assert _compute_stream_stale_timeout(agent, {"model": "test"}) == float("inf")
+
+    def test_llamacpp_via_provider_disables_stale(self, monkeypatch):
+        """llama.cpp on :8080 with provider 'local' → disabled."""
+        monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+        from agent.chat_completion_helpers import _compute_stream_stale_timeout
+        agent = self._agent(base_url="http://127.0.0.1:8080/v1", provider="local")
+        assert _compute_stream_stale_timeout(agent, {"model": "test"}) == float("inf")
+
+    def test_user_override_keeps_timeout_for_ollama(self, monkeypatch):
+        """HERMES_STREAM_STALE_TIMEOUT set → don't auto-disable even for Ollama."""
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "300")
+        from agent.chat_completion_helpers import _compute_stream_stale_timeout
+        agent = self._agent(base_url="http://127.0.0.1:11434/v1", provider="custom")
+        result = _compute_stream_stale_timeout(agent, {"model": "test"})
+        assert result == 300.0

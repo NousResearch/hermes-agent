@@ -1328,7 +1328,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home, get_hermes_home_override
-from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
+from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value, expand_fallback_base_url
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -1994,7 +1994,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                         explicit_api_key = os.getenv(key_env, "").strip() or None
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"),
-                    explicit_base_url=entry.get("base_url"),
+                    explicit_base_url=expand_fallback_base_url(entry.get("base_url")),
                     explicit_api_key=explicit_api_key,
                 )
                 # Log the literal `provider` key from config, not the resolved

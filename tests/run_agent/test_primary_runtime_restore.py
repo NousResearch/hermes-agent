@@ -489,6 +489,30 @@ class TestTryRecoverPrimaryTransport:
 
         assert result is True
 
+    def test_recovers_on_broken_pipe_error(self):
+        agent = _make_agent(provider="custom")
+        error = _make_transport_error("BrokenPipeError")
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+
+    def test_recovers_on_connection_reset_error(self):
+        agent = _make_agent(provider="custom")
+        error = _make_transport_error("ConnectionResetError")
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+
     def test_skipped_when_already_on_fallback(self):
         agent = _make_agent(provider="custom")
         agent._fallback_activated = True

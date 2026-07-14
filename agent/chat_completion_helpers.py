@@ -29,13 +29,14 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.gemini_native_adapter import is_native_gemini_base_url
+from urllib.parse import urlparse
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname, env_float, env_int
+from utils import base_url_host_matches, base_url_hostname, expand_fallback_base_url, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
@@ -114,6 +115,95 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
         return sum(_chars(value) for value in api_payload.values()) // 4
 
     return _chars(api_payload) // 4
+
+
+# Providers that are always local inference servers (never cloud relays).
+# ``custom`` is excluded because it covers both local Ollama/llama.cpp and
+# custom cloud endpoints — the base_url + port must disambiguate.
+_LOCAL_INFERENCE_PROVIDERS = frozenset({"lmstudio", "local"})
+
+
+def _is_known_local_inference_endpoint(
+    base_url: str | None, provider: str | None = None
+) -> bool:
+    """Return True only for local endpoints that are known inference servers.
+
+    Port 8080 alone is NOT treated as inference because it is a common
+    cloud-proxy / relay port.  llama.cpp users on :8080 should set
+    ``HERMES_STREAM_STALE_TIMEOUT`` or use provider ``local``/``llamacpp``
+    so the provider identity disambiguates from generic relays.
+    """
+    if not base_url or not is_local_endpoint(base_url):
+        return False
+
+    # Provider identity is the most reliable signal — ``lmstudio`` and
+    # ``local`` (vllm, llamacpp) are always local inference.
+    if provider and provider.lower() in _LOCAL_INFERENCE_PROVIDERS:
+        return True
+
+    try:
+        parsed_port = urlparse(base_url).port
+    except Exception:
+        parsed_port = None
+
+    # 11434 = Ollama, 1234 = LM Studio — both unique enough to trust.
+    # 8080 (llama.cpp default) is deliberately excluded.
+    return parsed_port in (11434, 1234) or "omlx" in base_url.lower()
+
+
+def _compute_stream_stale_timeout(agent, api_kwargs: dict) -> float:
+    """Compute the stale-stream timeout for the current streaming request."""
+    cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
+    stream_stale_timeout_env = os.getenv("HERMES_STREAM_STALE_TIMEOUT")
+
+    if cfg_stale is not None:
+        stream_stale_timeout_base = cfg_stale
+        allow_local_inference_disable = False
+    else:
+        stream_stale_timeout_base = (
+            float(stream_stale_timeout_env)
+            if stream_stale_timeout_env
+            else 180.0
+        )
+        allow_local_inference_disable = stream_stale_timeout_env is None
+
+    # Local inference servers can take minutes for prefill on large contexts.
+    # Disable the stale detector only for known local inference endpoints. A
+    # generic localhost/cloud relay should keep the normal timeout so real
+    # provider hangs still surface.
+    if (
+        allow_local_inference_disable
+        and _is_known_local_inference_endpoint(
+            getattr(agent, "base_url", ""), getattr(agent, "provider", None)
+        )
+    ):
+        logger.debug(
+            "Local inference provider detected (%s) — stale stream timeout disabled",
+            getattr(agent, "base_url", ""),
+        )
+        return float("inf")
+
+    # Scale the stale timeout for large contexts: slow models (like Opus)
+    # can legitimately think for minutes before producing the first token.
+    est_tokens = estimate_request_context_tokens(api_kwargs)
+    if est_tokens > 100_000:
+        stream_stale_timeout = max(stream_stale_timeout_base, 300.0)
+    elif est_tokens > 50_000:
+        stream_stale_timeout = max(stream_stale_timeout_base, 240.0)
+    else:
+        stream_stale_timeout = stream_stale_timeout_base
+    # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
+    # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
+    # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
+    # model threshold during their thinking phase.  The cloud gateway
+    # upstream kills the socket first, surfacing as BrokenPipeError.
+    # Raises the floor only — never overrides explicit user config
+    # (handled by get_provider_stale_timeout above).
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+    if _reasoning_floor is not None:
+        stream_stale_timeout = max(stream_stale_timeout, _reasoning_floor)
+    return stream_stale_timeout
 
 
 def _is_openai_codex_backend(agent) -> bool:
@@ -1425,7 +1515,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Pass base_url and api_key from fallback config so custom
         # endpoints (e.g. Ollama Cloud) resolve correctly instead of
         # falling through to OpenRouter defaults.
-        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
+        fb_base_url_hint = expand_fallback_base_url(fb.get("base_url"))
         fb_api_key_hint = (fb.get("api_key") or "").strip() or None
         if not fb_api_key_hint:
             # key_env and api_key_env are both documented aliases (see
@@ -2990,42 +3080,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         finally:
             _close_request_client_once("stream_request_complete")
 
-    # Provider-configured stale timeout takes priority over env default.
-    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
-    if _cfg_stale is not None:
-        _stream_stale_timeout_base = _cfg_stale
-    else:
-        _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
-    # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-    # for prefill on large contexts.  Disable the stale detector unless
-    # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-    if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        _stream_stale_timeout = float("inf")
-        logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
-    else:
-        # Scale the stale timeout for large contexts: slow models (like Opus)
-        # can legitimately think for minutes before producing the first token
-        # when the context is large.  Without this, the stale detector kills
-        # healthy connections during the model's thinking phase, producing
-        # spurious RemoteProtocolError ("peer closed connection").
-        _est_tokens = estimate_request_context_tokens(api_kwargs)
-        if _est_tokens > 100_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-        elif _est_tokens > 50_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-        else:
-            _stream_stale_timeout = _stream_stale_timeout_base
-        # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
-        # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
-        # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
-        # model threshold during their thinking phase.  The cloud gateway
-        # upstream kills the socket first, surfacing as BrokenPipeError.
-        # Raises the floor only — never overrides explicit user config
-        # (handled by get_provider_stale_timeout above).
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-        _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
-        if _reasoning_floor is not None:
-            _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
+    _stream_stale_timeout = _compute_stream_stale_timeout(agent, api_kwargs)
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()

@@ -35,6 +35,7 @@ import atexit
 import importlib
 import json
 import logging
+import math
 import os
 import queue
 import sys
@@ -56,6 +57,9 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+_DEFAULT_PREFETCH_JOIN_TIMEOUT = 5.0
+_MAX_PREFETCH_JOIN_TIMEOUT = 60.0
+_PREFETCH_SHUTDOWN_GRACE_TIMEOUT = 5.0
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -88,18 +92,18 @@ def _parse_int_setting(value: Any, default: int) -> int:
 
 
 def _parse_float_setting(value: Any, default: float) -> float:
-    """Parse a float config value, falling back on invalid input."""
+    """Parse a bounded non-negative float config value."""
     if value is None or value == "":
         return default
     try:
         result = float(value)
-        if result < 0:
-            logger.warning("Negative float Hindsight setting %r; using default %s", value, default)
-            return default
-        return result
     except (TypeError, ValueError):
         logger.warning("Invalid float Hindsight setting %r; using default %s", value, default)
         return default
+    if not math.isfinite(result) or result < 0 or result > _MAX_PREFETCH_JOIN_TIMEOUT:
+        logger.warning("Out-of-range float Hindsight setting %r; using default %s", value, default)
+        return default
+    return result
 
 
 # Env var the embedded daemon manager reads (at import time, as a module-level
@@ -675,6 +679,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
+        self._prefetch_generation = 0
         self._prefetch_thread = None
         # Single-writer model for retain. sync_turn() enqueues; the writer
         # thread drains sequentially. Avoids spawning ad-hoc threads that
@@ -1519,6 +1524,9 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
 
+        with self._prefetch_lock:
+            prefetch_generation = self._prefetch_generation
+
         def _run():
             try:
                 if self._prefetch_method == "reflect":
@@ -1543,7 +1551,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
                 if text:
                     with self._prefetch_lock:
-                        self._prefetch_result = text
+                        if prefetch_generation == self._prefetch_generation:
+                            self._prefetch_result = text
             except Exception as e:
                 logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
 
@@ -1904,12 +1913,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._register_atexit()
                 self._retain_queue.put(_flush)
 
-        # 2. Drain any in-flight prefetch from the old session and drop
-        # its cached result so the new session doesn't see stale recall.
+        # 2. Invalidate in-flight prefetch before waiting so a timed-out old
+        # worker cannot write stale recall into the new session's cache.
+        with self._prefetch_lock:
+            self._prefetch_generation += 1
+            self._prefetch_result = ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=self._prefetch_join_timeout)
-        with self._prefetch_lock:
-            self._prefetch_result = ""
 
         # 3. Now rotate to the new session.
         if parent_session_id:
@@ -1947,8 +1957,11 @@ class HindsightMemoryProvider(MemoryProvider):
                     "abandoning %d pending retain(s)",
                     self._retain_queue.qsize(),
                 )
+        with self._prefetch_lock:
+            self._prefetch_generation += 1
+            self._prefetch_result = ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=self._prefetch_join_timeout)
+            self._prefetch_thread.join(timeout=_PREFETCH_SHUTDOWN_GRACE_TIMEOUT)
         if self._client is not None:
             try:
                 if self._mode == "local_embedded":

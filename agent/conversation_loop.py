@@ -458,6 +458,31 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+def _is_length_continuation_prompt(message: Dict) -> bool:
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    return content.startswith(
+        (
+            "[System: Your previous response was truncated by the output length limit.",
+            "[System: The previous response was cut off by a network error mid-stream.",
+            "[System: Your previous tool call ",
+        )
+    )
+
+
+def _length_continuation_made_no_progress(
+    truncated_response_parts: List[str],
+    content: Optional[str],
+) -> bool:
+    """Return True when a continuation retry only repeats the last partial text."""
+    if not truncated_response_parts or not content:
+        return False
+    return truncated_response_parts[-1].strip() == content.strip()
+
+
 # Shared recovery hint appended to every content-policy refusal message. Both
 # the HTTP-200 refusal path (``finish_reason=content_filter``) and the
 # exception path (a provider moderation error classified as
@@ -1919,6 +1944,31 @@ def run_conversation(
                                 force=True,
                             )
                         if assistant_message is not None and not _trunc_has_tool_calls:
+                            if _length_continuation_made_no_progress(
+                                truncated_response_parts,
+                                assistant_message.content,
+                            ):
+                                if messages and _is_length_continuation_prompt(messages[-1]):
+                                    messages.pop()
+                                if messages and messages[-1].get("role") == "assistant":
+                                    messages[-1]["finish_reason"] = "stop"
+                                partial_response = agent._strip_think_blocks(
+                                    "".join(truncated_response_parts)
+                                ).strip()
+                                agent._vprint(
+                                    f"{agent.log_prefix}↻ Continuation repeated the same text; "
+                                    "treating the prior response as complete.",
+                                    force=True,
+                                )
+                                agent._cleanup_task_resources(effective_task_id)
+                                agent._persist_session(messages, conversation_history)
+                                return {
+                                    "final_response": partial_response or assistant_message.content,
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": True,
+                                }
+
                             length_continue_retries += 1
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                             messages.append(interim_msg)

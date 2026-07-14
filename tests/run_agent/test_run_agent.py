@@ -4078,6 +4078,31 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_length_continuation_no_progress_returns_single_response(self, agent):
+        self._setup_agent(agent)
+        final_text = "Kész. ~/summaries/all_in_podcast/report.md"
+        length_resp = _mock_response(content=final_text, finish_reason="length")
+        agent.client.chat.completions.create.side_effect = [length_resp, length_resp]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("finish the podcast summary")
+
+        assert result["completed"] is True
+        assert result["final_response"] == final_text
+        assert result["api_calls"] == 2
+        assert agent.client.chat.completions.create.call_count == 2
+        assert [m["role"] for m in result["messages"]] == ["user", "assistant"]
+        assert result["messages"][-1]["content"] == final_text
+        assert result["messages"][-1]["finish_reason"] == "stop"
+        assert all(
+            "Your previous response was truncated" not in (m.get("content") or "")
+            for m in result["messages"]
+        )
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

@@ -1196,15 +1196,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
                     ).lower() in {"true", "1", "yes"}
-                    if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _channel_id = str(message.channel.id)
-                        _parent_id = None
-                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                            _parent_id = str(message.channel.parent_id)
-                        _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
-                        if "*" not in _free_channels and not (_channel_keys & _free_channels):
-                            return
+                    if (
+                        _ignore_no_mention
+                        and not _self_mentioned
+                        and not _other_bots_mentioned
+                        and not adapter_self._no_mention_free_gate_admits(message)
+                    ):
+                        return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
 
@@ -4863,11 +4861,19 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
-    def _discord_free_response_categories(self) -> set:
-        """Return Discord category IDs/names where no bot mention is required."""
-        raw = self.config.extra.get("free_response_categories")
+    def _discord_category_scope(self, extra_key: str, env_var: str) -> set:
+        """Resolve a category scope from ``config.extra``, else the environment.
+
+        ``config`` is read through ``getattr`` because ``_is_allowed_user``
+        reaches this via the category bypass, and callers that build an adapter
+        with ``object.__new__(DiscordAdapter)`` have no ``config`` (AGENTS.md
+        pitfall #17 — the same fallback the user/role allowlists use).
+        """
+        config = getattr(self, "config", None)
+        extra = getattr(config, "extra", None) or {}
+        raw = extra.get(extra_key)
         if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CATEGORIES", "")
+            raw = os.getenv(env_var, "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         s = str(raw).strip() if raw is not None else ""
@@ -4875,17 +4881,17 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_free_response_categories(self) -> set:
+        """Return Discord category IDs/names where no bot mention is required."""
+        return self._discord_category_scope(
+            "free_response_categories", "DISCORD_FREE_RESPONSE_CATEGORIES"
+        )
+
     def _discord_allowed_categories(self) -> set:
         """Return Discord category IDs/names where guild users may address the bot."""
-        raw = self.config.extra.get("allowed_categories")
-        if raw is None:
-            raw = os.getenv("DISCORD_ALLOWED_CATEGORIES", "")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
+        return self._discord_category_scope(
+            "allowed_categories", "DISCORD_ALLOWED_CATEGORIES"
+        )
 
     def _discord_category_ids_allowed(self, category_keys: set[str]) -> bool:
         """True when *category_keys* intersect configured allowed categories."""
@@ -4908,19 +4914,64 @@ class DiscordAdapter(BasePlatformAdapter):
         Categories are intentionally separate from channel keys so operators can
         configure explicit ``allowed_categories`` / ``free_response_categories``
         gates without overloading ``allowed_channels`` with category snowflakes.
+
+        A thread has no category of its own — it inherits the parent channel's.
+        Resolve through ``channel.parent`` when present, mirroring the parent
+        scope ``_discord_channel_keys_from_channel`` already preserves for
+        thread policies. discord.py's ``Thread.category`` / ``Thread.category_id``
+        raise ``ClientException`` when the parent is not cached (``getattr``
+        only swallows ``AttributeError``), so both reads are suppressed: an
+        unresolvable category yields no keys instead of raising through the
+        message and slash gates.
         """
         keys: set[str] = set()
-        category_id = getattr(channel, "category_id", None)
+
+        parent = getattr(channel, "parent", None)
+        source = parent if parent is not None else channel
+
+        category_id = None
+        with suppress(Exception):
+            category_id = getattr(source, "category_id", None)
         if category_id is not None:
             keys.add(str(category_id))
 
-        category_channel = getattr(channel, "category", None)
+        category_channel = None
+        with suppress(Exception):
+            category_channel = getattr(source, "category", None)
         category_name = str(getattr(category_channel, "name", "")).strip() if category_channel else ""
         if category_name:
             keys.add(category_name)
             keys.add(f"#{category_name}")
 
         return keys
+
+    def _no_mention_free_gate_admits(self, message: Any) -> bool:
+        """Whether a no-mention message survives the early ``on_message`` gate.
+
+        That gate drops messages which @mention other users but not this bot
+        (``DISCORD_IGNORE_NO_MENTION``). Free-response scopes are the exception:
+        the bot answers regardless of who was mentioned. Resolve the channel
+        scope (channel / thread-parent keys vs ``free_response_channels``) and
+        the category scope (vs ``free_response_categories``) so category-level
+        free-response applies at this earlier gate too, matching the
+        ``is_free_channel`` decision in ``_handle_message``.
+        """
+        channel = getattr(message, "channel", None)
+        parent_id = None
+        if getattr(channel, "parent_id", None):
+            parent_id = str(channel.parent_id)
+
+        free_channels = self._discord_free_response_channels()
+        channel_keys = self._discord_channel_keys(message, parent_id)
+        if "*" in free_channels or (channel_keys & free_channels):
+            return True
+
+        free_categories = self._discord_free_response_categories()
+        category_keys = self._discord_category_keys(message)
+        if "*" in free_categories or (category_keys & free_categories):
+            return True
+
+        return False
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.

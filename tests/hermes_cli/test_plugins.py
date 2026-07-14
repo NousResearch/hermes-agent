@@ -442,22 +442,6 @@ class TestPluginDiscovery:
         assert loaded.enabled is True
         assert "direct-plugin" in mgr._plugin_commands
 
-    def test_discover_external_plugin_paths_from_env(self, tmp_path, monkeypatch):
-        """HERMES_PLUGIN_PATHS adds external plugin roots."""
-        hermes_home = tmp_path / "hermes_test"
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        external_root = tmp_path / "private_plugins"
-        _make_plugin_dir(external_root, "private-env", auto_enable=False)
-        _write_plugins_config(hermes_home, enabled=["private-env"])
-        monkeypatch.setenv("HERMES_PLUGIN_PATHS", str(external_root))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        loaded = mgr._plugins["private-env"]
-        assert loaded.manifest.source == "external"
-        assert loaded.enabled is True
-
     def test_unenabled_external_plugin_does_not_shadow_bundled_backend(self, tmp_path, monkeypatch):
         """External discovery alone must not replace a bundled auto-loaded backend."""
         hermes_home = tmp_path / "hermes_test"

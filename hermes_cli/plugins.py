@@ -10,8 +10,9 @@ Discovers, loads, and manages plugins from five sources:
 2. **User plugins**   – ``~/.hermes/plugins/<name>/``
 3. **Project plugins** – ``./.hermes/plugins/<name>/`` (opt-in via
    ``HERMES_ENABLE_PROJECT_PLUGINS``)
-4. **External plugin paths** – directories listed in ``plugins.extra_paths``
-   or ``HERMES_PLUGIN_PATHS``
+4. **External plugin paths** – general PluginManager plugins listed in
+   ``plugins.extra_paths``. Specialized plugin categories keep their own
+   documented discovery locations.
 5. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
    entry-point group.
 
@@ -285,19 +286,14 @@ def _split_plugin_paths(raw: str) -> List[Path]:
 
 
 def _get_extra_plugin_paths() -> List[Path]:
-    """Read additional plugin discovery roots from env and config.
+    """Read additional general-plugin discovery roots from config.
 
-    ``HERMES_PLUGIN_PATHS`` follows the platform path-list separator
-    (``:`` on POSIX, ``;`` on Windows). ``plugins.extra_paths`` may be a
-    string or a YAML list. Each entry may be either a collection directory
+    ``plugins.extra_paths`` may be a string or a YAML list. Each entry may be
+    either a collection directory
     containing plugin subdirectories or a direct plugin checkout containing
     a root ``plugin.yaml``.
     """
     paths: List[Path] = []
-
-    raw_env = os.getenv("HERMES_PLUGIN_PATHS", "").strip()
-    if raw_env:
-        paths.extend(_split_plugin_paths(raw_env))
 
     try:
         from hermes_cli.config import load_config

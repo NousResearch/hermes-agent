@@ -4435,6 +4435,17 @@ class BasePlatformAdapter(ABC):
         self._discard_text_debounce(session_key)
         return True
 
+    def _set_active_session_message_id(
+        self,
+        session_key: str,
+        event: MessageEvent,
+    ) -> None:
+        """Record the inbound event identity for the task owning a session."""
+        if event.message_id:
+            self._active_session_message_ids[session_key] = str(event.message_id)
+        else:
+            self._active_session_message_ids.pop(session_key, None)
+
     def _start_session_processing(
         self,
         event: MessageEvent,
@@ -4451,8 +4462,7 @@ class BasePlatformAdapter(ABC):
         """
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
-        if event.message_id:
-            self._active_session_message_ids[session_key] = str(event.message_id)
+        self._set_active_session_message_id(session_key, event)
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
@@ -5229,6 +5239,7 @@ class BasePlatformAdapter(ABC):
                 # exhaust at ~2000 frames and SIGSEGV the process.
                 # Mirror the late-arrival drain pattern below: hand off
                 # to a new task and return so this frame can unwind.
+                self._set_active_session_message_id(session_key, pending_event)
                 drain_task = asyncio.create_task(
                     self._process_message_background(pending_event, session_key)
                 )
@@ -5353,6 +5364,7 @@ class BasePlatformAdapter(ABC):
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:
                         _active.clear()
+                    self._set_active_session_message_id(session_key, late_pending)
                     drain_task = asyncio.create_task(
                         self._process_message_background(late_pending, session_key)
                     )
@@ -5459,6 +5471,7 @@ class BasePlatformAdapter(ABC):
         self._session_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
+        self._active_session_message_ids.clear()
         for state in list(self._text_debounce_store().values()):
             if state.task is not None and not state.task.done():
                 state.task.cancel()

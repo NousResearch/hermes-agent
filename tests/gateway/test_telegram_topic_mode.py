@@ -1494,50 +1494,71 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
 
 @pytest.mark.asyncio
 async def test_topic_mode_auto_disables_when_chat_is_forum_false(tmp_path):
-    runner = _make_runner(session_db=SessionDB(tmp_path / "state.db"))
-    db = runner._session_db
+    db = SessionDB(tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    runner._handle_message_with_agent = AsyncMock(return_value="agent response")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    
+
     event = _make_event("Hello", thread_id=None)
     event.raw_message = SimpleNamespace(
         chat=SimpleNamespace(id=208214988, is_forum=False)
     )
-    
+
     response = await runner._handle_message(event)
-    
+
     assert db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988") is False
     assert runner._telegram_topic_mode_enabled(event.source) is False
-    assert "reserved for system commands" not in str(response)
+    assert response == "agent response"
+    runner._handle_message_with_agent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_new_auto_disables_topic_mode_when_chat_is_forum_false(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+
+    event = _make_event("/new", thread_id=None)
+    event.raw_message = SimpleNamespace(
+        chat=SimpleNamespace(id=208214988, is_forum=False)
+    )
+
+    response = await runner._handle_message(event)
+
+    assert db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988") is False
+    assert "create a new topic" not in str(response)
+    runner.session_store.reset_session.assert_called_once_with(
+        build_session_key(event.source)
+    )
 
 
 @pytest.mark.asyncio
 async def test_topic_mode_stays_enabled_when_chat_is_forum_true(tmp_path):
-    runner = _make_runner(session_db=SessionDB(tmp_path / "state.db"))
-    db = runner._session_db
+    db = SessionDB(tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    
+
     event = _make_event("Hello", thread_id=None)
     event.raw_message = SimpleNamespace(
         chat=SimpleNamespace(id=208214988, is_forum=True)
     )
-    
+
     response = await runner._handle_message(event)
-    
+
     assert db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988") is True
     assert "reserved for system commands" in str(response)
 
 
 @pytest.mark.asyncio
 async def test_topic_mode_no_crash_when_raw_message_missing(tmp_path):
-    runner = _make_runner(session_db=SessionDB(tmp_path / "state.db"))
-    db = runner._session_db
+    db = SessionDB(tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    
+
     event = _make_event("Hello", thread_id=None)
     event.raw_message = None
-    
+
     response = await runner._handle_message(event)
-    
+
     assert db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988") is True
     assert "reserved for system commands" in str(response)
-
